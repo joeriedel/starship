@@ -52,17 +52,18 @@ func TestPinnedBridge(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := cmdSetup([]string{"--projects", "/srv/projects"}, &out); err != nil {
+	projects := t.TempDir()
+	if err := cmdSetup([]string{"--projects", projects}, &out); err != nil {
 		t.Fatalf("setup: %v\n%s", err, out.String())
 	}
 	installed, _ := os.ReadFile(filepath.Join(os.Getenv("STARSHIP_BIN_DIR"), exeName()))
 	if !strings.Contains(string(installed), "released ensign") {
 		t.Errorf("setup should install the pinned release's ensign")
 	}
-	if m := loadMachine(bridge); m.Projects != "/srv/projects" {
+	if m := loadMachine(bridge); m.Projects != filepath.ToSlash(projects) {
 		t.Errorf("machine projects = %q", m.Projects)
 	}
-	if ws, _ := expandWorkspace(bridge, "$PROJECTS/app"); ws != filepath.FromSlash("/srv/projects/app") {
+	if ws, _ := expandWorkspace(bridge, "$PROJECTS/app"); ws != filepath.Join(projects, "app") {
 		t.Errorf("$PROJECTS expanded to %q", ws)
 	}
 	if reg := loadRegistry(); !contains(reg.Bridges, bridge) {
