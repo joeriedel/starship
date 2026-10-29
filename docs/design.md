@@ -819,7 +819,6 @@ collides with the starship shell prompt, whose binary is `starship`.
 ```
 bin/
   linux-amd64/ensign
-  linux-arm64/ensign
   windows-amd64/ensign.exe
 ```
 
