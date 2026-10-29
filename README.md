@@ -58,54 +58,14 @@ confirm. If you don't say where the code is, it asks.
 A task works in the project's code unless you name a different location, such as a
 second checkout.
 
-Claude reads the code and comes back with a plan. Type `go` to start the run, and you'll
-get a report when it's done.
+Claude reads the code and comes back with a plan. Type `go` to start the run. A coder
+makes the change, reviewers who didn't write it check it, a style pass tidies it, and a
+tester runs the full suite; anything they find goes back to the coder. You get a report
+when it's done: what changed, every finding and what was decided about it.
 
 **4. Come back to it any time.** `open foobar / fix-login` picks the task up where it left
 off, in a new session or on another machine. Type `help` to see everything you can ask
 for, and `status` for where things stand.
-
-## A day on the bridge
-
-It's Monday. You open a terminal in your work bridge (a private repo that holds your
-work projects; more on bridges below) and start Claude.
-
-```
-> open supernova / rate-limit
-
-⏺ Task rate-limit: workspace ~/src/supernova, branch rate-limit, clean.
-
-> add per-account rate limiting to the login endpoint, limits from config
-```
-
-That's project `supernova`, task `rate-limit`. Claude reads the code (looking doesn't
-need permission; changing does) and comes back with a plan. It says what it will change,
-what done looks like, and what it deliberately won't touch. It shows you the run it has
-set up: code, review, style, test. Then it waits.
-
-```
-> go
-```
-
-Now the crew goes to work:
-
-- A **coder** makes the change and confirms it compiles.
-- **Reviewers** read it, one per review dimension (correctness, security, whatever your
-  project asks for), independently of the coder.
-- They find something, so it goes back to the coder for another pass.
-- A **style reviewer** tidies it to match how your project actually writes code.
-- A **tester** builds it and runs the full suite. A test fails, so
-  it goes back to the coder again.
-- Second time round it passes.
-
-You get a report: what changed, every finding and what was decided about it, and anything
-deferred.
-
-On Tuesday you're on a different machine. You open the same task, and Claude knows
-exactly where things stand. The task journal was committed and pushed last night, and a
-hook wouldn't let the session end until it was.
-
-Apart from `go`, you never typed a command. You just had a conversation.
 
 ## The cast
 
