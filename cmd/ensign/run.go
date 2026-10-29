@@ -482,7 +482,11 @@ func printSummary(out io.Writer, c *Config, start string) {
 			if s.Parallel != nil {
 				extra += fmt.Sprintf(" parallel over %v", s.Dimensions)
 			}
-			fmt.Fprintf(out, "%s%-8s %-15s%s\n%s         from %s\n", indent, s.ID, s.Role, extra, indent, s.Source)
+			src := s.Source
+			if !strings.HasPrefix(src, "inserted by") && !strings.HasPrefix(src, "replaced by") {
+				src = "from " + src
+			}
+			fmt.Fprintf(out, "%s%-8s %-15s%s\n%s         %s\n", indent, s.ID, s.Role, extra, indent, src)
 			for _, o := range s.Outcomes {
 				fmt.Fprintf(out, "%s           %-9s → %s\n", indent, o.Name, o.Then)
 			}
