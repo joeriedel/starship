@@ -163,6 +163,9 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	firstOfStage := m.running(scope, s.ID) == 0 && len(sc.Branches) == 0
 	if s.isLead() && !r.State.Started {
 		r.State.Started = true
+		if isGit(r.Snap.Workspace) {
+			r.State.StartHead, _ = gitOut(r.Snap.Workspace, "rev-parse", "HEAD")
+		}
 		if r.State.Sync {
 			if out, err := runHandler(r, Handler{Kind: "require", Command: "@sync", Source: "--sync"}, nil); err != nil {
 				m.fail("handler", fmt.Sprintf("@sync failed: %v: %s", err, lastLines(out, 5)))

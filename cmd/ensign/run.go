@@ -83,13 +83,14 @@ type State struct {
 	Scopes   map[string]*ScopeState `json:"scopes"`
 	// StartChild is the --start stage inside a lead, applied when the lead's scope opens.
 	StartChild string         `json:"start_child,omitempty"`
-	Started    bool           `json:"started,omitempty"` // run.start has fired
-	Sync       bool           `json:"sync,omitempty"`    // run @sync before run.start
-	Base       string         `json:"base,omitempty"`    // git-catalog: HEAD when the run started
-	Extra      map[string]int `json:"extra,omitempty"`   // budget added on resume
-	Resume     *ResumePoint   `json:"resume,omitempty"`  // where an ask-user run continues
-	Answers    []string       `json:"answers,omitempty"` // the user's answers on resume
-	Rebuild    bool           `json:"rebuild,omitempty"` // style-generate: rebuild from every source
+	Started    bool           `json:"started,omitempty"`    // run.start has fired
+	Sync       bool           `json:"sync,omitempty"`       // run @sync before run.start
+	Base       string         `json:"base,omitempty"`       // git-catalog: HEAD when the run started
+	Extra      map[string]int `json:"extra,omitempty"`      // budget added on resume
+	Resume     *ResumePoint   `json:"resume,omitempty"`     // where an ask-user run continues
+	Answers    []string       `json:"answers,omitempty"`    // the user's answers on resume
+	Rebuild    bool           `json:"rebuild,omitempty"`    // style-generate: rebuild from every source
+	StartHead  string         `json:"start_head,omitempty"` // the workspace's commit when the run started (git)
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 }

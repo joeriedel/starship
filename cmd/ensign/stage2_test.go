@@ -324,3 +324,44 @@ func TestJournals(t *testing.T) {
 		t.Fatalf("journal commits are off for this project: %q", r)
 	}
 }
+
+func TestRunIsLoggedInTheJournal(t *testing.T) {
+	w := newWorld(t)
+	ws := w.gitWorkspace()
+	lead := w.startLead()
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	write(t, filepath.Join(ws, "lib.txt"), "two\n")
+	write(t, filepath.Join(ws, "new.txt"), "new\n")
+	w.stop(coder, "coder", report("compiled"), false)
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+	w.leaf(lead, "tester", "pass")
+	st := w.state()
+	if st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	data, _ := os.ReadFile(filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md"))
+	journal := string(data)
+	want := "run " + st.Run + " (coding): success.** 1 coder pass. Changed: lib.txt, new.txt. Started at "
+	if !strings.Contains(journal, want) || !strings.Contains(journal, "nothing committed.") {
+		t.Fatalf("the progress log has no entry for the run:\n%s", journal)
+	}
+	log := journal[strings.Index(journal, "## Progress log"):]
+	if next := strings.Index(log[3:], "\n## "); next >= 0 && !strings.Contains(log[:next+3], st.Run) {
+		t.Errorf("the entry should be inside the progress log section")
+	}
+}
+
+func TestInsertProgress(t *testing.T) {
+	doc := "# t\n\n## Progress log\n\n- old.\n\n## Outstanding\n\n- x\n"
+	if got := insertProgress(doc, "- new."); got != "# t\n\n## Progress log\n\n- old.\n- new.\n\n## Outstanding\n\n- x\n" {
+		t.Errorf("after the last entry, before the next section:\n%s", got)
+	}
+	if got := insertProgress("# t\n\n## Progress log\n\n## Notes\n", "- new."); got != "# t\n\n## Progress log\n\n- new.\n\n## Notes\n" {
+		t.Errorf("into an empty section:\n%q", got)
+	}
+	if got := insertProgress("# t\n", "- new."); got != "# t\n\n## Progress log\n\n- new.\n" {
+		t.Errorf("a missing section is added:\n%q", got)
+	}
+}

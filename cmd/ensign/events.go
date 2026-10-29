@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -165,4 +166,107 @@ func finishRun(r *RunFiles) {
 		m.fail("handler", err.Error())
 		fire(r, "run.finish:error", nil)
 	}
+	if err := logRunInJournal(r); err != nil {
+		st.log("journal", "", "", "the run could not be added to the task's progress log: "+err.Error())
+	}
+}
+
+// runEntry is the line a finished run adds to its task's progress log: what happened, in
+// facts only. The session writes the account under it.
+func runEntry(r *RunFiles) string {
+	st := r.State
+	outcome := st.Status
+	switch {
+	case st.Status == "ask-user":
+		outcome = "paused to ask the user"
+	case st.Reason != "" && st.Status != "success":
+		outcome += " (" + st.Reason + ")"
+	}
+	passes := 0
+	files := map[string]bool{}
+	for _, d := range st.Dispatches {
+		if d.Role == "coder" && d.Done {
+			passes++
+		}
+		for _, f := range d.Fields["files"] {
+			files[f] = true
+		}
+	}
+	ws := r.Snap.Workspace
+	head := ""
+	if st.StartHead != "" {
+		head, _ = gitOut(ws, "rev-parse", "HEAD")
+		if changed, err := gitOut(ws, "diff", "--name-only", st.StartHead); err == nil {
+			for _, f := range strings.Fields(changed) {
+				files[f] = true
+			}
+		}
+		if untracked, err := gitOut(ws, "ls-files", "--others", "--exclude-standard"); err == nil {
+			for _, f := range strings.Fields(untracked) {
+				files[f] = true
+			}
+		}
+	}
+	line := fmt.Sprintf("- **%s, run %s (%s): %s.**", time.Now().Format("2006-01-02"), st.Run, r.Snap.Pipeline.Name, outcome)
+	if passes > 0 {
+		line += fmt.Sprintf(" %d coder pass%s.", passes, map[bool]string{true: "", false: "es"}[passes == 1])
+	}
+	if len(files) > 0 {
+		line += " Changed: " + strings.Join(sortedStrings(files), ", ") + "."
+	}
+	if head != "" && head != st.StartHead {
+		line += fmt.Sprintf(" Commits: %s..%s.", short(st.StartHead), short(head))
+	} else if st.StartHead != "" {
+		line += fmt.Sprintf(" Started at %s; nothing committed.", short(st.StartHead))
+	}
+	return line
+}
+
+// logRunInJournal adds the run's line to the end of its task's progress log, so every
+// run is in the journal even if nothing else gets written.
+func logRunInJournal(r *RunFiles) error {
+	p, t, ok := strings.Cut(r.Snap.Task, "/")
+	if !ok {
+		return nil
+	}
+	f := filepath.Join(r.Snap.Bridge, "projects", p, "tasks", t, "task.md")
+	data, err := os.ReadFile(f)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(f, []byte(insertProgress(string(data), runEntry(r))), 0o644)
+}
+
+// insertProgress puts an entry at the end of the "## Progress log" section, adding the
+// section if there isn't one.
+func insertProgress(doc, entry string) string {
+	lines := strings.Split(doc, "\n")
+	start := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "## Progress log" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return strings.TrimRight(doc, "\n") + "\n\n## Progress log\n\n" + entry + "\n"
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "## ") {
+			end = i
+			break
+		}
+	}
+	last := end - 1
+	for last > start && strings.TrimSpace(lines[last]) == "" {
+		last--
+	}
+	out := append([]string{}, lines[:last+1]...)
+	if last == start {
+		out = append(out, "")
+	}
+	out = append(out, entry)
+	out = append(out, lines[last+1:]...)
+	return strings.Join(out, "\n")
 }

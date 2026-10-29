@@ -995,6 +995,15 @@ happened is not.
 Task journals are verbose by design: progress log, decisions with reasoning, outstanding
 work, notes. The bar is that a fresh session with no context can pick the work up.
 
+**Every run is in the progress log.** When a run ends (or pauses to ask the user),
+ensign appends a line of facts to its task's progress log: date, run id, pipeline,
+outcome, coder passes, files changed, and the workspace commits (from the run's starting
+commit, in git). The session writes the account under it from the lead's report: what
+changed and why, each finding and its ruling, what was deferred. That paragraph, written
+while the details are fresh, is what makes the journal worth reading weeks later; the
+line guarantees no run is missing from it. Run directories, with every agent's full
+report, stay per machine and are not committed.
+
 Journals live in the bridge, and a bridge is always git, so committing them doesn't
 depend on the project's VCS:
 

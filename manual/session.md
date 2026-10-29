@@ -56,6 +56,7 @@ What you do run is inspection (`git status`, `git log`, a diff) and `ensign` com
 - To wait, write one sentence naming what you're waiting for and end the turn. You are
   re-invoked when the lead finishes. Never poll.
 - When the lead reports, relay the outcome, what changed, and every item it deferred.
+- Then record the run in the journal (below), in the same turn.
 
 ## Triage what comes back
 
@@ -85,6 +86,19 @@ a fresh session with none of this conversation can pick the work up.
 - **Outstanding** — this task's remaining work only; observations go in Notes
 - **Decisions** — what was decided *and why*; the reason is the part that decays
 - **Notes** — discoveries and dead ends the next session would otherwise rediscover
+
+**Every run gets an account in the progress log.** When a run ends, ensign adds a line
+with the facts: date, run, outcome, coder passes, files changed, commits. Under it, while
+the lead's report is fresh, write one dense paragraph a reader can follow weeks later:
+
+- what changed and why, naming files and functions;
+- each finding a stage raised, and the ruling on it;
+- anything surprising, and where it was established (`path:line`);
+- what was deferred. Deferred work also goes in Outstanding, and new decisions in
+  Decisions.
+
+Weeks later, when an issue turns up, this is what someone reads first. A run with no
+account is a gap in the history nobody can fill.
 
 Commit journal changes with `ensign journal commit -m "<message>"`. A hook won't let a
 turn end with uncommitted journal changes.
