@@ -743,6 +743,8 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | PreToolUse can force a nested spawn into the foreground | yes; with `run_in_background` rewritten to `false`, the leaf's reply came back as the Agent call's result. Without the rewrite it ran in the background |
 | UserPromptSubmit `decision: block` shows its `reason` with no model call | yes; zero turns, zero cost. The harness frames it as "operation blocked by hook" |
 | SessionStart hook stdout reaches the session's context | yes; appears as `SessionStart:startup hook success: <stdout>` |
+| SessionStart stdout reaches the model whole, and only the session | yes; the model repeated ten markers spread through 9 KB and 60 KB blocks, and no subagent transcript contained any of it |
+| The project `CLAUDE.md`, with its imports, reaches subagents | yes; every agent in a live run carried the session manual while it was imported there |
 | A missing hook command blocks anything | no; non-blocking error, tool calls proceed |
 | PreToolUse `allow` lifts a permission `ask` rule | no (tested headless); the ask still applies |
 | SessionStart can pass values to the session's later commands | yes; a variable written to `CLAUDE_ENV_FILE` was visible to a Bash command in that session |
@@ -1051,7 +1053,7 @@ bin/
   .starship/control-plane/       the bridge's clone, checked out at the tag (gitignored)
   .claude/agents/                generated from the pinned clone (gitignored)
   .claude/skills/                on-demand skills, generated likewise (gitignored)
-  CLAUDE.md                      imports .starship/control-plane/CLAUDE.md
+  CLAUDE.md                      setup steps and the heartbeat rule; no imports
 ```
 
 **Pinning.** `bridge.yaml` names a release tag. The pinned clone is a shallow fetch of
@@ -1178,8 +1180,8 @@ only silent case, and rare enough to accept.
 So there are two defences:
 
 - **A heartbeat at session start.** SessionStart prints
-  `STARSHIP-READY ensign <version> bridge <tag>`, which appears in the session's context
-  (§7.1). The bridge's `CLAUDE.md`: **if that line is absent, or starship hooks report
+  `STARSHIP-READY ensign <version> bridge <tag>`, followed by the session manual, which
+  appear in the session's context (§7.1). The bridge's `CLAUDE.md`: **if that line is absent, or starship hooks report
   errors, say so plainly and do nothing except help fix it** — no pipeline, no agent
   spawn, no workspace change, no commit. This is a model-level rule, not a guarantee; it
   turns a silent failure into a visible one.
@@ -1268,6 +1270,14 @@ runs against Claude Code, except where listed below.
   shell variables such as `echo $?`, which Claude Code's permission checks refuse unless
   allowed.
 - **Bridges allow `Bash(ensign:*)` by default**, and the lead calls plain `ensign next`.
+- **The session manual comes from the SessionStart hook, not `CLAUDE.md`.** Claude Code
+  gives `CLAUDE.md` and its imports to every subagent, so importing the manual put it
+  in every coder's and tester's context, telling them not to edit or run tests. The hook
+  prints `.starship/session.md` after the heartbeat; SessionStart fires only for the
+  session, and again after a compaction. It removes the old import from an existing
+  bridge's `CLAUDE.md` and commits that, unless the file has uncommitted edits.
+  `ensign selftest` checks the hook's output reaches the model whole and stays out of
+  subagents, and a unit test keeps the manual under the size it checks (9 KB).
 - **Stages run in the foreground.** PreToolUse rewrites `run_in_background` to `false`
   on every stage dispatch, and `ensign selftest` checks the rewrite works. Inside a
   subagent, asking for the background does launch the agent in the background: a

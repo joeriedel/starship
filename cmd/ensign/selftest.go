@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // `ensign selftest` re-checks the Claude Code behaviour starship depends on, with a
@@ -35,6 +36,41 @@ model: haiku
 ---
 Reply with exactly what your prompt asks.
 `
+
+// The session manual reaches the session through SessionStart's output. The probe sends
+// a block as large as the manual is allowed to be (manualLimit), between two markers.
+const (
+	manualStart = "SELFTEST-MANUAL-START"
+	manualEnd   = "SELFTEST-MANUAL-END"
+	manualLimit = 9000
+)
+
+// probeManual spreads ten marker lines evenly through the block, each carrying a token
+// unique to this selftest, so only a model shown all of it can repeat every marker.
+// (Long output is sometimes cut to its beginning and end.)
+func probeManual(token string) string {
+	const marks = 10
+	filler := "This line stands in for the session manual, which only the session should see.\n"
+	markLen := len(manualEnd) + len(token) + 8
+	per := (manualLimit - len(manualStart) - 1 - marks*markLen) / marks / len(filler)
+	var b strings.Builder
+	b.WriteString(manualStart + "\n")
+	for i := 1; i <= marks; i++ {
+		b.WriteString(strings.Repeat(filler, per))
+		fmt.Fprintf(&b, "%s %d-%s\n", manualEnd, i, token)
+	}
+	return b.String()
+}
+
+// sawWholeManual reports whether a reply repeats every marker of probeManual.
+func sawWholeManual(reply, token string) bool {
+	for i := 1; i <= 10; i++ {
+		if !strings.Contains(reply, fmt.Sprintf("%d-%s", i, token)) {
+			return false
+		}
+	}
+	return true
+}
 
 // leafToken is the leaf probe's reply. Finding it in the result of the orchestrator's own
 // Agent call proves the dispatch ran in the foreground.
@@ -73,13 +109,26 @@ func cmdSelftest(out io.Writer) error {
 		}
 	}
 	git(dir, "init", "-q")
+	token := fmt.Sprintf("%x", time.Now().UnixNano())
+	if err := writeFile(filepath.Join(dir, "selftest-token"), token); err != nil {
+		return err
+	}
 	fmt.Fprintln(out, "running a probe session with haiku (a few cents)…")
 	cmd := exec.Command("claude", "-p", "--model", "haiku", "--allowedTools", "Agent", "--output-format", "json")
 	cmd.Dir = dir
-	cmd.Stdin = strings.NewReader(`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". When it finishes, stop.`)
-	if b, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("the probe session failed: %v: %s", err, lastLines(string(b), 5))
+	cmd.Stdin = strings.NewReader(`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". ` +
+		`When it finishes, find the text the SessionStart hook added to your context and reply with only its lines that start with ` +
+		manualEnd + `, exactly as written, in order.`)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	raw, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("the probe session failed: %v: %s", err, lastLines(string(raw)+stderr.String(), 5))
 	}
+	var session struct {
+		Result string `json:"result"`
+	}
+	json.Unmarshal(raw, &session)
 
 	var events []map[string]any
 	data, _ := os.ReadFile(filepath.Join(dir, "selftest-log.jsonl"))
@@ -124,6 +173,13 @@ func cmdSelftest(out io.Writer) error {
 	}
 	secondStopActive := len(orchStops) >= 2 && orchStops[1]["stop_hook_active"] == true
 	askedBackground, foreground := backgroundProbe(events, orchStops)
+	// The transcript keeps the whole output even when the model is shown only part of
+	// it, so the model itself has to repeat the markers.
+	manualArrived, manualLeaked := sawWholeManual(session.Result, token), false
+	for _, e := range append(leafStops, orchStops...) {
+		t, _ := os.ReadFile(str(e, "agent_transcript_path"))
+		manualLeaked = manualLeaked || strings.Contains(string(t), manualStart)
+	}
 	checks := []struct {
 		name string
 		ok   bool
@@ -136,6 +192,8 @@ func cmdSelftest(out io.Writer) error {
 			len(leafStops) > 0 && str(leafStops[0], "agent_transcript_path") != "" && leafStops[0]["last_assistant_message"] != nil},
 		{"SubagentStop block makes the agent continue (stop_hook_active on the next stop)", secondStopActive},
 		{"session_id is the same for the session and its agents", len(sessions) == 1},
+		{fmt.Sprintf("SessionStart output of %d bytes reaches the session whole", manualLimit), manualArrived},
+		{"SessionStart output stays out of subagents", len(leafStops) > 0 && !manualLeaked},
 	}
 	if askedBackground {
 		checks = append(checks, struct {
@@ -222,6 +280,8 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 	}
 	if event == "SessionStart" {
 		in["env_file"] = os.Getenv("CLAUDE_ENV_FILE") != ""
+		token, _ := os.ReadFile(filepath.Join(dir, "selftest-token"))
+		defer fmt.Fprint(stdout, probeManual(string(token)))
 	}
 	if line, err := json.Marshal(in); err == nil {
 		if f, err := os.OpenFile(filepath.Join(dir, "selftest-log.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {

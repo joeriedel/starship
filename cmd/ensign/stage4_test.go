@@ -291,3 +291,25 @@ func TestFactsForAMissingSkillAreHeld(t *testing.T) {
 		t.Errorf("discarding nothing should fail")
 	}
 }
+
+// The selftest proves SessionStart output up to manualLimit bytes reaches the session;
+// the manual must fit inside what was proved.
+func TestManualFitsWhatSelftestChecks(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "manual", "session.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > manualLimit {
+		t.Fatalf("manual/session.md is %d bytes; selftest only proves %d reach the session", len(data), manualLimit)
+	}
+}
+
+func TestProbeManualSize(t *testing.T) {
+	m := probeManual("abc123")
+	if len(m) > manualLimit || len(m) < manualLimit*9/10 {
+		t.Fatalf("probe block is %d bytes, want close to %d", len(m), manualLimit)
+	}
+	if !sawWholeManual(m, "abc123") || sawWholeManual(m[:len(m)/2], "abc123") {
+		t.Fatalf("markers should all be in the block, and not in half of it")
+	}
+}

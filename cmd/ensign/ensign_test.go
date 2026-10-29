@@ -519,3 +519,34 @@ func TestSessionStartRecordsTheSession(t *testing.T) {
 	}
 	_ = w
 }
+
+func TestSessionStartDeliversTheManual(t *testing.T) {
+	w := newWorld(t)
+	if err := link(w.bridge, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	git(w.bridge, "init", "-q")
+	git(w.bridge, "-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A")
+	write(t, filepath.Join(w.bridge, "CLAUDE.md"), "# Bridge\n\n"+sessionImport+"\n")
+	git(w.bridge, "add", "CLAUDE.md")
+	git(w.bridge, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "old bridge")
+
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
+	in, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "abc"})
+	var out, errb bytes.Buffer
+	if code := cmdHook("SessionStart", bytes.NewReader(in), &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if !strings.HasPrefix(out.String(), "STARSHIP-READY") || !strings.Contains(out.String(), "# Starship: the session manual") {
+		t.Fatalf("the manual did not follow the heartbeat:\n%s", out.String())
+	}
+	if claude, _ := os.ReadFile(filepath.Join(w.bridge, "CLAUDE.md")); strings.Contains(string(claude), sessionImport) {
+		t.Errorf("the old import should be removed")
+	}
+	if dirty, _ := gitOut(w.bridge, "status", "--porcelain", "--", "CLAUDE.md"); dirty != "" {
+		t.Errorf("removing the import should be committed: %q", dirty)
+	}
+}

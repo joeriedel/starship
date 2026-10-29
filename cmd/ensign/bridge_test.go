@@ -43,8 +43,9 @@ func TestInitAndLink(t *testing.T) {
 	if err := json.Unmarshal(data, &settings); err != nil {
 		t.Fatalf("settings.json is not valid JSON: %v", err)
 	}
-	if claude, _ := os.ReadFile(filepath.Join(b, "CLAUDE.md")); !strings.Contains(string(claude), "@.starship/session.md") {
-		t.Errorf("CLAUDE.md does not import the session manual")
+	if claude, _ := os.ReadFile(filepath.Join(b, "CLAUDE.md")); strings.Contains(string(claude), sessionImport) ||
+		!strings.Contains(string(claude), "STARSHIP-READY") {
+		t.Errorf("CLAUDE.md should carry the heartbeat rule and not import the manual (subagents would get it)")
 	}
 	if linkStale(b) {
 		t.Errorf("link is stale right after init")

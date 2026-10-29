@@ -43,8 +43,17 @@ is not set up on this machine. Tell the user, and with their OK run, from the br
 ` + "`<platform>`" + ` is ` + "`linux-amd64`" + ` or ` + "`windows-amd64`" + `. Ask the user where this machine keeps its
 workspaces (the projects root) for ` + "`--projects`" + `. Then ask them to restart claude.
 
-@.starship/session.md
+## The heartbeat
+
+At session start a starship hook prints a line beginning ` + "`STARSHIP-READY`" + `, followed by
+the session manual. **If that line is not in your context, or starship hooks report
+errors, starship is not working in this session. Say so plainly and do nothing except
+help fix it**: no runs, no agent spawns, no workspace changes, no commits.
 `
+
+// sessionImport is the line older bridges used to load the manual through CLAUDE.md,
+// which also put it in every subagent's context. SessionStart now removes it.
+const sessionImport = "@.starship/session.md"
 
 const bridgeGitignore = `# Generated per machine by ensign; never committed.
 .starship/

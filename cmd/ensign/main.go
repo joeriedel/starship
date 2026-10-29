@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -235,6 +236,42 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			return 0
 		}
 	}
+	dropSessionImport(bridge)
 	fmt.Fprintf(stdout, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
+	// The manual goes to the session through this hook, not CLAUDE.md, because Claude
+	// Code gives CLAUDE.md to every subagent too. SessionStart also fires after a
+	// compaction, so the manual comes back when the context is summarised.
+	manual, err := os.ReadFile(filepath.Join(bridge, ".starship", "session.md"))
+	if err != nil {
+		fmt.Fprintln(stdout, "starship: the session manual is missing; run ensign link")
+		return 0
+	}
+	fmt.Fprintf(stdout, "\n%s", manual)
 	return 0
+}
+
+// dropSessionImport removes the manual's import from a bridge's CLAUDE.md, left there by
+// older versions of ensign init, and commits that. A CLAUDE.md with someone's uncommitted
+// edits is left alone.
+func dropSessionImport(bridge string) {
+	f := filepath.Join(bridge, "CLAUDE.md")
+	data, err := os.ReadFile(f)
+	if err != nil || !strings.Contains(string(data), sessionImport) {
+		return
+	}
+	tracked := isGit(bridge)
+	if tracked {
+		if dirty, _ := gitOut(bridge, "status", "--porcelain", "--", "CLAUDE.md"); dirty != "" {
+			return
+		}
+	}
+	var keep []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) != sessionImport {
+			keep = append(keep, line)
+		}
+	}
+	if os.WriteFile(f, []byte(strings.Join(keep, "\n")), 0o644) == nil && tracked {
+		git(bridge, "commit", "-q", "-m", "Load the session manual from the SessionStart hook", "--", "CLAUDE.md")
+	}
 }
