@@ -1178,8 +1178,9 @@ restart, so a session never mixes two releases.
 
 ### 12.4 The very first install
 
-The user makes a folder, starts `claude` in it, and asks for a bridge, naming this repo.
-Claude follows the README's "For Claude" section: it downloads the newest release's
+The user makes a folder, starts `claude` in it, and asks for a bridge.
+The user's request names `SETUP.md`, a short file of steps for Claude (the README tells
+them what to ask, and tells Claude not to clone the repo). Claude follows it: it downloads the newest release's
 `ensign` for the platform into the folder's `.starship/bin/` and runs
 `.starship/bin/ensign init .`. With no flags, `init` pins the release that binary is,
 fetches the control plane at that tag, checks the binary against the release's

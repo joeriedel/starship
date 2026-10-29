@@ -1,5 +1,8 @@
 # Starship
 
+> **Claude:** to set up a starship bridge, follow [`SETUP.md`](SETUP.md). Don't clone
+> this repository into the user's folder.
+
 **Claude Code for real, ongoing work: every change reviewed and tested, and every task's
 history kept.**
 
@@ -33,7 +36,7 @@ nothing else to install or build; Claude sets everything up.
 keeps your projects and tasks. Make an empty folder, start `claude` in it, and ask:
 
 ```
-> make a starship bridge here, from https://github.com/joeriedel/starship
+> make a starship bridge here, following https://github.com/joeriedel/starship/blob/master/SETUP.md
 ```
 
 When it's done, restart `claude` in the same folder. To use the bridge on other machines
@@ -172,29 +175,6 @@ rediscovering the same things.
   gates: the right author identity, every bridge's list of banned terms, and a review by
   a model that has never seen your projects.
 - **Sign anything as an AI.** No co-author trailers, no "generated with".
-
-## For Claude: setting up a bridge
-
-When asked to make a starship bridge in a folder:
-
-1. From the folder, run:
-
-   ```
-   TAG=$(git ls-remote --tags --refs --sort=-v:refname https://github.com/joeriedel/starship.git 'v*' | head -n 1 | sed 's#.*/##')
-   mkdir -p .starship/bin
-   curl -fsSL -o .starship/bin/ensign "https://github.com/joeriedel/starship/releases/download/$TAG/ensign-<platform>"
-   chmod +x .starship/bin/ensign
-   .starship/bin/ensign init .
-   ```
-
-   `<platform>` is `linux-amd64`, `darwin-arm64` (a Mac with Apple silicon),
-   `darwin-amd64` (an Intel Mac) or `windows-amd64.exe` (save it as
-   `.starship/bin/ensign.exe`, and skip `chmod`). `init` pins the bridge to that
-   release, checks the binary against the release's checksums, and commits the bridge's
-   files. Nothing is installed outside the folder. It refuses to overwrite files already
-   in the folder; if it does, tell the user which ones and let them decide.
-2. Tell the user to restart `claude` in the folder and type `help`. Suggest they push the
-   bridge to a private repo of their own, never to starship.
 
 ## Further reading
 
