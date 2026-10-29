@@ -262,21 +262,19 @@ were favourable — two skills, descriptions that matched the task closely, rule
 could not have guessed. The risk grows with many skills, vague descriptions, and
 technology the model believes it already knows, which is why `inject` stays the default.
 
-**Learning.** Every loop role may report facts it had to dig out:
+**Learning.** When a run has skills, every stage agent is told it may add a line per
+fact it had to establish about a technology itself to its report:
 
 ```
-facts:
-  - skill: go
-    fact: "json.Marshal omits a nil slice but emits [] for an empty one"
-    evidence: "encoding/json/encode.go:… — verified with a test"
+fact: shell | set -e does not apply inside a function called in a condition | tested with bash 5
 ```
 
-The driver appends them to `skills/pending/<skill>.yaml` in the bridge at
-`stage.after`, without slowing the run. A `skill-curate` pipeline, dispatched by the
-session (no lead), runs the `curator` role over each skill with pending facts: it
-consolidates the skill, applies the facts, and reports a ledger accounting for every
-existing entry — the same pass and the same checks as the style guide (§9.5). `help`
-shows how many facts are pending.
+The driver saves each one as its own file, `skills/pending/<skill>/<run>-<dispatch>-<n>.yaml`
+in the bridge, without slowing the run. `ensign run --pipeline skill-curate` (scope
+`bridge`, no lead) dispatches one `curator` per skill with pending facts; each folds its
+facts into `skills/<skill>.learned.yaml` under the rules of §4.5, and the facts it was
+given are cleared either way. A skill's learned entries are appended to its text
+wherever it is delivered.
 
 **Learned facts land in the bridge's copy of the skill, never the control plane's.**
 Promoting one into a public skill goes through the proposal path (§3.2) under the
@@ -284,12 +282,47 @@ high-risk gate (§3.3).
 
 ### 4.5 The curator
 
-One `curator` role maintains every curated document: style guides (§9) and skills
-(§4.4). It is the only writer of those documents. Each document type supplies a brief
-(`briefs/curate-style.md`, `briefs/curate-skill.md`) saying what an entry is and what
-counts as evidence; the consolidation pass, the ledger, and the driver's checks are the
-same for all of them. The curator's context is deliberately small — the document, the
-proposals, and any binding that outranks them — so its attention goes to consistency.
+One `curator` role maintains every curated document: style guides (§9) and skills'
+learned entries (§4.4). A stage marks itself with `curates: style` or `curates: skill`,
+and its agents are the only writers of those documents. Each document type supplies a
+brief (`briefs/curate-style.md`, `briefs/curate-skill.md`); the pass and the checks are
+the same for all of them. The curator's context is deliberately small — the document,
+the proposals, and anything that outranks them — so its attention goes to consistency.
+
+A document is YAML: entries with an id (`S12` for style, `K12` for skills), a status
+(`candidate` or `active`), the text, a hit count and evidence. The curator first
+consolidates what is there, then folds in the proposals, and returns the whole document
+plus a ledger in fenced blocks:
+
+````
+```starship-document
+entries:
+  - id: S3
+    status: active
+    text: "Return early on error; no else after a returning if."
+    hits: 3
+    evidence: ["src/session.go:88 — rewrote if/else into a guard clause"]
+```
+
+```starship-ledger
+S3: reworded
+S7: "merged-into S3"
+S9: "dropped — contradicts @style"
+S14: new
+```
+````
+
+When the curator stops, the driver checks the rewrite before writing it, and blocks the
+stop with the reasons if it fails:
+
+- every existing id appears in the ledger as `kept`, `reworded`, `promoted`,
+  `merged-into <id>` or `dropped <reason>` — nothing disappears silently;
+- a merge keeps the lower id;
+- a new entry has evidence and starts as `candidate`, unless an authoritative source
+  (`source:<id>`) backs it;
+- a candidate is promoted only on its second sighting (hits ≥ 2) or an authoritative
+  source; an active entry never goes back to candidate;
+- the document fits in 150 lines.
 
 ### 4.6 Integrations
 
@@ -819,154 +852,101 @@ provides:
 ## 9. Extension: `style-learning`
 
 A per-project style guide that learns from the style pass and from sources the user
-supplies, and is fed to the coder so that later runs need less correcting.
+supplies, and is given to the coder so that later runs need less correcting. A project
+turns it on with `use: [style-learning]`.
 
 ### 9.1 Files
 
 ```
 <bridge>/projects/<project>/style/
-  learned.md       the guide: rules with stable IDs, status, hits, evidence
+  learned.yaml     the guide: entries with stable ids, status, hits, evidence (§4.5)
   sources.yaml     manifest of ingested sources
   sources/         copies of ingested documents
 ```
 
 Precedence, highest first: the project's `@style` binding (written by people) → the
-learned guide → the control plane's house style. Learned rules may add to `@style` but
-never contradict it.
-
-Each rule carries an ID (`S14`), a status (`candidate` or `active`), a hit count, and a
-short list of evidence (a correction at `file:line`, or a source location).
+learned guide → the control plane's house style. The curator drops any learned rule that
+contradicts `@style`.
 
 ### 9.2 Roles
 
-| Role | Does | Context |
+| Role | Does | Given |
 |---|---|---|
-| `style-reviewer` | fixes style in the diff; reports the rules behind its corrections | diff, guide, `@style` |
-| `style-generator` | reads one source; proposes rules with evidence from it | one source, guide, `@style` |
-| `curator` (§4.5) | the only writer of the guide: consolidates it, then applies proposed rules | guide, proposals, `@style` |
-
-The curator runs with `briefs/curate-style.md`.
+| `style-reviewer` | fixes style in the change; reports the rule behind each correction | the whole guide, candidates included |
+| `style-generator` | reads one source; proposes the rules it supports, with evidence | that source |
+| `curator` (§4.5) | the only writer of the guide | the guide, this run's proposals, sources' trust, `@style` |
+| `coder` | — | the guide's active entries |
 
 ### 9.3 Learning from the style pass
 
-The bundle adds a `curate` stage to the coding pipeline:
-
 ```yaml
 # extensions/style-learning/extension.yaml (excerpt)
-name: style-learning
-ops:
-  - set:    { stage: style, outcomes: { learned: next, done: { goto: test } } }
-  - insert: { after: style, stage: { id: curate, role: curator,
-              brief: briefs/curate-style.md,
-              outcomes: { updated: next, unchanged: next } } }
+pipelines:
+  coding:
+    ops:
+      - set:    { stage: style, outcomes: { learned: next, done: { goto: test } } }
+      - insert: { after: style, stage: { id: curate, role: curator, brief: briefs/curate-style.md,
+                  curates: style, outcomes: { updated: next, unchanged: next } } }
 events:
-  stage.before:code:   [{ augment: style/learned.md, status: active }]
-  stage.before:style:  [{ augment: style/learned.md }]
-  stage.before:curate: [{ augment: pending-rules }]
-  stage.after:curate:  [{ require: ensign style write-guide }]
+  stage.before:code:   [{ augment: "@style-guide", status: active }]
+  stage.before:style:  [{ augment: "@style-guide" }, { augment: briefs/style-reviewer.md }]
+  stage.before:curate: [{ augment: "@style-curate-input" }]
 ```
 
-- The style-reviewer reports `learned` when its report carries rules — new ones with
-  evidence, or hits on existing IDs — and `done` otherwise. Only `learned` reaches
-  `curate`, so a pass that teaches nothing costs nothing.
-- The coder receives only `active` rules. The style-reviewer sees candidates too.
+- An augment starting with `@` is **generated at dispatch time** from the bridge: the
+  rendered guide, or the curator's input.
+- The style reviewer adds a line per correction to its report —
+  `rule: new | <rule> | <path:line — what changed>`, or `rule: hit | S12` for one the
+  guide already covers — and reports `learned` when it has any, `done` when it has none.
+  Only `learned` reaches `curate`, so a pass that teaches nothing costs nothing.
 - `curate` spends no budget.
 
-### 9.4 Ingesting sources
+### 9.4 Ingesting sources and generating the guide
 
 ```
-ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note "..."]
+ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>]
+ensign run --pipeline style-generate --project <project> [--rebuild]
 ```
 
 ```yaml
 # style/sources.yaml
-- id: src1
-  path: sources/team-style.md        # documents are copied in; URLs are fetched and saved
-  trust: authoritative
-  ingested: 2026-10-29
-  processed: null                     # the guide commit that absorbed it
-- id: src2
-  ref: workspace:backend/internal/session/   # code exemplars are referenced, not copied
-  trust: exemplar
-  ingested: 2026-10-29
-  processed: null
+sources:
+  - id: src1
+    path: sources/src1.md          # documents are copied in; URLs are fetched and saved
+    trust: authoritative
+    ingested: 2026-10-29
+    processed: 2026-10-29 by run 20261029-…
+  - id: src2
+    ref: $PROJECTS/app/internal/session   # code held up as an example is referenced in place
+    trust: exemplar
+    ingested: 2026-10-29
 ```
 
-- **`authoritative`** (a style document someone wrote on purpose): its rules enter as
-  `active`.
-- **`exemplar`** (code held up as good): its rules enter as `candidate`, because a sample
-  shows habits as well as intent.
+- **`authoritative`** — a style document someone wrote on purpose. Its rules may enter
+  the guide as `active` at once.
+- **`exemplar`** — code held up as good. It shows habits as well as intent, so its rules
+  enter as `candidate` and need a second sighting.
 - Fetched content is data. A generator turns it into proposed rules; nothing in a source
   is followed as an instruction.
 
-The bundle adds a `style-generate` pipeline, run by the session (no lead):
+`style-generate` (in the bundle, `scope: project`) has no lead: the session dispatches one
+`style-generator` per unprocessed source, in parallel, then one `curator`. When the
+curator's rewrite is accepted, those sources are marked `processed`. `--rebuild` gives
+every source to a generator again; the ledger must still account for every existing id.
 
-```yaml
-pipeline: style-generate
-stages:
-  - id: generate
-    role: style-generator
-    dispatched-by: session
-    parallel: { over: unprocessed-sources, join: all }
-    outcomes: { proposed: next, nothing: next }
-  - id: curate
-    role: curator
-    brief: briefs/curate-style.md
-    dispatched-by: session
-    outcomes: { updated: { finish: success }, unchanged: { finish: success } }
-```
+### 9.5 Writing the guide
 
-One generator per unprocessed source, in parallel; then one curator merges everything.
-After `ensign style write-guide` commits, it marks those sources `processed`.
-
-- **Update** (default): the curator consolidates the existing guide and applies the
-  proposals, exactly as after a style pass.
-- **Rebuild** (`ensign style generate <project> --rebuild`): every source is treated
-  as unprocessed, and the curator rebuilds the guide from all proposals. The ledger must
-  still account for every existing ID — kept, merged, or dropped with reason.
-
-Spawning generators and the curator is agent work like any other, so a run needs `go`.
-
-### 9.5 The curator's pass
-
-Every time the guide is about to change, the curator first consolidates it — merges
-overlapping rules, resolves contradictions, drops rules that conflict with `@style`,
-tightens wording — and then applies the proposals. It reports the full revised guide and
-a ledger covering every rule:
-
-```
-guide-ledger:
-  S3:  kept
-  S7:  merged-into S3
-  S9:  reworded              # still being hit; old wording ambiguous
-  S11: dropped               # contradicts @style
-  S12: promoted              # second sighting; candidate → active
-  S14: new                   # evidence: src/session.go:88
-```
-
-`ensign style write-guide` validates before writing; a failure blocks the curator's stop with the
-reason:
-
-- every existing ID appears in the ledger, so nothing disappears silently
-- a merge keeps the lower ID, sums hit counts, and combines evidence (most recent few kept)
-- `dropped` has a reason; `new` has evidence
-- a candidate becomes active on its second independent sighting, or immediately if it
-  came from an authoritative source
-- the guide fits its line budget
-
-It then commits and pushes `learned.md` (and `sources.yaml`) in the bridge's repo,
-like a journal, with the ledger in the commit body, so `git log -p` on the
-guide shows every merge and drop with its reason.
+The curator's rewrite is checked when it stops (§4.5): a refused rewrite blocks its stop
+with the reasons, and it tries again. The accepted document is written to
+`learned.yaml`, which the journal mechanism (§10.2) commits and pushes, so
+`git log -p` on the guide shows every change.
 
 ### 9.6 Is it working?
 
-The run history records each style pass's diff size and which rule IDs were hit. An
-`active` rule still hit run after run is flagged for rewording at the next curate. A
-style diff that isn't shrinking across runs means the loop isn't working, and
-`help style-learning` shows it.
-
-A learned rule that is clearly generic is a candidate for the control plane's house
-style. It goes through the proposal path (§3.2); it is never copied across directly.
+The run history records each style pass's report, including which entries were hit. An
+active entry hit run after run is badly worded; the curator is told to reword such
+entries. A learned rule that is clearly generic is a candidate for the control plane's
+house style, through the proposal path (§3.2) — never copied across directly.
 
 ---
 
@@ -1027,9 +1007,10 @@ binary, `ensign`. The project is starship; the binary has its own name so that i
 collides with the starship shell prompt, whose binary is `starship`.
 
 - **Config is YAML**, parsed by a library compiled into the binary.
-- **Built-in handlers are subcommands**, not scripts: `ensign git-catalog commit-pass`,
-  `ensign style write-guide`. Bridge-supplied handlers are arbitrary commands and may
-  declare per-platform variants, like bindings.
+- **Built-in handlers are subcommands**, not scripts — `ensign git-catalog record-base`,
+  `ensign git-catalog commit-pass`, `ensign git-catalog squash` — and run inside the
+  hook's own process. Other handlers run through the platform's shell in the workspace;
+  `@name` runs a binding.
 - **State-file locking uses a portable file-lock library**, not `flock`.
 
 ### 11.2 Prebuilt binaries in the repo
@@ -1249,18 +1230,53 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
 
 ## 15. Implementation status
 
-Built and tested (unit tests, plus live runs against Claude Code):
+Everything in §§2–12 is built, with unit tests (run in CI on Linux and Windows) and live
+runs against Claude Code, except where listed below.
 
-- `ensign run` (`--start`, `--dry-run`), `ensign next`, and `ensign hook` for
-  SessionStart, PreToolUse, SubagentStop and UserPromptSubmit (`go`).
-- Runs owned by sessions (§5.5), with several sessions running at once in one bridge.
-- Layer merging with sources, validation, frozen snapshots, the coding pipeline's state
-  machine, budgets, parallel review with `join: all`, report parsing, and failing closed.
+### 15.1 Commands
 
-Stubbed or not started:
+| Command | Does |
+|---|---|
+| `ensign init <dir> (--control-plane <path> \| --remote <url> --tag <tag>)` | create a bridge |
+| `ensign setup [--projects <path>]` | fetch the pinned control plane, install the launcher, record machine paths, register the bridge, link |
+| `ensign update [<tag>]` | move the bridge to a newer release |
+| `ensign link [--force]` | regenerate the bridge's role, skill and manual files |
+| `ensign project new <name>` / `ensign task new <p>/<t> --workspace <path>` / `ensign task open <p>/<t>` | scaffold and open |
+| `ensign run <p>/<t> [--start <stage>] [--sync] [--dry-run]` | create a run for a task |
+| `ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]` | create a project- or bridge-wide run |
+| `ensign next [--run <id>]` | what to dispatch next |
+| `ensign resume --answer <text> [--budget <b>=<n>]` | continue an `ask-user` run |
+| `ensign journal commit -m <msg>` / `ensign journal push` | commit and push the bridge's records |
+| `ensign git-catalog squash <p>/<t> -m <msg>` | collapse a task's catalog into one commit |
+| `ensign style ingest <project> <path-or-url> --trust <t>` | add a style source |
+| `ensign gate install --identity <email>` | install the leak gates in a control-plane clone |
+| `ensign proposal check <file>` | check a proposal against every denylist |
+| `ensign selftest` | re-check the Claude Code behaviour starship depends on |
+| `ensign hook <event>` | the hook driver |
 
+### 15.2 Settled while building
+
+- **Agents are given bindings as exact commands** (`cd <workspace> && ./build.sh`), and
+  each run has a scratch folder for logs, named in every prompt. Agent instructions avoid
+  shell variables such as `echo $?`, which Claude Code's permission checks refuse unless
+  allowed.
+- **Bridges allow `Bash(ensign:*)` by default**, and the lead calls plain `ensign next`.
+- **A lead waiting on a running stage is not "stopping early"**; it is blocked with a
+  reminder to wait, and not counted towards `lead-stopped`.
+- **The `@done` check** runs before a run may end as `success`; a failure ends it as
+  `error: done-check`.
+- **Events on stages a pipeline doesn't have are inactive for it**, so a bundle or layer
+  can serve several pipelines.
+
+### 15.3 Not done
+
+- **No release has been cut.** The release workflow exists but has never run, so there
+  is no tag for a bridge to pin; pinning is tested against local tags.
+- **How Claude Code runs hook commands on Windows** is unverified (§14). The code and its
+  tests pass on Windows in CI.
 - **Nested leads** are rejected by validation.
-- **Pinning**: `bridge.yaml` names the control plane by `control-plane.path`, not a
-  release tag; `setup`, `link`, `update`, `init` and the launcher don't exist yet.
-- Bundles, events and handlers, skills delivery, `help`/`status`, journal commits, leak
-  gates, `@sync`, `ask-user` and resume, CI releases, Windows.
+- **Style-guide metrics** (style diff size per run, flagging entries hit repeatedly)
+  are recorded only as report history; nothing summarises them yet.
+- **Help said nothing once:** in the very first session of a freshly created bridge,
+  `help` went to the model instead of being intercepted. Four later sessions intercepted
+  it; the cause is unknown.
