@@ -1,0 +1,40 @@
+pipeline: coding
+version: 1
+summary: Implement a scoped change through code, review, style and test, looping until it builds and passes.
+requires-bindings: [build, test]
+budgets: { loop: 3, test: 3 }
+free-roles: [explorer]
+
+stages:
+  - id: run
+    role: orchestrator
+    dispatched-by: session
+    stages:
+      - id: code
+        role: coder
+        spend: loop
+        outcomes:
+          compiled: next
+          broken:   { goto: code }
+          blocked:  { error: blocked }
+      - id: review
+        role: reviewer
+        parallel: { over: dimensions, join: all }
+        dimensions: [correctness]
+        outcomes:                     # precedence order: the join takes the first any branch reported
+          findings: { goto: code }
+          clean:    next
+      - id: style
+        role: style-reviewer
+        outcomes:
+          done: next
+      - id: test
+        role: tester
+        outcomes:
+          pass:  { finish: success }
+          fail:  { goto: code, spend: test, reset: loop }
+          error: { error: test-error }
+
+on-exhausted:
+  loop: { error: "budget:loop" }
+  test: { error: "budget:test" }

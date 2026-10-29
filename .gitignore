@@ -1,0 +1,4 @@
+# Local builds; committed binaries come only from CI.
+/ensign
+/ensign.exe
+*.test
