@@ -10,7 +10,8 @@ Remote: https://github.com/joeriedel/starship.git (personal, public-safe control
   `GOTOOLCHAIN=local`. Also set `XDG_CONFIG_HOME` into the scratchpad and run
   `go telemetry off` there: Go writes telemetry to `~/.config/go` otherwise, and the
   `GOTELEMETRY` env var does not stop it. No PATH or profile changes. Local build
-  output is never committed; only CI builds committed binaries.
+  output is never committed. Binaries are never committed at all: CI builds them and
+  attaches them to each release.
 - **Commit and push starship changes without asking.** One commit per logical change,
   files staged by name, short messages.
 

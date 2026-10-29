@@ -34,13 +34,17 @@ in that task's workspace.
 
 ## Setup on a new machine
 
-If ` + "`.starship/control-plane/`" + ` does not exist and ` + "`bridge.yaml`" + ` names a remote, this bridge
-is not set up on this machine. Tell the user, and with their OK run, from the bridge:
+If ` + "`.starship/bin/ensign`" + ` does not exist and ` + "`bridge.yaml`" + ` names a remote, this bridge is not
+set up on this machine. Tell the user, and with their OK run, from the bridge:
 
-    git clone --depth 1 --branch <tag from bridge.yaml> <remote> .starship/control-plane
-    .starship/control-plane/bin/<platform>/ensign setup
+    mkdir -p .starship/bin
+    curl -fsSL -o .starship/bin/ensign "<remote, without .git>/releases/download/<tag>/ensign-<platform>"
+    chmod +x .starship/bin/ensign
+    .starship/bin/ensign setup
 
-` + "`<platform>`" + ` is ` + "`linux-amd64`" + `, ` + "`windows-amd64`" + `, ` + "`darwin-arm64`" + ` (Apple silicon) or ` + "`darwin-amd64`" + ` (Intel Mac).
+` + "`<remote>`" + ` and ` + "`<tag>`" + ` are in ` + "`bridge.yaml`" + `. ` + "`<platform>`" + ` is ` + "`linux-amd64`" + `, ` + "`darwin-arm64`" + ` (Apple silicon),
+` + "`darwin-amd64`" + ` (Intel Mac) or ` + "`windows-amd64.exe`" + ` (save it as ` + "`ensign.exe`" + ` and skip ` + "`chmod`" + `).
+Setup fetches the control plane and checks the binary against the release's checksums.
 If any task's workspace starts with ` + "`$PROJECTS`" + `, ask the user which folder holds their code
 on this machine and add ` + "`--projects <folder>`" + `. Then ask them to restart claude.
 
@@ -87,14 +91,10 @@ func hookSettings() string {
 `
 }
 
-// selfExe is the running binary's path; tests replace it.
-var selfExe = os.Executable
-
 const initUsage = "usage: ensign init <dir> [--control-plane <path> | --remote <url> [--tag <tag>]] [--projects <path>]"
 
-// cmdInit implements `ensign init`. Run from a starship clone's bin/ with neither
-// --control-plane nor --remote, the bridge pins the clone it came from: its origin, at
-// this binary's release tag. A pinned bridge is also set up, as setup would, so one
+// cmdInit implements `ensign init`. With neither --control-plane nor --remote, a
+// released ensign pins the release it is: the repo it was built from, at its version. A pinned bridge is also set up, as setup would, so one
 // command makes a working bridge; --projects records where this machine keeps code.
 func cmdInit(args []string, out io.Writer) error {
 	var dir, cpPath, remote, tag, projects string
@@ -190,31 +190,18 @@ func cmdInit(args []string, out io.Writer) error {
 	return nil
 }
 
-// releaseOrigin fills in the control plane a bridge pins. The remote defaults to the
-// origin of the starship clone this binary sits in (<clone>/bin/<platform>/ensign), and
-// the tag to that clone's release tag, or this binary's own version.
+// releaseOrigin fills in the release a bridge pins: by default the repo this ensign was
+// released from and its own version, both set when the release is built.
 func releaseOrigin(remote, tag string) (string, string, error) {
-	clone := ""
-	if exe, err := selfExe(); err == nil {
-		if real, err := filepath.EvalSymlinks(exe); err == nil {
-			exe = real
-		}
-		if bin := filepath.Dir(filepath.Dir(exe)); filepath.Base(bin) == "bin" {
-			clone = filepath.Dir(bin)
-		}
-	}
-	if remote == "" && clone != "" {
-		remote, _ = gitOut(clone, "remote", "get-url", "origin")
-	}
-	if tag == "" && clone != "" {
-		tag, _ = gitOut(clone, "describe", "--tags", "--exact-match", "HEAD")
+	if remote == "" {
+		remote = releaseRepo
 	}
 	if tag == "" && strings.HasPrefix(version, "v") {
 		tag = version
 	}
 	switch {
 	case remote == "":
-		return "", "", fmt.Errorf("say which starship to use: run init from a starship clone's bin/ folder, or pass --remote <url> (or --control-plane <path>)")
+		return "", "", fmt.Errorf("say which starship to use: pass --remote <url> (or --control-plane <path>)")
 	case tag == "":
 		return "", "", fmt.Errorf("say which release to pin: pass --tag <tag>")
 	}
@@ -258,20 +245,16 @@ func ensignFile() string { return ".starship/bin/" + exeName() }
 // generatedFiles is everything link writes into a bridge, by path relative to it.
 func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte, error) {
 	files := map[string][]byte{}
-	// The bridge's ensign: its pinned release's, or, for a bridge that follows a local
-	// control plane (development), the one running now.
-	src := pinnedBinary(bridge)
-	if src == "" {
-		if bf.ControlPlane.Path == "" {
-			return nil, fmt.Errorf("the pinned release has no ensign for %s", platformKey())
+	// A pinned bridge downloads its release's ensign (fetchEnsign). One that follows a
+	// local control plane (development) gets a copy of the ensign running now.
+	if bf.ControlPlane.Path != "" {
+		src, _ := os.Executable()
+		bin, err := os.ReadFile(src)
+		if err != nil {
+			return nil, fmt.Errorf("reading ensign: %v", err)
 		}
-		src, _ = os.Executable()
+		files[ensignFile()] = bin
 	}
-	bin, err := os.ReadFile(src)
-	if err != nil {
-		return nil, fmt.Errorf("reading ensign: %v", err)
-	}
-	files[ensignFile()] = bin
 	manual, err := os.ReadFile(filepath.Join(cp, "manual", "session.md"))
 	if err != nil {
 		return nil, err

@@ -10,8 +10,12 @@ import (
 	"strings"
 )
 
-// version is set at release build time with -ldflags "-X main.version=…".
-var version = "dev"
+// version and releaseRepo are set at release build time with -ldflags
+// "-X main.version=… -X main.releaseRepo=…": the release tag, and the repo it came from.
+var (
+	version     = "dev"
+	releaseRepo = ""
+)
 
 func main() {
 	if len(os.Args) < 2 {

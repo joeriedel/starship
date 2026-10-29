@@ -181,15 +181,18 @@ When asked to make a starship bridge in a folder:
 
    ```
    TAG=$(git ls-remote --tags --refs --sort=-v:refname https://github.com/joeriedel/starship.git 'v*' | head -n 1 | sed 's#.*/##')
-   git clone -q --depth 1 --branch "$TAG" https://github.com/joeriedel/starship.git .starship/control-plane
-   .starship/control-plane/bin/<platform>/ensign init .
+   mkdir -p .starship/bin
+   curl -fsSL -o .starship/bin/ensign "https://github.com/joeriedel/starship/releases/download/$TAG/ensign-<platform>"
+   chmod +x .starship/bin/ensign
+   .starship/bin/ensign init .
    ```
 
-   `<platform>` is `linux-amd64`, `windows-amd64` (the binary is `ensign.exe`),
-   `darwin-arm64` (a Mac with Apple silicon) or `darwin-amd64` (an Intel Mac).
-   `init` pins the bridge to that release, gives it its own copy of `ensign` (nothing is
-   installed outside the folder), and commits the bridge's files. It refuses to overwrite files already in the folder; if it does,
-   tell the user which ones and let them decide.
+   `<platform>` is `linux-amd64`, `darwin-arm64` (a Mac with Apple silicon),
+   `darwin-amd64` (an Intel Mac) or `windows-amd64.exe` (save it as
+   `.starship/bin/ensign.exe`, and skip `chmod`). `init` pins the bridge to that
+   release, checks the binary against the release's checksums, and commits the bridge's
+   files. Nothing is installed outside the folder. It refuses to overwrite files already
+   in the folder; if it does, tell the user which ones and let them decide.
 2. Tell the user to restart `claude` in the folder and type `help`. Suggest they push the
    bridge to a private repo of their own, never to starship.
 

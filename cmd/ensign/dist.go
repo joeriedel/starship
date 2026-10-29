@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Distribution: each bridge runs a pinned release of the control plane, cloned into
@@ -78,13 +80,84 @@ func exeName() string {
 	return "ensign"
 }
 
-// pinnedBinary is the ensign a bridge's release ships, if it exists on disk.
-func pinnedBinary(bridge string) string {
-	p := filepath.Join(cpCloneDir(bridge), "bin", platformKey(), exeName())
-	if _, err := os.Stat(p); err == nil {
-		return p
+// Release binaries are attached to each GitHub release, never committed. A bridge
+// downloads the one for its pin and platform, checks it against the release's
+// SHA256SUMS, and keeps it as .starship/bin/ensign, with the tag it came from beside it.
+
+// ensignAsset is the release attachment for this platform.
+func ensignAsset() string { return "ensign-" + platformKey() + filepath.Ext(exeName()) }
+
+var githubRemoteRe = regexp.MustCompile(`^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+)/([^/]+?)(?:\.git)?/?$`)
+
+// releaseAsset fetches one attachment of a release. STARSHIP_RELEASES names a local
+// folder of <tag>/<name> files instead (tests, or a mirror).
+func releaseAsset(remote, tag, name string) ([]byte, error) {
+	if dir := os.Getenv("STARSHIP_RELEASES"); dir != "" {
+		return os.ReadFile(filepath.Join(dir, tag, name))
 	}
-	return ""
+	m := githubRemoteRe.FindStringSubmatch(remote)
+	if m == nil {
+		return nil, fmt.Errorf("can't find releases for %s: only GitHub remotes have them", remote)
+	}
+	url := fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s", m[1], m[2], tag, name)
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("downloading %s: %s", url, resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+}
+
+func ensignTagFile(bridge string) string {
+	return filepath.Join(bridge, filepath.FromSlash(ensignFile())+".tag")
+}
+
+// fetchEnsign makes the bridge's .starship/bin/ensign its pinned release's, checked
+// against the release's SHA256SUMS. A binary already there for that tag is kept.
+func fetchEnsign(bridge string, bf *BridgeFile) error {
+	remote, tag := bf.ControlPlane.Remote, bf.ControlPlane.Tag
+	if remote == "" || tag == "" {
+		return nil
+	}
+	dest := filepath.Join(bridge, filepath.FromSlash(ensignFile()))
+	if have, _ := os.ReadFile(ensignTagFile(bridge)); strings.TrimSpace(string(have)) == tag {
+		if _, err := os.Stat(dest); err == nil {
+			return nil
+		}
+	}
+	name := ensignAsset()
+	sums, err := releaseAsset(remote, tag, "SHA256SUMS")
+	if err != nil {
+		return err
+	}
+	want := ""
+	for _, line := range strings.Split(string(sums), "\n") {
+		if f := strings.Fields(line); len(f) == 2 && strings.TrimPrefix(f[1], "*") == name {
+			want = f[0]
+		}
+	}
+	if want == "" {
+		return fmt.Errorf("release %s has no ensign for %s", tag, platformKey())
+	}
+	// The ensign that set the bridge up may already be the right one (downloaded by hand).
+	if cur, err := os.ReadFile(dest); err == nil && sha(cur) == want {
+		return os.WriteFile(ensignTagFile(bridge), []byte(tag+"\n"), 0o644)
+	}
+	bin, err := releaseAsset(remote, tag, name)
+	if err != nil {
+		return err
+	}
+	if sha(bin) != want {
+		return fmt.Errorf("the downloaded %s does not match release %s's SHA256SUMS; not using it", name, tag)
+	}
+	if err := replaceFile(dest, bin, true); err != nil {
+		return err
+	}
+	return os.WriteFile(ensignTagFile(bridge), []byte(tag+"\n"), 0o644)
 }
 
 func registryFile() (string, error) {
@@ -146,6 +219,9 @@ func setupBridge(bridge, projects string, out io.Writer) error {
 	}
 	if bf.ControlPlane.Path == "" {
 		if err := fetchControlPlane(bridge, bf); err != nil {
+			return err
+		}
+		if err := fetchEnsign(bridge, bf); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "control plane %s at %s\n", bf.ControlPlane.Remote, pinRef(bf))
@@ -249,6 +325,9 @@ func cmdUpdate(args []string, out io.Writer) error {
 	old := bf.ControlPlane.Tag
 	bf.ControlPlane.Tag = tag
 	if err := fetchControlPlane(bridge, bf); err != nil {
+		return err
+	}
+	if err := fetchEnsign(bridge, bf); err != nil {
 		return err
 	}
 	data = tagLineRe.ReplaceAll(data, []byte("${1}"+tag))

@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
-// releaseRepo makes a control-plane repo from this one's config, with release tags.
-func releaseRepo(t *testing.T) string {
+// fakeRelease makes a control-plane repo from this one's config with release tags, and
+// a folder of release attachments for them (STARSHIP_RELEASES), as GitHub would serve.
+func fakeRelease(t *testing.T) string {
 	t.Helper()
 	needGit(t)
 	repo := filepath.Join(t.TempDir(), "starship")
@@ -18,8 +18,6 @@ func releaseRepo(t *testing.T) string {
 	for _, dir := range []string{"pipelines", "roles", "manual", "extensions", "briefs"} {
 		copyDir(t, filepath.Join(root, dir), filepath.Join(repo, dir))
 	}
-	write(t, filepath.Join(repo, "bin", platformKey(), exeName()), "#!/bin/sh\necho released ensign\n")
-	os.Chmod(filepath.Join(repo, "bin", platformKey(), exeName()), 0o755)
 	runGit(t, repo, "init", "-q", "-b", "master")
 	runGit(t, repo, "add", "-A")
 	runGit(t, repo, "commit", "-q", "-m", "release 0.1.0")
@@ -29,11 +27,27 @@ func releaseRepo(t *testing.T) string {
 	runGit(t, repo, "tag", "v0.2.0")
 	write(t, filepath.Join(repo, "roles", "coder.md"), "---\nname: coder\nmodel: sonnet\n---\nunreleased\n")
 	runGit(t, repo, "commit", "-q", "-am", "work in progress")
+
+	releases := t.TempDir()
+	for _, tag := range []string{"v0.1.0", "v0.2.0"} {
+		bin := releasedBinary(tag)
+		write(t, filepath.Join(releases, tag, ensignAsset()), bin)
+		write(t, filepath.Join(releases, tag, "SHA256SUMS"), sha([]byte(bin))+"  "+ensignAsset()+"\n")
+	}
+	t.Setenv("STARSHIP_RELEASES", releases)
 	return repo
 }
 
+func releasedBinary(tag string) string { return "#!/bin/sh\necho released ensign " + tag + "\n" }
+
+func ownEnsign(t *testing.T, bridge string) string {
+	t.Helper()
+	data, _ := os.ReadFile(filepath.Join(bridge, filepath.FromSlash(ensignFile())))
+	return string(data)
+}
+
 func TestPinnedBridge(t *testing.T) {
-	repo := releaseRepo(t)
+	repo := fakeRelease(t)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
 	t.Setenv("HOME", t.TempDir())
 
@@ -47,17 +61,14 @@ func TestPinnedBridge(t *testing.T) {
 	if data, _ := os.ReadFile(coder); strings.Contains(string(data), "version two") {
 		t.Fatalf("v0.1.0 should not have version two's coder")
 	}
-	if pinnedBinary(bridge) == "" {
-		t.Fatalf("the release's binary was not found in the pinned clone")
+	if ownEnsign(t, bridge) != releasedBinary("v0.1.0") {
+		t.Fatalf("init should download v0.1.0's ensign into the bridge")
 	}
 
 	out.Reset()
 	projects := t.TempDir()
 	if err := cmdSetup([]string{"--projects", projects}, &out); err != nil {
 		t.Fatalf("setup: %v\n%s", err, out.String())
-	}
-	if own, _ := os.ReadFile(filepath.Join(bridge, filepath.FromSlash(ensignFile()))); !strings.Contains(string(own), "released ensign") {
-		t.Errorf("the bridge should have its pinned release's ensign")
 	}
 	if m := loadMachine(bridge); m.Projects != filepath.ToSlash(projects) {
 		t.Errorf("machine projects = %q", m.Projects)
@@ -90,6 +101,9 @@ func TestPinnedBridge(t *testing.T) {
 	if data, _ := os.ReadFile(coder); !strings.Contains(string(data), "version two") {
 		t.Errorf("update did not relink the new release's roles")
 	}
+	if ownEnsign(t, bridge) != releasedBinary("v0.2.0") {
+		t.Errorf("update should download v0.2.0's ensign")
+	}
 	if data, _ := os.ReadFile(filepath.Join(bridge, "bridge.yaml")); !strings.Contains(string(data), "tag: v0.2.0") {
 		t.Errorf("bridge.yaml not updated:\n%s", data)
 	}
@@ -116,10 +130,10 @@ func TestPinnedBridge(t *testing.T) {
 	}
 }
 
-// The flow the README gives Claude: clone a release into the new bridge's folder, then
-// run that clone's ensign init with only --projects.
-func TestInitFromAReleaseClone(t *testing.T) {
-	repo := releaseRepo(t)
+// The flow the README gives Claude: download the release's ensign into the new bridge's
+// folder, then run it with init and nothing else.
+func TestInitFromARelease(t *testing.T) {
+	repo := fakeRelease(t)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
 	t.Setenv("HOME", t.TempDir())
 	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
@@ -128,17 +142,15 @@ func TestInitFromAReleaseClone(t *testing.T) {
 	for _, k := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
 		t.Setenv(k, "t@example.com")
 	}
+	defer func(r, v string) { releaseRepo, version = r, v }(releaseRepo, version)
+	releaseRepo, version = "file://"+repo, "v0.1.0"
 
 	bridge := filepath.Join(t.TempDir(), "home")
 	write(t, filepath.Join(bridge, "notes.txt"), "the user's own file\n")
-	clone := filepath.Join(bridge, ".starship", "control-plane")
-	runGit(t, bridge, "clone", "-q", "--depth", "1", "--branch", "v0.1.0", "file://"+repo, clone)
-	defer func(f func() (string, error)) { selfExe = f }(selfExe)
-	selfExe = func() (string, error) { return filepath.Join(clone, "bin", platformKey(), exeName()), nil }
+	write(t, filepath.Join(bridge, filepath.FromSlash(ensignFile())), releasedBinary("v0.1.0"))
 
-	projects := t.TempDir()
 	var out bytes.Buffer
-	if err := cmdInit([]string{bridge, "--projects", projects}, &out); err != nil {
+	if err := cmdInit([]string{bridge}, &out); err != nil {
 		t.Fatalf("init: %v\n%s", err, out.String())
 	}
 	bf, err := loadBridgeFile(bridge)
@@ -146,25 +158,51 @@ func TestInitFromAReleaseClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if bf.ControlPlane.Remote != "file://"+repo || bf.ControlPlane.Tag != "v0.1.0" {
-		t.Errorf("pinned %q at %q, want the clone's origin at v0.1.0", bf.ControlPlane.Remote, bf.ControlPlane.Tag)
+		t.Errorf("pinned %q at %q, want the release this ensign is", bf.ControlPlane.Remote, bf.ControlPlane.Tag)
 	}
-	if own, _ := os.ReadFile(filepath.Join(bridge, filepath.FromSlash(ensignFile()))); !strings.Contains(string(own), "released ensign") {
-		t.Errorf("the bridge should have its release's ensign")
+	if ownEnsign(t, bridge) != releasedBinary("v0.1.0") {
+		t.Errorf("the downloaded ensign should be kept")
 	}
-	if fi, err := os.Stat(filepath.Join(bridge, filepath.FromSlash(ensignFile()))); err != nil || (runtime.GOOS != "windows" && fi.Mode()&0o111 == 0) {
-		t.Errorf("the bridge's ensign should be executable: %v", err)
+	if tag, _ := os.ReadFile(ensignTagFile(bridge)); string(tag) != "v0.1.0\n" {
+		t.Errorf("the bridge should record which release its ensign is: %q", tag)
 	}
 	if settings, _ := os.ReadFile(filepath.Join(bridge, ".claude/settings.json")); !strings.Contains(string(settings), `$CLAUDE_PROJECT_DIR/.starship/bin/ensign`) {
 		t.Errorf("hooks should run the bridge's own ensign:\n%s", settings)
-	}
-	if m := loadMachine(bridge); m.Projects != filepath.ToSlash(projects) {
-		t.Errorf("machine projects = %q", m.Projects)
 	}
 	if _, err := os.Stat(filepath.Join(bridge, ".claude/agents/coder.md")); err != nil {
 		t.Errorf("the bridge was not linked")
 	}
 	if status, _ := gitOut(bridge, "status", "--porcelain"); status != "?? notes.txt" {
 		t.Errorf("init should commit its own files and leave the user's alone; status %q", status)
+	}
+}
+
+func TestDownloadedEnsignMustMatchItsChecksum(t *testing.T) {
+	repo := fakeRelease(t)
+	releases := os.Getenv("STARSHIP_RELEASES")
+	write(t, filepath.Join(releases, "v0.2.0", ensignAsset()), "#!/bin/sh\necho tampered\n")
+	bridge := t.TempDir()
+	write(t, filepath.Join(bridge, filepath.FromSlash(ensignFile())), "old\n")
+	var bf BridgeFile
+	bf.ControlPlane.Remote, bf.ControlPlane.Tag = repo, "v0.2.0"
+	err := fetchEnsign(bridge, &bf)
+	if err == nil || !strings.Contains(err.Error(), "SHA256SUMS") {
+		t.Fatalf("a binary that doesn't match the checksums should be refused: %v", err)
+	}
+	if ownEnsign(t, bridge) != "old\n" {
+		t.Errorf("a refused download must not replace the bridge's ensign")
+	}
+}
+
+func TestGithubRemotes(t *testing.T) {
+	for _, r := range []string{"https://github.com/joeriedel/starship.git", "https://github.com/joeriedel/starship",
+		"git@github.com:joeriedel/starship.git", "ssh://git@github.com/joeriedel/starship.git"} {
+		if m := githubRemoteRe.FindStringSubmatch(r); m == nil || m[1] != "joeriedel" || m[2] != "starship" {
+			t.Errorf("%s: %v", r, m)
+		}
+	}
+	if githubRemoteRe.MatchString("https://example.com/a/b.git") {
+		t.Errorf("a non-GitHub remote should not match")
 	}
 }
 

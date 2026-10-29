@@ -1035,27 +1035,33 @@ collides with the starship shell prompt, whose binary is `starship`.
   `@name` runs a binding.
 - **State-file locking uses a portable file-lock library**, not `flock`.
 
-### 11.2 Prebuilt binaries in the repo
+### 11.2 Prebuilt binaries, attached to releases
+
+Binaries are never committed. Each GitHub release carries them as attachments:
 
 ```
-bin/
-  linux-amd64/ensign
-  windows-amd64/ensign.exe
-  darwin-arm64/ensign          macOS, Apple silicon
-  darwin-amd64/ensign          macOS, Intel
+ensign-linux-amd64
+ensign-windows-amd64.exe
+ensign-darwin-arm64          macOS, Apple silicon
+ensign-darwin-amd64          macOS, Intel
+SHA256SUMS
 ```
 
 - **A release is cut by CI.** You trigger the release workflow with a version
   (`gh workflow run release -f version=1.4.0`, or from the GitHub UI). On one Linux
-  runner it cross-compiles every target, commits the binaries to `master`, and creates
-  the tag `v1.4.0` **on that commit**, so a tagged checkout always contains its own
-  binaries. Tags are never created by hand. Free for public repos.
-- **Only CI builds committed binaries.** A local build embeds local file paths; building
-  on a work machine would carry them into the public repo.
+  runner it tests, cross-compiles every target, tags the current commit `v1.4.0`, and
+  publishes the release with the binaries attached, as a pre-release unless
+  `-f prerelease=false`. Tags are never created by hand. Free for public repos.
+- **Each binary knows its release**: the build sets its version (the tag) and the repo it
+  came from, so `ensign init` with no flags pins exactly the release it is.
+- **A bridge downloads the binary for its pin and platform** and checks it against the
+  release's `SHA256SUMS` before using it (`.starship/bin/ensign`, with the tag beside it
+  in `ensign.tag`). The first one is downloaded by Claude when it makes the bridge or
+  sets up a machine; after that, `ensign update` downloads the new release's.
+- **Only CI builds released binaries.** A local build embeds local file paths; building
+  on a work machine would carry them into a public release.
 - **Builds are reproducible**: `CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid="`.
   Anyone can rebuild from the tagged source and compare.
-- **Rebuilt only on release**, which keeps repo growth to roughly one set of binaries
-  per release. If it grows too heavy, binaries move to GitHub Releases with a fetch step.
 - **CI also tests on a Windows runner**: paths, locking, and running `ensign.exe` from
   PowerShell and Git Bash. The harness probe (§7.1) needs a Claude login and stays manual.
 - Go is needed only on a machine where `ensign` itself is being developed.
@@ -1142,12 +1148,10 @@ spawned.
 
 The bridge's committed `CLAUDE.md` (written by `ensign init`) carries a short setup
 section that is visible before anything else exists: if `.starship/control-plane/` is
-missing, the bridge isn't set up on this machine. Setup is two commands:
-
-```
-git clone --depth 1 --branch <tag from bridge.yaml> <remote> .starship/control-plane
-.starship/control-plane/bin/<platform>/ensign setup [--projects <path>] ...
-```
+missing, the bridge isn't set up on this machine. Claude downloads the pinned release's
+`ensign` for the platform into `.starship/bin/` and runs `.starship/bin/ensign setup`,
+which fetches the control plane at the pinned tag and checks the binary against the
+release's checksums.
 
 `ensign setup`, in Go and therefore the same on both platforms:
 
@@ -1175,10 +1179,11 @@ restart, so a session never mixes two releases.
 ### 12.4 The very first install
 
 The user makes a folder, starts `claude` in it, and asks for a bridge, naming this repo.
-Claude follows the README's "For Claude" section: it clones the newest release tag into
-the folder's `.starship/control-plane/` and runs that clone's
-`bin/<platform>/ensign init .`. Run from a clone's `bin/` with no `--remote`, `init` pins
-the clone's origin at its release tag, and does what `setup` does. Where this machine
+Claude follows the README's "For Claude" section: it downloads the newest release's
+`ensign` for the platform into the folder's `.starship/bin/` and runs
+`.starship/bin/ensign init .`. With no flags, `init` pins the release that binary is,
+fetches the control plane at that tag, checks the binary against the release's
+checksums, and does what `setup` does. Where this machine
 keeps code (`$PROJECTS`) isn't asked here; the session offers to record it the first
 time the user gives a workspace path. `init` refuses to overwrite a file already in the folder, and
 commits only its own files. Then the user restarts `claude`.

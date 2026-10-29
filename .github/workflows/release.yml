@@ -1,8 +1,9 @@
 name: release
 
-# Cut a release: build ensign for every platform, commit the binaries, tag that commit
-# (so a tagged checkout always contains its own binaries), and publish a GitHub release
-# for the tag, marked as a pre-release unless told otherwise. Run it with
+# Cut a release: build ensign for every platform, tag the commit, and publish a GitHub
+# release for the tag with the binaries and their SHA256SUMS attached, marked as a
+# pre-release unless told otherwise. Binaries are never committed; bridges download
+# the one for their platform from the release. Run it with
 #   gh workflow run release -f version=0.1.0                     (a pre-release)
 #   gh workflow run release -f version=1.0.0 -f prerelease=false (a full release)
 
@@ -47,24 +48,21 @@ jobs:
       - name: Build reproducibly
         run: |
           set -e
-          rm -rf bin
+          repo="https://github.com/$GITHUB_REPOSITORY.git"
+          mkdir -p dist
           for target in linux/amd64 windows/amd64 darwin/arm64 darwin/amd64; do
             os=${target%/*}; arch=${target#*/}; ext=""
             if [ "$os" = windows ]; then ext=.exe; fi
             CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
-              -ldflags "-s -w -buildid= -X main.version=$TAG" \
-              -o "bin/$os-$arch/ensign$ext" ./cmd/ensign
+              -ldflags "-s -w -buildid= -X main.version=$TAG -X main.releaseRepo=$repo" \
+              -o "dist/ensign-$os-$arch$ext" ./cmd/ensign
           done
-          (cd bin && sha256sum */ensign* > SHA256SUMS)
-          cat bin/SHA256SUMS
-      - name: Commit and tag
+          (cd dist && sha256sum ensign-* > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: Tag
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bin
-          git commit -m "Release $TAG"
           git tag "$TAG"
-          git push origin HEAD:master "$TAG"
+          git push origin "$TAG"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -72,13 +70,4 @@ jobs:
         run: |
           flag=""
           if [ "$PRERELEASE" = "true" ]; then flag="--prerelease"; fi
-          # The binaries also go on the release page, named by platform. Bridges don't
-          # need them there: they clone the tag, which carries bin/.
-          mkdir -p dist
-          for f in bin/*/ensign*; do
-            p=$(basename "$(dirname "$f")"); ext=""
-            case "$f" in *.exe) ext=.exe ;; esac
-            cp "$f" "dist/ensign-$p$ext"
-          done
-          (cd dist && sha256sum ensign-* > SHA256SUMS)
           gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes $flag dist/*
