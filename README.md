@@ -11,10 +11,6 @@ Starship is the fix for that. You still just talk to Claude. But behind the
 conversation there's a crew of specialist agents, a process they can't wander off, and a
 written record that outlives the session.
 
-> **Status: working, not yet released.** Everything below is built and tested,
-> including live runs against real Claude Code. No release has been cut yet. The full
-> design is in [`docs/design.md`](docs/design.md).
-
 ## A day on the bridge
 
 It's Monday. You open a terminal in your work bridge and start Claude.
