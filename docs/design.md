@@ -152,6 +152,20 @@ Carried over from the reference design:
 - Platform variants are declared per platform; a binding with variants but none for the
   detected platform is a stop.
 
+Conventional names, reused before new ones are invented:
+
+| Binding | Purpose |
+|---|---|
+| `@sync` | bring the workspace up to date with its remote (git: pull/rebase the task branch; Perforce: sync or unshelve) |
+| `@checkout` | prepare files for editing (Perforce: `p4 edit`) |
+| `@compile` | fast compile-only check; falls back to `@build` |
+| `@build` | build |
+| `@test` | run the test suite |
+| `@lint` | linters and formatters |
+| `@diff` | the current change set |
+| `@style` | style rules beyond the linter, written by people |
+| `@done` | this project's definition of finished |
+
 ### 4.2 Events
 
 The initial set:
@@ -373,6 +387,22 @@ What this encodes:
 - **`success` is reachable only through `pass`.** A suite that didn't run is an `error`,
   never a success. The `@done` binding is a `require` check on the way to `success`; if it
   fails, the run ends as `error: done-check`.
+
+### 5.2.1 Starting elsewhere, and syncing first
+
+A run may start at any stage, and may sync the workspace first:
+
+```
+ensign resolve <task> --sync --start test
+```
+
+- `--sync` runs `@sync` as a `require` handler at `run.start`, before anything else, so
+  a `git-catalog` base is recorded after the pull.
+- `--start <stage>` begins at that stage; budgets start full.
+
+This covers "commits came in from another machine — pull them and make sure they compile
+and pass": the coding pipeline started at `test`. `pass` ends the run as `success`;
+`fail`, including a failed compile, goes back to `code` and the normal loop fixes it.
 
 ### 5.3 Extending a pipeline
 
