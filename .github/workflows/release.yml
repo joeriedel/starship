@@ -1,8 +1,10 @@
 name: release
 
-# Cut a release: build ensign for every platform, commit the binaries, and tag that
-# commit, so a tagged checkout always contains its own binaries. Run it with
-#   gh workflow run release -f version=0.1.0
+# Cut a release: build ensign for every platform, commit the binaries, tag that commit
+# (so a tagged checkout always contains its own binaries), and publish a GitHub release
+# for the tag, marked as a pre-release unless told otherwise. Run it with
+#   gh workflow run release -f version=0.1.0                     (a pre-release)
+#   gh workflow run release -f version=1.0.0 -f prerelease=false (a full release)
 
 on:
   workflow_dispatch:
@@ -10,6 +12,10 @@ on:
       version:
         description: "Version to release, e.g. 0.1.0"
         required: true
+      prerelease:
+        description: "Mark the GitHub release as a pre-release"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -59,3 +65,11 @@ jobs:
           git commit -m "Release $TAG"
           git tag "$TAG"
           git push origin HEAD:master "$TAG"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          flag=""
+          if [ "$PRERELEASE" = "true" ]; then flag="--prerelease"; fi
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes $flag
