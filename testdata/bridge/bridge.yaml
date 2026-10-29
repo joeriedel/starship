@@ -1,0 +1,3 @@
+# A fixture bridge for tests. Tests copy it and point control-plane.path at the repo.
+control-plane:
+  path: ../..

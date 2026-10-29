@@ -1,0 +1,10 @@
+bindings:
+  build: { command: "./build.sh" }
+  test:  { command: "./test.sh" }
+  lint:  { not-applicable: "no linter in this toy project" }
+
+pipelines:
+  coding:
+    ops:
+      - append: { stage: review, dimensions: [tests] }
+      - set:    { budgets.test: 2 }
