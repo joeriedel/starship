@@ -113,3 +113,66 @@ func TestPinnedBridge(t *testing.T) {
 		t.Fatalf("a run in a session from before the update should be refused: %v", err)
 	}
 }
+
+// The flow the README gives Claude: clone a release into the new bridge's folder, then
+// run that clone's ensign init with only --projects.
+func TestInitFromAReleaseClone(t *testing.T) {
+	repo := releaseRepo(t)
+	t.Setenv("STARSHIP_BIN_DIR", filepath.Join(t.TempDir(), "bin"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	t.Setenv("HOME", t.TempDir())
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
+		t.Setenv(k, "t")
+	}
+	for _, k := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		t.Setenv(k, "t@example.com")
+	}
+
+	bridge := filepath.Join(t.TempDir(), "home")
+	write(t, filepath.Join(bridge, "notes.txt"), "the user's own file\n")
+	clone := filepath.Join(bridge, ".starship", "control-plane")
+	runGit(t, bridge, "clone", "-q", "--depth", "1", "--branch", "v0.1.0", "file://"+repo, clone)
+	defer func(f func() (string, error)) { selfExe = f }(selfExe)
+	selfExe = func() (string, error) { return filepath.Join(clone, "bin", platformKey(), exeName()), nil }
+
+	projects := t.TempDir()
+	var out bytes.Buffer
+	if err := cmdInit([]string{bridge, "--projects", projects}, &out); err != nil {
+		t.Fatalf("init: %v\n%s", err, out.String())
+	}
+	bf, err := loadBridgeFile(bridge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bf.ControlPlane.Remote != "file://"+repo || bf.ControlPlane.Tag != "v0.1.0" {
+		t.Errorf("pinned %q at %q, want the clone's origin at v0.1.0", bf.ControlPlane.Remote, bf.ControlPlane.Tag)
+	}
+	if installed, _ := os.ReadFile(filepath.Join(os.Getenv("STARSHIP_BIN_DIR"), exeName())); !strings.Contains(string(installed), "released ensign") {
+		t.Errorf("init --projects should install the release's ensign")
+	}
+	if m := loadMachine(bridge); m.Projects != filepath.ToSlash(projects) {
+		t.Errorf("machine projects = %q", m.Projects)
+	}
+	if _, err := os.Stat(filepath.Join(bridge, ".claude/agents/coder.md")); err != nil {
+		t.Errorf("the bridge was not linked")
+	}
+	if status, _ := gitOut(bridge, "status", "--porcelain"); status != "?? notes.txt" {
+		t.Errorf("init should commit its own files and leave the user's alone; status %q", status)
+	}
+}
+
+func TestInitNeverOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "CLAUDE.md"), "mine\n")
+	var out bytes.Buffer
+	err := cmdInit([]string{dir, "--control-plane", repoRoot(t)}, &out)
+	if err == nil || !strings.Contains(err.Error(), "CLAUDE.md") {
+		t.Fatalf("init over an existing CLAUDE.md: %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "CLAUDE.md")); string(data) != "mine\n" {
+		t.Errorf("CLAUDE.md was changed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "bridge.yaml")); err == nil {
+		t.Errorf("init should write nothing when it refuses")
+	}
+}

@@ -1160,10 +1160,13 @@ restart, so a session never mixes two releases.
 
 ### 12.4 The very first install
 
-Before any bridge exists, `ensign` comes from the control plane itself: clone this repo at
-a release tag, run `bin/<platform>/ensign setup` to install the launcher, then
-`ensign init <dir>` to create a bridge. The clone can be deleted afterwards. A one-line
-download-and-run command may be documented as a convenience, never as the main path.
+The user makes a folder, starts `claude` in it, and asks for a bridge, naming this repo.
+Claude follows the README's "For Claude" section: it clones the newest release tag into
+the folder's `.starship/control-plane/` and runs that clone's
+`bin/<platform>/ensign init . --projects <path>`. Run from a clone's `bin/` with no
+`--remote`, `init` pins the clone's origin at its release tag, and `--projects` makes it
+also do what `setup` does. `init` refuses to overwrite a file already in the folder, and
+commits only its own files. Then the user restarts `claude`.
 
 ### 12.5 When `ensign` is missing: fail-open, and the heartbeat
 

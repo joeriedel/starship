@@ -167,6 +167,12 @@ func cmdSetup(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	return setupBridge(bridge, projects, out)
+}
+
+// setupBridge makes a bridge work on this machine: the pinned control plane, ensign on
+// PATH, where this machine keeps its code, the registry, and the generated files.
+func setupBridge(bridge, projects string, out io.Writer) error {
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
 		return err

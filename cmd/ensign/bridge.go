@@ -86,9 +86,17 @@ func hookSettings() string {
 `
 }
 
-// cmdInit implements `ensign init <dir> (--control-plane <path> | --remote <url> --tag <tag>)`.
+// selfExe is the running binary's path; tests replace it.
+var selfExe = os.Executable
+
+const initUsage = "usage: ensign init <dir> [--control-plane <path> | --remote <url> [--tag <tag>]] [--projects <path>]"
+
+// cmdInit implements `ensign init`. Run from a starship clone's bin/ with neither
+// --control-plane nor --remote, the bridge pins the clone it came from: its origin, at
+// this binary's release tag. With --projects it also does what setup does, so one
+// command makes a working bridge.
 func cmdInit(args []string, out io.Writer) error {
-	var dir, cpPath, remote, tag string
+	var dir, cpPath, remote, tag, projects string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "--control-plane" && i+1 < len(args):
@@ -97,14 +105,22 @@ func cmdInit(args []string, out io.Writer) error {
 			remote, i = args[i+1], i+1
 		case a == "--tag" && i+1 < len(args):
 			tag, i = args[i+1], i+1
+		case a == "--projects" && i+1 < len(args):
+			projects, i = args[i+1], i+1
 		case !strings.HasPrefix(a, "-") && dir == "":
 			dir = a
 		default:
-			return fmt.Errorf("usage: ensign init <dir> (--control-plane <path> | --remote <url> --tag <tag>)")
+			return fmt.Errorf(initUsage)
 		}
 	}
-	if dir == "" || (cpPath == "") == (remote == "") || (remote != "" && tag == "") {
-		return fmt.Errorf("usage: ensign init <dir> (--control-plane <path> | --remote <url> --tag <tag>)")
+	if dir == "" || (cpPath != "" && (remote != "" || tag != "")) {
+		return fmt.Errorf(initUsage)
+	}
+	if cpPath == "" {
+		var err error
+		if remote, tag, err = releaseOrigin(remote, tag); err != nil {
+			return err
+		}
 	}
 	dir, _ = filepath.Abs(dir)
 	if _, err := os.Stat(filepath.Join(dir, "bridge.yaml")); err == nil {
@@ -126,12 +142,24 @@ func cmdInit(args []string, out io.Writer) error {
 		"projects/.gitkeep":     "",
 		"proposals/.gitkeep":    "",
 	}
-	for rel, content := range files {
+	paths := sortedKeys(files)
+	// The folder may already hold the user's own files. Never overwrite one.
+	var taken []string
+	for _, rel := range paths {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err == nil {
+			taken = append(taken, rel)
+		}
+	}
+	if len(taken) > 0 {
+		return fmt.Errorf("%s already has %s; init won't overwrite them. Use an empty folder, or move them aside",
+			dir, strings.Join(taken, ", "))
+	}
+	for _, rel := range paths {
 		p := filepath.Join(dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(p, []byte(files[rel]), 0o644); err != nil {
 			return err
 		}
 	}
@@ -141,29 +169,64 @@ func cmdInit(args []string, out io.Writer) error {
 		}
 	}
 	fmt.Fprintf(out, "bridge created at %s\n", dir)
-	if cpPath == "" {
-		bf, err := loadBridgeFile(dir)
-		if err != nil {
+	if projects != "" {
+		if err := setupBridge(dir, projects, out); err != nil {
 			return err
 		}
-		if err := fetchControlPlane(dir, bf); err != nil {
+	} else {
+		if cpPath == "" {
+			bf, err := loadBridgeFile(dir)
+			if err != nil {
+				return err
+			}
+			if err := fetchControlPlane(dir, bf); err != nil {
+				return err
+			}
+		}
+		if err := link(dir, false, out); err != nil {
 			return err
 		}
 	}
-	if err := link(dir, false, out); err != nil {
+	// Commit the starting files, and only those: the folder may hold other files. Without
+	// this, the first session is asked to commit them as journal changes.
+	if err := git(dir, append([]string{"add", "--"}, paths...)...); err != nil {
 		return err
 	}
-	// Commit the starting files, or the first session is asked to commit them as
-	// journal changes before it can end.
-	if _, err := gitOut(dir, "rev-parse", "--verify", "HEAD"); err != nil {
-		if err := git(dir, "add", "-A"); err != nil {
-			return err
-		}
-		if err := git(dir, "commit", "-q", "-m", "New bridge"); err != nil {
-			fmt.Fprintf(out, "could not commit the new bridge (%v); commit its files before starting a session\n", err)
-		}
+	if err := git(dir, append([]string{"commit", "-q", "-m", "New bridge", "--"}, paths...)...); err != nil {
+		fmt.Fprintf(out, "could not commit the new bridge (%v); commit its files before starting a session\n", err)
 	}
 	return nil
+}
+
+// releaseOrigin fills in the control plane a bridge pins. The remote defaults to the
+// origin of the starship clone this binary sits in (<clone>/bin/<platform>/ensign), and
+// the tag to that clone's release tag, or this binary's own version.
+func releaseOrigin(remote, tag string) (string, string, error) {
+	clone := ""
+	if exe, err := selfExe(); err == nil {
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = real
+		}
+		if bin := filepath.Dir(filepath.Dir(exe)); filepath.Base(bin) == "bin" {
+			clone = filepath.Dir(bin)
+		}
+	}
+	if remote == "" && clone != "" {
+		remote, _ = gitOut(clone, "remote", "get-url", "origin")
+	}
+	if tag == "" && clone != "" {
+		tag, _ = gitOut(clone, "describe", "--tags", "--exact-match", "HEAD")
+	}
+	if tag == "" && strings.HasPrefix(version, "v") {
+		tag = version
+	}
+	switch {
+	case remote == "":
+		return "", "", fmt.Errorf("say which starship to use: run init from a starship clone's bin/ folder, or pass --remote <url> (or --control-plane <path>)")
+	case tag == "":
+		return "", "", fmt.Errorf("say which release to pin: pass --tag <tag>")
+	}
+	return remote, tag, nil
 }
 
 func git(dir string, args ...string) error {

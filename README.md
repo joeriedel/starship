@@ -160,23 +160,43 @@ rediscovering the same things.
 
 ## Getting started
 
-You need Claude Code and git, on Linux or Windows; macOS isn't supported yet. Each
-release ships `ensign` prebuilt, so there's nothing to compile.
+You need Claude Code and git, on Linux or Windows; macOS isn't supported yet.
+
+Make a folder for your bridge, start `claude` in it, and ask:
 
 ```
-git clone --branch <release tag> https://github.com/joeriedel/starship.git
-starship/bin/<linux-amd64|windows-amd64>/ensign setup        # puts ensign on PATH
-
-# Create a bridge. --remote and --tag say where the bridge fetches starship
-# releases from, and which one it uses; the bridge itself is your own repo.
-ensign init ~/bridges/home --remote https://github.com/joeriedel/starship.git --tag <release tag>
-
-cd ~/bridges/home && claude                                  # then type: help
+> make a starship bridge here, from https://github.com/joeriedel/starship
 ```
 
-On another machine, clone your bridge, run `claude` in it, and Claude sets up the rest.
+Claude asks where your code lives on this machine, sets the bridge up, and asks you to
+restart `claude`. Then type `help`.
+
+The bridge is a git repo of your own. Push it somewhere private, and on another machine
+clone it and run `claude` in it; Claude sets that machine up the same way.
+
 After upgrading Claude Code, run `ensign selftest`. It runs a few cents' worth of probe
 agents to check that Claude Code still behaves the way starship relies on.
+
+### For Claude: setting up a bridge
+
+When asked to make a starship bridge in a folder:
+
+1. Ask the user where their code checkouts live on this machine (for example `~/src`).
+   Never guess it.
+2. From the folder, run:
+
+   ```
+   TAG=$(git ls-remote --tags --refs --sort=-v:refname https://github.com/joeriedel/starship.git 'v*' | head -n 1 | sed 's#.*/##')
+   git clone -q --depth 1 --branch "$TAG" https://github.com/joeriedel/starship.git .starship/control-plane
+   .starship/control-plane/bin/linux-amd64/ensign init . --projects <their code folder>
+   ```
+
+   On Windows the binary is `.starship/control-plane/bin/windows-amd64/ensign.exe`.
+   `init` pins the bridge to that release, puts `ensign` on PATH, and commits the
+   bridge's files. It refuses to overwrite files already in the folder; if it does,
+   tell the user which ones and let them decide.
+3. Tell the user to restart `claude` in the folder and type `help`. Suggest they push the
+   bridge to a private repo of their own, never to starship.
 
 If you'd rather build `ensign` yourself, you need Go: `go build ./cmd/ensign`.
 
