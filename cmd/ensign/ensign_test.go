@@ -15,6 +15,7 @@ type world struct {
 	t       *testing.T
 	bridge  string
 	session string // session transcript path; subagent transcripts are derived from it
+	sid     string // Claude Code session id
 	agents  int
 }
 
@@ -31,7 +32,8 @@ func newWorld(t *testing.T) *world {
 	data, _ := os.ReadFile(task)
 	write(t, task, strings.Replace(string(data), "WORKSPACE", ws, 1))
 	t.Setenv("CLAUDE_PROJECT_DIR", bridge)
-	return &world{t: t, bridge: bridge, session: filepath.Join(tmp, "session.jsonl")}
+	t.Setenv("STARSHIP_SESSION", "s1")
+	return &world{t: t, bridge: bridge, session: filepath.Join(tmp, "session.jsonl"), sid: "s1"}
 }
 
 func copyDir(t *testing.T, from, to string) {
@@ -74,6 +76,7 @@ func (w *world) hook(event string, in map[string]any) (map[string]any, int) {
 	w.t.Helper()
 	in["hook_event_name"] = event
 	in["transcript_path"] = w.session
+	in["session_id"] = w.sid
 	data, _ := json.Marshal(in)
 	var out, errb bytes.Buffer
 	code := cmdHook(event, bytes.NewReader(data), &out, &errb)
@@ -159,7 +162,7 @@ func (w *world) leaf(lead, role, outcome string) {
 
 func (w *world) state() *State {
 	w.t.Helper()
-	r, err := openActiveRun(w.bridge)
+	r, err := openSessionRun(w.bridge, w.sid)
 	if err != nil || r == nil {
 		w.t.Fatalf("no active run: %v", err)
 	}
@@ -218,7 +221,7 @@ func TestMergeAndProvenance(t *testing.T) {
 	if !strings.Contains(out, "dry run: nothing created") || !strings.Contains(out, "from project:") {
 		t.Errorf("dry run output:\n%s", out)
 	}
-	if _, err := os.Stat(activeRunFile(w.bridge)); err == nil {
+	if len(listRuns(w.bridge)) != 0 {
 		t.Errorf("dry run created a run")
 	}
 }
@@ -389,7 +392,7 @@ func TestStartAtTest(t *testing.T) {
 func TestCorruptStateFailsClosed(t *testing.T) {
 	w := newWorld(t)
 	w.run("supernova/auth-refactor")
-	id, _ := os.ReadFile(activeRunFile(w.bridge))
+	id, _ := os.ReadFile(sessionFile(w.bridge, w.sid))
 	write(t, filepath.Join(runsDir(w.bridge), strings.TrimSpace(string(id)), "state.json"), "{not json")
 	_, code := w.hook("PreToolUse", map[string]any{
 		"tool_name": "Agent", "tool_input": map[string]any{"subagent_type": "orchestrator", "prompt": "x"},
@@ -401,4 +404,85 @@ func TestCorruptStateFailsClosed(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("a forced-continue stop should be let through, got %d", code)
 	}
+}
+
+// addTask copies the fixture task under a new name with its own workspace.
+func (w *world) addTask(name string) {
+	w.t.Helper()
+	ws := filepath.Join(filepath.Dir(w.bridge), "workspace-"+name)
+	os.MkdirAll(ws, 0o755)
+	write(w.t, filepath.Join(w.bridge, "projects/supernova/tasks", name, "task.md"),
+		"---\npipeline: coding\nworkspace: "+ws+"\n---\n\nDo "+name+".\n")
+}
+
+func TestSessionsAreIndependent(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	leadA := w.startLead()
+
+	b := *w
+	b.sid = "s2"
+	t.Setenv("STARSHIP_SESSION", "s2")
+	b.run("supernova/other")
+	b.approve()
+	leadB, why := b.spawn("", "", "orchestrator")
+	if leadB == "" {
+		t.Fatalf("session 2's lead was refused: %s", why)
+	}
+	b.leaf(leadB, "coder", "compiled")
+
+	t.Setenv("STARSHIP_SESSION", "s1")
+	if st := w.state(); st.Scopes["run"].Stage != "code" {
+		t.Fatalf("session 2's work moved session 1's run to %s", st.Scopes["run"].Stage)
+	}
+	w.leaf(leadA, "coder", "compiled")
+	if st := w.state(); st.Scopes["run"].Stage != "review" {
+		t.Fatalf("session 1's run is at %s", st.Scopes["run"].Stage)
+	}
+}
+
+func TestOneLiveRunPerSessionAndWorkspace(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.run("supernova/auth-refactor")
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	if err := cmdRun([]string{"supernova/other"}, &out); err == nil || !strings.Contains(err.Error(), "already has an active run") {
+		t.Fatalf("second run in one session: %v", err)
+	}
+	t.Setenv("STARSHIP_SESSION", "s2")
+	if err := cmdRun([]string{"supernova/auth-refactor"}, &out); err == nil || !strings.Contains(err.Error(), "same workspace") {
+		t.Fatalf("second run on one workspace: %v", err)
+	}
+}
+
+func TestGoClaimsARunCreatedOutsideASession(t *testing.T) {
+	w := newWorld(t)
+	t.Setenv("STARSHIP_SESSION", "")
+	w.run("supernova/auth-refactor")
+	if r, _ := openSessionRun(w.bridge, w.sid); r != nil {
+		t.Fatalf("a terminal-created run should not belong to a session yet")
+	}
+	w.approve()
+	if st := w.state(); st.Session != w.sid || st.Status != "running" {
+		t.Fatalf("after go: session %q status %s", st.Session, st.Status)
+	}
+}
+
+func TestSessionStartRecordsTheSession(t *testing.T) {
+	w := newWorld(t)
+	env := filepath.Join(t.TempDir(), "env.sh")
+	t.Setenv("CLAUDE_ENV_FILE", env)
+	in, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "abc"})
+	var out, errb bytes.Buffer
+	if code := cmdHook("SessionStart", bytes.NewReader(in), &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	data, _ := os.ReadFile(env)
+	if string(data) != "export STARSHIP_SESSION=abc\n" || !strings.HasPrefix(out.String(), "STARSHIP-READY") {
+		t.Fatalf("env file %q, stdout %q", data, out.String())
+	}
+	_ = w
 }

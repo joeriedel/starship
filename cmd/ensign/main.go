@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -38,8 +39,8 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   ensign run <project>/<task> [--start <stage>] [--dry-run]
-  ensign next [--bridge <dir>]
-  ensign hook <PreToolUse|SubagentStop|UserPromptSubmit>`)
+  ensign next [--bridge <dir>] [--run <id>]
+  ensign hook <SessionStart|PreToolUse|SubagentStop|UserPromptSubmit>`)
 }
 
 // cmdHook runs one hook event and returns the exit code for Claude Code.
@@ -58,11 +59,18 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return 0 // outside a bridge, hook events are no-ops
 	}
-	r, err := openActiveRun(bridge)
+	if event == "SessionStart" {
+		return hookSessionStart(&in, bridge, stdout, stderr)
+	}
+	r, err := openSessionRun(bridge, in.SessionID)
 	if err != nil {
 		return failHook(&in, nil, err, stderr)
 	}
-	if r == nil && event != "UserPromptSubmit" {
+	if r == nil && event == "UserPromptSubmit" && strings.TrimSpace(in.Prompt) == "go" {
+		if r, err = claimRun(bridge, in.SessionID); err != nil {
+			return failHook(&in, nil, err, stderr)
+		}
+	} else if r == nil {
 		return 0
 	}
 	if r != nil {
@@ -76,7 +84,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "SubagentStop":
 		out, err = hookSubagentStop(&in, r)
 	case "UserPromptSubmit":
-		out, err = hookUserPromptSubmit(&in, r)
+		if strings.TrimSpace(in.Prompt) == "go" {
+			out, err = hookUserPromptSubmit(&in, r)
+		}
 	default:
 		err = fmt.Errorf("unknown hook event %q", event)
 	}
@@ -109,4 +119,22 @@ func failHook(in *HookInput, r *RunFiles, err error, stderr io.Writer) int {
 		return 0
 	}
 	return 2
+}
+
+// hookSessionStart gives the session's commands its id, so `ensign run` can bind the run
+// to this session, and prints the heartbeat the bridge's CLAUDE.md checks for.
+func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) int {
+	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
+		env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, err = fmt.Fprintf(env, "export STARSHIP_SESSION=%s\n", in.SessionID)
+			env.Close()
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "starship: could not record the session id:", err)
+			return 2
+		}
+	}
+	fmt.Fprintf(stdout, "STARSHIP-READY ensign bridge %s\n", bridge)
+	return 0
 }

@@ -59,7 +59,8 @@ type HistoryEntry struct {
 
 type State struct {
 	Run      string                 `json:"run"`
-	Status   string                 `json:"status"` // pending, running, success, error, ask-user
+	Session  string                 `json:"session,omitempty"` // the Claude Code session that owns the run
+	Status   string                 `json:"status"`            // pending, running, success, error, ask-user
 	Reason   string                 `json:"reason,omitempty"`
 	Approved bool                   `json:"approved"`
 	Spent    map[string]int         `json:"spent"`
@@ -100,7 +101,9 @@ func (st *State) byAgent(agentID string) *Dispatch {
 
 func runsDir(bridge string) string { return filepath.Join(bridge, ".starship", "runs") }
 
-func activeRunFile(bridge string) string { return filepath.Join(bridge, ".starship", "active-run") }
+func sessionFile(bridge, session string) string {
+	return filepath.Join(bridge, ".starship", "sessions", session)
+}
 
 // RunFiles is an open run: its snapshot, its state, and the lock held while using them.
 type RunFiles struct {
@@ -110,16 +113,8 @@ type RunFiles struct {
 	lock  *flock.Flock
 }
 
-// openActiveRun locks and loads the bridge's active run. It returns nil, nil when there is none.
-func openActiveRun(bridge string) (*RunFiles, error) {
-	data, err := os.ReadFile(activeRunFile(bridge))
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	id := strings.TrimSpace(string(data))
+// openRun locks and loads one run.
+func openRun(bridge, id string) (*RunFiles, error) {
 	dir := filepath.Join(runsDir(bridge), id)
 	l := flock.New(filepath.Join(dir, "lock"))
 	if err := l.Lock(); err != nil {
@@ -135,6 +130,52 @@ func openActiveRun(bridge string) (*RunFiles, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// openSessionRun opens the run bound to a session. It returns nil, nil when there is none.
+func openSessionRun(bridge, session string) (*RunFiles, error) {
+	if session == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(sessionFile(bridge, session))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return openRun(bridge, strings.TrimSpace(string(data)))
+}
+
+// bindSession records that a run belongs to a session.
+func bindSession(bridge, session, run string) error {
+	f := sessionFile(bridge, session)
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(f, []byte(run+"\n"), 0o644)
+}
+
+type runInfo struct {
+	id    string
+	snap  Snapshot
+	state State
+}
+
+// listRuns reads every run in the bridge, newest first, without locking.
+func listRuns(bridge string) []runInfo {
+	entries, _ := os.ReadDir(runsDir(bridge))
+	var out []runInfo
+	for i := len(entries) - 1; i >= 0; i-- {
+		dir := filepath.Join(runsDir(bridge), entries[i].Name())
+		var ri runInfo
+		ri.id = entries[i].Name()
+		if readJSON(filepath.Join(dir, "pipeline.json"), &ri.snap) == nil &&
+			readJSON(filepath.Join(dir, "state.json"), &ri.state) == nil {
+			out = append(out, ri)
+		}
+	}
+	return out
 }
 
 func (r *RunFiles) save() error {
@@ -215,19 +256,25 @@ func cmdRun(args []string, out io.Writer) error {
 		return nil
 	}
 
-	if r, err := openActiveRun(bridge); err != nil {
-		return err
-	} else if r != nil {
-		active := r.State.Run
-		live := !r.State.terminal()
-		r.close()
-		if live {
-			return fmt.Errorf("run %s is still active in this bridge", active)
+	session := os.Getenv("STARSHIP_SESSION")
+	for _, ri := range listRuns(bridge) {
+		if ri.state.terminal() {
+			continue
+		}
+		if session != "" && ri.state.Session == session {
+			return fmt.Errorf("this session already has an active run, %s", ri.id)
+		}
+		if ri.snap.Workspace == c.Workspace {
+			return fmt.Errorf("run %s is still active on the same workspace (%s)", ri.id, c.Workspace)
 		}
 	}
 
+	id, dir, err := newRunDir(bridge, time.Now().Format("20060102-150405")+"-"+strings.ReplaceAll(c.Task, "/", "-"))
+	if err != nil {
+		return err
+	}
 	snap := &Snapshot{
-		Run:          time.Now().Format("20060102-150405") + "-" + c.Pipeline.Name,
+		Run:          id,
 		Task:         c.Task,
 		Bridge:       bridge,
 		ControlPlane: c.ControlPlane,
@@ -242,7 +289,7 @@ func cmdRun(args []string, out io.Writer) error {
 	if err := freezeBriefs(c, snap); err != nil {
 		return err
 	}
-	st := &State{Run: snap.Run, Status: "pending", Spent: map[string]int{}, Scopes: map[string]*ScopeState{}}
+	st := &State{Run: snap.Run, Session: session, Status: "pending", Spent: map[string]int{}, Scopes: map[string]*ScopeState{}}
 	first := c.Pipeline.Stages[0].ID
 	if start != "" {
 		_, _, scope := c.Pipeline.find(start)
@@ -255,8 +302,7 @@ func cmdRun(args []string, out io.Writer) error {
 	m := &machine{snap: snap, st: st}
 	m.enter("", first)
 
-	dir := filepath.Join(runsDir(bridge), snap.Run)
-	if err := os.MkdirAll(filepath.Join(dir, "reports"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, "reports"), 0o755); err != nil {
 		return err
 	}
 	if err := writeJSON(filepath.Join(dir, "pipeline.json"), snap); err != nil {
@@ -265,13 +311,38 @@ func cmdRun(args []string, out io.Writer) error {
 	if err := writeJSON(filepath.Join(dir, "state.json"), st); err != nil {
 		return err
 	}
-	if err := os.WriteFile(activeRunFile(bridge), []byte(snap.Run+"\n"), 0o644); err != nil {
-		return err
+	if session != "" {
+		if err := bindSession(bridge, session, snap.Run); err != nil {
+			return err
+		}
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "pipeline.json"))
 	sum := sha256.Sum256(data)
 	fmt.Fprintf(out, "\nrun %s created (pipeline sha %s), waiting for go\n", snap.Run, hex.EncodeToString(sum[:])[:12])
 	return nil
+}
+
+// newRunDir creates a run's directory exclusively, adding -2, -3 … if the id is taken,
+// so two runs started in the same second can never share one.
+func newRunDir(bridge, base string) (string, string, error) {
+	if err := os.MkdirAll(runsDir(bridge), 0o755); err != nil {
+		return "", "", err
+	}
+	for n := 1; n < 100; n++ {
+		id := base
+		if n > 1 {
+			id = fmt.Sprintf("%s-%d", base, n)
+		}
+		dir := filepath.Join(runsDir(bridge), id)
+		err := os.Mkdir(dir, 0o755)
+		if err == nil {
+			return id, dir, nil
+		}
+		if !os.IsExist(err) {
+			return "", "", err
+		}
+	}
+	return "", "", fmt.Errorf("could not allocate a run id for %s", base)
 }
 
 // freezeBriefs copies every brief the run can use into the snapshot.

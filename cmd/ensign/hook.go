@@ -13,6 +13,7 @@ import (
 // HookInput is the part of Claude Code's hook payload that ensign reads.
 type HookInput struct {
 	Event               string         `json:"hook_event_name"`
+	SessionID           string         `json:"session_id"`
 	Cwd                 string         `json:"cwd"`
 	ToolName            string         `json:"tool_name"`
 	ToolInput           map[string]any `json:"tool_input"`
@@ -274,10 +275,32 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 	return nil, nil
 }
 
-func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
-	if strings.TrimSpace(in.Prompt) != "go" {
-		return nil, nil
+// claimRun binds the newest pending run that no session owns to this session, and opens it.
+// That is how a run created outside a session (from a terminal) gets approved.
+func claimRun(bridge, session string) (*RunFiles, error) {
+	for _, ri := range listRuns(bridge) {
+		if ri.state.Status != "pending" || ri.state.Session != "" {
+			continue
+		}
+		r, err := openRun(bridge, ri.id)
+		if err != nil {
+			return nil, err
+		}
+		if r.State.Session != "" { // claimed meanwhile
+			r.close()
+			continue
+		}
+		r.State.Session = session
+		if err := bindSession(bridge, session, ri.id); err != nil {
+			r.close()
+			return nil, err
+		}
+		return r, nil
 	}
+	return nil, nil
+}
+
+func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 	ctx := func(s string) any {
 		return map[string]any{"hookSpecificOutput": map[string]any{
 			"hookEventName": "UserPromptSubmit", "additionalContext": "starship: " + s,
@@ -361,8 +384,8 @@ func leadPrompt(r *RunFiles, d *Dispatch, s *Stage, original string) string {
 		fmt.Fprintf(&b, "; outcomes: %s\n", strings.Join(outs, "; "))
 	}
 	exe, _ := os.Executable()
-	fmt.Fprintf(&b, "\n## What to dispatch next\n\nAt the start, and after every stage finishes, run this and do exactly what it says:\n\n    %s next --bridge %s\n\n",
-		exe, r.Snap.Bridge)
+	fmt.Fprintf(&b, "\n## What to dispatch next\n\nAt the start, and after every stage finishes, run this and do exactly what it says:\n\n    %s next --bridge %s --run %s\n\n",
+		exe, r.Snap.Bridge, r.State.Run)
 	b.WriteString(workspaceSection(r))
 	b.WriteString("\n## Work item\n\n" + original + "\n")
 	return b.String()
@@ -384,11 +407,15 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string) string {
 
 // cmdNext prints what the run's lead should dispatch next.
 func cmdNext(args []string) error {
-	dir := ""
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--bridge" && i+1 < len(args) {
+	dir, run := "", ""
+	for i := 0; i+1 < len(args); i += 2 {
+		switch args[i] {
+		case "--bridge":
 			dir = args[i+1]
-			i++
+		case "--run":
+			run = args[i+1]
+		default:
+			return fmt.Errorf("usage: ensign next [--bridge <dir>] [--run <id>]")
 		}
 	}
 	if dir == "" {
@@ -398,7 +425,12 @@ func cmdNext(args []string) error {
 	if err != nil {
 		return err
 	}
-	r, err := openActiveRun(bridge)
+	var r *RunFiles
+	if run != "" {
+		r, err = openRun(bridge, run)
+	} else {
+		r, err = openSessionRun(bridge, os.Getenv("STARSHIP_SESSION"))
+	}
 	if err != nil {
 		return err
 	}
