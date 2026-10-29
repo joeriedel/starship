@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Git identity for tests that commit
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+      - run: go vet ./...
+      - run: go test ./...

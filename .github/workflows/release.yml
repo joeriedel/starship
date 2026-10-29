@@ -1,0 +1,61 @@
+name: release
+
+# Cut a release: build ensign for every platform, commit the binaries, and tag that
+# commit, so a tagged checkout always contains its own binaries. Run it with
+#   gh workflow run release -f version=0.1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check the version
+        run: |
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "version must look like 1.2.3"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then echo "v$VERSION already exists"; exit 1; fi
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+      - name: Test
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+          go vet ./...
+          go test ./...
+      - name: Build reproducibly
+        run: |
+          set -e
+          rm -rf bin
+          for target in linux/amd64 windows/amd64; do
+            os=${target%/*}; arch=${target#*/}; ext=""
+            if [ "$os" = windows ]; then ext=.exe; fi
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -buildid= -X main.version=$TAG" \
+              -o "bin/$os-$arch/ensign$ext" ./cmd/ensign
+          done
+          (cd bin && sha256sum */ensign* > SHA256SUMS)
+          cat bin/SHA256SUMS
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bin
+          git commit -m "Release $TAG"
+          git tag "$TAG"
+          git push origin HEAD:master "$TAG"
