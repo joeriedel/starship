@@ -1,0 +1,19 @@
+pipeline: skill-curate
+version: 1
+scope: bridge
+summary: Fold the technology facts agents reported into the bridge's skills.
+
+help:
+  - say: '"curate the skills"'
+    does: fold facts agents reported into the bridge's skills
+
+stages:
+  - id: curate
+    role: curator
+    dispatched-by: session
+    brief: briefs/curate-skill.md
+    curates: skill
+    parallel: { over: pending-skills, join: all }
+    outcomes:
+      updated:   { finish: success }
+      unchanged: { finish: success }

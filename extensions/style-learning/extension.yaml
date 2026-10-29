@@ -1,0 +1,22 @@
+name: style-learning
+summary: A per-project style guide, learned from the style pass and from sources you choose, and given to the coder so later runs need less correcting.
+
+help:
+  - say: '"learn our style from <file, folder or link>"'
+    does: add a source for the style guide
+  - say: '"update the style guide from its sources"'
+    does: fold new sources into the guide
+  - say: '"rebuild the style guide"'
+    does: regenerate it from every source
+
+pipelines:
+  coding:
+    ops:
+      - set:    { stage: style, outcomes: { learned: next, done: { goto: test } } }
+      - insert: { after: style, stage: { id: curate, role: curator, brief: briefs/curate-style.md, curates: style,
+                  outcomes: { updated: next, unchanged: next } } }
+
+events:
+  stage.before:code:   [{ augment: "@style-guide", status: active }]
+  stage.before:style:  [{ augment: "@style-guide" }, { augment: briefs/style-reviewer.md }]
+  stage.before:curate: [{ augment: "@style-curate-input" }]

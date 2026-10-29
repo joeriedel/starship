@@ -135,9 +135,11 @@ type Stage struct {
 	Dimensions   []string  `yaml:"dimensions" json:"dimensions,omitempty"`
 	Outcomes     Outcomes  `yaml:"outcomes" json:"outcomes,omitempty"`
 	ReportFields []string  `yaml:"report-fields" json:"report_fields,omitempty"`
-	Stages       []*Stage  `yaml:"stages" json:"stages,omitempty"`
-	Source       string    `yaml:"-" json:"source"`
-	line         int
+	// Curates names the document this stage's agents rewrite: style or skill.
+	Curates string   `yaml:"curates" json:"curates,omitempty"`
+	Stages  []*Stage `yaml:"stages" json:"stages,omitempty"`
+	Source  string   `yaml:"-" json:"source"`
+	line    int
 }
 
 func (s *Stage) UnmarshalYAML(n *yaml.Node) error {
@@ -160,6 +162,7 @@ type Pipeline struct {
 	OnExhausted      map[string]Transition `yaml:"on-exhausted" json:"on_exhausted"`
 	FreeRoles        []string              `yaml:"free-roles" json:"free_roles"`
 	Help             []HelpEntry           `yaml:"help" json:"help,omitempty"`
+	Scope            string                `yaml:"scope" json:"scope,omitempty"` // task (default), project or bridge
 	Stages           []*Stage              `yaml:"stages" json:"stages"`
 	// Sources records where non-stage fields were last set, e.g. "budgets.test".
 	Sources map[string]string `yaml:"-" json:"sources"`
@@ -236,10 +239,12 @@ type Layer struct {
 	Pipelines map[string]struct {
 		Ops []yaml.Node `yaml:"ops"`
 	} `yaml:"pipelines"`
-	Bindings yaml.Node                `yaml:"bindings"`
-	Use      []string                 `yaml:"use"`
-	Events   map[string][]HandlerSpec `yaml:"events"`
-	Journal  struct {
+	Bindings  yaml.Node                `yaml:"bindings"`
+	Use       []string                 `yaml:"use"`
+	Skills    yaml.Node                `yaml:"skills"`
+	Workspace string                   `yaml:"workspace"` // a project's default, for project-wide runs
+	Events    map[string][]HandlerSpec `yaml:"events"`
+	Journal   struct {
 		Commit string `yaml:"commit"`
 		Reason string `yaml:"reason"`
 	} `yaml:"journal"`
@@ -346,10 +351,9 @@ type TaskVcs struct {
 }
 
 type TaskFile struct {
-	Layer     `yaml:",inline"`
-	Pipeline  string  `yaml:"pipeline"`
-	Workspace string  `yaml:"workspace"`
-	Vcs       TaskVcs `yaml:"vcs"`
+	Layer    `yaml:",inline"`
+	Pipeline string  `yaml:"pipeline"`
+	Vcs      TaskVcs `yaml:"vcs"`
 }
 
 // Config is everything a run is built from, after merging the layers.
@@ -365,7 +369,8 @@ type Config struct {
 	Bindings     map[string]Binding
 	Events       map[string][]Handler
 	Bundles      []string
-	JournalOff   string            // reason, when the project turned journal commits off
+	JournalOff   string // reason, when the project turned journal commits off
+	Skills       []SkillDelivery
 	needs        map[string]string // binding -> what requires it, from bundles
 	problems     []string
 }
@@ -418,13 +423,28 @@ func findBridge(dir string) (string, error) {
 	}
 }
 
+// Target is what a run is for: a task, or — for pipelines that work at that level — a
+// whole project or the whole bridge.
+type Target struct {
+	Task     string // <project>/<task>
+	Project  string
+	Pipeline string
+}
+
+type layerEntry struct {
+	label string
+	file  string
+	layer Layer
+}
+
 // loadConfig merges control plane → bridge → project → task for one task.
 func loadConfig(bridge, task string) (*Config, error) {
-	parts := strings.Split(task, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, fmt.Errorf("task must be <project>/<task>, got %q", task)
-	}
-	c := &Config{Bridge: bridge, Project: parts[0], Task: task, Bindings: map[string]Binding{},
+	return loadTarget(bridge, Target{Task: task})
+}
+
+// loadTarget merges the layers that apply to a target.
+func loadTarget(bridge string, t Target) (*Config, error) {
+	c := &Config{Bridge: bridge, Project: t.Project, Task: t.Task, Bindings: map[string]Binding{},
 		Events: map[string][]Handler{}, needs: map[string]string{}}
 
 	bridgeFile := filepath.Join(bridge, "bridge.yaml")
@@ -432,65 +452,103 @@ func loadConfig(bridge, task string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	bf := *bfp
 	if c.ControlPlane, err = controlPlaneDir(bridge, bfp); err != nil {
 		return nil, err
 	}
+	layers := []layerEntry{{"bridge:" + relTo(bridge, bridgeFile), bridgeFile, bfp.Layer}}
+	name := t.Pipeline
 
-	projectDir := filepath.Join(bridge, "projects", c.Project)
-	projectFile := filepath.Join(projectDir, "project.yaml")
 	var pf Layer
-	if err := readYAML(projectFile, &pf); err != nil {
-		return nil, fmt.Errorf("project %q: %v", c.Project, err)
+	loadProject := func() error {
+		projectFile := filepath.Join(bridge, "projects", c.Project, "project.yaml")
+		if err := readYAML(projectFile, &pf); err != nil {
+			return fmt.Errorf("project %q: %v", c.Project, err)
+		}
+		layers = append(layers, layerEntry{"project:" + relTo(bridge, projectFile), projectFile, pf})
+		if pf.Journal.Commit == "off" {
+			c.JournalOff = pf.Journal.Reason
+		}
+		return nil
 	}
 
-	c.TaskDir = filepath.Join(projectDir, "tasks", parts[1])
-	taskFile := filepath.Join(c.TaskDir, "task.md")
-	front, body, err := splitFrontmatter(taskFile)
-	if err != nil {
-		return nil, fmt.Errorf("task %q: %v", task, err)
-	}
-	var tf TaskFile
-	if err := yaml.Unmarshal(front, &tf); err != nil {
-		return nil, fmt.Errorf("%s: %v", taskFile, err)
-	}
-	if c.Workspace, err = expandWorkspace(bridge, tf.Workspace); err != nil {
-		return nil, err
-	}
-	c.WorkItem = workItem(string(body))
-	name := tf.Pipeline
-	if name == "" {
-		name = "coding"
+	if t.Task != "" {
+		parts := strings.Split(t.Task, "/")
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("task must be <project>/<task>, got %q", t.Task)
+		}
+		c.Project = parts[0]
+		if err := loadProject(); err != nil {
+			return nil, err
+		}
+		c.TaskDir = filepath.Join(bridge, "projects", c.Project, "tasks", parts[1])
+		taskFile := filepath.Join(c.TaskDir, "task.md")
+		front, body, err := splitFrontmatter(taskFile)
+		if err != nil {
+			return nil, fmt.Errorf("task %q: %v", t.Task, err)
+		}
+		var tf TaskFile
+		if err := yaml.Unmarshal(front, &tf); err != nil {
+			return nil, fmt.Errorf("%s: %v", taskFile, err)
+		}
+		if c.Workspace, err = expandWorkspace(bridge, tf.Workspace); err != nil {
+			return nil, err
+		}
+		c.WorkItem = workItem(string(body))
+		if name == "" {
+			name = tf.Pipeline
+		}
+		if name == "" {
+			name = "coding"
+		}
+		layers = append(layers, layerEntry{"task:" + relTo(bridge, taskFile), taskFile, tf.Layer})
+	} else {
+		if name == "" {
+			return nil, fmt.Errorf("a run needs a task, or a pipeline (with --project for a project-wide one)")
+		}
+		if c.Project != "" {
+			if err := loadProject(); err != nil {
+				return nil, err
+			}
+			if pf.Workspace != "" {
+				if c.Workspace, err = expandWorkspace(bridge, pf.Workspace); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 
-	base := filepath.Join(c.ControlPlane, "pipelines", name+".yaml")
+	base, baseLabel := findPipeline(bridge, c.ControlPlane, name)
+	if base == "" {
+		return nil, fmt.Errorf("no pipeline %q", name)
+	}
 	p := &Pipeline{}
 	if err := readYAML(base, p); err != nil {
 		return nil, fmt.Errorf("pipeline %q: %v", name, err)
 	}
 	p.Sources = map[string]string{}
-	rel := relTo(c.ControlPlane, base)
-	setSources(p.Stages, "control-plane:"+rel)
+	rel := baseLabel
+	setSources(p.Stages, rel)
+	switch scope := p.scope(); {
+	case t.Task != "" && scope != "task":
+		return nil, fmt.Errorf("pipeline %s runs for a whole %s, not a task", name, scope)
+	case t.Task == "" && scope == "task":
+		return nil, fmt.Errorf("pipeline %s runs for a task: ensign run <project>/<task>", name)
+	case t.Task == "" && scope == "project" && c.Project == "":
+		return nil, fmt.Errorf("pipeline %s runs for a project: add --project <name>", name)
+	case t.Task == "" && scope == "bridge" && c.Project != "":
+		return nil, fmt.Errorf("pipeline %s runs for the whole bridge; drop --project", name)
+	}
+	if t.Task == "" {
+		c.WorkItem = p.Summary
+	}
 	for k := range p.Budgets {
-		p.Sources["budgets."+k] = "control-plane:" + rel
+		p.Sources["budgets."+k] = rel
 	}
 	for k := range p.OnExhausted {
-		p.Sources["on-exhausted."+k] = "control-plane:" + rel
+		p.Sources["on-exhausted."+k] = rel
 	}
 	c.Pipeline = p
 
-	if pf.Journal.Commit == "off" {
-		c.JournalOff = pf.Journal.Reason
-	}
-	layers := []struct {
-		label string
-		file  string
-		layer Layer
-	}{
-		{"bridge:" + relTo(bridge, bridgeFile), bridgeFile, bf.Layer},
-		{"project:" + relTo(bridge, projectFile), projectFile, pf},
-		{"task:" + relTo(bridge, taskFile), taskFile, tf.Layer},
-	}
 	bundles := availableBundles(bridge, c.ControlPlane)
 	for _, l := range layers {
 		for _, use := range l.layer.Use {
@@ -535,7 +593,32 @@ func loadConfig(bridge, task string) (*Config, error) {
 			}
 		}
 	}
+	if err := c.selectSkills(layers); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// findPipeline locates a pipeline file: the control plane's, then any bundle's.
+func findPipeline(bridge, cp, name string) (path, label string) {
+	f := filepath.Join(cp, "pipelines", name+".yaml")
+	if _, err := os.Stat(f); err == nil {
+		return f, "control-plane:pipelines/" + name + ".yaml"
+	}
+	for _, dir := range bundleDirs(bridge, cp) {
+		f := filepath.Join(dir, "pipelines", name+".yaml")
+		if _, err := os.Stat(f); err == nil {
+			return f, "bundle:" + filepath.Base(dir) + "/pipelines/" + name + ".yaml"
+		}
+	}
+	return "", ""
+}
+
+func (p *Pipeline) scope() string {
+	if p.Scope == "" {
+		return "task"
+	}
+	return p.Scope
 }
 
 func relTo(base, path string) string {
@@ -767,10 +850,12 @@ func validate(c *Config) []string {
 	add := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }
 	p := c.Pipeline
 
-	if c.Workspace == "" {
+	if c.Task != "" && c.Workspace == "" {
 		add("task %s: workspace is not set", c.Task)
-	} else if fi, err := os.Stat(c.Workspace); err != nil || !fi.IsDir() {
-		add("task %s: workspace %s does not exist", c.Task, c.Workspace)
+	} else if c.Workspace != "" {
+		if fi, err := os.Stat(c.Workspace); err != nil || !fi.IsDir() {
+			add("workspace %s does not exist", c.Workspace)
+		}
 	}
 	for _, name := range p.RequiresBindings {
 		if _, ok := c.Bindings[name]; !ok {
@@ -835,19 +920,22 @@ func validate(c *Config) []string {
 				add("%s: no outcomes", at)
 			}
 			if s.Parallel != nil {
-				if s.Parallel.Over != "dimensions" {
-					add("%s: parallel over %q is not supported (only dimensions)", at, s.Parallel.Over)
-				}
 				if s.Parallel.Join != "all" {
 					add("%s: join %q is not supported (only all)", at, s.Parallel.Join)
 				}
-				if len(s.Dimensions) == 0 {
-					add("%s: parallel stage with no dimensions", at)
-				}
-				for _, d := range s.Dimensions {
-					if _, err := c.findFile("briefs/review/" + d + ".md"); err != nil {
-						add("%s: dimension %q has no brief (briefs/review/%s.md)", at, d, d)
+				switch s.Parallel.Over {
+				case "dimensions":
+					if len(s.Dimensions) == 0 {
+						add("%s: parallel stage with no dimensions", at)
 					}
+					for _, d := range s.Dimensions {
+						if _, err := c.findFile("briefs/review/" + d + ".md"); err != nil {
+							add("%s: dimension %q has no brief (briefs/review/%s.md)", at, d, d)
+						}
+					}
+				case "pending-skills", "unprocessed-sources":
+				default:
+					add("%s: parallel over %q is not supported", at, s.Parallel.Over)
 				}
 			}
 			for _, o := range s.Outcomes {
@@ -919,13 +1007,9 @@ func validEvent(ev string, p *Pipeline) bool {
 	case "run.start", "run.finish:success", "run.finish:error", "run.finish:ask-user":
 		return true
 	}
-	for _, prefix := range []string{"stage.before:", "stage.after:"} {
-		if id, ok := strings.CutPrefix(ev, prefix); ok {
-			s, _, _ := p.find(id)
-			return s != nil
-		}
-	}
-	return false
+	// Events on stages this pipeline doesn't have are inactive for it: a layer or bundle
+	// serves several pipelines.
+	return strings.HasPrefix(ev, "stage.before:") || strings.HasPrefix(ev, "stage.after:")
 }
 
 // findFile looks for a control-plane-relative file in the bridge first, then the control plane.

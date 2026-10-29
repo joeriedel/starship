@@ -155,7 +155,8 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 		return deny(r, s.ID, "the run is not approved yet; the user must type go"), nil
 	}
 
-	d := &Dispatch{ID: fmt.Sprintf("d%d", len(r.State.Dispatches)+1), Stage: s.ID, Scope: scope, Role: role}
+	d := &Dispatch{ID: fmt.Sprintf("d%d", len(r.State.Dispatches)+1), Stage: s.ID, Scope: scope, Role: role,
+		Fields: map[string][]string{}}
 	if caller != nil {
 		d.CallerAgent = caller.AgentID
 	}
@@ -274,7 +275,28 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		r.State.log("blocked", s.ID, d.ID, problem)
 		return block(problem + " " + reportInstructions(s)), nil
 	}
-	d.Done, d.Outcome, d.Summary, d.Fields = true, outcome, summary, fields
+	if s.Curates != "" {
+		d.Outcome = outcome
+		if problem := applyCuration(r, s, d, in.LastMessage); problem != "" {
+			d.Outcome = ""
+			d.StopBlocks++
+			if d.StopBlocks > 2 {
+				d.Done = true
+				m.fail("bad-report", fmt.Sprintf("%s (%s) never produced a valid rewrite: %s", s.ID, d.ID, problem))
+				return nil, nil
+			}
+			r.State.log("blocked", s.ID, d.ID, problem)
+			return block(problem), nil
+		}
+	}
+	if d.Fields == nil {
+		d.Fields = map[string][]string{}
+	}
+	for k, v := range fields {
+		d.Fields[k] = v
+	}
+	d.Done, d.Outcome, d.Summary = true, outcome, summary
+	recordFacts(r, d)
 	os.WriteFile(filepath.Join(r.Dir, "reports", d.ID+".md"), []byte(in.LastMessage), 0o644)
 	r.State.log("report", s.ID, d.ID, outcome+": "+summary)
 	if r.State.terminal() {
@@ -348,6 +370,11 @@ func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 	r.State.Approved, r.State.Status = true, "running"
 	r.State.log("approved", "", "", "")
 	lead := r.Snap.Pipeline.Stages[0]
+	if !lead.isLead() {
+		m := &machine{snap: r.Snap, st: r.State}
+		return ctx(fmt.Sprintf("run %s approved. You dispatch its stages yourself: %s After each stage finishes, run `ensign next --run %s` and do what it says.",
+			r.State.Run, m.expect(""), r.State.Run)), nil
+	}
 	return ctx(fmt.Sprintf("run %s approved. Dispatch its lead now: use the Agent tool with subagent_type %q, "+
 		"and pass this work item as the prompt:\n\n%s", r.State.Run, lead.Role, r.Snap.WorkItem)), nil
 }
@@ -413,7 +440,8 @@ func reportInstructions(s *Stage) string {
 
 func workspaceSection(r *RunFiles) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "## Workspace\n\n%s\n\nThe project's bindings, as the exact commands to run:\n\n", r.Snap.Workspace)
+	fmt.Fprintf(&b, "## Workspace\n\n%s\n\nScratch folder for logs and notes (never the workspace): %s\n\nThe project's bindings, as the exact commands to run:\n\n",
+		r.Snap.Workspace, filepath.Join(r.Dir, "scratch"))
 	for _, k := range sortedKeys(r.Snap.Bindings) {
 		bd := r.Snap.Bindings[k]
 		switch {
@@ -452,6 +480,9 @@ func leadPrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []str
 	}
 	fmt.Fprintf(&b, "\n## What to dispatch next\n\nAt the start, and after every stage finishes, run this and do exactly what it says:\n\n    ensign next --bridge %s --run %s\n\n",
 		shellQuote(r.Snap.Bridge), r.State.Run)
+	if sk := skillSections(r, s.Role); sk != "" {
+		b.WriteString("\n" + sk + "\n\n")
+	}
 	b.WriteString(workspaceSection(r))
 	b.WriteString("\n## Work item\n\n" + original + "\n")
 	return b.String()
@@ -460,8 +491,10 @@ func leadPrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []str
 func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []string) string {
 	var b strings.Builder
 	b.WriteString(tagLine(r.State.Run, d) + "\n\n## Stage: " + s.ID + "\n\n")
-	if d.Dim != "" {
+	if d.Dim != "" && s.Parallel != nil && s.Parallel.Over == "dimensions" {
 		fmt.Fprintf(&b, "Your focus: **%s**.\n\n%s\n", d.Dim, r.Snap.Briefs["briefs/review/"+d.Dim+".md"])
+	} else if d.Dim != "" {
+		b.WriteString(itemContext(r, s, d.Dim, d) + "\n")
 	}
 	if s.Brief != "" {
 		b.WriteString(r.Snap.Briefs[s.Brief] + "\n")
@@ -469,8 +502,15 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 	for _, a := range extra {
 		b.WriteString(strings.TrimSpace(a) + "\n\n")
 	}
+	if sk := skillSections(r, s.Role); sk != "" {
+		b.WriteString(sk + "\n\n")
+	}
 	b.WriteString(workspaceSection(r))
 	b.WriteString("\n## Your brief\n\n" + original + "\n\n## Report\n\n" + reportInstructions(s) + "\n")
+	if len(r.Snap.Skills) > 0 {
+		b.WriteString("\nIf you had to establish a fact about a technology itself — true on any project using it, not just this one — " +
+			"add a line per fact to the report block: `fact: <skill> | <the fact> | <path:line or how you verified it>`.\n")
+	}
 	return b.String()
 }
 

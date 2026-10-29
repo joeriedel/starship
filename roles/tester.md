@@ -37,9 +37,10 @@ flakes or pre-existing, don't compare against another revision, don't read the d
 the source, don't speculate about the design. If you're asked to interpret, say that's
 outside your stage and report the result.
 
-**Don't read a whole run into your context.** Redirect output to a file **outside the
-workspace**, then pull out the exit code, the counts, and the failing tests' output.
-Quote failures; never quote passes. Create nothing inside the workspace.
+**Run each binding exactly as given.** If its output is long, redirect it to a file in
+the run's scratch folder (named in your prompt) and pull out the counts and the failing
+tests' output with `grep` or `tail`. Quote failures; never quote passes. Create nothing
+inside the workspace.
 
 ## Finish the run
 

@@ -28,6 +28,8 @@ type Snapshot struct {
 	Bindings     map[string]Binding   `json:"bindings"`
 	Briefs       map[string]string    `json:"briefs"` // relative path -> contents, frozen with the run
 	Events       map[string][]Handler `json:"events,omitempty"`
+	Skills       []SkillDelivery      `json:"skills,omitempty"`
+	Project      string               `json:"project,omitempty"`
 	Bundles      []string             `json:"bundles,omitempty"`
 	Created      string               `json:"created"`
 }
@@ -86,6 +88,7 @@ type State struct {
 	Extra      map[string]int `json:"extra,omitempty"`   // budget added on resume
 	Resume     *ResumePoint   `json:"resume,omitempty"`  // where an ask-user run continues
 	Answers    []string       `json:"answers,omitempty"` // the user's answers on resume
+	Rebuild    bool           `json:"rebuild,omitempty"` // style-generate: rebuild from every source
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 }
@@ -229,14 +232,26 @@ func writeJSON(path string, v any) error {
 
 // cmdRun implements `ensign run <project>/<task> [--start <stage>] [--dry-run]`.
 func cmdRun(args []string, out io.Writer) error {
-	var task, start string
-	dry, sync := false, false
+	var task, start, pipeline, project string
+	dry, sync, rebuild := false, false, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dry-run":
 			dry = true
 		case "--sync":
 			sync = true
+		case "--rebuild":
+			rebuild = true
+		case "--pipeline", "--project":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s needs a value", args[i])
+			}
+			if args[i] == "--pipeline" {
+				pipeline = args[i+1]
+			} else {
+				project = args[i+1]
+			}
+			i++
 		case "--start":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--start needs a stage")
@@ -245,23 +260,37 @@ func cmdRun(args []string, out io.Writer) error {
 			start = args[i]
 		default:
 			if strings.HasPrefix(args[i], "-") || task != "" {
-				return fmt.Errorf("usage: ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]")
+				return fmt.Errorf("usage: ensign run (<project>/<task> | --pipeline <name> [--project <p>]) [--start <stage>] [--sync] [--rebuild] [--dry-run]")
 			}
 			task = args[i]
 		}
 	}
-	if task == "" {
-		return fmt.Errorf("usage: ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]")
+	if task == "" && pipeline == "" {
+		return fmt.Errorf("usage: ensign run (<project>/<task> | --pipeline <name> [--project <p>]) [--start <stage>] [--sync] [--rebuild] [--dry-run]")
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
 		return err
 	}
-	c, err := loadConfig(bridge, task)
+	c, err := loadTarget(bridge, Target{Task: task, Project: project, Pipeline: pipeline})
 	if err != nil {
 		return err
 	}
 	errs := validate(c)
+	var resolve func(list []*Stage)
+	resolve = func(list []*Stage) {
+		for _, s := range list {
+			if s.Parallel != nil && s.Parallel.Over != "dimensions" {
+				items, err := generatorItems(c, s.Parallel.Over, rebuild)
+				if err != nil {
+					errs = append(errs, err.Error())
+				}
+				s.Dimensions = items
+			}
+			resolve(s.Stages)
+		}
+	}
+	resolve(c.Pipeline.Stages)
 	if start != "" {
 		if s, _, _ := c.Pipeline.find(start); s == nil {
 			errs = append(errs, fmt.Sprintf("--start: no stage %q", start))
@@ -301,7 +330,11 @@ func cmdRun(args []string, out io.Writer) error {
 		}
 	}
 
-	id, dir, err := newRunDir(bridge, time.Now().Format("20060102-150405")+"-"+strings.ReplaceAll(c.Task, "/", "-"))
+	label := strings.ReplaceAll(c.Task, "/", "-")
+	if label == "" {
+		label = strings.Trim(c.Project+"-"+c.Pipeline.Name, "-")
+	}
+	id, dir, err := newRunDir(bridge, time.Now().Format("20060102-150405")+"-"+label)
 	if err != nil {
 		return err
 	}
@@ -318,6 +351,8 @@ func cmdRun(args []string, out io.Writer) error {
 		Briefs:       map[string]string{},
 		Events:       c.Events,
 		Bundles:      c.Bundles,
+		Skills:       c.Skills,
+		Project:      c.Project,
 		Created:      time.Now().Format(time.RFC3339),
 	}
 	for _, hs := range snap.Events {
@@ -339,7 +374,7 @@ func cmdRun(args []string, out io.Writer) error {
 		return err
 	}
 	st := &State{Run: snap.Run, Session: session, Status: "pending", Spent: map[string]int{}, Scopes: map[string]*ScopeState{},
-		Sync: sync, Extra: map[string]int{}}
+		Sync: sync, Extra: map[string]int{}, Rebuild: rebuild}
 	first := c.Pipeline.Stages[0].ID
 	if start != "" {
 		_, _, scope := c.Pipeline.find(start)
@@ -352,6 +387,7 @@ func cmdRun(args []string, out io.Writer) error {
 	m := &machine{snap: snap, st: st}
 	m.enter("", first)
 
+	os.Mkdir(filepath.Join(dir, "scratch"), 0o755)
 	if err := os.Mkdir(filepath.Join(dir, "reports"), 0o755); err != nil {
 		return err
 	}
@@ -404,8 +440,10 @@ func freezeBriefs(c *Config, snap *Snapshot) error {
 			if s.Brief != "" {
 				paths = append(paths, s.Brief)
 			}
-			for _, d := range s.Dimensions {
-				paths = append(paths, "briefs/review/"+d+".md")
+			if s.Parallel != nil && s.Parallel.Over == "dimensions" {
+				for _, d := range s.Dimensions {
+					paths = append(paths, "briefs/review/"+d+".md")
+				}
 			}
 			for _, rel := range paths {
 				f, err := c.findFile(rel)
@@ -466,6 +504,12 @@ func printSummary(out io.Writer, c *Config, start string) {
 		fmt.Fprintf(out, "  on %s exhausted → %s   from %s\n", k, p.OnExhausted[k], p.Sources["on-exhausted."+k])
 	}
 
+	if len(c.Skills) > 0 {
+		fmt.Fprintln(out, "\nskills")
+		for _, sk := range c.Skills {
+			fmt.Fprintf(out, "  %-12s %s, for %s\n", sk.Name, sk.Delivery, strings.Join(sk.Roles, ", "))
+		}
+	}
 	fmt.Fprintln(out, "\nbindings")
 	for _, k := range sortedKeys(c.Bindings) {
 		b := c.Bindings[k]

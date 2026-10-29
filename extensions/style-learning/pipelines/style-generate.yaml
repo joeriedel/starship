@@ -1,0 +1,21 @@
+pipeline: style-generate
+version: 1
+scope: project
+summary: Build or update a project's style guide from its ingested sources.
+
+stages:
+  - id: generate
+    role: style-generator
+    dispatched-by: session
+    parallel: { over: unprocessed-sources, join: all }
+    outcomes:
+      proposed: next
+      nothing:  next
+  - id: curate
+    role: curator
+    dispatched-by: session
+    brief: briefs/curate-style.md
+    curates: style
+    outcomes:
+      updated:   { finish: success }
+      unchanged: { finish: success }

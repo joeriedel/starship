@@ -20,7 +20,7 @@ func isGit(dir string) bool {
 // journalChanges lists changed files under projects/ and proposals/, leaving out
 // projects that turned journal commits off.
 func journalChanges(bridge string) []string {
-	status, err := gitOut(bridge, "status", "--porcelain", "--untracked-files=all", "--", "projects", "proposals")
+	status, err := gitOut(bridge, "status", "--porcelain", "--untracked-files=all", "--", "projects", "proposals", "skills")
 	if err != nil || status == "" {
 		return nil
 	}

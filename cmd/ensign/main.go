@@ -47,6 +47,8 @@ func main() {
 		if len(os.Args) == 3 {
 			os.Exit(cmdSelftestHook(os.Args[2], os.Stdin, os.Stdout))
 		}
+	case "style":
+		err = cmdStyle(os.Args[2:], os.Stdout)
 	case "setup":
 		err = cmdSetup(os.Args[2:], os.Stdout)
 	case "update":
@@ -80,6 +82,8 @@ func usage() {
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
   ensign task open <project>/<task>
   ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]
+  ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
+  ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>]
   ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]
   ensign journal commit -m <message> [files…] | ensign journal push
   ensign git-catalog squash <project>/<task> -m <message>

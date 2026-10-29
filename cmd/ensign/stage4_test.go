@@ -1,0 +1,237 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func (w *world) promptOf(agent string) string {
+	data, _ := os.ReadFile(agentTranscript(w.session, agent))
+	return string(data)
+}
+
+func TestSkillsSelectionAndDelivery(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "skills/shell.md"), "---\ndescription: POSIX shell\ndefault-roles: [coder, reviewer]\n---\nQuote every expansion.\n")
+	write(t, filepath.Join(w.bridge, "skills/big.md"), "---\ndescription: A large reference\ndelivery: on-demand\n---\nLots of text.\n")
+	write(t, filepath.Join(w.bridge, "projects/supernova/skills/shell.md"), "Project addition: use set -e.\n")
+	w.project("skills: [shell, big]\n")
+	task := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md")
+	data, _ := os.ReadFile(task)
+	write(t, task, strings.Replace(string(data), "pipeline: coding\n", "pipeline: coding\nskills: { roles: { shell: [coder] } }\n", 1))
+
+	c, err := loadConfig(w.bridge, "supernova/auth-refactor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Skills) != 2 || c.Skills[0].Name != "shell" || strings.Join(c.Skills[0].Roles, ",") != "coder" {
+		t.Fatalf("skills: %+v", c.Skills)
+	}
+	if !strings.Contains(c.Skills[0].Text, "Quote every expansion.") || !strings.Contains(c.Skills[0].Text, "use set -e") {
+		t.Errorf("project layer should extend the bridge's skill: %q", c.Skills[0].Text)
+	}
+
+	lead := w.startLead()
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	p := w.promptOf(coder)
+	if !strings.Contains(p, "## Skill: shell") || !strings.Contains(p, "Quote every expansion.") {
+		t.Errorf("the coder was not given the shell skill")
+	}
+	if strings.Contains(p, "Lots of text.") || !strings.Contains(p, "`big`") {
+		t.Errorf("an on-demand skill should be named, not injected")
+	}
+	fact := "Done.\n\n```starship-report\noutcome: compiled\nsummary: ok\nfact: shell | set -e does not apply inside a function called in a condition | tested with bash 5\n```\n"
+	w.stop(coder, "coder", fact, false)
+	pending, _ := filepath.Glob(filepath.Join(w.bridge, "skills/pending/shell/*.yaml"))
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending fact, got %v", pending)
+	}
+
+	reviewer, _ := w.spawn(lead, "orchestrator", "reviewer")
+	if strings.Contains(w.promptOf(reviewer), "## Skill: shell") {
+		t.Errorf("the task narrowed shell to the coder only")
+	}
+
+	files, err := generatedFiles(w.bridge, mustBridgeFile(t, w.bridge), repoRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := files[".claude/skills/big/SKILL.md"]; !ok {
+		t.Errorf("link should write on-demand skills into .claude/skills")
+	}
+}
+
+func mustBridgeFile(t *testing.T, bridge string) *BridgeFile {
+	bf, err := loadBridgeFile(bridge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bf
+}
+
+func curatorMessage(doc, ledger, outcome string) string {
+	return "Here it is.\n\n```starship-document\n" + doc + "```\n\n```starship-ledger\n" + ledger + "```\n\n```starship-report\noutcome: " +
+		outcome + "\nsummary: curated\n```\n"
+}
+
+func TestSkillCurate(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "skills/shell.md"), "Quote every expansion.\n")
+	write(t, filepath.Join(w.bridge, "skills/pending/shell/r1-d1-1.yaml"), "fact: set -e is ignored in conditions\nevidence: bash 5\n")
+	write(t, learnedSkillFile(w.bridge, "shell"), "entries:\n  - id: K1\n    status: active\n    text: old fact\n    hits: 1\n    evidence: [x]\n")
+
+	w.run("--pipeline", "skill-curate")
+	res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "go"})
+	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); !strings.Contains(ctx, "You dispatch its stages yourself") {
+		t.Fatalf("a lead-less run should tell the session to dispatch: %q", ctx)
+	}
+	cur, why := w.spawn("", "", "curator")
+	if cur == "" {
+		t.Fatalf("curator refused: %s", why)
+	}
+	if p := w.promptOf(cur); !strings.Contains(p, "set -e is ignored in conditions") || !strings.Contains(p, "old fact") {
+		t.Fatalf("the curator was not given the pending facts and current entries")
+	}
+	// Dropping K1 silently is refused.
+	bad := curatorMessage("entries:\n  - id: K2\n    status: candidate\n    text: set -e is ignored in conditions\n    hits: 1\n    evidence: [bash 5]\n", "K2: new\n", "updated")
+	if r := w.stop(cur, "curator", bad, false); !strings.Contains(r, "does not account for K1") {
+		t.Fatalf("a rewrite losing K1 was not refused: %q", r)
+	}
+	good := curatorMessage("entries:\n  - id: K1\n    status: active\n    text: old fact\n    hits: 1\n    evidence: [x]\n  - id: K2\n    status: candidate\n    text: set -e is ignored in conditions\n    hits: 1\n    evidence: [bash 5]\n",
+		"K1: kept\nK2: new\n", "updated")
+	if r := w.stop(cur, "curator", good, true); r != "" {
+		t.Fatalf("a valid rewrite was refused: %s", r)
+	}
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s %s", st.Status, st.Reason)
+	}
+	doc, _ := loadDoc(learnedSkillFile(w.bridge, "shell"))
+	if len(doc.Entries) != 2 {
+		t.Fatalf("learned entries not written: %+v", doc)
+	}
+	if left, _ := filepath.Glob(filepath.Join(w.bridge, "skills/pending/shell/*.yaml")); len(left) != 0 {
+		t.Errorf("considered facts should be cleared: %v", left)
+	}
+}
+
+func TestValidateCuration(t *testing.T) {
+	old := Doc{Entries: []Entry{
+		{ID: "S1", Status: "active", Text: "a", Hits: 3, Evidence: []string{"x"}},
+		{ID: "S2", Status: "active", Text: "b", Hits: 1, Evidence: []string{"x"}},
+		{ID: "S3", Status: "candidate", Text: "c", Hits: 1, Evidence: []string{"x"}},
+	}}
+	cases := []struct {
+		name   string
+		next   []Entry
+		ledger map[string]string
+		want   string
+	}{
+		{"merge into a higher id", []Entry{old.Entries[1], old.Entries[2]},
+			map[string]string{"S1": "merged-into S2", "S2": "kept", "S3": "kept"}, "keeps the lower id"},
+		{"drop without reason", []Entry{old.Entries[0], old.Entries[1]},
+			map[string]string{"S1": "kept", "S2": "kept", "S3": "dropped"}, "without a reason"},
+		{"promote on one sighting", []Entry{old.Entries[0], old.Entries[1], {ID: "S3", Status: "active", Text: "c", Hits: 1, Evidence: []string{"x"}}},
+			map[string]string{"S1": "kept", "S2": "kept", "S3": "promoted"}, "one sighting"},
+		{"new and active without a source", append(append([]Entry{}, old.Entries...), Entry{ID: "S4", Status: "active", Text: "d", Hits: 1, Evidence: []string{"y"}}),
+			map[string]string{"S1": "kept", "S2": "kept", "S3": "kept", "S4": "new"}, "starts as a candidate"},
+		{"new and active from an authoritative source", append(append([]Entry{}, old.Entries...), Entry{ID: "S4", Status: "active", Text: "d", Hits: 0, Evidence: []string{"source:src1 §2"}}),
+			map[string]string{"S1": "kept", "S2": "kept", "S3": "kept", "S4": "new"}, ""},
+		{"merge into a lower id", []Entry{old.Entries[0], old.Entries[2]},
+			map[string]string{"S1": "kept", "S2": "merged-into S1", "S3": "kept"}, ""},
+	}
+	for _, c := range cases {
+		errs := strings.Join(validateCuration("S", old, Doc{Entries: c.next}, c.ledger, map[string]bool{"src1": true}), "; ")
+		if c.want == "" && errs != "" {
+			t.Errorf("%s: unexpected errors: %s", c.name, errs)
+		}
+		if c.want != "" && !strings.Contains(errs, c.want) {
+			t.Errorf("%s: want %q, got %q", c.name, c.want, errs)
+		}
+	}
+}
+
+func TestStyleLearningInACodingRun(t *testing.T) {
+	w := newWorld(t)
+	write(t, styleGuideFile(w.bridge, "supernova"), "entries:\n  - id: S1\n    status: active\n    text: Name errors err.\n    hits: 2\n    evidence: [x]\n  - id: S2\n    status: candidate\n    text: Prefer early returns.\n    hits: 1\n    evidence: [y]\n")
+	w.project("use: [style-learning]\n")
+	lead := w.startLead()
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	if p := w.promptOf(coder); !strings.Contains(p, "Name errors err.") || strings.Contains(p, "Prefer early returns.") {
+		t.Errorf("the coder should get active rules only")
+	}
+	w.stop(coder, "coder", report("compiled"), false)
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	style, _ := w.spawn(lead, "orchestrator", "style-reviewer")
+	if p := w.promptOf(style); !strings.Contains(p, "Prefer early returns.") || !strings.Contains(p, "rule: hit | S12") {
+		t.Errorf("the style reviewer should get every rule and the rule-reporting brief")
+	}
+	learned := "Fixed.\n\n```starship-report\noutcome: learned\nsummary: two fixes\nrule: hit | S2\nrule: new | Wrap errors with context | lib.go:12 — added context\n```\n"
+	w.stop(style, "style-reviewer", learned, false)
+	if st := w.state(); st.Scopes["run"].Stage != "curate" {
+		t.Fatalf("learned should go to curate, at %s", st.Scopes["run"].Stage)
+	}
+	cur, _ := w.spawn(lead, "orchestrator", "curator")
+	if p := w.promptOf(cur); !strings.Contains(p, "Wrap errors with context") || !strings.Contains(p, "hit | S2") {
+		t.Fatalf("the curator was not given this run's proposals")
+	}
+	doc := "entries:\n  - id: S1\n    status: active\n    text: Name errors err.\n    hits: 2\n    evidence: [x]\n" +
+		"  - id: S2\n    status: active\n    text: Prefer early returns.\n    hits: 2\n    evidence: [y, lib.go:3]\n" +
+		"  - id: S3\n    status: candidate\n    text: Wrap errors with context.\n    hits: 1\n    evidence: [lib.go:12]\n"
+	if r := w.stop(cur, "curator", curatorMessage(doc, "S1: kept\nS2: promoted\nS3: new\n", "updated"), false); r != "" {
+		t.Fatalf("curation refused: %s", r)
+	}
+	if st := w.state(); st.Scopes["run"].Stage != "test" {
+		t.Fatalf("after curate, at %s", st.Scopes["run"].Stage)
+	}
+	if d, _ := loadDoc(styleGuideFile(w.bridge, "supernova")); len(d.Entries) != 3 || d.Entries[1].Status != "active" {
+		t.Fatalf("guide not updated: %+v", d)
+	}
+}
+
+func TestStyleIngestAndGenerate(t *testing.T) {
+	w := newWorld(t)
+	w.project("use: [style-learning]\n")
+	doc := filepath.Join(t.TempDir(), "guide.md")
+	write(t, doc, "# House style\n\nAlways return early.\n")
+	var out bytes.Buffer
+	if err := cmdStyle([]string{"ingest", "supernova", doc, "--trust", "authoritative"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if src := loadSources(w.bridge, "supernova"); len(src.Sources) != 1 || src.Sources[0].ID != "src1" {
+		t.Fatalf("sources: %+v", src)
+	}
+	w.run("--pipeline", "style-generate", "--project", "supernova")
+	w.approve()
+	gen, why := w.spawn("", "", "style-generator")
+	if gen == "" {
+		t.Fatalf("generator refused: %s", why)
+	}
+	if p := w.promptOf(gen); !strings.Contains(p, "Always return early.") || !strings.Contains(p, "trust: authoritative") {
+		t.Fatalf("the generator was not given its source")
+	}
+	w.stop(gen, "style-generator", "```starship-report\noutcome: proposed\nsummary: one rule\nrule: new | Return early | source:src1 §1\n```\n", false)
+	cur, _ := w.spawn("", "", "curator")
+	next := "entries:\n  - id: S1\n    status: active\n    text: Return early.\n    hits: 0\n    evidence: [\"source:src1 §1\"]\n"
+	if r := w.stop(cur, "curator", curatorMessage(next, "S1: new\n", "updated"), false); r != "" {
+		t.Fatalf("curation refused: %s", r)
+	}
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s %s", st.Status, st.Reason)
+	}
+	if src := loadSources(w.bridge, "supernova"); src.Sources[0].Processed == "" {
+		t.Errorf("the source should be marked processed")
+	}
+	// With everything processed, another run has nothing to do.
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	t.Setenv("STARSHIP_SESSION", "s9")
+	if err := cmdRun([]string{"--pipeline", "style-generate", "--project", "supernova"}, &out); err == nil ||
+		!strings.Contains(err.Error(), "no unprocessed style sources") {
+		t.Fatalf("expected nothing to do: %v", err)
+	}
+}
