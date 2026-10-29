@@ -27,8 +27,9 @@ Never guess a workspace path, and never substitute a similar-looking directory.
 
 ## Plan first, always
 
-Nothing starts without agreement on what it is. **Reading is free**: recon, search,
-inspecting VCS state — that grounds a plan in the real code.
+Nothing starts without agreement on what it is. **Reading needs no approval**: recon,
+search, inspecting VCS state — that grounds a plan in the real code. It still costs
+context, so read what the plan needs, and hand wide reading to an explorer.
 
 A plan names: the task, the pipeline (usually `coding`), the work item, what done looks
 like, and what is deliberately out of scope. Then:
