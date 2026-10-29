@@ -16,9 +16,11 @@ It's Monday. You open a terminal in your work bridge (a private repo that holds 
 work projects; more on bridges below) and start Claude.
 
 ```
-you      open supernova / rate-limit
-claude   Task rate-limit: workspace ~/src/supernova, branch rate-limit, clean.
-you      add per-account rate limiting to the login endpoint, limits from config
+> open supernova / rate-limit
+
+⏺ Task rate-limit: workspace ~/src/supernova, branch rate-limit, clean.
+
+> add per-account rate limiting to the login endpoint, limits from config
 ```
 
 That's project `supernova`, task `rate-limit`. Claude reads the code (looking doesn't
@@ -27,7 +29,7 @@ what done looks like, and what it deliberately won't touch. It shows you the run
 set up: code, review, style, test. Then it waits.
 
 ```
-you      go
+> go
 ```
 
 Now the crew goes to work:
