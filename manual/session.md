@@ -96,6 +96,16 @@ a fresh session with none of this conversation can pick the work up.
 Commit journal changes with `ensign journal commit -m "<message>"`. A hook won't let a
 turn end with uncommitted journal changes.
 
+## Facts with no skill
+
+Agents report facts about technologies, and each fact names a skill. When no skill of
+that name exists, the fact is held, and `status` lists it. If the user asks for the
+skill, read the held facts in `skills/proposed/<name>/`, write a one-line description
+of the technology, and run `ensign skill new <name> --description "<description>"`.
+The facts become pending, and the `skill-curate` pipeline folds them in. If the user
+says to discard them, run `ensign skill discard <name>`. Either way, commit the change
+with `ensign journal commit`.
+
 ## Pushing and landing
 
 Workspace commits, pushes and submits need the user's explicit approval **every time**;

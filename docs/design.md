@@ -1275,6 +1275,10 @@ runs against Claude Code, except where listed below.
   on a running stage is allowed to end its turn, and that isn't counted towards
   `lead-stopped`. Blocking it would force the filler turns the waiting rules exist to
   prevent.
+- **Facts for a skill that doesn't exist are held, not curated.** Agents are told which
+  skill names exist. A fact for any other name goes to `skills/proposed/<name>/`, and
+  `status` lists it. `ensign skill new <name> --description …` creates the skill and
+  makes its facts pending; `ensign skill discard <name>` drops them.
 - **The `@done` check** runs before a run may end as `success`; a failure ends it as
   `error: done-check`.
 - **Events on stages a pipeline doesn't have are inactive for it**, so a bundle or layer
@@ -1289,9 +1293,6 @@ runs against Claude Code, except where listed below.
 - **Nested leads** are rejected by validation.
 - **Style-guide metrics** (style diff size per run, flagging entries hit repeatedly)
   are recorded only as report history; nothing summarises them yet.
-- **Facts for a skill that doesn't exist** are accepted and curated, but their learned
-  entries reach no one until someone writes that skill's file. Agents should be told
-  which skill names exist, or such facts flagged for the user.
 - **Help said nothing once:** in the very first session of a freshly created bridge,
   `help` went to the model instead of being intercepted. Four later sessions intercepted
   it; the cause is unknown.

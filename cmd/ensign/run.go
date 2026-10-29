@@ -29,6 +29,7 @@ type Snapshot struct {
 	Briefs       map[string]string    `json:"briefs"` // relative path -> contents, frozen with the run
 	Events       map[string][]Handler `json:"events,omitempty"`
 	Skills       []SkillDelivery      `json:"skills,omitempty"`
+	KnownSkills  []string             `json:"known_skills,omitempty"` // every skill name a fact may be filed under
 	Project      string               `json:"project,omitempty"`
 	Bundles      []string             `json:"bundles,omitempty"`
 	Created      string               `json:"created"`
@@ -352,6 +353,7 @@ func cmdRun(args []string, out io.Writer) error {
 		Events:       c.Events,
 		Bundles:      c.Bundles,
 		Skills:       c.Skills,
+		KnownSkills:  knownSkills(bridge, c.ControlPlane, c.Project),
 		Project:      c.Project,
 		Created:      time.Now().Format(time.RFC3339),
 	}

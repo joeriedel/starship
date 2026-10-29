@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -217,6 +218,97 @@ func pendingSkillDir(bridge, skill string) string {
 	return filepath.Join(bridge, "skills", "pending", skill)
 }
 
+// proposedSkillDir holds facts reported for a skill that doesn't exist yet.
+func proposedSkillDir(bridge, skill string) string {
+	return filepath.Join(bridge, "skills", "proposed", skill)
+}
+
+// knownSkills lists every skill defined in the control plane, the bridge or the project.
+func knownSkills(bridge, cp, project string) []string {
+	names := map[string]bool{}
+	for _, dir := range skillDirs(bridge, cp, project) {
+		found, _ := filepath.Glob(filepath.Join(dir, "*.md"))
+		for _, f := range found {
+			names[strings.TrimSuffix(filepath.Base(f), ".md")] = true
+		}
+	}
+	return sortedStrings(names)
+}
+
+// proposedSkills counts the held facts for each skill that doesn't exist yet.
+func proposedSkills(bridge string) map[string]int {
+	out := map[string]int{}
+	dirs, _ := os.ReadDir(filepath.Join(bridge, "skills", "proposed"))
+	for _, d := range dirs {
+		files, _ := filepath.Glob(filepath.Join(bridge, "skills", "proposed", d.Name(), "*.yaml"))
+		if d.IsDir() && len(files) > 0 {
+			out[d.Name()] = len(files)
+		}
+	}
+	return out
+}
+
+// cmdSkill implements `ensign skill new <name> --description <text>` and
+// `ensign skill discard <name>`, which settle facts held for a skill that doesn't exist.
+func cmdSkill(args []string, out io.Writer) error {
+	usage := fmt.Errorf("usage: ensign skill new <name> --description <text> | ensign skill discard <name>")
+	if len(args) < 2 || !validName(args[1]) {
+		return usage
+	}
+	bridge, err := cwdBridge()
+	if err != nil {
+		return err
+	}
+	name, held := args[1], proposedSkillDir(bridge, args[1])
+	switch {
+	case args[0] == "discard" && len(args) == 2:
+		n := proposedSkills(bridge)[name]
+		if n == 0 {
+			return fmt.Errorf("no facts are held for %q", name)
+		}
+		if err := os.RemoveAll(held); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "discarded %d fact(s) held for %s\n", n, name)
+		return nil
+	case args[0] == "new" && len(args) == 4 && args[2] == "--description" && strings.TrimSpace(args[3]) != "":
+		bf, err := loadBridgeFile(bridge)
+		if err != nil {
+			return err
+		}
+		cp, err := controlPlaneDir(bridge, bf)
+		if err != nil {
+			return err
+		}
+		if contains(knownSkills(bridge, cp, ""), name) {
+			return fmt.Errorf("skill %q already exists", name)
+		}
+		body := fmt.Sprintf("---\ndescription: %s\n---\n\n# %s\n\nWhat agents have established about %s, curated from their reports.\n",
+			yamlScalar(args[3]), name, name)
+		if err := writeFile(filepath.Join(bridge, "skills", name+".md"), body); err != nil {
+			return err
+		}
+		files, _ := filepath.Glob(filepath.Join(held, "*.yaml"))
+		for _, f := range files {
+			dest := filepath.Join(pendingSkillDir(bridge, name), filepath.Base(f))
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				return err
+			}
+			if err := os.Rename(f, dest); err != nil {
+				return err
+			}
+		}
+		os.Remove(held)
+		fmt.Fprintf(out, "created skills/%s.md", name)
+		if len(files) > 0 {
+			fmt.Fprintf(out, "; %d held fact(s) are now pending. Run the skill-curate pipeline to fold them in", len(files))
+		}
+		fmt.Fprintln(out)
+		return nil
+	}
+	return usage
+}
+
 // recordFacts saves the facts a stage reported, one file each, for the curator.
 func recordFacts(r *RunFiles, d *Dispatch) {
 	for i, line := range d.Fields["fact"] {
@@ -232,9 +324,15 @@ func recordFacts(r *RunFiles, d *Dispatch) {
 		if len(parts) == 3 {
 			f["evidence"] = strings.TrimSpace(parts[2])
 		}
-		path := filepath.Join(pendingSkillDir(r.Snap.Bridge, skill), fmt.Sprintf("%s-%s-%d.yaml", r.State.Run, d.ID, i+1))
+		dir, note := pendingSkillDir(r.Snap.Bridge, skill), ""
+		if !contains(r.Snap.KnownSkills, skill) {
+			// No skill of that name exists, so curating it would reach no one. It waits
+			// for the user to create the skill or discard the facts.
+			dir, note = proposedSkillDir(r.Snap.Bridge, skill), " (no such skill; held for the user)"
+		}
+		path := filepath.Join(dir, fmt.Sprintf("%s-%s-%d.yaml", r.State.Run, d.ID, i+1))
 		if err := writeYAML(path, f); err == nil {
-			r.State.log("fact", d.Stage, d.ID, skill+": "+f["fact"])
+			r.State.log("fact", d.Stage, d.ID, skill+": "+f["fact"]+note)
 		}
 	}
 }

@@ -513,9 +513,11 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 	}
 	b.WriteString(workspaceSection(r))
 	b.WriteString("\n## Your brief\n\n" + original + "\n\n## Report\n\n" + reportInstructions(s) + "\n")
-	if len(r.Snap.Skills) > 0 {
+	if len(r.Snap.KnownSkills) > 0 {
 		b.WriteString("\nIf you had to establish a fact about a technology itself — true on any project using it, not just this one — " +
-			"add a line per fact to the report block: `fact: <skill> | <the fact> | <path:line or how you verified it>`.\n")
+			"add a line per fact to the report block: `fact: <skill> | <the fact> | <path:line or how you verified it>`. " +
+			"The skills are: " + strings.Join(r.Snap.KnownSkills, ", ") + ". " +
+			"If none fits, name the technology anyway; the fact is held for the user to decide whether it gets a skill.\n")
 	}
 	return b.String()
 }

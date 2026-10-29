@@ -235,3 +235,59 @@ func TestStyleIngestAndGenerate(t *testing.T) {
 		t.Fatalf("expected nothing to do: %v", err)
 	}
 }
+
+func TestFactsForAMissingSkillAreHeld(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "skills/shell.md"), "---\ndescription: POSIX shell\n---\nQuote every expansion.\n")
+	lead := w.startLead()
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	if p := w.promptOf(coder); !strings.Contains(p, "The skills are: shell.") {
+		t.Errorf("the coder was not told which skills exist")
+	}
+	msg := "Done.\n\n```starship-report\noutcome: compiled\nsummary: ok\n" +
+		"fact: shell | quoting matters | tested\nfact: make | recipes need tabs | GNU make 4\n```\n"
+	w.stop(coder, "coder", msg, false)
+	if got, _ := filepath.Glob(filepath.Join(w.bridge, "skills/pending/shell/*.yaml")); len(got) != 1 {
+		t.Errorf("a fact for an existing skill should be pending: %v", got)
+	}
+	if got, _ := filepath.Glob(filepath.Join(w.bridge, "skills/pending/make")); len(got) != 0 {
+		t.Errorf("a fact for a missing skill must not be pending")
+	}
+	if held := proposedSkills(w.bridge); held["make"] != 1 {
+		t.Fatalf("held facts: %v", held)
+	}
+	if s := statusText(w.bridge, w.session); !strings.Contains(s, "make: 1 fact.") {
+		t.Errorf("status should list the held facts:\n%s", s)
+	}
+
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	if err := cmdSkill([]string{"new", "shell", "--description", "x"}, &out); err == nil {
+		t.Errorf("creating a skill that exists should fail")
+	}
+	if err := cmdSkill([]string{"new", "make", "--description", "GNU make: Makefiles"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(knownSkills(w.bridge, repoRoot(t), ""), "make") {
+		t.Errorf("make should now be a skill")
+	}
+	if got, _ := filepath.Glob(filepath.Join(w.bridge, "skills/pending/make/*.yaml")); len(got) != 1 {
+		t.Errorf("the held fact should now be pending: %v", got)
+	}
+	if len(proposedSkills(w.bridge)) != 0 {
+		t.Errorf("nothing should be held any more")
+	}
+
+	write(t, filepath.Join(proposedSkillDir(w.bridge, "awk"), "f.yaml"), "fact: x\n")
+	if err := cmdSkill([]string{"discard", "awk"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(proposedSkillDir(w.bridge, "awk")); !os.IsNotExist(err) {
+		t.Errorf("discarded facts should be gone")
+	}
+	if err := cmdSkill([]string{"discard", "awk"}, &out); err == nil {
+		t.Errorf("discarding nothing should fail")
+	}
+}

@@ -53,6 +53,8 @@ func main() {
 		err = cmdProposal(os.Args[2:], os.Stdout)
 	case "style":
 		err = cmdStyle(os.Args[2:], os.Stdout)
+	case "skill":
+		err = cmdSkill(os.Args[2:], os.Stdout)
 	case "setup":
 		err = cmdSetup(os.Args[2:], os.Stdout)
 	case "update":
@@ -90,6 +92,7 @@ func usage() {
   ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>]
+  ensign skill new <name> --description <text> | ensign skill discard <name>
   ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]
   ensign journal commit -m <message> [files…] | ensign journal push
   ensign git-catalog squash <project>/<task> -m <message>

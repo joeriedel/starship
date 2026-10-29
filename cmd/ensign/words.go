@@ -271,6 +271,13 @@ func statusText(bridge, session string) string {
 	} else {
 		b.WriteString("\nNo task open. Say \"open <project> / <task>\".\n")
 	}
+	if held := proposedSkills(bridge); len(held) > 0 {
+		b.WriteString("\nAgents reported facts about technologies with no skill yet:\n")
+		for _, name := range sortedKeys(held) {
+			fmt.Fprintf(&b, "  %s: %d fact%s. Say \"make a %s skill\" or \"discard the %s facts\".\n",
+				name, held[name], plural(held[name]), name, name)
+		}
+	}
 	return b.String()
 }
 
