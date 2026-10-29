@@ -1096,6 +1096,18 @@ the design assumes one bridge per machine:
 - In a container, the container is the machine: setup runs inside it, and its registry
   holds the bridges in that container.
 
+A bridge is normally **shared by every machine working in its context** — say a Linux and
+a Windows machine on the same project, often doing platform-specific work. Splitting it
+per machine would duplicate its projects, tasks and journals. Sharing needs only:
+
+- **Fetch and rebase as you work.** SessionStart fast-forwards the bridge when it has no
+  local changes, and every automatic commit fetches and rebases before pushing. A
+  conflict where both sides only added lines is resolved directly; any other conflict
+  stops and asks.
+- Machine paths are per machine (`.starship/machine.yaml`) and task paths go through
+  `$PROJECTS`, so the same `task.md` resolves on every machine. Run state stays on the
+  machine that ran it.
+
 ---
 
 ## 13. Carried over from the reference design
