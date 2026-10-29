@@ -2,14 +2,13 @@
 
 **Give Claude Code a crew, a process, and a memory.**
 
-You've probably had this experience. You ask Claude to "just quickly fix" something. It
-does. Along the way it tweaked three things you didn't ask about, reviewed its own work
-(glowing review),[^1] skipped the slow tests because they were slow, and by tomorrow has
-no idea any of it happened.
+Ask a single Claude session to make a change and it will usually do it, but it is also
+the one deciding what "done" means. It writes the code, judges its own work, decides
+which tests are worth running, and forgets all of it when the session ends.
 
-Starship is built for that. You still just talk to Claude. But behind the conversation
-there's a crew of specialist agents, a process they can't wander off, and a written
-record that outlives the session.
+Starship splits that up. You still just talk to Claude. Behind the conversation, a crew
+of specialist agents does the work in stages, a process enforced by hooks decides what
+happens next, and a written record carries the work from one session to the next.
 
 ## A day on the bridge
 
@@ -35,12 +34,12 @@ Now the crew goes to work:
 
 - A **coder** makes the change and confirms it compiles.
 - **Reviewers** read it, one per review dimension (correctness, security, whatever your
-  project asks for), and they don't trust the coder's opinion of itself.
-- They find something, so it goes back to the coder. That's the loop doing its job.
+  project asks for), independently of the coder.
+- They find something, so it goes back to the coder for another pass.
 - A **style reviewer** tidies it to match how your project actually writes code.
-- A **tester** builds it and runs the real suite, slow parts included. A test fails, so
+- A **tester** builds it and runs the full suite. A test fails, so
   it goes back to the coder again.
-- Second time round it passes. (The coder was sure the first time, too.)
+- Second time round it passes.
 
 You get a report: what changed, every finding and what was decided about it, and anything
 deferred.
@@ -61,7 +60,7 @@ it's shared, and it can be improved from anywhere.
 such as `~/bridges/work` and `~/bridges/home`. A bridge is a git repo of your own, hosted
 wherever that part of your life requires. It holds your projects, your tasks and their
 journals, your project-specific skills, and anything else that must never leave it. Your
-work bridge stays at work; it doesn't come home for the weekend.
+work bridge stays on work infrastructure, and nothing in it reaches the others.
 
 **Projects and tasks** live in the bridge. A project fills in what the pipeline's named
 steps mean there: `@build` and `@test` are placeholders, and the project says which
@@ -72,31 +71,30 @@ the change itself.
 
 **The ensign** is `ensign`, a small binary that does the paperwork. It's wired into
 Claude Code's hooks, so it sees every agent dispatched and every report filed. It
-doesn't get talked round, and it doesn't take "I'm sure the tests pass" for an answer.
+enforces the pipeline in code, so the rules hold no matter what an agent says.
 
 **The crew** are role definitions: an **orchestrator** that leads a run, plus a coder,
 reviewers, a style reviewer, a tester, an explorer for reading code, and a curator that
-keeps skills and style guides tidy, like a librarian with permission to throw things
-away. Each has a narrow job and a Claude model sized to it.
+keeps skills and style guides tidy. Each has a narrow job and a Claude model sized to it.
 
 ## How it works
 
 - **The agents bring judgement; the ensign brings the clipboard.** The process lives in
-  config and is enforced by hooks, not in a prompt that hopes for the best.
+  config and is enforced by hooks, not by instructions in a prompt.
 - **Every run starts from a plan.** Claude follows a session manual: understand first,
   plan, never edit the code directly. Code changes only happen inside a run.
-- **Only `go` starts a run.** Not "yes", not "sounds good", not "I suppose so". A hook
-  checks for the exact word before anything happens.
+- **Only `go` starts a run.** Not "yes" or "sounds good": a hook checks for
+  the exact word before anything happens.
 - **Runs are small state machines.** A pipeline is a YAML file. Code goes to review;
   findings go back to code; a failed test goes back to code; budgets stop it looping
-  forever, which it otherwise would, quite happily. Success means it compiled and the
+  forever. Success means it compiled and the
   tests actually ran and passed.
 - **Agents can't cut corners.** If one tries to skip a stage, the dispatch is refused. A
   report missing its outcome gets sent back to be redone. An orchestrator that tries to
-  clock off early gets told the run isn't finished.
-- **Memory is files, not vibes.** Task journals are committed and pushed in the bridge,
+  stop early is told the run isn't finished.
+- **Memory lives in files.** Task journals are committed and pushed in the bridge,
   so any session on any machine can pick the work up.
-- **Some words are free.** `help`, `status` and `go` are answered by a hook without
+- **Some words don't need the model.** `help`, `status` and `go` are answered by a hook without
   calling the model at all. `help` tells you what you can ask for in the bridge you're
   in, in plain language.
 
@@ -127,7 +125,7 @@ pipelines:
   coding:
     ops:
       - append: { stage: review, dimensions: [security] }   # one more reviewer
-      - set:    { budgets.test: 1 }                         # patience is finite
+      - set:    { budgets.test: 1 }                         # one test cycle
 
 events:
   stage.after:test: [{ observe: scripts/post-summary.sh }]
@@ -139,25 +137,24 @@ Two bundles ship in the box:
   orchestrator can see how the work evolved. It squashes everything into one commit when
   you say so.
 - **[`style-learning`](extensions/style-learning)** turns what the style pass finds into
-  a per-project style guide. The coder reads it on later runs, so you stop hearing about
-  the same brace placement every time. You can seed it with style docs or exemplar code.
+  a per-project style guide. The coder reads it on later runs, so the same style
+  issues don't keep coming up. You can seed it with style docs or exemplar code.
 
 Agents also report facts they discover along the way ("this build needs a clean after
 switching branches"), and a curator folds them into skills. Over time the crew stops
 rediscovering the same things.
 
-## Things it flatly refuses to do
+## Things it won't do
 
 - **Guess.** If a pipeline needs `@test` and the project hasn't said what that means,
   the run doesn't start. If there really is no test suite, you have to say so, with a
-  reason, and it goes on the record.
+  reason.
 - **Start without your `go`.**
 - **Let your work leak into public.** Improvements discovered in a bridge come back as
   proposals written in general terms. Commits to the control plane then pass the leak
   gates: the right author identity, every bridge's list of banned terms, and a review by
   a model that has never seen your projects.
-- **Sign anything as an AI.** No co-author trailers, no "generated with". The work is
-  yours. So is the blame.
+- **Sign anything as an AI.** No co-author trailers, no "generated with".
 
 ## Getting started
 
@@ -177,8 +174,7 @@ cd ~/bridges/home && claude                                  # then type: help
 
 On another machine, clone your bridge, run `claude` in it, and Claude sets up the rest.
 After upgrading Claude Code, run `ensign selftest`. It runs a few cents' worth of probe
-agents to check that Claude Code still behaves the way starship relies on. Claude Code
-moves fast, and this is cheaper than finding out mid-run.
+agents to check that Claude Code still behaves the way starship relies on.
 
 If you'd rather build `ensign` yourself, you need Go: `go build ./cmd/ensign`.
 
@@ -191,6 +187,3 @@ still open.
 ## License
 
 [MIT](LICENSE)
-
-[^1]: Very few people, and no language models, have ever reviewed their own work and
-    found it wanting.
