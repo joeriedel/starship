@@ -35,8 +35,7 @@ Make a folder for your bridge, start `claude` in it, and ask:
 > make a starship bridge here, from https://github.com/joeriedel/starship
 ```
 
-Claude asks where your code lives on this machine, sets the bridge up, and asks you to
-restart `claude`. Then type `help`.
+Claude sets the bridge up and asks you to restart `claude`. Then type `help`.
 
 The bridge is a git repo of your own. Push it somewhere private, and on another machine
 clone it and run `claude` in it; Claude sets that machine up the same way.
@@ -198,14 +197,12 @@ rediscovering the same things.
 
 When asked to make a starship bridge in a folder:
 
-1. Ask the user where their code checkouts live on this machine (for example `~/src`).
-   Never guess it.
-2. From the folder, run:
+1. From the folder, run:
 
    ```
    TAG=$(git ls-remote --tags --refs --sort=-v:refname https://github.com/joeriedel/starship.git 'v*' | head -n 1 | sed 's#.*/##')
    git clone -q --depth 1 --branch "$TAG" https://github.com/joeriedel/starship.git .starship/control-plane
-   .starship/control-plane/bin/<platform>/ensign init . --projects <their code folder>
+   .starship/control-plane/bin/<platform>/ensign init .
    ```
 
    `<platform>` is `linux-amd64`, `windows-amd64` (the binary is `ensign.exe`),
@@ -213,7 +210,7 @@ When asked to make a starship bridge in a folder:
    `init` pins the bridge to that release, puts `ensign` on PATH, and commits the
    bridge's files. It refuses to overwrite files already in the folder; if it does,
    tell the user which ones and let them decide.
-3. Tell the user to restart `claude` in the folder and type `help`. Suggest they push the
+2. Tell the user to restart `claude` in the folder and type `help`. Suggest they push the
    bridge to a private repo of their own, never to starship.
 
 ## Further reading

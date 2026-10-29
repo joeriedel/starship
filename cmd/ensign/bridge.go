@@ -38,10 +38,11 @@ If ` + "`.starship/control-plane/`" + ` does not exist and ` + "`bridge.yaml`" +
 is not set up on this machine. Tell the user, and with their OK run, from the bridge:
 
     git clone --depth 1 --branch <tag from bridge.yaml> <remote> .starship/control-plane
-    .starship/control-plane/bin/<platform>/ensign setup --projects <path>
+    .starship/control-plane/bin/<platform>/ensign setup
 
-` + "`<platform>`" + ` is ` + "`linux-amd64`" + `, ` + "`windows-amd64`" + `, ` + "`darwin-arm64`" + ` (Apple silicon) or ` + "`darwin-amd64`" + ` (Intel Mac). Ask the user where this machine keeps its
-workspaces (the projects root) for ` + "`--projects`" + `. Then ask them to restart claude.
+` + "`<platform>`" + ` is ` + "`linux-amd64`" + `, ` + "`windows-amd64`" + `, ` + "`darwin-arm64`" + ` (Apple silicon) or ` + "`darwin-amd64`" + ` (Intel Mac).
+If any task's workspace starts with ` + "`$PROJECTS`" + `, ask the user which folder holds their code
+on this machine and add ` + "`--projects <folder>`" + `. Then ask them to restart claude.
 
 ## The heartbeat
 
@@ -93,8 +94,8 @@ const initUsage = "usage: ensign init <dir> [--control-plane <path> | --remote <
 
 // cmdInit implements `ensign init`. Run from a starship clone's bin/ with neither
 // --control-plane nor --remote, the bridge pins the clone it came from: its origin, at
-// this binary's release tag. With --projects it also does what setup does, so one
-// command makes a working bridge.
+// this binary's release tag. A pinned bridge is also set up, as setup would, so one
+// command makes a working bridge; --projects records where this machine keeps code.
 func cmdInit(args []string, out io.Writer) error {
 	var dir, cpPath, remote, tag, projects string
 	for i := 0; i < len(args); i++ {
@@ -169,23 +170,14 @@ func cmdInit(args []string, out io.Writer) error {
 		}
 	}
 	fmt.Fprintf(out, "bridge created at %s\n", dir)
-	if projects != "" {
+	// A bridge pinned to a release is set up on this machine straight away. One that
+	// follows a local control plane (development) is only linked, unless asked.
+	if cpPath == "" || projects != "" {
 		if err := setupBridge(dir, projects, out); err != nil {
 			return err
 		}
-	} else {
-		if cpPath == "" {
-			bf, err := loadBridgeFile(dir)
-			if err != nil {
-				return err
-			}
-			if err := fetchControlPlane(dir, bf); err != nil {
-				return err
-			}
-		}
-		if err := link(dir, false, out); err != nil {
-			return err
-		}
+	} else if err := link(dir, false, out); err != nil {
+		return err
 	}
 	// Commit the starting files, and only those: the folder may hold other files. Without
 	// this, the first session is asked to commit them as journal changes.

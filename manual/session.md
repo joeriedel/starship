@@ -13,6 +13,11 @@ one.
   prints where it stands. Report that, then wait for the work.
 - `ensign task new <project>/<task> --workspace <path>` creates one. **Ask for the
   workspace path; never guess it.**
+- **The projects folder.** A workspace path can be written as `$PROJECTS/<name>`, so the
+  task works on machines that keep code in different places. The first time the user
+  gives a workspace path and this machine has no projects folder yet, offer to record the
+  folder holding it (`~/src` for `~/src/foobar`) with `ensign setup --projects <folder>`,
+  and write the path as `$PROJECTS/foobar`. If they'd rather not, use the path as given.
 - `ensign project new <project>` creates a project; ask which bindings it needs
   (`@build`, `@test`, …) rather than assuming.
 

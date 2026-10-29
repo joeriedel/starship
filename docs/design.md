@@ -1174,9 +1174,10 @@ restart, so a session never mixes two releases.
 The user makes a folder, starts `claude` in it, and asks for a bridge, naming this repo.
 Claude follows the README's "For Claude" section: it clones the newest release tag into
 the folder's `.starship/control-plane/` and runs that clone's
-`bin/<platform>/ensign init . --projects <path>`. Run from a clone's `bin/` with no
-`--remote`, `init` pins the clone's origin at its release tag, and `--projects` makes it
-also do what `setup` does. `init` refuses to overwrite a file already in the folder, and
+`bin/<platform>/ensign init .`. Run from a clone's `bin/` with no `--remote`, `init` pins
+the clone's origin at its release tag, and does what `setup` does. Where this machine
+keeps code (`$PROJECTS`) isn't asked here; the session offers to record it the first
+time the user gives a workspace path. `init` refuses to overwrite a file already in the folder, and
 commits only its own files. Then the user restarts `claude`.
 
 ### 12.5 When `ensign` is missing: fail-open, and the heartbeat
