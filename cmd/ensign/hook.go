@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 // HookInput is the part of Claude Code's hook payload that ensign reads.
@@ -301,22 +299,29 @@ func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 var reportRe = regexp.MustCompile("(?s)```starship-report\\s*\\n(.*?)```")
 
 // parseReport extracts the outcome from the last report block in an agent's final message.
+// Each line is "key: value", split at the first colon, so a summary may contain colons.
 func parseReport(msg string, s *Stage) (outcome, summary, problem string) {
 	all := reportRe.FindAllStringSubmatch(msg, -1)
 	if len(all) == 0 {
 		return "", "", "Your final message has no starship-report block."
 	}
-	var rep struct {
-		Outcome string `yaml:"outcome"`
-		Summary string `yaml:"summary"`
+	for _, line := range strings.Split(all[len(all)-1][1], "\n") {
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		switch strings.TrimSpace(key) {
+		case "outcome":
+			outcome = val
+		case "summary":
+			summary = val
+		}
 	}
-	if err := yaml.Unmarshal([]byte(all[len(all)-1][1]), &rep); err != nil {
-		return "", "", "Your starship-report block is not valid YAML: " + err.Error() + "."
+	if _, ok := s.Outcomes.find(outcome); !ok {
+		return "", "", fmt.Sprintf("Your report's outcome %q is not one of this stage's outcomes.", outcome)
 	}
-	if _, ok := s.Outcomes.find(rep.Outcome); !ok {
-		return "", "", fmt.Sprintf("Your report's outcome %q is not one of this stage's outcomes.", rep.Outcome)
-	}
-	return rep.Outcome, rep.Summary, ""
+	return outcome, summary, ""
 }
 
 func reportInstructions(s *Stage) string {

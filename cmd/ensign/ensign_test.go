@@ -142,7 +142,7 @@ func (w *world) stop(agent, agentType, message string, active bool) string {
 }
 
 func report(outcome string) string {
-	return "Did it.\n\n```starship-report\noutcome: " + outcome + "\nsummary: test\n```\n"
+	return "Did it.\n\n```starship-report\noutcome: " + outcome + "\nsummary: build: ok; tests: 2 passed\n```\n"
 }
 
 // leaf spawns a stage agent from the lead and stops it with an outcome.
@@ -252,6 +252,9 @@ func TestHappyPath(t *testing.T) {
 	st := w.state()
 	if st.Status != "success" {
 		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if got := st.Dispatches[len(st.Dispatches)-1].Summary; got != "build: ok; tests: 2 passed" {
+		t.Errorf("a summary containing colons was not kept whole: %q", got)
 	}
 	if r := w.stop(lead, "orchestrator", "done", false); r != "" {
 		t.Fatalf("lead stop after success was blocked: %s", r)
