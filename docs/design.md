@@ -480,11 +480,17 @@ Parallel work is **separate tasks in separate sessions**. Within a run, only a p
 stage runs concurrently; there are no parallel fragments within one task and no
 speculative stages. Each session has at most one active run, so a spawn from the session
 belongs to that run without ambiguity. Two runs must not share a workspace; nothing
-coordinates edits between them.
+coordinates edits between them, so `ensign run` refuses a second live run on the same
+workspace.
 
-*Implementation status:* `ensign` currently tracks one active run per bridge per machine
-(`.starship/active-run`), so two sessions in the same bridge cannot run at once yet.
-Per-session tracking is the next step (§15).
+**How a run is tied to its session.** Every hook payload carries Claude Code's
+`session_id`, the same for the session and every agent inside it. `ensign run`, though,
+is a command Claude runs through Bash, so the SessionStart hook writes
+`STARSHIP_SESSION=<session_id>` to the file Claude Code provides for that
+(`CLAUDE_ENV_FILE`), and every later command in the session sees it. The run is recorded
+as belonging to that session (`.starship/sessions/<session_id>`), and hooks look runs up
+by session. A run created outside any session — from a terminal — belongs to no one until
+a session types `go`, which claims the newest such run.
 
 ### 5.6 Locks
 
@@ -568,8 +574,8 @@ The run then waits for `go`. Until then the hooks refuse its lead dispatch.
 
 ```
 <bridge>/.starship/
-  active-run                 the id of the bridge's active run
-  runs/<run-id>/
+  sessions/<session-id>      the run that session owns
+  runs/<run-id>/             <timestamp>-<project>-<task>, allocated exclusively
     pipeline.json            the snapshot: resolved pipeline with sources, bindings,
                              workspace, work item, and every brief the run can use
     state.json               written only by the driver
@@ -659,6 +665,10 @@ invocation takes a file lock on the run, and outside a bridge every event is a n
 4. If the stopping agent is a lead whose pipeline hasn't reached a run outcome, block it
    and name the stage that hasn't run.
 
+**SessionStart**
+
+Records the session's id for its commands (§5.5) and prints the heartbeat (§12.5).
+
 **UserPromptSubmit**
 
 If the user's message is exactly `go` and a run is pending, set `approved` and tell the
@@ -695,6 +705,8 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | SessionStart hook stdout reaches the session's context | yes; appears as `SessionStart:startup hook success: <stdout>` |
 | A missing hook command blocks anything | no; non-blocking error, tool calls proceed |
 | PreToolUse `allow` lifts a permission `ask` rule | no (tested headless); the ask still applies |
+| SessionStart can pass values to the session's later commands | yes; a variable written to `CLAUDE_ENV_FILE` was visible to a Bash command in that session |
+| `session_id` is the same for the session and its agents | yes; identical in hook payloads from the session, an orchestrator and its agents |
 | UserPromptSubmit `additionalContext` reaches the session | yes; the session dispatched the lead as instructed on `go` |
 | A full coding run, enforced only by hooks (sonnet session, haiku roles) | yes; four live scenarios, including a test failure that looped back and refused spawns |
 | Subagents load relevant Claude Code skills on demand | yes; 10 of 10 subagent runs and 6 of 6 session runs loaded the matching skill and followed it (favourable conditions; see §4.4) |
@@ -1240,7 +1252,8 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
 Built and tested (unit tests, plus live runs against Claude Code):
 
 - `ensign run` (`--start`, `--dry-run`), `ensign next`, and `ensign hook` for
-  PreToolUse, SubagentStop and UserPromptSubmit (`go`).
+  SessionStart, PreToolUse, SubagentStop and UserPromptSubmit (`go`).
+- Runs owned by sessions (§5.5), with several sessions running at once in one bridge.
 - Layer merging with sources, validation, frozen snapshots, the coding pipeline's state
   machine, budgets, parallel review with `join: all`, report parsing, and failing closed.
 
@@ -1249,6 +1262,5 @@ Stubbed or not started:
 - **Nested leads** are rejected by validation.
 - **Pinning**: `bridge.yaml` names the control plane by `control-plane.path`, not a
   release tag; `setup`, `link`, `update`, `init` and the launcher don't exist yet.
-- **One active run per bridge**, not per session (§5.5).
 - Bundles, events and handlers, skills delivery, `help`/`status`, journal commits, leak
   gates, `@sync`, `ask-user` and resume, CI releases, Windows.
