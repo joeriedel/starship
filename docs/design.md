@@ -656,8 +656,9 @@ A few exact messages are handled by the UserPromptSubmit hook rather than the mo
 | `go` | approve the pending plan |
 | `help` | what you can ask for here |
 | `help <topic>` | more on one topic: a kind of work, a project, a task |
+| `status` | where things stand: bridge, project, task, the active run, what's outstanding |
 
-`help` is deterministic and costs nothing: the hook prints the text and blocks the prompt
+`help` and `status` are deterministic and cost nothing: the hook prints the text and blocks the prompt
 before the model sees it. Anything that isn't an exact match (`help me add a review
 dimension`) goes to the model as a normal question.
 
@@ -672,7 +673,7 @@ Working on: review, 2 of 3 reviewers done · 2 of 3 passes used this cycle
 Getting around
   "open supernova / auth-refactor"            pick up a task where it left off
   "new task <name> in supernova"              start a task
-  "where are we?"                             status of the current task
+  status                                      where the current task stands
 
 Doing the work
   describe what you want done                 I'll plan it; type go to start
@@ -698,6 +699,8 @@ Where each part comes from:
   plain words, and one line on what happens. A bridge's own bundles appear without
   extra work.
 - **The status lines** come from the task journal and the active run, in plain words.
+  `status` prints them on their own, expanded: the task's goal, where it stands, the
+  active run's stage and budgets, and what's outstanding.
 - **Projects and tasks** come from the bridge. `help supernova` or `help auth-refactor`
   describes the project or task: its goal, where it stands, what's outstanding.
 
