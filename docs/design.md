@@ -44,7 +44,7 @@ task            <overlay>/projects/<project>/tasks/<task>/task.md
                 workspace paths, VCS state, per-task extensions, journal
 ```
 
-Each later layer may extend or override the one before it, subject to locks (§5.4).
+Each later layer may extend or override the one before it, subject to locks (§5.6).
 
 ### 2.1 How an overlay consumes the control plane
 
@@ -233,9 +233,11 @@ stages:
           blocked:  { error: blocked }
       - id: review
         role: reviewer
-        outcomes:
-          clean:    next
+        parallel: { over: dimensions, join: all }
+        dimensions: [correctness]
+        outcomes:                     # precedence order: the join takes the first one any branch reported
           findings: { goto: code }
+          clean:    next
       - id: style
         role: style-reviewer
         outcomes:
@@ -273,9 +275,10 @@ silently replaced.
 # a project's pipelines/coding.yaml, or a block in task.md frontmatter
 extends: coding
 ops:
-  - insert: { after: review, stage: { id: security, role: reviewer,
-              brief: briefs/security.md,
-              outcomes: { clean: next, findings: { goto: code } } } }
+  - append: { stage: review, dimensions: [concurrency, security] }
+  - insert: { before: test, stage: { id: migrations, role: tester,
+              brief: briefs/migrations.md,
+              outcomes: { fail: { goto: code }, pass: next } } }
   - remove: style
   - set:    { budgets.test: 1 }
   - set:    { on-exhausted.test: { ask-user: "test budget spent — another cycle?" } }
@@ -292,7 +295,49 @@ events:
 
 A file without `extends:` defines a new pipeline. The same resolver and driver run it.
 
-### 5.4 Locks
+`append` adds to a list field; `set` on a list field replaces it explicitly.
+
+### 5.4 Parallel stages
+
+Review is the one stage that fans out. A stage with `parallel` dispatches one agent per
+entry in the named list, all on the same commit, and joins their outcomes.
+
+```yaml
+      - id: review
+        role: reviewer
+        parallel: { over: dimensions, join: all }
+        dimensions: [correctness, concurrency, security]
+        outcomes:
+          findings: { goto: code }
+          clean:    next
+```
+
+- **Branches are assigned by the driver, not chosen by the lead.** The orchestrator spawns
+  the reviewers with one shared brief; PreToolUse gives each spawn the next undispatched
+  dimension, tagging it (`stage=run.review dim=security`) and appending
+  `briefs/review/<dimension>.md` from whichever layer supplies it. A spawn beyond the
+  list is denied.
+- **The list is configuration.** The default is `[correctness]`, a single reviewer.
+  Projects and tasks add dimensions with `append`. A dimension with no brief anywhere in
+  the layers is a stop, like a missing binding.
+- **`join: all` waits for every branch.** The lead cannot dispatch the next stage until
+  the join completes; PreToolUse denies it and names the outstanding branches.
+- **Outcomes combine by precedence.** A parallel stage lists its outcomes in precedence
+  order, and the join takes the highest one any branch reported: one `findings` among
+  three `clean` is `findings`. Each branch's report is kept separately in `reports/`.
+- **Branches don't spend.** A stage-level `spend` is charged once, on entry; the edge out
+  of the join spends as usual.
+- **Reviewers are read-only**, so branches can't conflict in the workspace.
+
+### 5.5 Concurrency model
+
+Parallel work is **separate tasks in separate sessions**. Within a run, only a parallel
+stage runs concurrently; there are no parallel fragments within one task and no
+speculative stages. Each session has at most one active run, so a spawn from the session
+belongs to that run without ambiguity. Two runs must not share a workspace; nothing
+coordinates edits between them.
+
+### 5.6 Locks
 
 The control plane marks invariants as locks — for example the approval gate, no
 workspace push without approval, and no agent attribution. Lower layers may tighten a lock freely.
@@ -397,12 +442,13 @@ invocation takes an `flock` on `state.json`.
 
 1. Identify the caller: `agent_id` maps to a dispatched stage; no `agent_id` is the
    session.
-2. Find the next expected stage for that caller from `position`.
+2. Find the next expected stage for that caller from `position`. In a parallel stage,
+   that is the next undispatched branch.
 3. If the requested `subagent_type` doesn't match the stage's role, deny with the
    expected stage named. Free roles pass without changing state.
 4. Run `stage.before` handlers; a failing `require` denies the spawn.
-5. Rewrite the prompt: prepend a tag `[starship run=… dispatch=d7 stage=run.review]`,
-   then any augments.
+5. Rewrite the prompt: prepend a tag `[starship run=… dispatch=d7 stage=run.review]`
+   (plus `dim=…` for a branch), then any augments.
 6. Record the dispatch.
 
 **SubagentStop**
@@ -410,7 +456,8 @@ invocation takes an `flock` on `state.json`.
 1. Read the dispatch tag from the first user message in `agent_transcript_path`.
 2. Parse the report from `last_assistant_message`; if invalid, block with the valid
    outcomes.
-3. Apply the transition, spend and reset budgets, run `stage.after` handlers.
+3. Apply the transition, spend and reset budgets, run `stage.after` handlers. For a
+   branch, record its outcome; the transition applies when the last branch joins.
 4. If the stopping agent is a lead whose pipeline hasn't reached a run outcome, block it
    and name the stage that hasn't run.
 
@@ -547,7 +594,8 @@ both.
 1. **Config format and resolver language.** YAML (shown here) needs a parser dependency;
    TOML is in the Python standard library but nests awkwardly; a Go resolver gives one
    static binary.
-2. **Parallel fan-out**, needed by the review pipeline: a `parallel` stage and a join rule.
+2. **Join rules beyond `all`**, such as stopping at the first `findings`, if a case
+   needs one.
 3. **Nesting depth.** One lead level is specified; deeper nesting is forbidden until a
    second case needs it.
 4. **Who may unlock** a lock: overlay and project only, or tasks too.
