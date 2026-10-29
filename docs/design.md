@@ -51,8 +51,9 @@ Each later layer may extend or override the one before it, subject to locks (§5
 - **Sessions open in the overlay, not in the control plane.** The overlay's repo is the
   session's repo, so tasks, scratch, settings and commits stay inside its boundary.
 - **One writable clone of the control plane per machine**, at `~/starship`. Overlays
-  consume it directly (`@import` from the overlay's `CLAUDE.md`, symlinked agents and
-  hook scripts), so control-plane edits are live immediately. A Claude Code plugin was
+  consume it directly (`@import` from the overlay's `CLAUDE.md`, role definitions copied
+  in by `ensign link` (§11.3), hooks calling `ensign`), so control-plane edits are live
+  immediately. A Claude Code plugin was
   considered and dropped: it installs into a cache, which would mean keeping a writable
   clone and a published copy in sync.
 - **Overlay sessions cannot write to the control plane.** A permission deny on the
@@ -373,7 +374,7 @@ Handlers attach to `run.finish:error`; filtering by code is not supported until 
 case needs it.
 
 `ask-user` is resumable because a run's state lives in files, not in an agent's context:
-`starship resume <run>` dispatches a fresh lead against the same state, with the user's
+`ensign resume <run>` dispatches a fresh lead against the same state, with the user's
 answer and any budget change recorded there.
 
 ### 6.2 Stage reports
@@ -394,7 +395,7 @@ further fields (the `code` stage requires `files` when `git-catalog` is enabled)
 
 ### 6.3 Resolver and snapshot
 
-`starship resolve <task>` merges control plane → overlay → project → task and writes a
+`ensign resolve <task>` merges control plane → overlay → project → task and writes a
 frozen snapshot. Hooks read only the snapshot.
 
 ```
@@ -404,7 +405,7 @@ frozen snapshot. Hooks read only the snapshot.
   reports/         each stage's report block as received
 ```
 
-`starship explain <task>` prints the resolved pipeline with provenance:
+`ensign explain <task>` prints the resolved pipeline with provenance:
 
 ```
 stage security          from project:supernova/pipelines/coding.yaml:4
@@ -441,7 +442,7 @@ affect that run.
 
 ## 7. The hook driver
 
-One script, `starship hook <event>`, called from harness hooks and git hooks. Every
+One binary, `ensign hook <event>`, called from harness hooks and git hooks. Every
 invocation takes an `flock` on `state.json`.
 
 **PreToolUse (Agent tool)**
@@ -522,12 +523,12 @@ Session words
   help [topic]           this text, or detail on one topic
 
 Commands (run in a terminal, or ask me to run them)
-  starship resolve <task>      merge the layers into a run snapshot
-  starship explain <task>      show the resolved pipeline and where each part came from
-  starship resume <run>        continue a run that ended as ask-user
-  starship squash <task>       squash the run's catalog (git-catalog)
-  starship style ingest ...    add a style source (style-learning)
-  starship style generate ...  build or update the style guide (style-learning)
+  ensign resolve <task>      merge the layers into a run snapshot
+  ensign explain <task>      show the resolved pipeline and where each part came from
+  ensign resume <run>        continue a run that ended as ask-user
+  ensign squash <task>       squash the run's catalog (git-catalog)
+  ensign style ingest ...    add a style source (style-learning)
+  ensign style generate ...  build or update the style guide (style-learning)
 
 Pipelines   coding, style-generate
 Bundles     git-catalog, journal-git, style-learning
@@ -541,7 +542,7 @@ Where each part comes from:
 - **Bundles** declare a `help:` block in `extension.yaml`: the commands, pipelines and
   words they add. An overlay's own bundles therefore appear without extra work.
 - **Pipelines** carry a `summary:`; `help coding` prints its stages, outcomes and
-  budgets as resolved for the current task, with provenance (as `starship explain`).
+  budgets as resolved for the current task, with provenance (as `ensign explain`).
 - **Roles** use their definition's `description`.
 - **Projects and tasks** come from the overlay; a task's `help` shows its workspace, VCS
   state and journal status.
@@ -549,7 +550,7 @@ Where each part comes from:
 Anything that adds a command, pipeline or bundle without help text is a resolver error,
 in the same spirit as a missing binding: a missing description is caught, never guessed.
 
-`starship help [topic]` in a terminal prints the same text.
+`ensign help [topic]` in a terminal prints the same text.
 
 ---
 
@@ -564,26 +565,26 @@ name: git-catalog
 requires-bindings: [vcs-git]
 
 events:
-  run.start:        [{ require: record-base.sh }]   # clean tree required; store HEAD as base
-  stage.after:code: [{ require: commit-pass.sh }]
+  run.start:        [{ require: ensign git-catalog record-base }]   # clean tree required; store HEAD as base
+  stage.after:code: [{ require: ensign git-catalog commit-pass }]
   stage.before:run: [{ augment: briefs/orchestrator.md }]
 
 provides:
-  squash: squash.sh                                 # not bound to any event by default
+  squash: ensign git-catalog squash   # not bound to any event by default
 ```
 
 - **The driver commits, not the coder.** Messages are uniform and numbered from state:
   `wip(c1 p1) BROKEN` with compile errors from the report in the body, `wip(c1 p2)`,
   `wip(c2 p1)`.
-- **Staging is by name.** `commit-pass.sh` stages exactly the report's `files`, then
+- **Staging is by name.** `ensign git-catalog commit-pass` stages exactly the report's `files`, then
   checks for any other modification; if there is one, the run ends as `error` rather than
   sweeping in or stashing someone's work.
 - **A clean tree is required at `run.start`.**
 - **The orchestrator learns about the catalog only through the bundle's augment**, so
   its role definition never mentions git.
-- **Squashing is placed by the project.** `squash.sh` (`git reset --soft <base>`, one
+- **Squashing is placed by the project.** `ensign git-catalog squash` (`git reset --soft <base>`, one
   commit) is attached to whichever event the project chooses — `push.before`,
-  `run.finish:success`, or none, with `starship squash <task>` by hand.
+  `run.finish:success`, or none, with `ensign squash <task>` by hand.
 - Commits use the workspace's configured identity and carry no agent attribution.
   Pushing stays locked behind explicit approval.
 
@@ -636,7 +637,7 @@ events:
   stage.before:code:   [{ augment: style/learned.md, status: active }]
   stage.before:style:  [{ augment: style/learned.md }]
   stage.before:curate: [{ augment: pending-rules }]
-  stage.after:curate:  [{ require: write-guide.sh }]
+  stage.after:curate:  [{ require: ensign style write-guide }]
 ```
 
 - The style-reviewer reports `learned` when its report carries rules — new ones with
@@ -648,7 +649,7 @@ events:
 ### 9.4 Ingesting sources
 
 ```
-starship style ingest <project> <path-or-url> --trust authoritative|exemplar [--note "..."]
+ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note "..."]
 ```
 
 ```yaml
@@ -689,11 +690,11 @@ stages:
 ```
 
 One generator per unprocessed source, in parallel; then one curator merges everything.
-After `write-guide.sh` commits, it marks those sources `processed`.
+After `ensign style write-guide` commits, it marks those sources `processed`.
 
 - **Update** (default): the curator consolidates the existing guide and applies the
   proposals, exactly as after a style pass.
-- **Rebuild** (`starship style generate <project> --rebuild`): every source is treated
+- **Rebuild** (`ensign style generate <project> --rebuild`): every source is treated
   as unprocessed, and the curator rebuilds the guide from all proposals. The ledger must
   still account for every existing ID — kept, merged, or dropped with reason.
 
@@ -716,7 +717,7 @@ guide-ledger:
   S14: new                   # evidence: src/session.go:88
 ```
 
-`write-guide.sh` validates before writing; a failure blocks the curator's stop with the
+`ensign style write-guide` validates before writing; a failure blocks the curator's stop with the
 reason:
 
 - every existing ID appears in the ledger, so nothing disappears silently
@@ -735,7 +736,7 @@ guide shows every merge and drop with its reason.
 The run history records each style pass's diff size and which rule IDs were hit. An
 `active` rule still hit run after run is flagged for rewording at the next curate. A
 style diff that isn't shrinking across runs means the loop isn't working, and
-`starship explain` shows it.
+`ensign explain` shows it.
 
 A learned rule that is clearly generic is a candidate for the control plane's house
 style. It goes through the proposal path (§3.2); it is never copied across directly.
@@ -791,12 +792,71 @@ both.
   `journal-commit: { not-applicable: "<reason>" }`. The Stop hook then skips journal
   checks for that project. As with every binding, a missing binding is a stop; only an
   explicit declaration turns the behaviour off.
-- The agent commits through `starship journal commit -m "<message>" <files>`, which
+- The agent commits through `ensign journal commit -m "<message>" <files>`, which
   resolves the binding, so the agent never needs to know the project's VCS.
 
 ---
 
-## 11. Carried over from the reference design
+## 11. Build, platforms and installation
+
+Starship runs on **Linux and Windows**. A machine that only uses it needs **Claude Code
+and git**, nothing else.
+
+### 11.1 `ensign`
+
+The resolver, the hook driver, the built-in bundle handlers and the CLI are one Go
+binary, `ensign`. The project is starship; the binary has its own name so that it never
+collides with the starship shell prompt, whose binary is `starship`.
+
+- **Config is YAML**, parsed by a library compiled into the binary.
+- **Built-in handlers are subcommands**, not scripts: `ensign git-catalog commit-pass`,
+  `ensign style write-guide`. Overlay-supplied handlers are arbitrary commands and may
+  declare per-platform variants, like bindings.
+- **State-file locking uses a portable file-lock library**, not `flock`.
+
+### 11.2 Prebuilt binaries in the repo
+
+```
+bin/
+  linux-amd64/ensign
+  linux-arm64/ensign
+  windows-amd64/ensign.exe
+```
+
+- **Built by GitHub Actions on a version tag**, on one Linux runner that cross-compiles
+  every target. The workflow commits the binaries to `master`. Free for public repos.
+- **Only CI builds committed binaries.** A local build embeds local file paths; building
+  on a work machine would carry them into the public repo.
+- **Builds are reproducible**: `CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid="`.
+  Anyone can rebuild from the tagged source and compare.
+- **Rebuilt only on release**, which keeps repo growth to roughly one set of binaries
+  per release. If it grows too heavy, binaries move to GitHub Releases with a fetch step.
+- **CI also tests on a Windows runner**: paths, locking, and running `ensign.exe` from
+  PowerShell and Git Bash. The harness probe (§7.1) needs a Claude login and stays manual.
+- Go is needed only on a machine where `ensign` itself is being developed.
+
+### 11.3 Installing on a machine
+
+`install.sh` (Linux) or `install.ps1` (Windows) puts the platform's `bin/` directory on
+PATH. These are the only per-platform scripts. Hooks then call `ensign hook <event>`,
+which resolves to the right binary everywhere, so an overlay's committed `settings.json`
+is identical across platforms.
+
+`ensign link` (run in an overlay) copies the control plane's role definitions into the
+overlay's `.claude/agents/`, and re-copies when the control plane changes. No symlinks:
+on Windows they need developer mode, and git checks them out as plain files by default.
+
+### 11.4 Portability rules
+
+- `.gitattributes` with `* text=auto eol=lf`, so config and scripts are never converted to
+  CRLF.
+- Forward slashes in every path; a per-platform `$PROJECTS` root for workspace paths.
+- Hook commands in `settings.json` use no shell syntax — no `$VAR`, no quoting tricks —
+  because the shell that runs them differs by platform.
+
+---
+
+## 12. Carried over from the reference design
 
 - Vocabulary kept distinct: skill, pipeline, role, binding, project, task.
 - Plan first; nothing is dispatched without approval, and approval is the literal `go`.
@@ -807,11 +867,11 @@ both.
 
 ---
 
-## 12. Open questions
+## 13. Open questions
 
-1. **Config format and resolver language.** YAML (shown here) needs a parser dependency;
-   TOML is in the Python standard library but nests awkwardly; a Go resolver gives one
-   static binary.
+1. **How Claude Code runs hook commands on Windows** (Git Bash, PowerShell, or direct
+   process launch). `ensign hook <event>` is designed to work under all three; verify on
+   a Windows machine.
 2. **Join rules beyond `all`**, such as stopping at the first `findings`, if a case
    needs one.
 3. **Nesting depth.** One lead level is specified; deeper nesting is forbidden until a
