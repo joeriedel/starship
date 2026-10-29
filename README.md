@@ -27,25 +27,128 @@ Each layer can extend or override the one above it. The control plane knows noth
 about any project, so it can be shared across contexts that must stay separate, and
 improvements to the process can flow back from any of them.
 
-## What makes it different
+## A conversation on top, enforcement underneath
 
-- **The process is enforced, not remembered.** Pipelines are small state machines.
-  Claude Code hooks enforce stage order, budgets, gates and the approval word `go`;
-  agents supply judgement, not bookkeeping.
-- **Everything is extensible below the control plane.** Bindings say what `@build`
-  means in a project; pipeline operations insert, remove or reshape stages; events attach
-  behaviour to points in a run; bundles package all three.
-- **Nothing is guessed.** A missing binding stops the run. "Not applicable" has to be
-  declared.
-- **The coding loop:** coder ⇄ reviewer (fanned out across review dimensions) → style →
-  tester, with a pass budget per cycle and a cycle budget per run. Success means it
-  compiles and the tests ran and passed.
-- **Style that learns.** The style pass feeds a per-project guide, curated for
-  consistency, that the coder reads on later runs. Style documents and exemplar code can
-  be ingested to seed it.
-- **Task journals are the memory.** Verbose, committed, and good enough for a fresh
-  session to pick the work up.
-- **Type `help`** in a session for a guide generated from the configuration you're in.
+You never drive starship with commands. You talk to Claude Code in a bridge the way you
+would anywhere else, and the machinery runs underneath:
+
+```
+you      open supernova / rate-limit
+claude   Task rate-limit, workspace ~/src/supernova on branch rate-limit, clean.
+you      add per-account rate limiting to the login endpoint; the limits come from config
+claude   (reads the code, then proposes a plan: the work item, what done looks like,
+         what's out of scope; then shows the run it set up)
+         Coding pipeline: code ⇄ review (correctness, security) → style → test,
+         3 passes per cycle. Type go to start.
+you      go
+claude   (dispatches the lead; agents work)
+         Success after 2 passes. Changed: auth/limiter.go, auth/login.go, config.go.
+         One review finding fixed, one deferred: ...
+```
+
+What happened underneath:
+
+- **The session follows a manual, not a script.** Claude reads [`manual/session.md`](manual/session.md):
+  plan first, never implement directly, write standing instructions into files, keep the
+  task journal current. Inspecting the code and discussing it are free. Changing the
+  workspace only happens through a run.
+- **`ensign` turns the plan into a run.** Claude runs `ensign run supernova/rate-limit`,
+  which merges the control plane, bridge, project and task into one snapshot: the
+  pipeline, the bindings (what `@build` and `@test` mean here), the bundles, skills and
+  budgets. It refuses if anything is missing. The snapshot is what the run follows, so
+  editing config mid-run can't change it.
+- **Only the word `go` starts it.** A hook intercepts the message and approves the run.
+  "Yes" or "sounds good" do not.
+- **Hooks enforce the pipeline; agents supply judgement.** The lead agent (the
+  orchestrator) asks `ensign next` what to dispatch and writes the briefs. Every
+  dispatch passes through Claude Code's hooks, where `ensign`:
+  - refuses a stage out of order, over budget, or not approved;
+  - rewrites the prompt to carry the stage brief, the workspace and its exact binding
+    commands, and the relevant skills;
+  - runs each stage in the foreground, so no agent spends a turn waiting.
+
+  When a stage finishes, `ensign` reads its structured report, applies the transition,
+  spends or resets budgets, and fires events. An agent can't skip a stage, invent an
+  outcome, or quietly stop early.
+- **Memory lives in files.** The task journal is committed and pushed in the bridge's
+  git; a hook won't let a turn end with it uncommitted. A fresh session on another
+  machine picks the work up from there.
+- **Words that cost nothing.** `help`, `help <topic>`, `status` and `go` are answered
+  by a hook without a model call. Help is generated from the configuration you're in, in
+  plain requests ("squash this task's commits"), never commands.
+
+The pipeline is a small state machine
+([`pipelines/coding.yaml`](pipelines/coding.yaml)): code ⇄ review, fanned out one
+reviewer per dimension in parallel → style → test. Success means it compiles and the
+tests actually ran and passed. A run ends as `success`, `error` with a reason (a spent
+budget, a blocked coder, a failing check), or `ask-user`, which pauses for your
+decision and resumes.
+
+## Extending it
+
+The control plane knows nothing about any project. Everything specific is added below
+it, by the layer that knows it, in one config file per layer: `bridge.yaml`,
+`projects/<p>/project.yaml`, or the frontmatter of a task's `task.md`. Each layer
+extends or overrides the one above, except for locked invariants.
+
+| To change | Use | Example |
+|---|---|---|
+| what a step means in a project | **bindings** | `@build` → `./build.sh --fast`; `@test` declared not applicable, with a reason |
+| what runs and in what order | **pipeline ops** | add a security review dimension; insert a migrations check before test; drop style |
+| what else happens at a point in a run | **events** | before code: require a clean tree; after test: post a summary; on success: squash |
+| what agents know | **skills** | a project's conventions for its build system, delivered to the stages that need them |
+| a whole new process | **pipelines** | a new YAML state machine, run with `ensign run --pipeline <name>` |
+| all of the above, packaged | **bundles** | `extensions/<name>/extension.yaml`, enabled with `use: [<name>]` |
+
+```yaml
+# projects/supernova/project.yaml
+use: [git-catalog]
+
+bindings:
+  build: { command: "./build.sh --fast" }
+  test:  { command: "./test.sh" }
+
+pipelines:
+  coding:
+    ops:
+      - append: { stage: review, dimensions: [security] }
+      - insert: { before: test, stage: { id: migrations, role: tester,
+                  brief: briefs/migrations.md,
+                  outcomes: { fail: { goto: code }, pass: next } } }
+      - set:    { budgets.test: 1 }
+
+events:
+  stage.after:test: [{ observe: scripts/post-summary.sh }]
+```
+
+The rules that keep extension safe:
+
+- **Nothing is guessed.** A pipeline that needs a binding the project hasn't defined
+  doesn't run. "Not applicable" must be declared, with a reason.
+- **Lists are edited, never silently replaced.** Ops name the stage or field they touch.
+- **Events are fired by code, not agents.** A `require` handler that fails stops the
+  run; an `observe` handler is logged; an `augment` adds text to the next prompt.
+- **A bundle declares the bindings it needs**, so it can't be enabled where it doesn't
+  fit.
+
+Two bundles ship with the control plane:
+
+- **[`git-catalog`](extensions/git-catalog)** commits each coder pass, so the lead can
+  see how the work moved, and squashes when the project says.
+- **[`style-learning`](extensions/style-learning)** feeds what the style pass finds into
+  a per-project style guide. It's curated for consistency and read by the coder on later
+  runs. Style documents and exemplar code can be ingested to seed it.
+
+A bridge can ship its own bundles, skills, roles and pipelines in the same formats.
+
+### Improvements flow back
+
+Agents report facts they discover ("this build needs a clean before switching
+branches"); the `skill-curate` pipeline folds them into skills. Process improvements
+are written up as proposals in the bridge, in general terms, and carried into the
+control plane in a separate session. Commits there pass the leak gates: author
+identity, every bridge's denylist, no agent attribution, and a review by a model with
+no project context.
 
 ## Getting started
 
