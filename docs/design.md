@@ -1277,6 +1277,9 @@ runs against Claude Code, except where listed below.
 - **Nested leads** are rejected by validation.
 - **Style-guide metrics** (style diff size per run, flagging entries hit repeatedly)
   are recorded only as report history; nothing summarises them yet.
+- **Facts for a skill that doesn't exist** are accepted and curated, but their learned
+  entries reach no one until someone writes that skill's file. Agents should be told
+  which skill names exist, or such facts flagged for the user.
 - **Help said nothing once:** in the very first session of a freshly created bridge,
   `help` went to the model instead of being intercepted. Four later sessions intercepted
   it; the cause is unknown.
