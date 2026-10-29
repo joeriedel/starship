@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// HelpEntry is one plain-language request a pipeline or bundle answers to.
+// HelpEntry is one plain-language request a pipeline or extension answers to.
 // Run is the command that carries it out. The session is told it; help never shows it.
 type HelpEntry struct {
 	Say  string `yaml:"say" json:"say"`
@@ -17,7 +17,7 @@ type HelpEntry struct {
 }
 
 // requestCommands is what the session is told, after its manual, about carrying out the
-// requests that pipelines and bundles answer to.
+// requests that pipelines and extensions answer to.
 func requestCommands(bridge string) string {
 	var lines []string
 	extra := extraHelp(bridge)
@@ -162,7 +162,7 @@ func helpText(bridge, session string) string {
 	return b.String()
 }
 
-// extraHelp gathers help entries from pipelines and bundles, by group.
+// extraHelp gathers help entries from pipelines and extensions, by group.
 func extraHelp(bridge string) map[string][]HelpEntry {
 	out := map[string][]HelpEntry{}
 	bf, err := loadBridgeFile(bridge)
@@ -174,7 +174,7 @@ func extraHelp(bridge string) map[string][]HelpEntry {
 		return out
 	}
 	files, _ := filepath.Glob(filepath.Join(cp, "pipelines", "*.yaml"))
-	for _, dir := range bundleDirs(bridge, cp) {
+	for _, dir := range extensionDirs(bridge, cp) {
 		more, _ := filepath.Glob(filepath.Join(dir, "pipelines", "*.yaml"))
 		files = append(files, more...)
 	}
@@ -186,7 +186,7 @@ func extraHelp(bridge string) map[string][]HelpEntry {
 			out["Doing the work"] = append(out["Doing the work"], p.Help...)
 		}
 	}
-	for _, dir := range bundleDirs(bridge, cp) {
+	for _, dir := range extensionDirs(bridge, cp) {
 		var x struct {
 			Name string      `yaml:"name"`
 			Help []HelpEntry `yaml:"help"`

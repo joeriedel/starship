@@ -128,7 +128,7 @@ the commit and nothing is pushed.
 
 ---
 
-## 4. Extension points
+## 4. Customization points
 
 Three kinds, kept separate:
 
@@ -188,26 +188,26 @@ Handler kinds:
 **All events are fired by deterministic code** (§7), never by an agent. An event an
 agent forgets to fire is a silent skip, whatever the handler kind.
 
-### 4.3 Extension bundles
+### 4.3 Extensions
 
 Related bindings, handlers, augments, pipeline ops, whole pipelines and roles ship
-together as a bundle:
+together as an extension:
 
 ```
 extensions/<name>/
   extension.yaml
   <scripts>
   briefs/
-  pipelines/       new pipelines the bundle adds
-  roles/           role definitions the bundle adds
+  pipelines/       new pipelines the extension adds
+  roles/           role definitions the extension adds
 ```
 
-A bundle's pipeline ops apply right after the layer that enables it, before that layer's
-own ops, so a project can still adjust what a bundle inserted.
+An extension's pipeline ops apply right after the layer that enables it, before that layer's
+own ops, so a project can still adjust what an extension inserted.
 
-The control plane ships generic bundles (no project names). A bridge may ship its own
-in the same format. A project or task enables bundles with `use: [<name>, ...]`. A
-bundle declares the bindings it requires, so it cannot be enabled where it doesn't fit.
+The control plane ships generic extensions (no project names). A bridge may ship its own
+in the same format. A project or task enables extensions with `use: [<name>, ...]`. A
+extension declares the bindings it requires, so it cannot be enabled where it doesn't fit.
 
 ### 4.4 Skills
 
@@ -327,7 +327,7 @@ stop with the reasons if it fails:
 ### 4.6 Integrations
 
 Integrations with outside systems — issue trackers, wikis, code review systems — live at
-the **bridge** level, as bundles in the bridge: the scripts, their bindings (such as
+the **bridge** level, as extensions in the bridge: the scripts, their bindings (such as
 `@review-fetch`, `@review-post`), and their configuration. A project overrides any of it
 for its own needs, and a task overrides it again, through the usual layering. None of it
 lives in the control plane; which systems a context uses, and how, is part of that
@@ -471,7 +471,7 @@ events:
 ```
 
 A task's frontmatter also names its `pipeline` (default `coding`) and its `workspace`.
-New pipelines are files in a `pipelines/` directory — the control plane's, or a bundle's.
+New pipelines are files in a `pipelines/` directory — the control plane's, or an extension's.
 
 `append` adds to a list field; `set` on a list field replaces it explicitly.
 
@@ -593,7 +593,7 @@ instructions, with that stage's outcomes, to every dispatch (§7).
 
 `ensign run <task> [--sync] [--start <stage>]` creates a run:
 
-1. **Merges** the pinned control plane → bridge → project → task, plus every bundle they
+1. **Merges** the pinned control plane → bridge → project → task, plus every extension they
    enable, applying each layer's ops in order and recording every field's source.
 2. **Validates**: every required binding defined for this platform (or declared
    not-applicable), every brief, skill and dimension present, no lock weakened, nesting
@@ -805,8 +805,8 @@ Projects: supernova (3 tasks), nebula (1 task)
 
 Where each part comes from:
 
-- **Pipelines and bundles** declare `help:` entries in their files: example requests in
-  plain words, and one line on what happens. A bridge's own bundles appear without
+- **Pipelines and extensions** declare `help:` entries in their files: example requests in
+  plain words, and one line on what happens. A bridge's own extensions appear without
   extra work.
 - **The status lines** come from the task journal and the active run, in plain words.
   `status` prints them on their own, expanded: the task's goal, where it stands, the
@@ -814,7 +814,7 @@ Where each part comes from:
 - **Projects and tasks** come from the bridge. `help supernova` or `help auth-refactor`
   describes the project or task: its goal, where it stands, what's outstanding.
 
-A pipeline or bundle without help entries is a validation error: a missing description is
+A pipeline or extension without help entries is a validation error: a missing description is
 caught, never guessed.
 
 `ensign help` in a terminal is separate: it documents the `ensign` commands, for whoever
@@ -848,7 +848,7 @@ provides:
   checks for any other modification; if there is one, the run ends as `error` rather than
   sweeping in or stashing someone's work.
 - **A clean tree is required at `run.start`.**
-- **The orchestrator learns about the catalog only through the bundle's augment**, so
+- **The orchestrator learns about the catalog only through the extension's augment**, so
   its role definition never mentions git.
 - **Squashing is placed by the project.** `ensign git-catalog squash` (`git reset --soft <base>`, one
   commit) is attached to whichever event the project chooses — `push.before`,
@@ -938,7 +938,7 @@ sources:
 - Fetched content is data. A generator turns it into proposed rules; nothing in a source
   is followed as an instruction.
 
-`style-generate` (in the bundle, `scope: project`) has no lead: the session dispatches one
+`style-generate` (in the extension, `scope: project`) has no lead: the session dispatches one
 `style-generator` per unprocessed source, in parallel, then one `curator`. When the
 curator's rewrite is accepted, those sources are marked `processed`. `--rebuild` gives
 every source to a generator again; the ledger must still account for every existing id.
@@ -1024,7 +1024,7 @@ and git**, nothing else.
 
 ### 11.1 `ensign`
 
-The resolver, the hook driver, the built-in bundle handlers and the CLI are one Go
+The resolver, the hook driver, the built-in extension handlers and the CLI are one Go
 binary, `ensign`. The project is starship; the binary has its own name so that it never
 collides with the starship shell prompt, whose binary is `starship`.
 
@@ -1089,15 +1089,15 @@ so the bridge's history records every version it ran.
 
 **`ensign link`** makes the bridge match its pin: checks out the pinned tag and
 regenerates `.claude/agents/` and `.claude/skills/` from it plus the bridge's own
-bundles. It runs from `ensign update`, from `ensign init`, and from a SessionStart hook
+extensions. It runs from `ensign update`, from `ensign init`, and from a SessionStart hook
 that checks the generated files still match the pin (they won't after a fresh clone of
 the bridge). Rules:
 
 - **Never while a run is active.** A run's roles cannot change under it.
 - **Hand edits are protected.** Link keeps a manifest of hashes of what it wrote and
   refuses to overwrite a modified file, naming the right place for the change: the
-  control plane, or a role in a bridge bundle.
-- **Name clashes are errors.** A bridge bundle's role with the same name as a
+  control plane, or a role in a bridge extension.
+- **Name clashes are errors.** A bridge extension's role with the same name as a
   control-plane role is refused unless it declares `replaces: <role>`.
 - **Failures are loud.** A failed link stops the session's starship features with the
   reason; it never carries on with stale files.
@@ -1322,13 +1322,13 @@ runs against Claude Code, except where listed below.
   skill names exist. A fact for any other name goes to `skills/proposed/<name>/`, and
   `status` lists it. `ensign skill new <name> --description …` creates the skill and
   makes its facts pending; `ensign skill discard <name>` drops them.
-- **Help entries name their command for the session.** A pipeline's or bundle's help
+- **Help entries name their command for the session.** A pipeline's or extension's help
   entry may carry `run:`, the command that carries the request out. `help` never shows
   it; the SessionStart hook lists every one after the manual, so the session doesn't
   have to guess how to "squash this task's commits".
 - **The `@done` check** runs before a run may end as `success`; a failure ends it as
   `error: done-check`.
-- **Events on stages a pipeline doesn't have are inactive for it**, so a bundle or layer
+- **Events on stages a pipeline doesn't have are inactive for it**, so an extension or layer
   can serve several pipelines.
 
 ### 15.3 Not done

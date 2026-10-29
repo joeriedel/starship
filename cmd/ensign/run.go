@@ -31,7 +31,7 @@ type Snapshot struct {
 	Skills       []SkillDelivery      `json:"skills,omitempty"`
 	KnownSkills  []string             `json:"known_skills,omitempty"` // every skill name a fact may be filed under
 	Project      string               `json:"project,omitempty"`
-	Bundles      []string             `json:"bundles,omitempty"`
+	Extensions   []string             `json:"extensions,omitempty"`
 	Created      string               `json:"created"`
 }
 
@@ -352,7 +352,7 @@ func cmdRun(args []string, out io.Writer) error {
 		Bindings:     c.Bindings,
 		Briefs:       map[string]string{},
 		Events:       c.Events,
-		Bundles:      c.Bundles,
+		Extensions:   c.Extensions,
 		Skills:       c.Skills,
 		KnownSkills:  knownSkills(bridge, c.ControlPlane, c.Project),
 		Project:      c.Project,

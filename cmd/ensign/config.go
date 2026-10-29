@@ -268,8 +268,8 @@ type Handler struct {
 	Status  string `json:"status,omitempty"` // passed to generated augments
 }
 
-// Bundle is an extension's extension.yaml.
-type Bundle struct {
+// Extension is an extension's extension.yaml.
+type Extension struct {
 	Name             string      `yaml:"name"`
 	Summary          string      `yaml:"summary"`
 	RequiresBindings []string    `yaml:"requires-bindings"`
@@ -368,10 +368,10 @@ type Config struct {
 	Pipeline     *Pipeline
 	Bindings     map[string]Binding
 	Events       map[string][]Handler
-	Bundles      []string
+	Extensions   []string
 	JournalOff   string // reason, when the project turned journal commits off
 	Skills       []SkillDelivery
-	needs        map[string]string // binding -> what requires it, from bundles
+	needs        map[string]string // binding -> what requires it, from extensions
 	problems     []string
 }
 
@@ -549,18 +549,18 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 	}
 	c.Pipeline = p
 
-	bundles := availableBundles(bridge, c.ControlPlane)
+	extensions := availableExtensions(bridge, c.ControlPlane)
 	for _, l := range layers {
 		for _, use := range l.layer.Use {
-			if contains(c.Bundles, use) {
+			if contains(c.Extensions, use) {
 				continue
 			}
-			b, ok := bundles[use]
+			b, ok := extensions[use]
 			if !ok {
-				return nil, fmt.Errorf("%s: no bundle %q", l.label, use)
+				return nil, fmt.Errorf("%s: no extension %q", l.label, use)
 			}
-			c.Bundles = append(c.Bundles, use)
-			label := "bundle:" + use
+			c.Extensions = append(c.Extensions, use)
+			label := "extension:" + use
 			if po, ok := b.Pipelines[name]; ok {
 				for i := range po.Ops {
 					if err := applyOp(p, &po.Ops[i], label); err != nil {
@@ -599,16 +599,16 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 	return c, nil
 }
 
-// findPipeline locates a pipeline file: the control plane's, then any bundle's.
+// findPipeline locates a pipeline file: the control plane's, then any extension's.
 func findPipeline(bridge, cp, name string) (path, label string) {
 	f := filepath.Join(cp, "pipelines", name+".yaml")
 	if _, err := os.Stat(f); err == nil {
 		return f, "control-plane:pipelines/" + name + ".yaml"
 	}
-	for _, dir := range bundleDirs(bridge, cp) {
+	for _, dir := range extensionDirs(bridge, cp) {
 		f := filepath.Join(dir, "pipelines", name+".yaml")
 		if _, err := os.Stat(f); err == nil {
-			return f, "bundle:" + filepath.Base(dir) + "/pipelines/" + name + ".yaml"
+			return f, "extension:" + filepath.Base(dir) + "/pipelines/" + name + ".yaml"
 		}
 	}
 	return "", ""
@@ -1007,7 +1007,7 @@ func validEvent(ev string, p *Pipeline) bool {
 	case "run.start", "run.finish:success", "run.finish:error", "run.finish:ask-user":
 		return true
 	}
-	// Events on stages this pipeline doesn't have are inactive for it: a layer or bundle
+	// Events on stages this pipeline doesn't have are inactive for it: a layer or extension
 	// serves several pipelines.
 	return strings.HasPrefix(ev, "stage.before:") || strings.HasPrefix(ev, "stage.after:")
 }
@@ -1050,12 +1050,12 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// availableBundles finds every bundle: the control plane's extensions, then the bridge's,
-// which replace a control-plane bundle of the same name.
-func availableBundles(bridge, cp string) map[string]*Bundle {
-	out := map[string]*Bundle{}
-	for _, dir := range bundleDirs(bridge, cp) {
-		var b Bundle
+// availableExtensions finds every extension: the control plane's extensions, then the bridge's,
+// which replace a control-plane extension of the same name.
+func availableExtensions(bridge, cp string) map[string]*Extension {
+	out := map[string]*Extension{}
+	for _, dir := range extensionDirs(bridge, cp) {
+		var b Extension
 		if readYAML(filepath.Join(dir, "extension.yaml"), &b) == nil && b.Name != "" {
 			b.dir = dir
 			out[b.Name] = &b
@@ -1064,7 +1064,7 @@ func availableBundles(bridge, cp string) map[string]*Bundle {
 	return out
 }
 
-func bundleDirs(bridge, cp string) []string {
+func extensionDirs(bridge, cp string) []string {
 	var out []string
 	for _, base := range []string{cp, bridge} {
 		found, _ := filepath.Glob(filepath.Join(base, "extensions", "*", "extension.yaml"))
@@ -1075,9 +1075,9 @@ func bundleDirs(bridge, cp string) []string {
 	return out
 }
 
-func bundleRoleDirs(bridge, cp string) []string {
+func extensionRoleDirs(bridge, cp string) []string {
 	var out []string
-	for _, b := range availableBundles(bridge, cp) {
+	for _, b := range availableExtensions(bridge, cp) {
 		out = append(out, filepath.Join(b.dir, "roles"))
 	}
 	sort.Strings(out)

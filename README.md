@@ -128,7 +128,7 @@ level, and each level can add to or override the one above it.
 | run something at a point in a run: before code, after test, on success | **events** |
 | teach agents your project's conventions | **skills** |
 | invent a whole new process | **pipelines** |
-| package all of the above to reuse | **bundles** |
+| package all of the above to reuse | **extensions** |
 
 ```yaml
 # projects/supernova/project.yaml
@@ -148,7 +148,7 @@ events:
   stage.after:test: [{ observe: scripts/post-summary.sh }]
 ```
 
-Two bundles ship in the box:
+Two extensions ship in the box:
 
 - **[`git-catalog`](extensions/git-catalog)** commits each coder pass, so the
   orchestrator can see how the work evolved. It squashes everything into one commit when
@@ -199,7 +199,7 @@ When asked to make a starship bridge in a folder:
 ## Further reading
 
 [`docs/design.md`](docs/design.md) has the full design: layers, pipelines, the hook
-driver, the extension points, what has been verified against Claude Code, and what is
+driver, the customization points, what has been verified against Claude Code, and what is
 still open.
 
 ## License

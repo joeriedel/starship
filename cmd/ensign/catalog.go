@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// The git-catalog bundle: one local commit per coder pass, so the lead can read how the
+// The git-catalog extension: one local commit per coder pass, so the lead can read how the
 // work moved between passes, and a squash placed wherever the project chooses.
 
 func taskBaseFile(bridge, task string) string {

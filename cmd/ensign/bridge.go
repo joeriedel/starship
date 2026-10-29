@@ -271,7 +271,7 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 		roles[strings.TrimSuffix(filepath.Base(f), ".md")] = data
 	}
 	var bridgeRoles []string
-	for _, d := range append([]string{filepath.Join(bridge, "roles")}, bundleRoleDirs(bridge, cp)...) {
+	for _, d := range append([]string{filepath.Join(bridge, "roles")}, extensionRoleDirs(bridge, cp)...) {
 		found, _ := filepath.Glob(filepath.Join(d, "*.md"))
 		bridgeRoles = append(bridgeRoles, found...)
 	}

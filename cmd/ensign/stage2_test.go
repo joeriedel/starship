@@ -73,7 +73,7 @@ func TestGitCatalog(t *testing.T) {
 		t.Fatalf("attribution in a catalog commit: %q", body)
 	}
 
-	// The orchestrator's prompt carried the bundle's augment.
+	// The orchestrator's prompt carried the extension's augment.
 	st := w.state()
 	if st.Base == "" {
 		t.Fatalf("no base recorded")
