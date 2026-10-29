@@ -76,7 +76,10 @@ func TestPinnedBridge(t *testing.T) {
 	runGit(t, bridge, "config", "user.email", "t@example.com")
 	runGit(t, bridge, "config", "user.name", "t")
 	runGit(t, bridge, "add", "-A")
-	runGit(t, bridge, "commit", "-q", "-m", "bridge")
+	// init commits the bridge itself when git has an identity (macOS git makes one up).
+	if staged, _ := gitOut(bridge, "diff", "--cached", "--name-only"); staged != "" {
+		runGit(t, bridge, "commit", "-q", "-m", "bridge")
+	}
 
 	if tag, err := latestTag(repo); err != nil || tag != "v0.2.0" {
 		t.Fatalf("latest tag %q %v", tag, err)
