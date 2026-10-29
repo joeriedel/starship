@@ -16,7 +16,7 @@ This document records the design as agreed. Open questions are collected at the 
 2. **Improvements flow back from anywhere.** Process improvements discovered at home or
    at work can be committed to the control plane from either machine, without carrying
    project knowledge with them.
-3. **Everything is extensible below the control plane.** An overlay, a project, or a
+3. **Everything is extensible below the control plane.** A bridge, a project, or a
    single task can change bindings, reshape pipelines, and attach behaviour to events,
    without editing the control plane.
 4. **The process is enforced, not remembered.** Stage order, budgets, gates and approvals
@@ -32,31 +32,34 @@ control plane   ~/starship            personal GitHub; public-safe
    │            roles, pipelines, extensions, hook driver, resolver,
    │            operating manual, harness notes, generic skills
    ▼
-overlay         starship-work/        hosted wherever that context requires
-   │            starship-home/        (a work overlay never touches personal GitHub)
+bridge          bridges/work/         hosted wherever that context requires
+   │            bridges/home/         (a work bridge never touches personal GitHub)
    │            projects, tasks, project skills, integration scripts,
    │            platform roots, denylist.txt, proposals/, local extensions
    ▼
-project         <overlay>/projects/<project>/
+project         <bridge>/projects/<project>/
    │            bindings, pipeline extensions, rules
    ▼
-task            <overlay>/projects/<project>/tasks/<task>/task.md
+task            <bridge>/projects/<project>/tasks/<task>/task.md
                 workspace paths, VCS state, per-task extensions, journal
 ```
 
 Each later layer may extend or override the one before it, subject to locks (§5.6).
 
-### 2.1 How an overlay consumes the control plane
+### 2.1 How a bridge consumes the control plane
 
-- **Sessions open in the overlay, not in the control plane.** The overlay's repo is the
+- **Sessions open in the bridge, not in the control plane.** The bridge's repo is the
   session's repo, so tasks, scratch, settings and commits stay inside its boundary.
-- **One writable clone of the control plane per machine**, at `~/starship`. Overlays
-  consume it directly (`@import` from the overlay's `CLAUDE.md`, role definitions copied
+- **A bridge is always a git repo.** Workspaces may use any VCS; the bridge, which holds
+  starship's own state, does not vary. Nothing from starship is ever written into a
+  workspace, so no project repo needs to ignore anything.
+- **One writable clone of the control plane per machine**, at `~/starship`. Bridges
+  consume it directly (`@import` from the bridge's `CLAUDE.md`, role definitions copied
   in by `ensign link` (§11.3), hooks calling `ensign`), so control-plane edits are live
   immediately. A Claude Code plugin was
   considered and dropped: it installs into a cache, which would mean keeping a writable
   clone and a published copy in sync.
-- **Overlay sessions cannot write to the control plane.** A permission deny on the
+- **Bridge sessions cannot write to the control plane.** A permission deny on the
   control-plane path, backed by a PreToolUse hook, makes this structural.
 
 ---
@@ -79,7 +82,7 @@ The last three are channels, not mistakes, and need structural answers.
 ### 3.2 The improvement path
 
 ```
-overlay session (cwd: <overlay>)
+bridge session (cwd: <bridge>)
   │  notices a process improvement
   │  writes proposals/<slug>.md, stated abstractly
   ▼
@@ -89,7 +92,7 @@ control-plane session (cwd: ~/starship, fresh context)
   ▼
 commit gates (git hooks in ~/starship)
   1. identity: author email must be the personal address
-  2. denylist: diff grepped against every overlay denylist on this machine
+  2. denylist: diff grepped against every bridge denylist on this machine
   3. clean-room review: an agent with no project context reads only the diff
   ▼
 commit and push to personal GitHub, without asking (§10.1)
@@ -100,8 +103,8 @@ commit and push to personal GitHub, without asking (§10.1)
   session prevents paraphrase. Both are needed.
 - **Proposals are linted on read**, against the same denylists, since they are where
   project context is first abstracted.
-- **Denylists live in their overlay and never enter the control plane.** The check fails
-  closed: an overlay present with a missing or empty `denylist.txt` refuses the commit.
+- **Denylists live in their bridge and never enter the control plane.** The check fails
+  closed: a bridge present with a missing or empty `denylist.txt` refuses the commit.
 - **Commit identity is enforced** by a pre-commit hook, not just configured, so a
   machine's global git identity cannot reach public history.
 - **Examples in the control plane use a fictional project** (`supernova`). Lessons are
@@ -186,7 +189,7 @@ extensions/<name>/
 A bundle's pipeline ops apply right after the layer that enables it, before that layer's
 own ops, so a project can still adjust what a bundle inserted.
 
-The control plane ships generic bundles (no project names). An overlay may ship its own
+The control plane ships generic bundles (no project names). A bridge may ship its own
 in the same format. A project or task enables bundles with `use: [<name>, ...]`. A
 bundle declares the bindings it requires, so it cannot be enabled where it doesn't fit.
 
@@ -202,10 +205,10 @@ project's rules or the task journal.
 | Layer | Holds | Example |
 |---|---|---|
 | control plane `skills/` | public technology knowledge | `go`, `cpp`, `proto` |
-| overlay `skills/` | technology knowledge that must stay in that context | an internal framework; engine facts learned on the job |
+| bridge `skills/` | technology knowledge that must stay in that context | an internal framework; engine facts learned on the job |
 | project `skills/` | rare: a technology only this project uses | a project-private DSL |
 
-A skill of the same name at a lower layer **extends** the one above it (the overlay's
+A skill of the same name at a lower layer **extends** the one above it (the bridge's
 `go.md` adds to the control plane's). Replacing it outright needs `replace: true`.
 
 **Selection** happens at the project and task layers:
@@ -252,14 +255,14 @@ facts:
     evidence: "encoding/json/encode.go:… — verified with a test"
 ```
 
-The driver appends them to `skills/pending/<skill>.yaml` in the overlay at
+The driver appends them to `skills/pending/<skill>.yaml` in the bridge at
 `stage.after`, without slowing the run. A `skill-curate` pipeline, dispatched by the
 session (no lead), runs the `curator` role over each skill with pending facts: it
 consolidates the skill, applies the facts, and reports a ledger accounting for every
 existing entry — the same pass and the same checks as the style guide (§9.5). `help`
 shows how many facts are pending.
 
-**Learned facts land in the overlay's copy of the skill, never the control plane's.**
+**Learned facts land in the bridge's copy of the skill, never the control plane's.**
 Promoting one into a public skill goes through the proposal path (§3.2) under the
 high-risk gate (§3.3).
 
@@ -477,11 +480,11 @@ further fields (the `code` stage requires `files` when `git-catalog` is enabled)
 
 ### 6.3 Resolver and snapshot
 
-`ensign resolve <task>` merges control plane → overlay → project → task and writes a
+`ensign resolve <task>` merges control plane → bridge → project → task and writes a
 frozen snapshot. Hooks read only the snapshot.
 
 ```
-<overlay>/.starship/runs/<run-id>/
+<bridge>/.starship/runs/<run-id>/
   pipeline.json    resolved pipeline; every field records its source file and line
   state.json       written only by the driver
   reports/         each stage's report block as received
@@ -595,10 +598,10 @@ before the model sees it. Anything that isn't an exact match (`help me add a rev
 dimension`) goes to the model as a normal question.
 
 **Help is generated from the resolved configuration, never hand-maintained**, so it
-always describes the overlay you are in:
+always describes the bridge you are in:
 
 ```
-starship — overlay: starship-work   platform: linux   project: supernova   task: auth-refactor
+starship — bridge: work   platform: linux   project: supernova   task: auth-refactor
 run: 20261029-1203-coding  stage: review (2 of 3 branches done)  loop 2/3  test 0/3
 
 Session words
@@ -614,7 +617,7 @@ Commands (run in a terminal, or ask me to run them)
   ensign style generate ...  build or update the style guide (style-learning)
 
 Pipelines   coding, style-generate
-Bundles     git-catalog, journal-git, style-learning
+Bundles     git-catalog, style-learning
 Projects    supernova (3 tasks), nebula (1 task)
 Bindings    supernova: all required bindings defined; @lint not-applicable
 ```
@@ -623,11 +626,11 @@ Where each part comes from:
 
 - **Commands** register a one-line summary and a detail page in the CLI.
 - **Bundles** declare a `help:` block in `extension.yaml`: the commands, pipelines and
-  words they add. An overlay's own bundles therefore appear without extra work.
+  words they add. A bridge's own bundles therefore appear without extra work.
 - **Pipelines** carry a `summary:`; `help coding` prints its stages, outcomes and
   budgets as resolved for the current task, with provenance (as `ensign explain`).
 - **Roles** use their definition's `description`.
-- **Projects and tasks** come from the overlay; a task's `help` shows its workspace, VCS
+- **Projects and tasks** come from the bridge; a task's `help` shows its workspace, VCS
   state and journal status.
 
 Anything that adds a command, pipeline or bundle without help text is a resolver error,
@@ -681,7 +684,7 @@ supplies, and is fed to the coder so that later runs need less correcting.
 ### 9.1 Files
 
 ```
-<overlay>/projects/<project>/style/
+<bridge>/projects/<project>/style/
   learned.md       the guide: rules with stable IDs, status, hits, evidence
   sources.yaml     manifest of ingested sources
   sources/         copies of ingested documents
@@ -811,8 +814,8 @@ reason:
   came from an authoritative source
 - the guide fits its line budget
 
-It then commits `learned.md` (and `sources.yaml`) through the overlay's
-`@journal-commit` binding, with the ledger in the commit body, so `git log -p` on the
+It then commits and pushes `learned.md` (and `sources.yaml`) in the bridge's repo,
+like a journal, with the ledger in the commit body, so `git log -p` on the
 guide shows every merge and drop with its reason.
 
 ### 9.6 Is it working?
@@ -834,7 +837,7 @@ Three kinds of repository, three defaults:
 | What | Commit | Push |
 |---|---|---|
 | control plane (`~/starship`) | automatic | automatic, after the gates in §3.2 |
-| task journals (`tasks/<task>/`) | automatic, per project; may be disabled | automatic, with the commit |
+| task journals (`tasks/<task>/`, in the bridge) | automatic; a project may turn it off | automatic, with the commit |
 | workspaces (product code) | per pipeline (e.g. `git-catalog`) | only with explicit approval, every time |
 
 In every case the agent writes the commit message, because it knows what the logical
@@ -854,30 +857,18 @@ happened is not.
 ### 10.2 Task journals
 
 Task journals are verbose by design: progress log, decisions with reasoning, outstanding
-work, notes. The bar is that a fresh session with no context can pick the work up. They
-are committed by default.
+work, notes. The bar is that a fresh session with no context can pick the work up.
 
-Projects don't all use git, so how a journal is committed is a binding, not a fixed
-command:
+Journals live in the bridge, and a bridge is always git, so committing them doesn't
+depend on the project's VCS:
 
-| Binding | Means |
-|---|---|
-| `@journal-status` | list journal changes not yet recorded remotely (uncommitted or unpushed) |
-| `@journal-commit` | record the given journal files remotely with the given message |
-
-`@journal-commit` means "durably recorded on the remote", not "committed locally". For
-git that is a commit followed by a push; for a centralised VCS the submit already does
-both.
-
-- **Default:** the control plane's `journal-git` bundle, enabled for every project,
-  binds both to git in the repo holding the task directory: stage by name, commit, push.
-- **Another VCS:** the project binds them to its own commands.
-- **Disabled:** the project declares
-  `journal-commit: { not-applicable: "<reason>" }`. The Stop hook then skips journal
-  checks for that project. As with every binding, a missing binding is a stop; only an
-  explicit declaration turns the behaviour off.
-- The agent commits through `ensign journal commit -m "<message>" <files>`, which
-  resolves the binding, so the agent never needs to know the project's VCS.
+- **Default: on.** Journal files are staged by name, committed, and pushed in the
+  bridge's repo.
+- **Off:** the project declares `journal: { commit: off, reason: "<why>" }`. The Stop
+  hook then skips journal checks for that project. Turning it off needs a reason, like a
+  `not-applicable` binding.
+- The agent commits through `ensign journal commit -m "<message>" <files>`, which stages,
+  commits and pushes in one step.
 
 ---
 
@@ -894,7 +885,7 @@ collides with the starship shell prompt, whose binary is `starship`.
 
 - **Config is YAML**, parsed by a library compiled into the binary.
 - **Built-in handlers are subcommands**, not scripts: `ensign git-catalog commit-pass`,
-  `ensign style write-guide`. Overlay-supplied handlers are arbitrary commands and may
+  `ensign style write-guide`. Bridge-supplied handlers are arbitrary commands and may
   declare per-platform variants, like bindings.
 - **State-file locking uses a portable file-lock library**, not `flock`.
 
@@ -922,12 +913,23 @@ bin/
 
 `install.sh` (Linux) or `install.ps1` (Windows) puts the platform's `bin/` directory on
 PATH. These are the only per-platform scripts. Hooks then call `ensign hook <event>`,
-which resolves to the right binary everywhere, so an overlay's committed `settings.json`
+which resolves to the right binary everywhere, so a bridge's committed `settings.json`
 is identical across platforms.
 
-`ensign link` (run in an overlay) copies the control plane's role definitions into the
-overlay's `.claude/agents/`, and re-copies when the control plane changes. No symlinks:
-on Windows they need developer mode, and git checks them out as plain files by default.
+Most of the control plane needs no copying: the bridge's `CLAUDE.md` imports
+`~/starship/CLAUDE.md`, hooks call `ensign` on PATH, and the driver reads pipelines and
+skills from `~/starship` directly. Only files Claude Code must find inside the bridge's
+`.claude/` are copied — role definitions into `.claude/agents/`, and `on-demand` skills
+into `.claude/skills/`.
+
+- The copies are **generated output, gitignored in the bridge**; `ensign init` writes
+  the ignore rule when the bridge is created.
+- A **SessionStart hook refreshes them** when the control plane's commit differs from the
+  one they were copied from. `ensign link` does the same by hand.
+- **No symlinks**: on Windows they need developer mode, and git checks them out as plain
+  files by default.
+- Whether a Claude Code plugin can be loaded live from `~/starship` without caching,
+  which would remove the copies entirely, is untested (§13).
 
 ### 11.4 Portability rules
 
@@ -959,11 +961,13 @@ on Windows they need developer mode, and git checks them out as plain files by d
    needs one.
 3. **Nesting depth.** One lead level is specified; deeper nesting is forbidden until a
    second case needs it.
-4. **Who may unlock** a lock: overlay and project only, or tasks too.
+4. **Who may unlock** a lock: bridge and project only, or tasks too.
 5. **Integration scripts** (issue trackers, review systems): generic bundles in the
-   control plane with configuration from the overlay, or overlay-only.
-6. **Same machine or separate machines** for different overlays, which affects whether a
-   denylist check sees more than one overlay.
+   control plane with configuration from the bridge, or bridge-only.
+6. **Same machine or separate machines** for different bridges, which affects whether a
+   denylist check sees more than one bridge.
 7. **A fast path for trivial control-plane fixes**, or always the proposal handoff.
-8. **Committing to the personal repo from a work machine** is an employment-agreement
+8. **Loading the control plane as a Claude Code plugin from a local directory**, without
+   a cached copy, which would replace `ensign link`.
+9. **Committing to the personal repo from a work machine** is an employment-agreement
    question, separate from content cleanliness. The user's call.

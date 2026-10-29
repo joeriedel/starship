@@ -3,8 +3,8 @@
 An agent-orchestration control plane for [Claude Code](https://claude.com/claude-code).
 
 Starship holds no application. It holds the configuration used to work on *other*
-repositories — roles, pipelines, and the rules that govern them. You open a session in an
-overlay, name a project and a task, and say what you want done; which agents run, in what
+repositories — roles, pipelines, and the rules that govern them. You open a session in a
+bridge, name a project and a task, and say what you want done; which agents run, in what
 order, on which model, under which project's rules, is resolved from configuration.
 
 > **Status: design.** The design is in [`docs/design.md`](docs/design.md). Nothing is
@@ -15,7 +15,7 @@ order, on which model, under which project's rules, is resolved from configurati
 ```
 control plane   this repo: roles, pipelines, extension bundles, the hook driver
    ▼
-overlay         one per context (home, work, ...), kept wherever that context requires:
+bridge          one per context (home, work, ...), kept wherever that context requires:
    ▼            projects, tasks, project skills, integrations
 project         bindings (@build, @test, ...), pipeline extensions, rules
    ▼
