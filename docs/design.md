@@ -473,6 +473,9 @@ If the user's message is exactly `go` and a plan is pending, set `approved`. Unt
 PreToolUse denies the lead dispatch. The approval gate is a harness check, not an
 agent's promise.
 
+If the message is `help` or `help <topic>`, print the help text and end the turn without
+calling the model (§7.2).
+
 **Git hooks** run `commit.before` and `push.before` through the same script, including
 the control-plane leak gates (§3.2).
 
@@ -487,10 +490,66 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | PreToolUse `deny` on a nested spawn | yes; the agent never started and the caller saw the reason |
 | SubagentStop identifies the agent and its output | yes: `agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message` |
 | SubagentStop `decision: block` forces the agent to continue | yes; the second stop arrives with `stop_hook_active: true` |
+| UserPromptSubmit `decision: block` shows its `reason` with no model call | yes; zero turns, zero cost. The harness frames it as "operation blocked by hook" |
 
 SubagentStop identifies the role but not the stage, which is why dispatches are tagged.
 Harness behaviour changes between builds, so the probe belongs in this repo as a
 self-test, re-run after every Claude Code upgrade.
+
+### 7.2 Session words and help
+
+A few exact messages are handled by the UserPromptSubmit hook rather than the model:
+
+| Word | Effect |
+|---|---|
+| `go` | approve the pending plan |
+| `help` | overview of what is available here |
+| `help <topic>` | detail on one command, pipeline, bundle, project or role |
+
+`help` is deterministic and costs nothing: the hook prints the text and blocks the prompt
+before the model sees it. Anything that isn't an exact match (`help me add a review
+dimension`) goes to the model as a normal question.
+
+**Help is generated from the resolved configuration, never hand-maintained**, so it
+always describes the overlay you are in:
+
+```
+starship — overlay: starship-work   platform: linux   project: supernova   task: auth-refactor
+run: 20261029-1203-coding  stage: review (2 of 3 branches done)  loop 2/3  test 0/3
+
+Session words
+  go                     approve the pending plan
+  help [topic]           this text, or detail on one topic
+
+Commands (run in a terminal, or ask me to run them)
+  starship resolve <task>      merge the layers into a run snapshot
+  starship explain <task>      show the resolved pipeline and where each part came from
+  starship resume <run>        continue a run that ended as ask-user
+  starship squash <task>       squash the run's catalog (git-catalog)
+  starship style ingest ...    add a style source (style-learning)
+  starship style generate ...  build or update the style guide (style-learning)
+
+Pipelines   coding, style-generate
+Bundles     git-catalog, journal-git, style-learning
+Projects    supernova (3 tasks), nebula (1 task)
+Bindings    supernova: all required bindings defined; @lint not-applicable
+```
+
+Where each part comes from:
+
+- **Commands** register a one-line summary and a detail page in the CLI.
+- **Bundles** declare a `help:` block in `extension.yaml`: the commands, pipelines and
+  words they add. An overlay's own bundles therefore appear without extra work.
+- **Pipelines** carry a `summary:`; `help coding` prints its stages, outcomes and
+  budgets as resolved for the current task, with provenance (as `starship explain`).
+- **Roles** use their definition's `description`.
+- **Projects and tasks** come from the overlay; a task's `help` shows its workspace, VCS
+  state and journal status.
+
+Anything that adds a command, pipeline or bundle without help text is a resolver error,
+in the same spirit as a missing binding: a missing description is caught, never guessed.
+
+`starship help [topic]` in a terminal prints the same text.
 
 ---
 
