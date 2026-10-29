@@ -62,7 +62,7 @@ func TestGitCatalog(t *testing.T) {
 	if r := w.stop(coder, "coder", report("compiled"), false); !strings.Contains(r, "no files line") {
 		t.Fatalf("a coder report without files should be blocked: %q", r)
 	}
-	if r := w.stop(coder, "coder", coderReport("compiled", "lib.txt"), true); r != "" {
+	if r := w.stop(coder, "coder", coderReport("compiled", filepath.Join(ws, "lib.txt")), true); r != "" {
 		t.Fatalf("blocked: %s", r)
 	}
 	log := runGit(t, ws, "log", "--format=%s", "-1")

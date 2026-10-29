@@ -51,11 +51,17 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 		return fmt.Errorf("commit-pass runs only after a stage")
 	}
 	ws := r.Snap.Workspace
-	files := d.Fields["files"]
-	for _, f := range files {
+	var files []string
+	for _, f := range d.Fields["files"] {
+		if filepath.IsAbs(f) {
+			if rel, err := filepath.Rel(ws, f); err == nil {
+				f = rel
+			}
+		}
 		if filepath.IsAbs(f) || strings.HasPrefix(filepath.Clean(f), "..") {
 			return fmt.Errorf("reported file %q is not a path inside the workspace", f)
 		}
+		files = append(files, filepath.ToSlash(filepath.Clean(f)))
 	}
 	if len(files) > 0 {
 		if err := git(ws, append([]string{"add", "--"}, files...)...); err != nil {

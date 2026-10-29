@@ -246,6 +246,10 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 			d.Done = true
 			return nil, nil
 		}
+		if waiting := m.runningIn(s.ID); waiting != "" {
+			// Waiting on a running stage is not giving up, so it doesn't count.
+			return block("stage " + waiting + " is still running; wait for its result, then run the next command."), nil
+		}
 		d.StopBlocks++
 		if d.StopBlocks > 3 {
 			d.Done = true
@@ -409,12 +413,12 @@ func reportInstructions(s *Stage) string {
 
 func workspaceSection(r *RunFiles) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "## Workspace\n\n%s\n\nRun commands from the workspace root. Bindings for this project:\n\n", r.Snap.Workspace)
+	fmt.Fprintf(&b, "## Workspace\n\n%s\n\nThe project's bindings, as the exact commands to run:\n\n", r.Snap.Workspace)
 	for _, k := range sortedKeys(r.Snap.Bindings) {
 		bd := r.Snap.Bindings[k]
 		switch {
 		case bd.Command != "":
-			fmt.Fprintf(&b, "- @%s: `%s`\n", k, bd.Command)
+			fmt.Fprintf(&b, "- @%s: `cd %s && %s`\n", k, shellQuote(r.Snap.Workspace), bd.Command)
 		case bd.Guidance != "":
 			fmt.Fprintf(&b, "- @%s: %s\n", k, bd.Guidance)
 		default:
@@ -575,4 +579,12 @@ func cmdResume(args []string, out io.Writer) error {
 	fmt.Fprintf(out, "run %s resumed. Dispatch its lead now: use the Agent tool with subagent_type %q and this work item as the prompt:\n\n%s\n",
 		r.State.Run, lead.Role, r.Snap.WorkItem)
 	return nil
+}
+
+// shellQuote quotes a path for a POSIX shell when it needs it.
+func shellQuote(p string) string {
+	if strings.ContainsAny(p, " '\"$`\\&;|<>()*?[]{}!#~") {
+		return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
+	}
+	return p
 }

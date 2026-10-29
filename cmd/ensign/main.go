@@ -17,6 +17,7 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	handoff()
 	var err error
 	switch os.Args[1] {
 	case "run":
@@ -40,6 +41,10 @@ func main() {
 		err = cmdCatalog(os.Args[2:], os.Stdout)
 	case "resume":
 		err = cmdResume(os.Args[2:], os.Stdout)
+	case "setup":
+		err = cmdSetup(os.Args[2:], os.Stdout)
+	case "update":
+		err = cmdUpdate(os.Args[2:], os.Stdout)
 	case "version", "--version":
 		fmt.Println("ensign", version)
 	case "hook":
@@ -61,6 +66,8 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   ensign init <dir> (--control-plane <path> | --remote <url> --tag <tag>)
+  ensign setup [--projects <path>]
+  ensign update [<tag>]
   ensign link [--force]
   ensign project new <name>
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
@@ -195,6 +202,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if err != nil {
 		fmt.Fprintf(stdout, "starship: this bridge is not ready: %v\n", err)
 		return 0
+	}
+	if in.SessionID != "" {
+		writeFile(sessionFile(bridge, in.SessionID)+".pin", pinnedCommit(bridge)+"\n")
 	}
 	if note := syncBridge(bridge); note != "" {
 		fmt.Fprintln(stdout, note)

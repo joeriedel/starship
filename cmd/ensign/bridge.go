@@ -129,11 +129,16 @@ func cmdInit(args []string, out io.Writer) error {
 		}
 	}
 	fmt.Fprintf(out, "bridge created at %s\n", dir)
-	if cpPath != "" {
-		return link(dir, false, out)
+	if cpPath == "" {
+		bf, err := loadBridgeFile(dir)
+		if err != nil {
+			return err
+		}
+		if err := fetchControlPlane(dir, bf); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintln(out, "run `ensign setup` in it to fetch the control plane and generate its files")
-	return nil
+	return link(dir, false, out)
 }
 
 func git(dir string, args ...string) error {

@@ -209,3 +209,13 @@ func (m *machine) running(scope, stage string) int {
 	}
 	return n
 }
+
+// runningIn names a stage in scope with a dispatched agent still working, or "".
+func (m *machine) runningIn(scope string) string {
+	for _, d := range m.st.Dispatches {
+		if d.Scope == scope && !d.Done {
+			return d.Stage
+		}
+	}
+	return ""
+}

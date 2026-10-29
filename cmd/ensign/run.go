@@ -282,6 +282,13 @@ func cmdRun(args []string, out io.Writer) error {
 	}
 
 	session := os.Getenv("STARSHIP_SESSION")
+	if session != "" {
+		if data, err := os.ReadFile(sessionFile(bridge, session) + ".pin"); err == nil {
+			if started := strings.TrimSpace(string(data)); started != pinnedCommit(bridge) {
+				return fmt.Errorf("the bridge was updated to a new starship release after this session started; restart claude before starting a run")
+			}
+		}
+	}
 	for _, ri := range listRuns(bridge) {
 		if ri.state.terminal() {
 			continue
