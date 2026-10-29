@@ -4,10 +4,16 @@ summary: A per-project style guide, learned from the style pass and from sources
 help:
   - say: '"learn our style from <file, folder or link>"'
     does: add a source for the style guide
+    run: ensign style ingest <project> <path-or-url> --trust authoritative|exemplar --note "<what it is>"   (ask the user which trust)
   - say: '"update the style guide from its sources"'
     does: fold new sources into the guide
+    run: ensign run --pipeline style-generate --project <project>
   - say: '"rebuild the style guide"'
     does: regenerate it from every source
+    run: ensign run --pipeline style-generate --project <project> --rebuild
+  - say: '"how is the style guide doing?"'
+    does: whether style passes need less correcting over time, and which rules keep being missed
+    run: ensign style report <project>
 
 pipelines:
   coding:
@@ -20,3 +26,4 @@ events:
   stage.before:code:   [{ augment: "@style-guide", status: active }]
   stage.before:style:  [{ augment: "@style-guide" }, { augment: briefs/style-reviewer.md }]
   stage.before:curate: [{ augment: "@style-curate-input" }]
+  stage.after:style:   [{ observe: "ensign style record" }]

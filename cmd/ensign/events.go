@@ -140,6 +140,8 @@ func internalHandler(r *RunFiles, args []string, d *Dispatch) error {
 		return catalogCommitPass(r, d)
 	case "git-catalog squash":
 		return catalogSquashRun(r)
+	case "style record":
+		return styleRecord(r, d)
 	}
 	return fmt.Errorf("unknown built-in handler: ensign %s", strings.Join(args, " "))
 }

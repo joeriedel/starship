@@ -65,6 +65,129 @@ func styleGuideFile(bridge, project string) string {
 	return filepath.Join(styleDir(bridge, project), "learned.yaml")
 }
 
+// StyleRecord is one style pass, as kept in the project's committed style history. The
+// run directories are per machine; the history goes with the bridge.
+type StyleRecord struct {
+	Run  string   `yaml:"run"`
+	Date string   `yaml:"date"`
+	Task string   `yaml:"task,omitempty"`
+	New  int      `yaml:"new"`            // corrections with no rule in the guide yet
+	Hits []string `yaml:"hits,omitempty"` // guide entries a correction fell under
+}
+
+type StyleHistory struct {
+	Passes []StyleRecord `yaml:"passes"`
+}
+
+func styleHistoryFile(bridge, project string) string {
+	return filepath.Join(styleDir(bridge, project), "history.yaml")
+}
+
+func loadStyleHistory(bridge, project string) StyleHistory {
+	var h StyleHistory
+	readYAML(styleHistoryFile(bridge, project), &h)
+	return h
+}
+
+// styleRecord appends the style pass that just finished to the project's history.
+func styleRecord(r *RunFiles, d *Dispatch) error {
+	if d == nil || r.Snap.Project == "" {
+		return fmt.Errorf("style record needs a style stage in a project run")
+	}
+	rec := StyleRecord{Run: r.State.Run, Date: time.Now().Format("2006-01-02"), Task: r.Snap.Task}
+	for _, line := range d.Fields["rule"] {
+		kind, rest, _ := strings.Cut(line, "|")
+		switch strings.TrimSpace(kind) {
+		case "new":
+			rec.New++
+		case "hit":
+			if id := strings.TrimSpace(rest); id != "" {
+				rec.Hits = append(rec.Hits, id)
+			}
+		}
+	}
+	h := loadStyleHistory(r.Snap.Bridge, r.Snap.Project)
+	h.Passes = append(h.Passes, rec)
+	return writeYAML(styleHistoryFile(r.Snap.Bridge, r.Snap.Project), h)
+}
+
+// recurringHits lists guide entries hit in at least min of the last window passes, most
+// first. An active entry the coder keeps getting corrected on is badly worded, or isn't
+// reaching the coder.
+func recurringHits(h StyleHistory, window, min int) []string {
+	passes := h.Passes
+	if len(passes) > window {
+		passes = passes[len(passes)-window:]
+	}
+	runs := map[string]int{}
+	for _, p := range passes {
+		seen := map[string]bool{}
+		for _, id := range p.Hits {
+			if !seen[id] {
+				seen[id] = true
+				runs[id]++
+			}
+		}
+	}
+	var out []string
+	for id, n := range runs {
+		if n >= min {
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if runs[out[i]] != runs[out[j]] {
+			return runs[out[i]] > runs[out[j]]
+		}
+		return out[i] < out[j]
+	})
+	for i, id := range out {
+		out[i] = fmt.Sprintf("%s (%d of the last %d passes)", id, runs[id], len(passes))
+	}
+	return out
+}
+
+// styleReport summarises a project's style history: whether passes need less correcting
+// over time, and which entries keep being hit.
+func styleReport(bridge, project string) string {
+	h := loadStyleHistory(bridge, project)
+	if len(h.Passes) == 0 {
+		return fmt.Sprintf("No style passes recorded for %s yet.\n", project)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Style passes for %s: %d, from %s to %s.\n", project, len(h.Passes), h.Passes[0].Date, h.Passes[len(h.Passes)-1].Date)
+	avg := func(ps []StyleRecord) float64 {
+		n := 0
+		for _, p := range ps {
+			n += p.New + len(p.Hits)
+		}
+		return float64(n) / float64(len(ps))
+	}
+	if k := len(h.Passes) / 2; k >= 2 {
+		early, late := avg(h.Passes[:k]), avg(h.Passes[len(h.Passes)-k:])
+		trend := "about the same"
+		switch {
+		case late < early*0.8:
+			trend = "fewer: the guide is working"
+		case late > early*1.2:
+			trend = "more: the guide isn't keeping up"
+		}
+		fmt.Fprintf(&b, "Corrections per pass: %.1f in the first %d, %.1f in the last %d (%s).\n", early, k, late, k, trend)
+	} else {
+		fmt.Fprintf(&b, "Corrections per pass: %.1f (too few passes for a trend).\n", avg(h.Passes))
+	}
+	last := h.Passes[len(h.Passes)-1]
+	fmt.Fprintf(&b, "Last pass (%s): %d new rule%s, %d correction%s under existing entries.\n",
+		last.Run, last.New, plural(last.New), len(last.Hits), plural(len(last.Hits)))
+	if rec := recurringHits(h, 10, 3); len(rec) > 0 {
+		b.WriteString("Entries the coder keeps being corrected on (reword them, or check they reach the coder):\n")
+		for _, r := range rec {
+			b.WriteString("  " + r + "\n")
+		}
+	}
+	return b.String()
+}
+
 // Source is an ingested style source.
 type Source struct {
 	ID        string `yaml:"id"`
@@ -331,6 +454,12 @@ func styleCurateInput(r *RunFiles) string {
 	if n == 0 {
 		b.WriteString("(nothing)\n")
 	}
+	if rec := recurringHits(loadStyleHistory(r.Snap.Bridge, r.Snap.Project), 10, 3); len(rec) > 0 {
+		b.WriteString("\n## Entries hit run after run\n\nThe coder is given these and still gets corrected on them. Reword each so it can't be misread.\n\n")
+		for _, x := range rec {
+			b.WriteString("- " + x + "\n")
+		}
+	}
 	if src := loadSources(r.Snap.Bridge, r.Snap.Project); len(src.Sources) > 0 {
 		b.WriteString("\n## Sources\n\n")
 		for _, s := range src.Sources {
@@ -348,7 +477,18 @@ func styleCurateInput(r *RunFiles) string {
 
 // cmdStyle implements `ensign style ingest <project> <path-or-url> --trust <t> [--note <n>]`.
 func cmdStyle(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>]")
+	usage := fmt.Errorf("usage: ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] | ensign style report <project>")
+	if len(args) == 2 && args[0] == "report" {
+		bridge, err := cwdBridge()
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(filepath.Join(bridge, "projects", args[1], "project.yaml")); err != nil {
+			return fmt.Errorf("no project %s", args[1])
+		}
+		fmt.Fprint(out, styleReport(bridge, args[1]))
+		return nil
+	}
 	if len(args) < 5 || args[0] != "ingest" {
 		return usage
 	}

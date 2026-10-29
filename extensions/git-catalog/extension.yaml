@@ -4,6 +4,7 @@ summary: Commit every coder pass locally, so the lead can read how the work move
 help:
   - say: '"squash this task''s commits"'
     does: one commit for the task, ready for you to push
+    run: ensign git-catalog squash <project>/<task> -m "<message>"
 
 pipelines:
   coding:

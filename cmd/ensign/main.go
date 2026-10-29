@@ -93,6 +93,7 @@ func usage() {
   ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>]
+  ensign style report <project>
   ensign skill new <name> --description <text> | ensign skill discard <name>
   ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]
   ensign journal commit -m <message> [files…] | ensign journal push
@@ -247,6 +248,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		return 0
 	}
 	fmt.Fprintf(stdout, "\n%s", manual)
+	if cmds := requestCommands(bridge); cmds != "" {
+		fmt.Fprintf(stdout, "\n%s", cmds)
+	}
 	return 0
 }
 

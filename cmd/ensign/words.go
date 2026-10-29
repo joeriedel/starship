@@ -9,9 +9,30 @@ import (
 )
 
 // HelpEntry is one plain-language request a pipeline or bundle answers to.
+// Run is the command that carries it out. The session is told it; help never shows it.
 type HelpEntry struct {
 	Say  string `yaml:"say" json:"say"`
 	Does string `yaml:"does" json:"does"`
+	Run  string `yaml:"run" json:"run,omitempty"`
+}
+
+// requestCommands is what the session is told, after its manual, about carrying out the
+// requests that pipelines and bundles answer to.
+func requestCommands(bridge string) string {
+	var lines []string
+	extra := extraHelp(bridge)
+	for _, group := range sortedKeys(extra) {
+		for _, e := range extra[group] {
+			if e.Run != "" {
+				lines = append(lines, fmt.Sprintf("- %s: `%s`", e.Say, e.Run))
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "## Requests this bridge answers, and the command for each\n\n" +
+		"A command that starts a run needs the user's go, like any run.\n\n" + strings.Join(lines, "\n") + "\n"
 }
 
 var fixedHelp = []struct {
@@ -19,19 +40,19 @@ var fixedHelp = []struct {
 	entries []HelpEntry
 }{
 	{"Getting around", []HelpEntry{
-		{`"open <project> / <task>"`, "pick up a task where it left off"},
-		{`"new task <name> in <project>"`, "start a task (I'll ask where its workspace is)"},
-		{`"new project <name>"`, "add a project to this bridge"},
-		{"status", "where the current task and run stand"},
-		{"help <project or task>", "more on one project or task"},
+		{`"open <project> / <task>"`, "pick up a task where it left off", ""},
+		{`"new task <name> in <project>"`, "start a task (I'll ask where its workspace is)", ""},
+		{`"new project <name>"`, "add a project to this bridge", ""},
+		{"status", "where the current task and run stand", ""},
+		{"help <project or task>", "more on one project or task", ""},
 	}},
 	{"Doing the work", []HelpEntry{
-		{"describe what you want done", "I plan it as a run; type go to start it"},
-		{"go", "approve the plan I just showed you"},
+		{"describe what you want done", "I plan it as a run; type go to start it", ""},
+		{"go", "approve the plan I just showed you", ""},
 	}},
 	{"Housekeeping", []HelpEntry{
-		{`"update the bridge"`, "move to the latest starship release"},
-		{`"suggest an improvement to starship"`, "write it up as a proposal"},
+		{`"update the bridge"`, "move to the latest starship release", "ensign update"},
+		{`"suggest an improvement to starship"`, "write it up as a proposal", ""},
 	}},
 }
 

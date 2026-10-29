@@ -952,9 +952,13 @@ with the reasons, and it tries again. The accepted document is written to
 
 ### 9.6 Is it working?
 
-The run history records each style pass's report, including which entries were hit. An
-active entry hit run after run is badly worded; the curator is told to reword such
-entries. A learned rule that is clearly generic is a candidate for the control plane's
+Each style pass adds a line to `projects/<p>/style/history.yaml`: the run, the date,
+the task, how many corrections had no rule yet, and which entries the rest fell under.
+It is committed with the journal, so it covers every machine; run directories don't.
+`ensign style report <project>` ("how is the style guide doing?") compares corrections
+per pass early and late, and lists entries hit in three of the last ten passes. An
+active entry hit run after run is badly worded, or isn't reaching the coder; the curator
+is given those entries and told to reword them. A learned rule that is clearly generic is a candidate for the control plane's
 house style, through the proposal path (§3.2) — never copied across directly.
 
 ---
@@ -1297,6 +1301,10 @@ runs against Claude Code, except where listed below.
   skill names exist. A fact for any other name goes to `skills/proposed/<name>/`, and
   `status` lists it. `ensign skill new <name> --description …` creates the skill and
   makes its facts pending; `ensign skill discard <name>` drops them.
+- **Help entries name their command for the session.** A pipeline's or bundle's help
+  entry may carry `run:`, the command that carries the request out. `help` never shows
+  it; the SessionStart hook lists every one after the manual, so the session doesn't
+  have to guess how to "squash this task's commits".
 - **The `@done` check** runs before a run may end as `success`; a failure ends it as
   `error: done-check`.
 - **Events on stages a pipeline doesn't have are inactive for it**, so a bundle or layer
@@ -1309,5 +1317,5 @@ runs against Claude Code, except where listed below.
 - **How Claude Code runs hook commands on Windows** is unverified (§14). The code and its
   tests pass on Windows in CI.
 - **Nested leads** are rejected by validation.
-- **Style-guide metrics** (style diff size per run, flagging entries hit repeatedly)
-  are recorded only as report history; nothing summarises them yet.
+- **Style-diff size** isn't measured: the report counts corrections the style reviewer
+  reports, not lines it changed, which would need a VCS-specific diff.

@@ -156,6 +156,7 @@ func TestValidateCuration(t *testing.T) {
 func TestStyleLearningInACodingRun(t *testing.T) {
 	w := newWorld(t)
 	write(t, styleGuideFile(w.bridge, "supernova"), "entries:\n  - id: S1\n    status: active\n    text: Name errors err.\n    hits: 2\n    evidence: [x]\n  - id: S2\n    status: candidate\n    text: Prefer early returns.\n    hits: 1\n    evidence: [y]\n")
+	write(t, styleHistoryFile(w.bridge, "supernova"), "passes:\n  - {run: r1, date: 2026-10-01, new: 2, hits: [S2]}\n  - {run: r2, date: 2026-10-02, new: 0, hits: [S2, S1]}\n")
 	w.project("use: [style-learning]\n")
 	lead := w.startLead()
 	coder, _ := w.spawn(lead, "orchestrator", "coder")
@@ -174,9 +175,17 @@ func TestStyleLearningInACodingRun(t *testing.T) {
 	if st := w.state(); st.Scopes["run"].Stage != "curate" {
 		t.Fatalf("learned should go to curate, at %s", st.Scopes["run"].Stage)
 	}
+	h := loadStyleHistory(w.bridge, "supernova")
+	if len(h.Passes) != 3 || h.Passes[2].New != 1 || strings.Join(h.Passes[2].Hits, ",") != "S2" || h.Passes[2].Task != "supernova/auth-refactor" {
+		t.Fatalf("the style pass was not recorded: %+v", h.Passes)
+	}
 	cur, _ := w.spawn(lead, "orchestrator", "curator")
-	if p := w.promptOf(cur); !strings.Contains(p, "Wrap errors with context") || !strings.Contains(p, "hit | S2") {
+	p := w.promptOf(cur)
+	if !strings.Contains(p, "Wrap errors with context") || !strings.Contains(p, "hit | S2") {
 		t.Fatalf("the curator was not given this run's proposals")
+	}
+	if !strings.Contains(p, "Entries hit run after run") || !strings.Contains(p, "S2 (3 of the last 3 passes)") || strings.Contains(p, "S1 (") {
+		t.Errorf("the curator should be told S2 keeps being hit, and only S2")
 	}
 	doc := "entries:\n  - id: S1\n    status: active\n    text: Name errors err.\n    hits: 2\n    evidence: [x]\n" +
 		"  - id: S2\n    status: active\n    text: Prefer early returns.\n    hits: 2\n    evidence: [y, lib.go:3]\n" +
@@ -311,5 +320,40 @@ func TestProbeManualSize(t *testing.T) {
 	}
 	if !sawWholeManual(m, "abc123") || sawWholeManual(m[:len(m)/2], "abc123") {
 		t.Fatalf("markers should all be in the block, and not in half of it")
+	}
+}
+
+func TestStyleReport(t *testing.T) {
+	w := newWorld(t)
+	if r := styleReport(w.bridge, "supernova"); !strings.Contains(r, "No style passes") {
+		t.Errorf("empty history: %q", r)
+	}
+	write(t, styleHistoryFile(w.bridge, "supernova"), "passes:\n"+
+		"  - {run: r1, date: 2026-10-01, new: 4, hits: [S1]}\n"+
+		"  - {run: r2, date: 2026-10-02, new: 3, hits: [S1, S1]}\n"+
+		"  - {run: r3, date: 2026-10-03, new: 0, hits: [S1]}\n"+
+		"  - {run: r4, date: 2026-10-04, new: 0, hits: [S2]}\n")
+	r := styleReport(w.bridge, "supernova")
+	for _, want := range []string{"Style passes for supernova: 4", "5.0 in the first 2, 1.0 in the last 2 (fewer: the guide is working)",
+		"Last pass (r4): 0 new rules, 1 correction", "S1 (3 of the last 4 passes)"} {
+		if !strings.Contains(r, want) {
+			t.Errorf("report missing %q:\n%s", want, r)
+		}
+	}
+	if strings.Contains(r, "S2 (") {
+		t.Errorf("S2 was hit once and should not be flagged:\n%s", r)
+	}
+}
+
+func TestSessionIsToldRequestCommands(t *testing.T) {
+	w := newWorld(t)
+	cmds := requestCommands(w.bridge)
+	for _, want := range []string{"ensign run --pipeline skill-curate", "ensign style report <project>", "ensign git-catalog squash"} {
+		if !strings.Contains(cmds, want) {
+			t.Errorf("missing %q:\n%s", want, cmds)
+		}
+	}
+	if strings.Contains(helpText(w.bridge, w.session), "ensign") {
+		t.Errorf("help must not mention ensign")
 	}
 }

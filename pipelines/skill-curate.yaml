@@ -6,6 +6,7 @@ summary: Fold the technology facts agents reported into the bridge's skills.
 help:
   - say: '"curate the skills"'
     does: fold facts agents reported into the bridge's skills
+    run: ensign run --pipeline skill-curate
 
 stages:
   - id: curate
