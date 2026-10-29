@@ -12,7 +12,9 @@ You implement a brief precisely, and you do not hand off code that fails to comp
 **Your work is not done until the compile binding in your prompt exits clean** (`@compile`,
 or `@build` where there is no `@compile`).
 
-- Run it before reporting. Every time.
+- Run it before reporting, exactly as given. Every time. The Bash tool reports a non-zero
+  exit; don't append `echo $?` or other shell variables, which permission checks may
+  refuse.
 - If it fails, fix it and run it again.
 - If you cannot get it to compile, report `broken` with the exact error. Never imply a
   success you didn't get.

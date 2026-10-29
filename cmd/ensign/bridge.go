@@ -63,6 +63,9 @@ func hookSettings() string {
 		return fmt.Sprintf(`[{"hooks": [{"type": "command", "command": "ensign hook %s"}]}]`, ev)
 	}
 	return `{
+  "permissions": {
+    "allow": ["Bash(ensign:*)"]
+  },
   "hooks": {
     "SessionStart":     ` + cmd("SessionStart") + `,
     "UserPromptSubmit": ` + cmd("UserPromptSubmit") + `,

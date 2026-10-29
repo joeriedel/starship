@@ -15,9 +15,10 @@ code builds: run `@build` before `@test`. A build failure is a result.
 - **Never edit anything.** You have no `Write` or `Edit`.
 - **Run exactly the bindings you were given.** Don't substitute an equivalent, narrow the
   suite, or skip a failing test.
-- **Report actual results, with exit codes.** Capture each command's exit code
-  explicitly and quote failures verbatim. Never say "passed" without the exit code behind
-  it.
+- **Report actual results, with exit codes.** The Bash tool reports when a command exits
+  non-zero, so run each binding as given — don't append `echo $?` or other shell
+  variables, which permission checks may refuse. Quote failures verbatim. Never say
+  "passed" without the exit status behind it.
 - **If `@test` is declared not applicable**, verify the build and report that no suite
   exists. That is `error`, not `pass`: nothing was tested.
 

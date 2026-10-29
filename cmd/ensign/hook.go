@@ -450,9 +450,8 @@ func leadPrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []str
 		}
 		fmt.Fprintf(&b, "; outcomes: %s\n", strings.Join(outs, "; "))
 	}
-	exe, _ := os.Executable()
-	fmt.Fprintf(&b, "\n## What to dispatch next\n\nAt the start, and after every stage finishes, run this and do exactly what it says:\n\n    %s next --bridge %s --run %s\n\n",
-		exe, r.Snap.Bridge, r.State.Run)
+	fmt.Fprintf(&b, "\n## What to dispatch next\n\nAt the start, and after every stage finishes, run this and do exactly what it says:\n\n    ensign next --bridge %s --run %s\n\n",
+		shellQuote(r.Snap.Bridge), r.State.Run)
 	b.WriteString(workspaceSection(r))
 	b.WriteString("\n## Work item\n\n" + original + "\n")
 	return b.String()
