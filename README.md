@@ -10,6 +10,27 @@ Starship splits that up. You still just talk to Claude. Behind the conversation,
 of specialist agents does the work in stages, a process enforced by hooks decides what
 happens next, and a written record carries the work from one session to the next.
 
+## Getting started
+
+You need Claude Code and git, on Linux or Windows; macOS isn't supported yet.
+
+Make a folder for your bridge, start `claude` in it, and ask:
+
+```
+> make a starship bridge here, from https://github.com/joeriedel/starship
+```
+
+Claude asks where your code lives on this machine, sets the bridge up, and asks you to
+restart `claude`. Then type `help`.
+
+The bridge is a git repo of your own. Push it somewhere private, and on another machine
+clone it and run `claude` in it; Claude sets that machine up the same way.
+
+After upgrading Claude Code, run `ensign selftest`. It runs a few cents' worth of probe
+agents to check that Claude Code still behaves the way starship relies on.
+
+If you'd rather build `ensign` yourself, you need Go: `go build ./cmd/ensign`.
+
 ## A day on the bridge
 
 It's Monday. You open a terminal in your work bridge (a private repo that holds your
@@ -158,26 +179,7 @@ rediscovering the same things.
   a model that has never seen your projects.
 - **Sign anything as an AI.** No co-author trailers, no "generated with".
 
-## Getting started
-
-You need Claude Code and git, on Linux or Windows; macOS isn't supported yet.
-
-Make a folder for your bridge, start `claude` in it, and ask:
-
-```
-> make a starship bridge here, from https://github.com/joeriedel/starship
-```
-
-Claude asks where your code lives on this machine, sets the bridge up, and asks you to
-restart `claude`. Then type `help`.
-
-The bridge is a git repo of your own. Push it somewhere private, and on another machine
-clone it and run `claude` in it; Claude sets that machine up the same way.
-
-After upgrading Claude Code, run `ensign selftest`. It runs a few cents' worth of probe
-agents to check that Claude Code still behaves the way starship relies on.
-
-### For Claude: setting up a bridge
+## For Claude: setting up a bridge
 
 When asked to make a starship bridge in a folder:
 
@@ -197,8 +199,6 @@ When asked to make a starship bridge in a folder:
    tell the user which ones and let them decide.
 3. Tell the user to restart `claude` in the folder and type `help`. Suggest they push the
    bridge to a private repo of their own, never to starship.
-
-If you'd rather build `ensign` yourself, you need Go: `go build ./cmd/ensign`.
 
 ## Further reading
 
