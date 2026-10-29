@@ -1047,19 +1047,24 @@ There is no harness-level fix. A permission rule that forces a prompt for the Ag
 would make a missing `ensign` visible, but a PreToolUse `allow` does not lift it (§7.1),
 so it would also prompt when everything is working.
 
-The defence is a **heartbeat** the model checks:
+In practice the hole is only at session start. During a session `ensign` can hardly go
+missing: the Claude Code process keeps the PATH it started with, and `ensign update`
+swapping the binary is already handled (§12.3). Deleting the binary mid-session is the
+only silent case, and rare enough to accept.
 
-- SessionStart prints `STARSHIP-READY ensign <version> bridge <tag>`; it appears in the
-  session's context.
-- UserPromptSubmit adds a short `starship ok` marker to each prompt, so a loss mid-session
-  is visible at the next prompt.
-- The bridge's `CLAUDE.md`: **if `STARSHIP-READY` is absent at session start, a prompt
-  arrives without the marker, or starship hooks report errors, say so plainly and do
-  nothing except help fix it** — no pipeline, no agent spawn, no workspace change, no
-  commit.
+So there are two defences:
 
-This is a model-level rule, not a guarantee. It turns a silent failure into a visible
-one, which is the realistic target.
+- **A heartbeat at session start.** SessionStart prints
+  `STARSHIP-READY ensign <version> bridge <tag>`, which appears in the session's context
+  (§7.1). The bridge's `CLAUDE.md`: **if that line is absent, or starship hooks report
+  errors, say so plainly and do nothing except help fix it** — no pipeline, no agent
+  spawn, no workspace change, no commit. This is a model-level rule, not a guarantee; it
+  turns a silent failure into a visible one.
+- **`ensign` fails closed.** Any internal error — a crash, a corrupt state file, an
+  unreadable snapshot — exits 2 with the reason, so the action is blocked rather than let
+  through. (A Go panic already exits 2.) One exception: when a stop arrives with
+  `stop_hook_active` set and the error repeats, the stop is let through, so a persistent
+  fault cannot trap an agent in a loop.
 
 ---
 
