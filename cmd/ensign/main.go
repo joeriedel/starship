@@ -41,6 +41,12 @@ func main() {
 		err = cmdCatalog(os.Args[2:], os.Stdout)
 	case "resume":
 		err = cmdResume(os.Args[2:], os.Stdout)
+	case "selftest":
+		err = cmdSelftest(os.Stdout)
+	case "selftest-hook":
+		if len(os.Args) == 3 {
+			os.Exit(cmdSelftestHook(os.Args[2], os.Stdin, os.Stdout))
+		}
 	case "setup":
 		err = cmdSetup(os.Args[2:], os.Stdout)
 	case "update":
@@ -69,6 +75,7 @@ func usage() {
   ensign setup [--projects <path>]
   ensign update [<tag>]
   ensign link [--force]
+  ensign selftest
   ensign project new <name>
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
   ensign task open <project>/<task>
