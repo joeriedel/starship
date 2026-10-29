@@ -46,7 +46,7 @@ deferred.
 
 On Tuesday you're on a different machine. You open the same task, and Claude knows
 exactly where things stand. The task journal was committed and pushed last night, and a
-hook wouldn't let the session end until it was. Hooks are like that.
+hook wouldn't let the session end until it was.
 
 At no point did you type a command. You just had a conversation.
 
