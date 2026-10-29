@@ -21,7 +21,8 @@ claude   Task rate-limit: workspace ~/src/supernova, branch rate-limit, clean.
 you      add per-account rate limiting to the login endpoint, limits from config
 ```
 
-Claude reads the code (reading is always free) and comes back with a plan. It says what
+Claude reads the code (looking doesn't need permission; changing does) and comes back
+with a plan. It says what
 it will change, what done looks like, and what it deliberately won't touch. It shows you
 the run it has set up: code, review, style, test. Then it waits.
 
