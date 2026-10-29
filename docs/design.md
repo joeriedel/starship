@@ -550,8 +550,8 @@ The run then waits for `go`. Until then the hooks refuse its lead dispatch.
   reports/         each stage's report block as received
 ```
 
-`ensign explain <task> [--start <stage>]` shows what a run would be, with provenance, and
-creates nothing:
+`ensign run <task> --dry-run` does steps 1, 2 and 4 and stops: it shows what the run
+would be, with the source of every field, and creates nothing:
 
 ```
 stage security          from project:supernova/pipelines/coding.yaml:4
@@ -674,7 +674,7 @@ Session words
 
 Commands (run in a terminal, or ask me to run them)
   ensign run <task>          create a run (waits for go)
-  ensign explain <task>      show what a run would be and where each part came from
+  ensign run --dry-run ...   show what a run would be and where each part came from
   ensign resume <run>        continue a run that ended as ask-user
   ensign squash <task>       squash the run's catalog (git-catalog)
   ensign style ingest ...    add a style source (style-learning)
@@ -692,7 +692,7 @@ Where each part comes from:
 - **Bundles** declare a `help:` block in `extension.yaml`: the commands, pipelines and
   words they add. A bridge's own bundles therefore appear without extra work.
 - **Pipelines** carry a `summary:`; `help coding` prints its stages, outcomes and
-  budgets as resolved for the current task, with provenance (as `ensign explain`).
+  budgets as resolved for the current task, with provenance (as `ensign run --dry-run`).
 - **Roles** use their definition's `description`.
 - **Projects and tasks** come from the bridge; a task's `help` shows its workspace, VCS
   state and journal status.
@@ -887,7 +887,7 @@ guide shows every merge and drop with its reason.
 The run history records each style pass's diff size and which rule IDs were hit. An
 `active` rule still hit run after run is flagged for rewording at the next curate. A
 style diff that isn't shrinking across runs means the loop isn't working, and
-`ensign explain` shows it.
+`help style-learning` shows it.
 
 A learned rule that is clearly generic is a candidate for the control plane's house
 style. It goes through the proposal path (§3.2); it is never copied across directly.
