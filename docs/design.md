@@ -579,6 +579,9 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | SubagentStop identifies the agent and its output | yes: `agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message` |
 | SubagentStop `decision: block` forces the agent to continue | yes; the second stop arrives with `stop_hook_active: true` |
 | UserPromptSubmit `decision: block` shows its `reason` with no model call | yes; zero turns, zero cost. The harness frames it as "operation blocked by hook" |
+| SessionStart hook stdout reaches the session's context | yes; appears as `SessionStart:startup hook success: <stdout>` |
+| A missing hook command blocks anything | no; non-blocking error, tool calls proceed |
+| PreToolUse `allow` lifts a permission `ask` rule | no (tested headless); the ask still applies |
 | Subagents load relevant Claude Code skills on demand | yes; 10 of 10 subagent runs and 6 of 6 session runs loaded the matching skill and followed it (favourable conditions; see §4.4) |
 
 SubagentStop identifies the role but not the stage, which is why dispatches are tagged.
@@ -957,16 +960,16 @@ and `ref` to any commit instead of a tag, to try changes before release. The bin
 an untagged commit are those of the last release, so such runs are marked `dev` in
 their snapshot and in `help`.
 
-**The launcher.** `install.sh` (Linux) or `install.ps1` (Windows) copies `ensign` from a
-release into a per-user directory on PATH — the only per-platform scripts. Hooks call
-`ensign hook <event>`, identical on every platform. When invoked, `ensign` finds the
+**The launcher.** `ensign setup` (§12) installs `ensign` into a per-user directory on
+PATH; there are no per-platform install scripts. Hooks call `ensign hook <event>`,
+identical on every platform. When invoked, `ensign` finds the
 bridge (from `CLAUDE_PROJECT_DIR`, read by the program rather than expanded by a shell,
 or by walking up from the working directory) and hands off to that bridge's pinned
 binary, so every bridge runs the `ensign` that matches its pipelines. Outside a bridge,
 hook events are no-ops.
 
 Whether a Claude Code plugin could be loaded directly from the pinned clone, removing
-the generated files, is untested (§13).
+the generated files, is untested (§14).
 
 ### 11.4 Portability rules
 
@@ -978,7 +981,89 @@ the generated files, is untested (§13).
 
 ---
 
-## 12. Carried over from the reference design
+## 12. Onboarding
+
+### 12.1 A new machine joining an existing bridge
+
+1. Install Claude Code and git.
+2. Clone the bridge.
+3. Run `claude` in it and approve the folder when Claude Code asks whether to trust it
+   (until then its hooks don't run).
+4. Claude notices the bridge isn't set up, says so, and asks to set it up. Say yes.
+5. Restart `claude` when it says the bridge is ready.
+
+Nothing else is installed by hand. Setup fetches code and puts a binary on PATH, so
+Claude asks first; it is an ordinary confirmation, not `go`, because no agents are
+spawned.
+
+### 12.2 What setup does
+
+The bridge's committed `CLAUDE.md` (written by `ensign init`) carries a short setup
+section that is visible before anything else exists: if `.starship/control-plane/` is
+missing, the bridge isn't set up on this machine. Setup is two commands:
+
+```
+git clone --depth 1 --branch <tag from bridge.yaml> <remote> .starship/control-plane
+.starship/control-plane/bin/<platform>/ensign setup [--projects <path>] ...
+```
+
+`ensign setup`, in Go and therefore the same on both platforms:
+
+- installs itself into a per-user directory and adds it to the user's PATH (the user
+  PATH in the registry on Windows, `~/.local/bin` on Linux);
+- runs `ensign link` to generate the bridge's role and skill files;
+- writes `.starship/machine.yaml` (gitignored): this machine's paths, such as the
+  `$PROJECTS` root. Claude asks for them in conversation and passes them as flags. A task
+  that needs a path that isn't set stops with a clear message.
+
+Product workspaces are not cloned by setup. Opening a task checks that its workspace
+exists and stops if not.
+
+### 12.3 The restart
+
+The session that ran setup cannot switch over to the result: it started before the
+control plane's `CLAUDE.md` and the role files existed, and its process still has the old
+PATH, so its hooks cannot find `ensign`. Setup ends with "bridge ready — restart claude".
+
+The same applies after `ensign update`. SessionStart records the pin a session started
+on; after an update, the driver refuses to start a new run in that session and asks for a
+restart, so a session never mixes two releases.
+
+### 12.4 The very first install
+
+Before any bridge exists, `ensign` comes from the control plane itself: clone this repo at
+a release tag, run `bin/<platform>/ensign setup` to install the launcher, then
+`ensign init <dir>` to create a bridge. The clone can be deleted afterwards. A one-line
+download-and-run command may be documented as a convenience, never as the main path.
+
+### 12.5 When `ensign` is missing: fail-open, and the heartbeat
+
+Hook enforcement has a hole. If `ensign` cannot be found — PATH changed, binary deleted,
+a broken update — Claude Code treats each hook as a **non-blocking error**, and every
+gate stops being enforced: pipeline order, `go`, the commit gates. Only exit code 2
+blocks, and a missing command cannot produce it.
+
+There is no harness-level fix. A permission rule that forces a prompt for the Agent tool
+would make a missing `ensign` visible, but a PreToolUse `allow` does not lift it (§7.1),
+so it would also prompt when everything is working.
+
+The defence is a **heartbeat** the model checks:
+
+- SessionStart prints `STARSHIP-READY ensign <version> bridge <tag>`; it appears in the
+  session's context.
+- UserPromptSubmit adds a short `starship ok` marker to each prompt, so a loss mid-session
+  is visible at the next prompt.
+- The bridge's `CLAUDE.md`: **if `STARSHIP-READY` is absent at session start, a prompt
+  arrives without the marker, or starship hooks report errors, say so plainly and do
+  nothing except help fix it** — no pipeline, no agent spawn, no workspace change, no
+  commit.
+
+This is a model-level rule, not a guarantee. It turns a silent failure into a visible
+one, which is the realistic target.
+
+---
+
+## 13. Carried over from the reference design
 
 - Vocabulary kept distinct: skill, pipeline, role, binding, project, task.
 - Plan first; nothing is dispatched without approval, and approval is the literal `go`.
@@ -989,7 +1074,7 @@ the generated files, is untested (§13).
 
 ---
 
-## 13. Open questions
+## 14. Open questions
 
 1. **How Claude Code runs hook commands on Windows** (Git Bash, PowerShell, or direct
    process launch). `ensign hook <event>` is designed to work under all three; verify on
