@@ -53,14 +53,16 @@ Each later layer may extend or override the one before it, subject to locks (§5
 - **A bridge is always a git repo.** Workspaces may use any VCS; the bridge, which holds
   starship's own state, does not vary. Nothing from starship is ever written into a
   workspace, so no project repo needs to ignore anything.
-- **One writable clone of the control plane per machine**, at `~/starship`. Bridges
-  consume it directly (`@import` from the bridge's `CLAUDE.md`, role definitions copied
-  in by `ensign link` (§11.3), hooks calling `ensign`), so control-plane edits are live
-  immediately. A Claude Code plugin was
-  considered and dropped: it installs into a cache, which would mean keeping a writable
-  clone and a published copy in sync.
-- **Bridge sessions cannot write to the control plane.** A permission deny on the
-  control-plane path, backed by a PreToolUse hook, makes this structural.
+- **Each bridge runs a pinned release of the control plane.** It keeps its own clone at
+  `.starship/control-plane/`, checked out at a release tag recorded in `bridge.yaml`
+  (§11.3). Runs are reproducible, bridges can sit on different releases, and nothing
+  reaches a bridge until it is released and the bridge is updated with `ensign update`.
+- **A writable clone, `~/starship`, exists only where the control plane is developed.**
+  Improvements are made and committed there (§3.2), released as a tag, and picked up by
+  each bridge when it updates. A machine that only uses starship doesn't need it.
+- **Bridge sessions cannot write to the control plane** — neither the pinned clone nor
+  `~/starship`. A permission deny on both paths, backed by a PreToolUse hook, makes this
+  structural.
 
 ---
 
@@ -897,8 +899,11 @@ bin/
   windows-amd64/ensign.exe
 ```
 
-- **Built by GitHub Actions on a version tag**, on one Linux runner that cross-compiles
-  every target. The workflow commits the binaries to `master`. Free for public repos.
+- **A release is cut by CI.** You trigger the release workflow with a version
+  (`gh workflow run release -f version=1.4.0`, or from the GitHub UI). On one Linux
+  runner it cross-compiles every target, commits the binaries to `master`, and creates
+  the tag `v1.4.0` **on that commit**, so a tagged checkout always contains its own
+  binaries. Tags are never created by hand. Free for public repos.
 - **Only CI builds committed binaries.** A local build embeds local file paths; building
   on a work machine would carry them into the public repo.
 - **Builds are reproducible**: `CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid="`.
@@ -909,27 +914,59 @@ bin/
   PowerShell and Git Bash. The harness probe (§7.1) needs a Claude login and stays manual.
 - Go is needed only on a machine where `ensign` itself is being developed.
 
-### 11.3 Installing on a machine
+### 11.3 Bridges, pinning and installation
 
-`install.sh` (Linux) or `install.ps1` (Windows) puts the platform's `bin/` directory on
-PATH. These are the only per-platform scripts. Hooks then call `ensign hook <event>`,
-which resolves to the right binary everywhere, so a bridge's committed `settings.json`
-is identical across platforms.
+```
+~/bridges/work/
+  bridge.yaml                    control-plane: { remote: <url>, tag: v1.4.0 }
+  .starship/control-plane/       the bridge's clone, checked out at the tag (gitignored)
+  .claude/agents/                generated from the pinned clone (gitignored)
+  .claude/skills/                on-demand skills, generated likewise (gitignored)
+  CLAUDE.md                      imports .starship/control-plane/CLAUDE.md
+```
 
-Most of the control plane needs no copying: the bridge's `CLAUDE.md` imports
-`~/starship/CLAUDE.md`, hooks call `ensign` on PATH, and the driver reads pipelines and
-skills from `~/starship` directly. Only files Claude Code must find inside the bridge's
-`.claude/` are copied — role definitions into `.claude/agents/`, and `on-demand` skills
-into `.claude/skills/`.
+**Pinning.** `bridge.yaml` names a release tag. The pinned clone is a shallow fetch of
+exactly that tag; a bridge needs no history. Every run snapshot records the tag.
 
-- The copies are **generated output, gitignored in the bridge**; `ensign init` writes
-  the ignore rule when the bridge is created.
-- A **SessionStart hook refreshes them** when the control plane's commit differs from the
-  one they were copied from. `ensign link` does the same by hand.
+**`ensign update [<tag>]`** — on request only. You run it, or ask Claude to ("update
+the bridge"); no hook runs it and Claude never starts it on its own. `help` notes when a
+newer release exists. It fetches tags, moves the pin to the newest
+release (or the one named), refuses while any run in the bridge is active, then runs
+`ensign link`. The change to `bridge.yaml` is committed and pushed in the bridge's repo,
+so the bridge's history records every version it ran.
+
+**`ensign link`** makes the bridge match its pin: checks out the pinned tag and
+regenerates `.claude/agents/` and `.claude/skills/` from it plus the bridge's own
+bundles. It runs from `ensign update`, from `ensign init`, and from a SessionStart hook
+that checks the generated files still match the pin (they won't after a fresh clone of
+the bridge). Rules:
+
+- **Never while a run is active.** A run's roles cannot change under it.
+- **Hand edits are protected.** Link keeps a manifest of hashes of what it wrote and
+  refuses to overwrite a modified file, naming the right place for the change: the
+  control plane, or a role in a bridge bundle.
+- **Name clashes are errors.** A bridge bundle's role with the same name as a
+  control-plane role is refused unless it declares `replaces: <role>`.
+- **Failures are loud.** A failed link stops the session's starship features with the
+  reason; it never carries on with stale files.
 - **No symlinks**: on Windows they need developer mode, and git checks them out as plain
   files by default.
-- Whether a Claude Code plugin can be loaded live from `~/starship` without caching,
-  which would remove the copies entirely, is untested (§13).
+
+**Developing the control plane.** A bridge may set `remote` to the local `~/starship`
+and `ref` to any commit instead of a tag, to try changes before release. The binaries at
+an untagged commit are those of the last release, so such runs are marked `dev` in
+their snapshot and in `help`.
+
+**The launcher.** `install.sh` (Linux) or `install.ps1` (Windows) copies `ensign` from a
+release into a per-user directory on PATH — the only per-platform scripts. Hooks call
+`ensign hook <event>`, identical on every platform. When invoked, `ensign` finds the
+bridge (from `CLAUDE_PROJECT_DIR`, read by the program rather than expanded by a shell,
+or by walking up from the working directory) and hands off to that bridge's pinned
+binary, so every bridge runs the `ensign` that matches its pipelines. Outside a bridge,
+hook events are no-ops.
+
+Whether a Claude Code plugin could be loaded directly from the pinned clone, removing
+the generated files, is untested (§13).
 
 ### 11.4 Portability rules
 
@@ -967,7 +1004,7 @@ into `.claude/skills/`.
 6. **Same machine or separate machines** for different bridges, which affects whether a
    denylist check sees more than one bridge.
 7. **A fast path for trivial control-plane fixes**, or always the proposal handoff.
-8. **Loading the control plane as a Claude Code plugin from a local directory**, without
-   a cached copy, which would replace `ensign link`.
+8. **Loading the control plane as a Claude Code plugin from a local directory** (the
+   bridge's pinned clone) without a cached copy, which would replace the generated files.
 9. **Committing to the personal repo from a work machine** is an employment-agreement
    question, separate from content cleanliness. The user's call.
