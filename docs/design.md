@@ -1312,9 +1312,6 @@ runs against Claude Code, except where listed below.
 
 - **No release has been cut.** The release workflow exists but has never run, so there
   is no tag for a bridge to pin; pinning is tested against local tags.
-- **Nested leads** are rejected by validation.
-- **Style-diff size** isn't measured: the report counts corrections the style reviewer
-  reports, not lines it changed, which would need a VCS-specific diff.
 
 ### 15.4 Backlog
 
@@ -1324,3 +1321,5 @@ Deliberately deferred; not reported as open work.
   or direct process launch) is unverified. `ensign hook <event>` is designed to work under
   all three, and the code and its tests pass on Windows in CI. Verify by running
   `ensign selftest` on a Windows machine.
+- **Nested leads.** A pipeline can't put an orchestrator stage inside another; validation
+  rejects it. Build it when a pipeline needs it.
