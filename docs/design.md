@@ -654,53 +654,58 @@ A few exact messages are handled by the UserPromptSubmit hook rather than the mo
 | Word | Effect |
 |---|---|
 | `go` | approve the pending plan |
-| `help` | overview of what is available here |
-| `help <topic>` | detail on one command, pipeline, bundle, project or role |
+| `help` | what you can ask for here |
+| `help <topic>` | more on one topic: a kind of work, a project, a task |
 
 `help` is deterministic and costs nothing: the hook prints the text and blocks the prompt
 before the model sees it. Anything that isn't an exact match (`help me add a review
 dimension`) goes to the model as a normal question.
 
-**Help is generated from the resolved configuration, never hand-maintained**, so it
-always describes the bridge you are in:
+**Help in a session talks about what you can ask Claude to do, never about `ensign`.**
+It lists requests in plain words; how they are carried out is not your concern. It is
+generated from the configuration of the bridge you are in, never hand-maintained:
 
 ```
-starship — bridge: work   platform: linux   project: supernova   task: auth-refactor
-run: 20261029-1203-coding  stage: review (2 of 3 branches done)  loop 2/3  test 0/3
+Bridge: work · Project: supernova · Task: auth-refactor
+Working on: review, 2 of 3 reviewers done · 2 of 3 passes used this cycle
 
-Session words
-  go                     approve the pending plan
-  help [topic]           this text, or detail on one topic
+Getting around
+  "open supernova / auth-refactor"            pick up a task where it left off
+  "new task <name> in supernova"              start a task
+  "where are we?"                             status of the current task
 
-Commands (run in a terminal, or ask me to run them)
-  ensign run <task>          create a run (waits for go)
-  ensign run --dry-run ...   show what a run would be and where each part came from
-  ensign resume <run>        continue a run that ended as ask-user
-  ensign squash <task>       squash the run's catalog (git-catalog)
-  ensign style ingest ...    add a style source (style-learning)
-  ensign style generate ...  build or update the style guide (style-learning)
+Doing the work
+  describe what you want done                 I'll plan it; type go to start
+  "pull the other machine's changes and
+   make sure they build and pass"             sync, test, and fix anything that fails
+  "carry on" (after I've asked you something) continue the paused work
+  "squash this task's commits"                one commit, ready for you to push
 
-Pipelines   coding, style-generate
-Bundles     git-catalog, style-learning
-Projects    supernova (3 tasks), nebula (1 task)
-Bindings    supernova: all required bindings defined; @lint not-applicable
+Style
+  "learn our style from <file or link>"       add a source to the style guide
+  "rebuild the style guide"                   regenerate it from all sources
+
+Housekeeping
+  "update the bridge"                         move to the latest starship release
+  "suggest an improvement to starship"        write it up as a proposal
+
+Projects: supernova (3 tasks), nebula (1 task)
 ```
 
 Where each part comes from:
 
-- **Commands** register a one-line summary and a detail page in the CLI.
-- **Bundles** declare a `help:` block in `extension.yaml`: the commands, pipelines and
-  words they add. A bridge's own bundles therefore appear without extra work.
-- **Pipelines** carry a `summary:`; `help coding` prints its stages, outcomes and
-  budgets as resolved for the current task, with provenance (as `ensign run --dry-run`).
-- **Roles** use their definition's `description`.
-- **Projects and tasks** come from the bridge; a task's `help` shows its workspace, VCS
-  state and journal status.
+- **Pipelines and bundles** declare `help:` entries in their files: example requests in
+  plain words, and one line on what happens. A bridge's own bundles appear without
+  extra work.
+- **The status lines** come from the task journal and the active run, in plain words.
+- **Projects and tasks** come from the bridge. `help supernova` or `help auth-refactor`
+  describes the project or task: its goal, where it stands, what's outstanding.
 
-Anything that adds a command, pipeline or bundle without help text is a resolver error,
-in the same spirit as a missing binding: a missing description is caught, never guessed.
+A pipeline or bundle without help entries is a validation error: a missing description is
+caught, never guessed.
 
-`ensign help [topic]` in a terminal prints the same text.
+`ensign help` in a terminal is separate: it documents the `ensign` commands, for whoever
+is developing or debugging starship itself.
 
 ---
 
