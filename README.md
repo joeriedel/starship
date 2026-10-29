@@ -27,23 +27,41 @@ What that gets you:
 
 ## Getting started
 
-You need Claude Code and git, on Linux, Windows or macOS.
+Starship needs nothing but **Claude Code and git**, on Linux, Windows or macOS. There's
+nothing else to install or build; Claude sets everything up.
 
-Make a folder for your bridge, start `claude` in it, and ask:
+**1. Make a bridge.** A bridge is a folder, and a git repo of your own, where starship
+keeps your projects and tasks. Make an empty folder, start `claude` in it, and ask:
 
 ```
 > make a starship bridge here, from https://github.com/joeriedel/starship
 ```
 
-Claude sets the bridge up and asks you to restart `claude`. Then type `help`.
+When it's done, restart `claude` in the same folder. To use the bridge on other machines
+too, push it to a private repo; on another machine, clone it and start `claude` in it.
 
-The bridge is a git repo of your own. Push it somewhere private, and on another machine
-clone it and run `claude` in it; Claude sets that machine up the same way.
+**2. Add a project.** Tell Claude about a codebase you work on:
 
-After upgrading Claude Code, run `ensign selftest`. It runs a few cents' worth of probe
-agents to check that Claude Code still behaves the way starship relies on.
+```
+> add a project called foobar
+```
 
-If you'd rather build `ensign` yourself, you need Go: `go build ./cmd/ensign`.
+Claude asks how the project builds and runs its tests, or reads the code and suggests
+the commands for you to confirm.
+
+**3. Start a task and describe the work.**
+
+```
+> new task fix-login in foobar, the code is in ~/projects/foobar
+> logins fail when the password has a trailing space; fix it and add a test
+```
+
+Claude reads the code and comes back with a plan. Type `go` to start the run, and you'll
+get a report when it's done.
+
+**4. Come back to it any time.** `open foobar / fix-login` picks the task up where it left
+off, in a new session or on another machine. Type `help` to see everything you can ask
+for, and `status` for where things stand.
 
 ## A day on the bridge
 
