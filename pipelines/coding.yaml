@@ -5,6 +5,10 @@ requires-bindings: [build, test]
 budgets: { loop: 3, test: 3 }
 free-roles: [explorer]
 
+help:
+  - say: "\"pull the other machine's changes and make sure they build and pass\""
+    does: sync the workspace, test it, and fix anything that fails
+
 stages:
   - id: run
     role: orchestrator

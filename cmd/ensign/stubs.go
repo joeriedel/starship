@@ -2,8 +2,10 @@ package main
 
 // Filled in by later stages: bundles (roles they add) and skills (on-demand delivery).
 
-func bundleRoleDirs(bridge, cp string) []string { return nil }
-
 func onDemandSkills(bridge, cp string) map[string][]byte { return nil }
 
-func bundleDirs(bridge, cp string) []string { return nil }
+func generatedAugment(r *RunFiles, name, status string, d *Dispatch) string { return "" }
+
+func styleWriteGuide(r *RunFiles, d *Dispatch) error { return nil }
+
+func skillsCollect(r *RunFiles, d *Dispatch) error { return nil }

@@ -25,31 +25,42 @@ func (m *machine) enter(scope, id string) {
 	}
 	sc.Stage, sc.Branches = id, nil
 	s := m.stage(id)
-	if s.Spend != "" && !m.spend(s.Spend) {
+	if s.Spend != "" && !m.spend(s.Spend, scope, id, false) {
 		return
 	}
 	m.st.log("enter", id, "", m.budgetLine())
 }
 
-// spend charges one unit of a budget. If that exceeds it, the budget's on-exhausted
-// transition ends the run and spend reports false.
-func (m *machine) spend(budget string) bool {
+// limit is a budget's size, including anything added when an ask-user run resumed.
+func (m *machine) limit(budget string) int {
+	return m.snap.Pipeline.Budgets[budget] + m.st.Extra[budget]
+}
+
+// spend charges one unit of a budget on the way into a stage — by entering it, or (edge)
+// by the transition leading there. If that exceeds the budget, its on-exhausted
+// transition ends the run and spend reports false. An ask-user there records where to
+// resume, with the spend undone so the resume can make it against the larger budget.
+func (m *machine) spend(budget, scope, into string, edge bool) bool {
 	m.st.Spent[budget]++
-	if m.st.Spent[budget] <= m.snap.Pipeline.Budgets[budget] {
+	if m.st.Spent[budget] <= m.limit(budget) {
 		return true
 	}
 	t := m.snap.Pipeline.OnExhausted[budget]
 	if !t.terminal() {
 		t = Transition{Error: "budget:" + budget}
 	}
-	m.finish(t, fmt.Sprintf("budget %s exhausted (%d)", budget, m.snap.Pipeline.Budgets[budget]))
+	if t.AskUser != "" {
+		m.st.Spent[budget]--
+		m.st.Resume = &ResumePoint{Scope: scope, Stage: into, Budget: budget, EdgeSpend: edge}
+	}
+	m.finish(t, fmt.Sprintf("budget %s exhausted (%d)", budget, m.limit(budget)))
 	return false
 }
 
 func (m *machine) budgetLine() string {
 	var parts []string
 	for _, k := range sortedKeys(m.snap.Pipeline.Budgets) {
-		parts = append(parts, fmt.Sprintf("%s %d/%d", k, m.st.Spent[k], m.snap.Pipeline.Budgets[k]))
+		parts = append(parts, fmt.Sprintf("%s %d/%d", k, m.st.Spent[k], m.limit(k)))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -64,8 +75,11 @@ func (m *machine) finish(t Transition, why string) {
 	case t.AskUser != "":
 		m.st.Status, m.st.Reason = "ask-user", t.AskUser
 	}
-	for _, sc := range m.st.Scopes {
-		sc.Stage, sc.Branches = "", nil
+	if m.st.Status != "ask-user" {
+		for _, sc := range m.st.Scopes {
+			sc.Stage, sc.Branches = "", nil
+		}
+		m.st.Resume = nil
 	}
 	m.st.log("finish", "", "", m.st.Status+" — "+m.st.Reason)
 }
@@ -77,27 +91,76 @@ func (m *machine) fail(code, why string) { m.finish(Transition{Error: code}, why
 func (m *machine) apply(scope string, s *Stage, outcome string) {
 	t, _ := s.Outcomes.find(outcome)
 	m.st.log("outcome", s.ID, "", outcome+" → "+t.String())
-	if t.Spend != "" && !m.spend(t.Spend) {
+	into := t.Goto
+	if t.Next {
+		into = m.after(scope, s.ID)
+	}
+	if t.Spend != "" && !m.spend(t.Spend, scope, into, true) {
+		if m.st.Resume != nil {
+			m.st.Resume.Reset = t.Reset // the edge's reset still applies when it resumes
+		}
 		return
 	}
 	if t.Reset != "" {
 		m.st.Spent[t.Reset] = 0
 	}
 	switch {
+	case t.AskUser != "":
+		m.st.Resume = &ResumePoint{Scope: scope, Stage: s.ID}
+		m.finish(t, "")
 	case t.terminal():
 		m.finish(t, fmt.Sprintf("%s reported %s", s.ID, outcome))
 	case t.Goto != "":
 		m.enter(scope, t.Goto)
 	case t.Next:
-		list := m.snap.Pipeline.scopeList(scope)
-		for i, x := range list {
-			if x.ID == s.ID && i+1 < len(list) {
-				m.enter(scope, list[i+1].ID)
-				return
-			}
+		if into == "" {
+			m.fail("ensign", "next after the last stage "+s.ID)
+			return
 		}
-		m.fail("ensign", "next after the last stage "+s.ID)
+		m.enter(scope, into)
 	}
+}
+
+// after is the stage following id in its scope, or "".
+func (m *machine) after(scope, id string) string {
+	list := m.snap.Pipeline.scopeList(scope)
+	for i, x := range list {
+		if x.ID == id && i+1 < len(list) {
+			return list[i+1].ID
+		}
+	}
+	return ""
+}
+
+// resume continues an ask-user run where it stopped, with the user's answer.
+func (m *machine) resume(answer string, extra map[string]int) error {
+	st := m.st
+	if st.Status != "ask-user" || st.Resume == nil {
+		return fmt.Errorf("run %s is %s; only a run waiting on a question can resume", st.Run, st.Status)
+	}
+	if st.Extra == nil {
+		st.Extra = map[string]int{}
+	}
+	if len(extra) == 0 && st.Resume.Budget != "" {
+		extra = map[string]int{st.Resume.Budget: 1}
+	}
+	for b, n := range extra {
+		st.Extra[b] += n
+	}
+	question := st.Reason
+	st.Status, st.Reason, st.Approved = "running", "", true
+	st.Answers = append(st.Answers, fmt.Sprintf("Q: %s\nA: %s", question, answer))
+	st.log("resumed", "", "", answer)
+	p := st.Resume
+	st.Resume = nil
+	if p.EdgeSpend {
+		st.Spent[p.Budget]++ // the transition's spend, now within the larger budget
+	}
+	if p.Reset != "" {
+		st.Spent[p.Reset] = 0
+	}
+	m.enter(p.Scope, p.Stage)
+	return nil
 }
 
 // join combines the branches of a parallel stage: the outcome listed first wins.

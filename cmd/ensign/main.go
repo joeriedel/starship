@@ -34,6 +34,12 @@ func main() {
 		err = cmdProject(os.Args[2:], os.Stdout)
 	case "task":
 		err = cmdTask(os.Args[2:], os.Stdout)
+	case "journal":
+		err = cmdJournal(os.Args[2:], os.Stdout)
+	case "git-catalog":
+		err = cmdCatalog(os.Args[2:], os.Stdout)
+	case "resume":
+		err = cmdResume(os.Args[2:], os.Stdout)
 	case "version", "--version":
 		fmt.Println("ensign", version)
 	case "hook":
@@ -59,9 +65,12 @@ func usage() {
   ensign project new <name>
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
   ensign task open <project>/<task>
-  ensign run <project>/<task> [--start <stage>] [--dry-run]
+  ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]
+  ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]
+  ensign journal commit -m <message> [files…] | ensign journal push
+  ensign git-catalog squash <project>/<task> -m <message>
   ensign next [--bridge <dir>] [--run <id>]
-  ensign hook <SessionStart|PreToolUse|SubagentStop|UserPromptSubmit>`)
+  ensign hook <SessionStart|UserPromptSubmit|PreToolUse|SubagentStop|Stop>`)
 }
 
 // cmdHook runs one hook event and returns the exit code for Claude Code.
@@ -96,6 +105,11 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			}
 			return 0
 		}
+	case "Stop":
+		if out := hookStop(bridge, &in); out != nil {
+			json.NewEncoder(stdout).Encode(out)
+		}
+		return 0
 	}
 	r, err := openSessionRun(bridge, in.SessionID)
 	if err != nil {
@@ -112,6 +126,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		defer r.close()
 	}
 
+	wasTerminal := r != nil && r.State.terminal()
 	var out any
 	switch event {
 	case "PreToolUse":
@@ -127,6 +142,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		return failHook(&in, r, err, stderr)
+	}
+	if r != nil && !wasTerminal && r.State.terminal() {
+		finishRun(r)
 	}
 	if r != nil {
 		if err := r.save(); err != nil {
@@ -177,6 +195,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if err != nil {
 		fmt.Fprintf(stdout, "starship: this bridge is not ready: %v\n", err)
 		return 0
+	}
+	if note := syncBridge(bridge); note != "" {
+		fmt.Fprintln(stdout, note)
 	}
 	if linkStale(bridge) && len(liveRuns(bridge)) == 0 {
 		if err := link(bridge, false, nil); err != nil {

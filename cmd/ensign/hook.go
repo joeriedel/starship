@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -157,6 +159,26 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	if caller != nil {
 		d.CallerAgent = caller.AgentID
 	}
+	firstOfStage := m.running(scope, s.ID) == 0 && len(sc.Branches) == 0
+	if s.isLead() && !r.State.Started {
+		r.State.Started = true
+		if r.State.Sync {
+			if out, err := runHandler(r, Handler{Kind: "require", Command: "@sync", Source: "--sync"}, nil); err != nil {
+				m.fail("handler", fmt.Sprintf("@sync failed: %v: %s", err, lastLines(out, 5)))
+				return deny(r, s.ID, "the run could not start: "+r.State.Reason), nil
+			}
+		}
+		if err := fire(r, "run.start", nil); err != nil {
+			m.fail("handler", err.Error())
+			return deny(r, s.ID, "the run could not start: "+r.State.Reason), nil
+		}
+	}
+	if firstOfStage && !(s.isLead() && r.State.Scopes[s.ID] != nil && r.State.Scopes[s.ID].Stage != "") {
+		if err := fire(r, "stage.before:"+s.ID, d); err != nil {
+			m.fail("handler", err.Error())
+			return deny(r, s.ID, "stage "+s.ID+" could not start: "+r.State.Reason), nil
+		}
+	}
 	if s.Parallel != nil {
 		for _, dim := range s.Dimensions {
 			if _, taken := sc.Branches[dim]; !taken {
@@ -179,15 +201,18 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 
 	original, _ := in.ToolInput["prompt"].(string)
 	var prompt string
+	extra := augments(r, "stage.before:"+s.ID, d)
 	if s.isLead() {
-		first := s.Stages[0].ID
-		if r.State.StartChild != "" {
-			first = r.State.StartChild
+		if child := r.State.Scopes[s.ID]; child == nil || child.Stage == "" {
+			first := s.Stages[0].ID
+			if r.State.StartChild != "" {
+				first = r.State.StartChild
+			}
+			m.enter(s.ID, first)
 		}
-		m.enter(s.ID, first)
-		prompt = leadPrompt(r, d, s, original)
+		prompt = leadPrompt(r, d, s, original, extra)
 	} else {
-		prompt = stagePrompt(r, d, s, original)
+		prompt = stagePrompt(r, d, s, original, extra)
 	}
 	updated := map[string]any{}
 	for k, v := range in.ToolInput {
@@ -234,7 +259,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		return nil, nil
 	}
 
-	outcome, summary, problem := parseReport(in.LastMessage, s)
+	outcome, summary, fields, problem := parseReport(in.LastMessage, s)
 	if problem != "" {
 		d.StopBlocks++
 		if d.StopBlocks > 2 {
@@ -245,7 +270,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		r.State.log("blocked", s.ID, d.ID, problem)
 		return block(problem + " " + reportInstructions(s)), nil
 	}
-	d.Done, d.Outcome, d.Summary = true, outcome, summary
+	d.Done, d.Outcome, d.Summary, d.Fields = true, outcome, summary, fields
 	os.WriteFile(filepath.Join(r.Dir, "reports", d.ID+".md"), []byte(in.LastMessage), 0o644)
 	r.State.log("report", s.ID, d.ID, outcome+": "+summary)
 	if r.State.terminal() {
@@ -270,6 +295,10 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 			got = append(got, b.Outcome)
 		}
 		outcome = join(s, got)
+	}
+	if err := fire(r, "stage.after:"+s.ID, d); err != nil {
+		m.fail("handler", err.Error())
+		return nil, nil
 	}
 	m.apply(d.Scope, s, outcome)
 	return nil, nil
@@ -321,35 +350,61 @@ func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 
 var reportRe = regexp.MustCompile("(?s)```starship-report\\s*\\n(.*?)```")
 
-// parseReport extracts the outcome from the last report block in an agent's final message.
-// Each line is "key: value", split at the first colon, so a summary may contain colons.
-func parseReport(msg string, s *Stage) (outcome, summary, problem string) {
+// parseReport extracts the outcome, summary and other fields from the last report block
+// in an agent's final message. Each line is "key: value", split at the first colon, so a
+// summary may contain colons. A key may repeat; files is a comma-separated list.
+func parseReport(msg string, s *Stage) (outcome, summary string, fields map[string][]string, problem string) {
 	all := reportRe.FindAllStringSubmatch(msg, -1)
 	if len(all) == 0 {
-		return "", "", "Your final message has no starship-report block."
+		return "", "", nil, "Your final message has no starship-report block."
 	}
+	fields = map[string][]string{}
 	for _, line := range strings.Split(all[len(all)-1][1], "\n") {
 		key, val, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
 		}
+		key = strings.TrimSpace(strings.TrimLeft(key, "- "))
 		val = strings.Trim(strings.TrimSpace(val), `"'`)
-		switch strings.TrimSpace(key) {
+		switch key {
 		case "outcome":
 			outcome = val
 		case "summary":
 			summary = val
+		case "files":
+			for _, f := range strings.Split(strings.Trim(val, "[]"), ",") {
+				if f = strings.Trim(strings.TrimSpace(f), `"'`); f != "" {
+					fields[key] = append(fields[key], f)
+				}
+			}
+		default:
+			if val != "" {
+				fields[key] = append(fields[key], val)
+			}
 		}
 	}
 	if _, ok := s.Outcomes.find(outcome); !ok {
-		return "", "", fmt.Sprintf("Your report's outcome %q is not one of this stage's outcomes.", outcome)
+		return "", "", nil, fmt.Sprintf("Your report's outcome %q is not one of this stage's outcomes.", outcome)
 	}
-	return outcome, summary, ""
+	for _, f := range s.ReportFields {
+		if len(fields[f]) == 0 && !(f == "files" && outcome != "compiled" && outcome != "broken") {
+			return "", "", nil, fmt.Sprintf("Your report has no %s line, which this stage requires.", f)
+		}
+	}
+	return outcome, summary, fields, ""
 }
 
 func reportInstructions(s *Stage) string {
-	return fmt.Sprintf("End your final message with a report block:\n\n```starship-report\noutcome: <one of: %s>\nsummary: <one line>\n```",
-		strings.Join(s.Outcomes.names(), ", "))
+	var extra string
+	for _, f := range s.ReportFields {
+		if f == "files" {
+			extra += "files: <every file you changed, comma-separated>\n"
+		} else {
+			extra += f + ": <" + f + ">\n"
+		}
+	}
+	return fmt.Sprintf("End your final message with a report block:\n\n```starship-report\noutcome: <one of: %s>\nsummary: <one line>\n%s```",
+		strings.Join(s.Outcomes.names(), ", "), extra)
 }
 
 func workspaceSection(r *RunFiles) string {
@@ -369,9 +424,17 @@ func workspaceSection(r *RunFiles) string {
 	return b.String()
 }
 
-func leadPrompt(r *RunFiles, d *Dispatch, s *Stage, original string) string {
+func leadPrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []string) string {
 	var b strings.Builder
-	b.WriteString(tagLine(r.State.Run, d) + "\n\n## The stages you lead\n\n")
+	b.WriteString(tagLine(r.State.Run, d) + "\n\n")
+	if len(r.State.Answers) > 0 {
+		fmt.Fprintf(&b, "## Resuming\n\nThis run stopped to ask the user a question and is continuing with their answer. "+
+			"Earlier stages' reports are in %s.\n\n%s\n\n", filepath.Join(r.Dir, "reports"), strings.Join(r.State.Answers, "\n\n"))
+	}
+	for _, a := range extra {
+		b.WriteString(strings.TrimSpace(a) + "\n\n")
+	}
+	b.WriteString("## The stages you lead\n\n")
 	for _, c := range s.Stages {
 		fmt.Fprintf(&b, "- %s — role %s", c.ID, c.Role)
 		if c.Parallel != nil {
@@ -391,7 +454,7 @@ func leadPrompt(r *RunFiles, d *Dispatch, s *Stage, original string) string {
 	return b.String()
 }
 
-func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string) string {
+func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []string) string {
 	var b strings.Builder
 	b.WriteString(tagLine(r.State.Run, d) + "\n\n## Stage: " + s.ID + "\n\n")
 	if d.Dim != "" {
@@ -399,6 +462,9 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string) string {
 	}
 	if s.Brief != "" {
 		b.WriteString(r.Snap.Briefs[s.Brief] + "\n")
+	}
+	for _, a := range extra {
+		b.WriteString(strings.TrimSpace(a) + "\n\n")
 	}
 	b.WriteString(workspaceSection(r))
 	b.WriteString("\n## Your brief\n\n" + original + "\n\n## Report\n\n" + reportInstructions(s) + "\n")
@@ -448,5 +514,65 @@ func cmdNext(args []string) error {
 	if !r.State.terminal() {
 		fmt.Println("Budgets used: " + m.budgetLine())
 	}
+	return nil
+}
+
+// cmdResume implements `ensign resume --answer <text> [--budget <name>=<n>]… [--run <id>]`.
+func cmdResume(args []string, out io.Writer) error {
+	usage := fmt.Errorf("usage: ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]")
+	var answer, run string
+	extra := map[string]int{}
+	for i := 0; i+1 < len(args); i += 2 {
+		switch args[i] {
+		case "--answer":
+			answer = args[i+1]
+		case "--run":
+			run = args[i+1]
+		case "--budget":
+			name, n, ok := strings.Cut(args[i+1], "=")
+			v, err := strconv.Atoi(strings.TrimPrefix(n, "+"))
+			if !ok || err != nil || v < 1 {
+				return usage
+			}
+			extra[name] += v
+		default:
+			return usage
+		}
+	}
+	if answer == "" || len(args)%2 != 0 {
+		return usage
+	}
+	bridge, err := cwdBridge()
+	if err != nil {
+		return err
+	}
+	var r *RunFiles
+	if run != "" {
+		r, err = openRun(bridge, run)
+	} else {
+		r, err = openSessionRun(bridge, os.Getenv("STARSHIP_SESSION"))
+	}
+	if err != nil {
+		return err
+	}
+	if r == nil {
+		return fmt.Errorf("no run in this session")
+	}
+	defer r.close()
+	for b := range extra {
+		if _, ok := r.Snap.Pipeline.Budgets[b]; !ok {
+			return fmt.Errorf("no budget %q", b)
+		}
+	}
+	m := &machine{snap: r.Snap, st: r.State}
+	if err := m.resume(answer, extra); err != nil {
+		return err
+	}
+	if err := r.save(); err != nil {
+		return err
+	}
+	lead := r.Snap.Pipeline.Stages[0]
+	fmt.Fprintf(out, "run %s resumed. Dispatch its lead now: use the Agent tool with subagent_type %q and this work item as the prompt:\n\n%s\n",
+		r.State.Run, lead.Role, r.Snap.WorkItem)
 	return nil
 }

@@ -1,0 +1,21 @@
+name: git-catalog
+summary: Commit every coder pass locally, so the lead can read how the work moved; squash when the project says.
+
+help:
+  - say: '"squash this task''s commits"'
+    does: one commit for the task, ready for you to push
+
+pipelines:
+  coding:
+    ops:
+      - set: { stage: code, report-fields: [files] }
+
+events:
+  run.start:        [{ require: "ensign git-catalog record-base" }]
+  stage.after:code: [{ require: "ensign git-catalog commit-pass" }]
+  stage.before:run: [{ augment: briefs/orchestrator.md }]
+
+# Squashing is not attached to any event by default. A project that wants each
+# successful run collapsed adds:
+#   events:
+#     run.finish:success: [{ require: "ensign git-catalog squash" }]

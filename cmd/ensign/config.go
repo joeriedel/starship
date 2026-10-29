@@ -134,6 +134,7 @@ type Stage struct {
 	Parallel     *Parallel `yaml:"parallel" json:"parallel,omitempty"`
 	Dimensions   []string  `yaml:"dimensions" json:"dimensions,omitempty"`
 	Outcomes     Outcomes  `yaml:"outcomes" json:"outcomes,omitempty"`
+	ReportFields []string  `yaml:"report-fields" json:"report_fields,omitempty"`
 	Stages       []*Stage  `yaml:"stages" json:"stages,omitempty"`
 	Source       string    `yaml:"-" json:"source"`
 	line         int
@@ -158,6 +159,7 @@ type Pipeline struct {
 	Budgets          map[string]int        `yaml:"budgets" json:"budgets"`
 	OnExhausted      map[string]Transition `yaml:"on-exhausted" json:"on_exhausted"`
 	FreeRoles        []string              `yaml:"free-roles" json:"free_roles"`
+	Help             []HelpEntry           `yaml:"help" json:"help,omitempty"`
 	Stages           []*Stage              `yaml:"stages" json:"stages"`
 	// Sources records where non-stage fields were last set, e.g. "budgets.test".
 	Sources map[string]string `yaml:"-" json:"sources"`
@@ -234,7 +236,41 @@ type Layer struct {
 	Pipelines map[string]struct {
 		Ops []yaml.Node `yaml:"ops"`
 	} `yaml:"pipelines"`
-	Bindings yaml.Node `yaml:"bindings"`
+	Bindings yaml.Node                `yaml:"bindings"`
+	Use      []string                 `yaml:"use"`
+	Events   map[string][]HandlerSpec `yaml:"events"`
+	Journal  struct {
+		Commit string `yaml:"commit"`
+		Reason string `yaml:"reason"`
+	} `yaml:"journal"`
+}
+
+// HandlerSpec is one handler as written: exactly one of require, observe or augment.
+type HandlerSpec struct {
+	Require string `yaml:"require"`
+	Observe string `yaml:"observe"`
+	Augment string `yaml:"augment"`
+	Status  string `yaml:"status"` // for a generated augment, e.g. only active rules
+}
+
+// Handler is a resolved handler, frozen into a run's snapshot.
+type Handler struct {
+	Kind    string `json:"kind"` // require, observe, augment
+	Command string `json:"command,omitempty"`
+	Text    string `json:"text,omitempty"`   // an augment's content
+	Source  string `json:"source"`           // where it was declared
+	Dir     string `json:"dir"`              // the directory relative paths resolve against
+	Status  string `json:"status,omitempty"` // passed to generated augments
+}
+
+// Bundle is an extension's extension.yaml.
+type Bundle struct {
+	Name             string      `yaml:"name"`
+	Summary          string      `yaml:"summary"`
+	RequiresBindings []string    `yaml:"requires-bindings"`
+	Help             []HelpEntry `yaml:"help"`
+	Layer            `yaml:",inline"`
+	dir              string
 }
 
 type BridgeFile struct {
@@ -327,6 +363,11 @@ type Config struct {
 	WorkItem     string // task.md body
 	Pipeline     *Pipeline
 	Bindings     map[string]Binding
+	Events       map[string][]Handler
+	Bundles      []string
+	JournalOff   string            // reason, when the project turned journal commits off
+	needs        map[string]string // binding -> what requires it, from bundles
+	problems     []string
 }
 
 func readYAML(path string, out any) error {
@@ -383,7 +424,8 @@ func loadConfig(bridge, task string) (*Config, error) {
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return nil, fmt.Errorf("task must be <project>/<task>, got %q", task)
 	}
-	c := &Config{Bridge: bridge, Project: parts[0], Task: task, Bindings: map[string]Binding{}}
+	c := &Config{Bridge: bridge, Project: parts[0], Task: task, Bindings: map[string]Binding{},
+		Events: map[string][]Handler{}, needs: map[string]string{}}
 
 	bridgeFile := filepath.Join(bridge, "bridge.yaml")
 	bfp, err := loadBridgeFile(bridge)
@@ -437,6 +479,9 @@ func loadConfig(bridge, task string) (*Config, error) {
 	}
 	c.Pipeline = p
 
+	if pf.Journal.Commit == "off" {
+		c.JournalOff = pf.Journal.Reason
+	}
 	layers := []struct {
 		label string
 		file  string
@@ -446,7 +491,31 @@ func loadConfig(bridge, task string) (*Config, error) {
 		{"project:" + relTo(bridge, projectFile), projectFile, pf},
 		{"task:" + relTo(bridge, taskFile), taskFile, tf.Layer},
 	}
+	bundles := availableBundles(bridge, c.ControlPlane)
 	for _, l := range layers {
+		for _, use := range l.layer.Use {
+			if contains(c.Bundles, use) {
+				continue
+			}
+			b, ok := bundles[use]
+			if !ok {
+				return nil, fmt.Errorf("%s: no bundle %q", l.label, use)
+			}
+			c.Bundles = append(c.Bundles, use)
+			label := "bundle:" + use
+			if po, ok := b.Pipelines[name]; ok {
+				for i := range po.Ops {
+					if err := applyOp(p, &po.Ops[i], label); err != nil {
+						return nil, err
+					}
+				}
+			}
+			c.addEvents(b.Events, label, b.dir)
+			for _, req := range b.RequiresBindings {
+				c.needs[req] = label
+			}
+		}
+		c.addEvents(l.layer.Events, l.label, filepath.Dir(l.file))
 		if po, ok := l.layer.Pipelines[name]; ok {
 			for i := range po.Ops {
 				if err := applyOp(p, &po.Ops[i], l.label); err != nil {
@@ -639,6 +708,9 @@ func setStageField(s *Stage, key string, val *yaml.Node, kind string) error {
 	case "dimensions":
 		s.Dimensions = nil
 		return val.Decode(&s.Dimensions)
+	case "report-fields":
+		s.ReportFields = nil
+		return val.Decode(&s.ReportFields)
 	case "parallel":
 		s.Parallel = &Parallel{}
 		return val.Decode(s.Parallel)
@@ -817,8 +889,43 @@ func validate(c *Config) []string {
 			add("stage %q: a top-level lead must be dispatched-by: session", s.ID)
 		}
 	}
+	errs = append(errs, c.problems...)
+	for name, by := range c.needs {
+		if _, ok := c.Bindings[name]; !ok {
+			add("binding @%s is required by %s but not defined", name, by)
+		}
+	}
+	for ev, hs := range c.Events {
+		if !validEvent(ev, p) {
+			add("event %q is not one starship fires (%s)", ev, hs[0].Source)
+		}
+		for _, h := range hs {
+			if h.Kind == "augment" && !strings.HasPrefix(h.Text, "@") {
+				if _, err := os.Stat(filepath.Join(h.Dir, filepath.FromSlash(h.Text))); err != nil {
+					if _, err := c.findFile(h.Text); err != nil {
+						add("%s: augment %s not found", h.Source, h.Text)
+					}
+				}
+			}
+		}
+	}
 	sort.Strings(errs)
 	return errs
+}
+
+// validEvent reports whether starship fires this event for this pipeline.
+func validEvent(ev string, p *Pipeline) bool {
+	switch ev {
+	case "run.start", "run.finish:success", "run.finish:error", "run.finish:ask-user":
+		return true
+	}
+	for _, prefix := range []string{"stage.before:", "stage.after:"} {
+		if id, ok := strings.CutPrefix(ev, prefix); ok {
+			s, _, _ := p.find(id)
+			return s != nil
+		}
+	}
+	return false
 }
 
 // findFile looks for a control-plane-relative file in the bridge first, then the control plane.
@@ -848,4 +955,70 @@ func writeYAML(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// availableBundles finds every bundle: the control plane's extensions, then the bridge's,
+// which replace a control-plane bundle of the same name.
+func availableBundles(bridge, cp string) map[string]*Bundle {
+	out := map[string]*Bundle{}
+	for _, dir := range bundleDirs(bridge, cp) {
+		var b Bundle
+		if readYAML(filepath.Join(dir, "extension.yaml"), &b) == nil && b.Name != "" {
+			b.dir = dir
+			out[b.Name] = &b
+		}
+	}
+	return out
+}
+
+func bundleDirs(bridge, cp string) []string {
+	var out []string
+	for _, base := range []string{cp, bridge} {
+		found, _ := filepath.Glob(filepath.Join(base, "extensions", "*", "extension.yaml"))
+		for _, f := range found {
+			out = append(out, filepath.Dir(f))
+		}
+	}
+	return out
+}
+
+func bundleRoleDirs(bridge, cp string) []string {
+	var out []string
+	for _, b := range availableBundles(bridge, cp) {
+		out = append(out, filepath.Join(b.dir, "roles"))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (c *Config) addEvents(events map[string][]HandlerSpec, label, dir string) {
+	for _, ev := range sortedKeys(events) {
+		for _, h := range events[ev] {
+			r := Handler{Source: label, Dir: dir, Status: h.Status}
+			n := 0
+			if h.Require != "" {
+				r.Kind, r.Command, n = "require", h.Require, n+1
+			}
+			if h.Observe != "" {
+				r.Kind, r.Command, n = "observe", h.Observe, n+1
+			}
+			if h.Augment != "" {
+				r.Kind, r.Text, n = "augment", h.Augment, n+1
+			}
+			if n != 1 {
+				c.problems = append(c.problems, fmt.Sprintf("%s: a handler for %s needs exactly one of require, observe, augment", label, ev))
+				continue
+			}
+			c.Events[ev] = append(c.Events[ev], r)
+		}
+	}
 }

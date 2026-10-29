@@ -146,7 +146,8 @@ func git(dir string, args ...string) error {
 
 func gitOut(dir string, args ...string) (string, error) {
 	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
-	return strings.TrimSpace(string(out)), err
+	// Trim only the end: porcelain status lines start with a meaningful space.
+	return strings.TrimRight(string(out), "\r\n"), err
 }
 
 func sha(data []byte) string {

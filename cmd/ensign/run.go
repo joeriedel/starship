@@ -17,17 +17,19 @@ import (
 
 // Snapshot is the frozen input of a run. Hooks read only this, never the layers.
 type Snapshot struct {
-	Run          string             `json:"run"`
-	Task         string             `json:"task"`
-	Bridge       string             `json:"bridge"`
-	ControlPlane string             `json:"control_plane"`
-	Workspace    string             `json:"workspace"`
-	WorkItem     string             `json:"work_item"`
-	Start        string             `json:"start,omitempty"`
-	Pipeline     *Pipeline          `json:"pipeline"`
-	Bindings     map[string]Binding `json:"bindings"`
-	Briefs       map[string]string  `json:"briefs"` // relative path -> contents, frozen with the run
-	Created      string             `json:"created"`
+	Run          string               `json:"run"`
+	Task         string               `json:"task"`
+	Bridge       string               `json:"bridge"`
+	ControlPlane string               `json:"control_plane"`
+	Workspace    string               `json:"workspace"`
+	WorkItem     string               `json:"work_item"`
+	Start        string               `json:"start,omitempty"`
+	Pipeline     *Pipeline            `json:"pipeline"`
+	Bindings     map[string]Binding   `json:"bindings"`
+	Briefs       map[string]string    `json:"briefs"` // relative path -> contents, frozen with the run
+	Events       map[string][]Handler `json:"events,omitempty"`
+	Bundles      []string             `json:"bundles,omitempty"`
+	Created      string               `json:"created"`
 }
 
 type Dispatch struct {
@@ -41,12 +43,23 @@ type Dispatch struct {
 	Done        bool   `json:"done"`
 	Outcome     string `json:"outcome,omitempty"`
 	Summary     string `json:"summary,omitempty"`
-	StopBlocks  int    `json:"stop_blocks,omitempty"`
+	// Fields holds the report's other lines (files, rules, facts …).
+	Fields     map[string][]string `json:"fields,omitempty"`
+	StopBlocks int                 `json:"stop_blocks,omitempty"`
 }
 
 type ScopeState struct {
 	Stage    string            `json:"stage"`              // current stage id; "" once the scope is finished
 	Branches map[string]string `json:"branches,omitempty"` // dimension -> dispatch id, for a parallel stage
+}
+
+// ResumePoint is where an ask-user run picks up again.
+type ResumePoint struct {
+	Scope     string `json:"scope"`
+	Stage     string `json:"stage"`
+	Budget    string `json:"budget,omitempty"`     // the budget that ran out
+	EdgeSpend bool   `json:"edge_spend,omitempty"` // it was spent by a transition, not by entering
+	Reset     string `json:"reset,omitempty"`      // a reset still owed by that transition
 }
 
 type HistoryEntry struct {
@@ -67,6 +80,12 @@ type State struct {
 	Scopes   map[string]*ScopeState `json:"scopes"`
 	// StartChild is the --start stage inside a lead, applied when the lead's scope opens.
 	StartChild string         `json:"start_child,omitempty"`
+	Started    bool           `json:"started,omitempty"` // run.start has fired
+	Sync       bool           `json:"sync,omitempty"`    // run @sync before run.start
+	Base       string         `json:"base,omitempty"`    // git-catalog: HEAD when the run started
+	Extra      map[string]int `json:"extra,omitempty"`   // budget added on resume
+	Resume     *ResumePoint   `json:"resume,omitempty"`  // where an ask-user run continues
+	Answers    []string       `json:"answers,omitempty"` // the user's answers on resume
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 }
@@ -211,11 +230,13 @@ func writeJSON(path string, v any) error {
 // cmdRun implements `ensign run <project>/<task> [--start <stage>] [--dry-run]`.
 func cmdRun(args []string, out io.Writer) error {
 	var task, start string
-	dry := false
+	dry, sync := false, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dry-run":
 			dry = true
+		case "--sync":
+			sync = true
 		case "--start":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--start needs a stage")
@@ -224,16 +245,15 @@ func cmdRun(args []string, out io.Writer) error {
 			start = args[i]
 		default:
 			if strings.HasPrefix(args[i], "-") || task != "" {
-				return fmt.Errorf("usage: ensign run <project>/<task> [--start <stage>] [--dry-run]")
+				return fmt.Errorf("usage: ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]")
 			}
 			task = args[i]
 		}
 	}
 	if task == "" {
-		return fmt.Errorf("usage: ensign run <project>/<task> [--start <stage>] [--dry-run]")
+		return fmt.Errorf("usage: ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]")
 	}
-	wd, _ := os.Getwd()
-	bridge, err := findBridge(wd)
+	bridge, err := cwdBridge()
 	if err != nil {
 		return err
 	}
@@ -245,6 +265,11 @@ func cmdRun(args []string, out io.Writer) error {
 	if start != "" {
 		if s, _, _ := c.Pipeline.find(start); s == nil {
 			errs = append(errs, fmt.Sprintf("--start: no stage %q", start))
+		}
+	}
+	if sync {
+		if b, ok := c.Bindings["sync"]; !ok || (b.Command == "" && b.NotApplicable == "") {
+			errs = append(errs, "--sync needs the @sync binding")
 		}
 	}
 	if len(errs) > 0 {
@@ -284,12 +309,30 @@ func cmdRun(args []string, out io.Writer) error {
 		Pipeline:     c.Pipeline,
 		Bindings:     c.Bindings,
 		Briefs:       map[string]string{},
+		Events:       c.Events,
+		Bundles:      c.Bundles,
 		Created:      time.Now().Format(time.RFC3339),
+	}
+	for _, hs := range snap.Events {
+		for i := range hs {
+			if hs[i].Kind == "augment" && !strings.HasPrefix(hs[i].Text, "@") {
+				f := filepath.Join(hs[i].Dir, filepath.FromSlash(hs[i].Text))
+				if _, err := os.Stat(f); err != nil {
+					f, _ = c.findFile(hs[i].Text)
+				}
+				data, err := os.ReadFile(f)
+				if err != nil {
+					return err
+				}
+				hs[i].Text = string(data)
+			}
+		}
 	}
 	if err := freezeBriefs(c, snap); err != nil {
 		return err
 	}
-	st := &State{Run: snap.Run, Session: session, Status: "pending", Spent: map[string]int{}, Scopes: map[string]*ScopeState{}}
+	st := &State{Run: snap.Run, Session: session, Status: "pending", Spent: map[string]int{}, Scopes: map[string]*ScopeState{},
+		Sync: sync, Extra: map[string]int{}}
 	first := c.Pipeline.Stages[0].ID
 	if start != "" {
 		_, _, scope := c.Pipeline.find(start)
