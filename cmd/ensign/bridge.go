@@ -150,7 +150,20 @@ func cmdInit(args []string, out io.Writer) error {
 			return err
 		}
 	}
-	return link(dir, false, out)
+	if err := link(dir, false, out); err != nil {
+		return err
+	}
+	// Commit the starting files, or the first session is asked to commit them as
+	// journal changes before it can end.
+	if _, err := gitOut(dir, "rev-parse", "--verify", "HEAD"); err != nil {
+		if err := git(dir, "add", "-A"); err != nil {
+			return err
+		}
+		if err := git(dir, "commit", "-q", "-m", "New bridge"); err != nil {
+			fmt.Fprintf(out, "could not commit the new bridge (%v); commit its files before starting a session\n", err)
+		}
+	}
+	return nil
 }
 
 func git(dir string, args ...string) error {

@@ -31,7 +31,19 @@ func TestInitAndLink(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
+		t.Setenv(k, "t")
+	}
+	for _, k := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		t.Setenv(k, "t@example.com")
+	}
 	b := newBridge(t)
+	if status, _ := gitOut(b, "status", "--porcelain"); status != "" {
+		t.Errorf("init should commit the new bridge; uncommitted: %q", status)
+	}
+	if changed := journalChanges(b); len(changed) != 0 {
+		t.Errorf("a new bridge should have no journal changes: %v", changed)
+	}
 	for _, f := range []string{"bridge.yaml", "CLAUDE.md", ".gitignore", ".claude/settings.json", "denylist.txt",
 		".claude/agents/coder.md", ".claude/agents/orchestrator.md", ".starship/session.md", ".starship/link.yaml"} {
 		if _, err := os.Stat(filepath.Join(b, f)); err != nil {
