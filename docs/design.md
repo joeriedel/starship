@@ -44,7 +44,7 @@ task            <bridge>/projects/<project>/tasks/<task>/task.md
                 workspace paths, VCS state, per-task extensions, journal
 ```
 
-Each later layer may extend or override the one before it, subject to locks (§5.6).
+Each later layer may extend or override the one before it, except locked invariants (§5.6).
 
 ### 2.1 How a bridge consumes the control plane
 
@@ -94,7 +94,7 @@ control-plane session (cwd: ~/starship, fresh context)
   ▼
 commit gates (git hooks in ~/starship)
   1. identity: author email must be the personal address
-  2. denylist: diff grepped against every bridge denylist on this machine
+  2. denylist: diff grepped against the denylist of every bridge registered here (§12.6)
   3. clean-room review: an agent with no project context reads only the diff
   ▼
 commit and push to personal GitHub, without asking (§10.1)
@@ -277,6 +277,15 @@ counts as evidence; the consolidation pass, the ledger, and the driver's checks 
 same for all of them. The curator's context is deliberately small — the document, the
 proposals, and any binding that outranks them — so its attention goes to consistency.
 
+### 4.6 Integrations
+
+Integrations with outside systems — issue trackers, wikis, code review systems — live at
+the **bridge** level, as bundles in the bridge: the scripts, their bindings (such as
+`@review-fetch`, `@review-post`), and their configuration. A project overrides any of it
+for its own needs, and a task overrides it again, through the usual layering. None of it
+lives in the control plane; which systems a context uses, and how, is part of that
+context.
+
 ---
 
 ## 5. Pipelines
@@ -303,6 +312,11 @@ Budgets:
 - `reset: <budget>` on an edge restores that budget to its full value.
 - A budget is the maximum number of spends. The spend that would exceed it triggers
   `on-exhausted` instead.
+
+Nesting: a stage with its own `stages` is a lead that dispatches them, and those may
+nest further. The driver tracks the chain of leads through dispatch tags, so the format
+places no limit; a safety cap of **5 levels** stops a runaway pipeline (one that
+includes itself) with `error: nesting`.
 
 ### 5.2 The default coding pipeline
 
@@ -414,7 +428,7 @@ entry in the named list, all on the same commit, and joins their outcomes.
 - **The list is configuration.** The default is `[correctness]`, a single reviewer.
   Projects and tasks add dimensions with `append`. A dimension with no brief anywhere in
   the layers is a stop, like a missing binding.
-- **`join: all` waits for every branch.** The lead cannot dispatch the next stage until
+- **`join: all` is the only join rule**, and it waits for every branch. The lead cannot dispatch the next stage until
   the join completes; PreToolUse denies it and names the outstanding branches.
 - **Outcomes combine by precedence.** A parallel stage lists its outcomes in precedence
   order, and the join takes the highest one any branch reported: one `findings` among
@@ -433,15 +447,11 @@ coordinates edits between them.
 
 ### 5.6 Locks
 
-The control plane marks invariants as locks — for example the approval gate, no
-workspace push without approval, and no agent attribution. Lower layers may tighten a lock freely.
-Loosening one needs an explicit entry:
-
-```yaml
-unlock: { lock: no-push, reason: "..." }
-```
-
-The resolver prints every unlock prominently.
+A few invariants are **locked** in the control plane: the `go` approval gate, no
+workspace push without approval, no agent attribution, and the control-plane leak gates.
+A lower layer may add to them (another gate, a stricter rule) but cannot weaken or remove
+them; the resolver rejects any layer that tries. There is no unlock. If an invariant is
+wrong, it is changed in the control plane, for everyone.
 
 ---
 
@@ -865,6 +875,9 @@ happened is not.
   remote, checked with `git ls-remote`, not the local tracking ref.
 - The leak gates (§3.2) are git hooks, so they run on every commit regardless of who
   makes it.
+- **From a work machine, the control plane is the only thing pushed to the personal
+  repo.** Bridges, journals and workspaces in a work context stay on that context's
+  infrastructure.
 
 ### 10.2 Task journals
 
@@ -975,9 +988,6 @@ or by walking up from the working directory) and hands off to that bridge's pinn
 binary, so every bridge runs the `ensign` that matches its pipelines. Outside a bridge,
 hook events are no-ops.
 
-Whether a Claude Code plugin could be loaded directly from the pinned clone, removing
-the generated files, is untested (§14).
-
 ### 11.4 Portability rules
 
 - `.gitattributes` with `* text=auto eol=lf`, so config and scripts are never converted to
@@ -1073,6 +1083,21 @@ So there are two defences:
   `stop_hook_active` set and the error repeats, the stop is let through, so a persistent
   fault cannot trap an agent in a loop.
 
+### 12.6 Machines and containers
+
+Bridges may share a machine, live on separate machines, or run in containers. Nothing in
+the design assumes one bridge per machine:
+
+- Machine-specific state is per bridge (`.starship/machine.yaml`), not per machine.
+- `ensign setup` registers each bridge in a per-user registry (`~/.config/starship/` on
+  Linux, `%APPDATA%\starship\` on Windows). The control plane's denylist gate checks the
+  denylist of every registered bridge, so on a shared machine a change is checked
+  against all of them.
+- In a container, the container is the machine: setup runs inside it, and its registry
+  holds only the bridges in that container. A control-plane edit made outside the
+  container is not checked against them — make control-plane edits where the relevant
+  bridges are registered.
+
 ---
 
 ## 13. Carried over from the reference design
@@ -1091,17 +1116,3 @@ So there are two defences:
 1. **How Claude Code runs hook commands on Windows** (Git Bash, PowerShell, or direct
    process launch). `ensign hook <event>` is designed to work under all three; verify on
    a Windows machine.
-2. **Join rules beyond `all`**, such as stopping at the first `findings`, if a case
-   needs one.
-3. **Nesting depth.** One lead level is specified; deeper nesting is forbidden until a
-   second case needs it.
-4. **Who may unlock** a lock: bridge and project only, or tasks too.
-5. **Integration scripts** (issue trackers, review systems): generic bundles in the
-   control plane with configuration from the bridge, or bridge-only.
-6. **Same machine or separate machines** for different bridges, which affects whether a
-   denylist check sees more than one bridge.
-7. **A fast path for trivial control-plane fixes**, or always the proposal handoff.
-8. **Loading the control plane as a Claude Code plugin from a local directory** (the
-   bridge's pinned clone) without a cached copy, which would replace the generated files.
-9. **Committing to the personal repo from a work machine** is an employment-agreement
-   question, separate from content cleanliness. The user's call.
