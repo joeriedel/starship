@@ -370,9 +370,10 @@ stages:
           pass:  { finish: success }
           fail:  { goto: code, spend: test, reset: loop }
           error: { error: test-error }
-    on-exhausted:
-      loop: { error: budget:loop }
-      test: { error: budget:test }
+
+on-exhausted:                         # run-wide, beside budgets
+  loop: { error: "budget:loop" }
+  test: { error: "budget:test" }
 ```
 
 What this encodes:
@@ -409,17 +410,22 @@ and pass": the coding pipeline started at `test`. `pass` ends the run as `succes
 Later layers edit a pipeline with explicit operations on stage IDs. A list is never
 silently replaced.
 
+Each layer has one config file, and they all share the same shape: `bridge.yaml` for the
+bridge, `projects/<p>/project.yaml` for a project, and the frontmatter of `task.md` for a
+task. Pipeline operations go under `pipelines.<name>.ops`, next to the layer's bindings:
+
 ```yaml
-# a project's pipelines/coding.yaml, or a block in task.md frontmatter
-extends: coding
-ops:
-  - append: { stage: review, dimensions: [concurrency, security] }
-  - insert: { before: test, stage: { id: migrations, role: tester,
-              brief: briefs/migrations.md,
-              outcomes: { fail: { goto: code }, pass: next } } }
-  - remove: style
-  - set:    { budgets.test: 1 }
-  - set:    { on-exhausted.test: { ask-user: "test budget spent — another cycle?" } }
+# projects/supernova/project.yaml (a task.md frontmatter block looks the same)
+pipelines:
+  coding:
+    ops:
+      - append: { stage: review, dimensions: [concurrency, security] }
+      - insert: { before: test, stage: { id: migrations, role: tester,
+                  brief: briefs/migrations.md,
+                  outcomes: { fail: { goto: code }, pass: next } } }
+      - remove: style
+      - set:    { budgets.test: 1 }
+      - set:    { on-exhausted.test: { ask-user: "test budget spent — another cycle?" } }
 
 use: [git-catalog]
 
@@ -431,7 +437,8 @@ events:
   stage.after:test: [{ observe: scripts/post-summary.sh }]
 ```
 
-A file without `extends:` defines a new pipeline. The same resolver and driver run it.
+A task's frontmatter also names its `pipeline` (default `coding`) and its `workspace`.
+New pipelines are files in a `pipelines/` directory — the control plane's, or a bundle's.
 
 `append` adds to a list field; `set` on a list field replaces it explicitly.
 
@@ -475,6 +482,10 @@ speculative stages. Each session has at most one active run, so a spawn from the
 belongs to that run without ambiguity. Two runs must not share a workspace; nothing
 coordinates edits between them.
 
+*Implementation status:* `ensign` currently tracks one active run per bridge per machine
+(`.starship/active-run`), so two sessions in the same bridge cannot run at once yet.
+Per-session tracking is the next step (§15).
+
 ### 5.6 Locks
 
 A few invariants are **locked** in the control plane: the `go` approval gate, no
@@ -497,6 +508,13 @@ wrong, it is changed in the control plane, for everyone.
 
 Reason codes come from whichever edge or budget ended the run (`blocked`,
 `test-error`, `budget:loop`, `budget:test`, `done-check`), so they are deterministic.
+The driver adds its own:
+
+| Code | When |
+|---|---|
+| `ensign` | an `ensign` error during the run (below) |
+| `bad-report` | a stage agent failed to produce a valid report after being blocked twice |
+| `lead-stopped` | the lead kept trying to stop before the pipeline finished (blocked three times) |
 
 **An `ensign` error during pipeline work is an immediate failure:** the run ends as
 `error: ensign` with `ensign`'s message. This covers a hook that fails and a command
@@ -523,9 +541,14 @@ files: [src/range.go]
 ```
 ````
 
-The driver rejects a report whose `outcome` is missing or not among the stage's declared
-outcomes, and blocks the agent's stop with the valid outcomes listed. Stages may require
-further fields (the `code` stage requires `files` when `git-catalog` is enabled).
+Each line is `key: value`, split at the first colon, so a summary may contain colons
+(an earlier YAML parse tripped over exactly that in a live run). The driver rejects a
+report whose `outcome` is missing or not among the stage's declared outcomes, and blocks
+the agent's stop with the valid outcomes listed. Stages may require further fields (the
+`code` stage requires `files` when `git-catalog` is enabled).
+
+Agents never have to be taught the format by a role file: the driver appends the report
+instructions, with that stage's outcomes, to every dispatch (§7).
 
 ### 6.3 Creating a run: the resolver and the snapshot
 
@@ -544,19 +567,31 @@ further fields (the `code` stage requires `files` when `git-catalog` is enabled)
 The run then waits for `go`. Until then the hooks refuse its lead dispatch.
 
 ```
-<bridge>/.starship/runs/<run-id>/
-  pipeline.json    resolved pipeline; every field records its source file and line
-  state.json       written only by the driver
-  reports/         each stage's report block as received
+<bridge>/.starship/
+  active-run                 the id of the bridge's active run
+  runs/<run-id>/
+    pipeline.json            the snapshot: resolved pipeline with sources, bindings,
+                             workspace, work item, and every brief the run can use
+    state.json               written only by the driver
+    reports/<dispatch>.md    each stage agent's final message
+    lock
 ```
+
+Briefs are frozen into the snapshot along with the pipeline, so editing a brief mid-run
+doesn't change what later stages of that run are told.
 
 `ensign run <task> --dry-run` does steps 1, 2 and 4 and stops: it shows what the run
 would be, with the source of every field, and creates nothing:
 
 ```
-stage security          from project:supernova/pipelines/coding.yaml:4
-stage style             REMOVED by project:supernova/pipelines/coding.yaml:7
-budgets.test=1          from task:tasks/auth-refactor/task.md
+    review   reviewer        parallel over [correctness tests]
+             from control-plane:pipelines/coding.yaml:20; dimensions append by project:projects/supernova/project.yaml:8
+               findings  → goto code
+               clean     → next
+budgets
+  test   1   from task:projects/supernova/tasks/auth-refactor/task.md:7
+bindings
+  @build    ./build.sh   from project:projects/supernova/project.yaml:2
 ```
 
 The snapshot's hash is recorded in the state file. A config change mid-run does not
@@ -566,42 +601,52 @@ affect that run.
 
 ```json
 {
-  "run": "20261029-1203-coding",
-  "task": "projects/supernova/tasks/auth-refactor",
-  "pipeline_sha": "3f9c…",
-  "approved": true,
+  "run": "20261029-141649-coding",
   "status": "running",
-  "base": "a1b2c3d",
-  "dispatches": {
-    "d7": { "stage": "run.review", "parent": "run", "agent_id": "a5ba254c…" }
+  "approved": true,
+  "spent": { "loop": 1, "test": 1 },
+  "scopes": {
+    "":    { "stage": "run" },
+    "run": { "stage": "review", "branches": { "correctness": "d8", "tests": "d9" } }
   },
-  "position": { "run": "review" },
-  "spent": { "loop": 2, "test": 0 },
+  "dispatches": [
+    { "id": "d7", "stage": "code", "scope": "run", "role": "coder",
+      "agent_id": "a5ba254c…", "done": true, "outcome": "compiled", "summary": "…" },
+    { "id": "d8", "stage": "review", "scope": "run", "dim": "correctness", "role": "reviewer", "done": false }
+  ],
   "history": [
-    { "d": "d5", "stage": "run.code",   "cycle": 1, "pass": 2, "outcome": "compiled" },
-    { "d": "d6", "stage": "run.review", "cycle": 1, "pass": 2, "outcome": "findings" }
+    { "kind": "outcome", "stage": "test", "detail": "fail → goto code, spend test, reset loop" },
+    { "kind": "enter",   "stage": "code", "detail": "loop 1/3, test 1/3" }
   ]
 }
 ```
+
+A **scope** is the list of stages one dispatcher works through: `""` is the session, and
+each lead's id is the scope of the stages it dispatches. The history records every
+dispatch, refusal, report, outcome, stage entry and block, so a run can be read back
+afterwards exactly as it happened.
 
 ---
 
 ## 7. The hook driver
 
 One binary, `ensign hook <event>`, called from harness hooks and git hooks. Every
-invocation takes an `flock` on `state.json`.
+invocation takes a file lock on the run, and outside a bridge every event is a no-op.
 
 **PreToolUse (Agent tool)**
 
 1. Identify the caller: `agent_id` maps to a dispatched stage; no `agent_id` is the
    session.
-2. Find the next expected stage for that caller from `position`. In a parallel stage,
-   that is the next undispatched branch.
+2. Find the caller's scope and its current stage. In a parallel stage, the next
+   undispatched branch. A caller that is a stage agent rather than a lead may spawn only
+   free roles.
 3. If the requested `subagent_type` doesn't match the stage's role, deny with the
    expected stage named. Free roles pass without changing state.
 4. Run `stage.before` handlers; a failing `require` denies the spawn.
-5. Rewrite the prompt: prepend a tag `[starship run=… dispatch=d7 stage=run.review]`
-   (plus `dim=…` for a branch), then any augments.
+5. Rewrite the prompt: a tag `[starship run=… dispatch=d7 stage=review]` (plus `dim=…`
+   for a branch), the dimension and stage briefs, the workspace and its resolved
+   bindings, the original prompt, and the report instructions. A lead's prompt instead
+   lists the stages it leads and the `ensign next` command (below).
 6. Record the dispatch.
 
 **SubagentStop**
@@ -616,7 +661,8 @@ invocation takes an `flock` on `state.json`.
 
 **UserPromptSubmit**
 
-If the user's message is exactly `go` and a plan is pending, set `approved`. Until then,
+If the user's message is exactly `go` and a run is pending, set `approved` and tell the
+session, as added context, to dispatch the lead with the task's work item. Until then,
 PreToolUse denies the lead dispatch. The approval gate is a harness check, not an
 agent's promise.
 
@@ -625,6 +671,14 @@ calling the model (§7.2).
 
 **Git hooks** run `commit.before` and `push.before` through the same script, including
 the control-plane leak gates (§3.2).
+
+**How a lead knows what to dispatch.** Hooks can refuse a wrong spawn, but they cannot
+speak to a lead between stages. So a lead's prompt includes a command,
+`ensign next --bridge <bridge>`, which prints exactly what to dispatch now — "Dispatch
+stage "review": 2 reviewer agents", "Wait: stage "test" is still running", or "The run is
+finished: success" — and the budgets used. The lead runs it at the start and after every
+stage. In live runs a haiku orchestrator followed it reliably, including when its work
+item told it to skip stages.
 
 ### 7.1 Verified harness behaviour
 
@@ -641,6 +695,8 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | SessionStart hook stdout reaches the session's context | yes; appears as `SessionStart:startup hook success: <stdout>` |
 | A missing hook command blocks anything | no; non-blocking error, tool calls proceed |
 | PreToolUse `allow` lifts a permission `ask` rule | no (tested headless); the ask still applies |
+| UserPromptSubmit `additionalContext` reaches the session | yes; the session dispatched the lead as instructed on `go` |
+| A full coding run, enforced only by hooks (sonnet session, haiku roles) | yes; four live scenarios, including a test failure that looped back and refused spawns |
 | Subagents load relevant Claude Code skills on demand | yes; 10 of 10 subagent runs and 6 of 6 session runs loaded the matching skill and followed it (favourable conditions; see §4.4) |
 
 SubagentStop identifies the role but not the stage, which is why dispatches are tagged.
@@ -1176,3 +1232,23 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
 1. **How Claude Code runs hook commands on Windows** (Git Bash, PowerShell, or direct
    process launch). `ensign hook <event>` is designed to work under all three; verify on
    a Windows machine.
+
+---
+
+## 15. Implementation status
+
+Built and tested (unit tests, plus live runs against Claude Code):
+
+- `ensign run` (`--start`, `--dry-run`), `ensign next`, and `ensign hook` for
+  PreToolUse, SubagentStop and UserPromptSubmit (`go`).
+- Layer merging with sources, validation, frozen snapshots, the coding pipeline's state
+  machine, budgets, parallel review with `join: all`, report parsing, and failing closed.
+
+Stubbed or not started:
+
+- **Nested leads** are rejected by validation.
+- **Pinning**: `bridge.yaml` names the control plane by `control-plane.path`, not a
+  release tag; `setup`, `link`, `update`, `init` and the launcher don't exist yet.
+- **One active run per bridge**, not per session (§5.5).
+- Bundles, events and handlers, skills delivery, `help`/`status`, journal commits, leak
+  gates, `@sync`, `ask-user` and resume, CI releases, Windows.
