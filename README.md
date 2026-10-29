@@ -1,18 +1,33 @@
 # Starship
 
-**Give Claude Code a crew, a process, and a memory.**
+**Claude Code for real, ongoing work: every change reviewed and tested, and every task's
+history kept.**
 
-Ask a single Claude session to make a change and it will usually do it, but it is also
-the one deciding what "done" means. It writes the code, judges its own work, decides
-which tests are worth running, and forgets all of it when the session ends.
+Starship is a control plane for Claude Code. You keep talking to Claude the way you
+already do, but each piece of work runs as a task. It's planned before anything changes,
+carried out by separate agents that write, review, tidy and test the code, and written
+down as it goes.
 
-Starship splits that up. You still just talk to Claude. Behind the conversation, a crew
-of specialist agents does the work in stages, a process enforced by hooks decides what
-happens next, and a written record carries the work from one session to the next.
+What that gets you:
+
+- **The full history of every task.** Weeks later, when an issue turns up in something
+  you shipped, the task is still there: what was asked for, the plan, each decision and
+  why, every review finding and what was done about it, the test runs, and a commit for
+  each pass. Keeping a record like that by hand is something nobody actually manages.
+  Starship keeps it without being asked, and with its predecessor it was the feature that
+  paid for itself again and again.
+- **Changes that were checked before you see them.** Code is reviewed by agents that
+  didn't write it, and only counts as done once it builds and the full test suite has run
+  and passed. Hooks enforce this, so no agent can skip it.
+- **Pick up where you left off, anywhere.** Tasks and their journals live in a git repo of
+  your own, so a new session tomorrow, or a different machine, carries on with nothing
+  lost.
+- **It learns your codebase.** Style corrections become a per-project guide, and facts
+  agents discover become skills, so later runs need less correcting.
 
 ## Getting started
 
-You need Claude Code and git, on Linux or Windows; macOS isn't supported yet.
+You need Claude Code and git, on Linux, Windows or macOS.
 
 Make a folder for your bridge, start `claude` in it, and ask:
 
@@ -190,10 +205,11 @@ When asked to make a starship bridge in a folder:
    ```
    TAG=$(git ls-remote --tags --refs --sort=-v:refname https://github.com/joeriedel/starship.git 'v*' | head -n 1 | sed 's#.*/##')
    git clone -q --depth 1 --branch "$TAG" https://github.com/joeriedel/starship.git .starship/control-plane
-   .starship/control-plane/bin/linux-amd64/ensign init . --projects <their code folder>
+   .starship/control-plane/bin/<platform>/ensign init . --projects <their code folder>
    ```
 
-   On Windows the binary is `.starship/control-plane/bin/windows-amd64/ensign.exe`.
+   `<platform>` is `linux-amd64`, `windows-amd64` (the binary is `ensign.exe`),
+   `darwin-arm64` (a Mac with Apple silicon) or `darwin-amd64` (an Intel Mac).
    `init` pins the bridge to that release, puts `ensign` on PATH, and commits the
    bridge's files. It refuses to overwrite files already in the folder; if it does,
    tell the user which ones and let them decide.

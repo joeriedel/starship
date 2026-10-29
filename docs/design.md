@@ -1019,7 +1019,7 @@ depend on the project's VCS:
 
 ## 11. Build, platforms and installation
 
-Starship runs on **Linux and Windows**. A machine that only uses it needs **Claude Code
+Starship runs on **Linux, Windows and macOS**. A machine that only uses it needs **Claude Code
 and git**, nothing else.
 
 ### 11.1 `ensign`
@@ -1041,6 +1041,8 @@ collides with the starship shell prompt, whose binary is `starship`.
 bin/
   linux-amd64/ensign
   windows-amd64/ensign.exe
+  darwin-arm64/ensign          macOS, Apple silicon
+  darwin-amd64/ensign          macOS, Intel
 ```
 
 - **A release is cut by CI.** You trigger the release workflow with a version
@@ -1253,7 +1255,7 @@ None at the moment. Deferred work is in the backlog (§15.4).
 
 ## 15. Implementation status
 
-Everything in §§2–12 is built, with unit tests (run in CI on Linux and Windows) and live
+Everything in §§2–12 is built, with unit tests (run in CI on Linux, Windows and macOS) and live
 runs against Claude Code, except where listed below.
 
 ### 15.1 Commands

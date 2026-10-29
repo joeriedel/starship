@@ -40,7 +40,7 @@ is not set up on this machine. Tell the user, and with their OK run, from the br
     git clone --depth 1 --branch <tag from bridge.yaml> <remote> .starship/control-plane
     .starship/control-plane/bin/<platform>/ensign setup --projects <path>
 
-` + "`<platform>`" + ` is ` + "`linux-amd64`" + ` or ` + "`windows-amd64`" + `. Ask the user where this machine keeps its
+` + "`<platform>`" + ` is ` + "`linux-amd64`" + `, ` + "`windows-amd64`" + `, ` + "`darwin-arm64`" + ` (Apple silicon) or ` + "`darwin-amd64`" + ` (Intel Mac). Ask the user where this machine keeps its
 workspaces (the projects root) for ` + "`--projects`" + `. Then ask them to restart claude.
 
 ## The heartbeat
