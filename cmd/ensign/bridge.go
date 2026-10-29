@@ -70,7 +70,7 @@ const bridgeDenylist = `# Terms that must never reach the public control plane f
 
 func hookSettings() string {
 	cmd := func(ev string) string {
-		return fmt.Sprintf(`[{"hooks": [{"type": "command", "command": "ensign hook %s"}]}]`, ev)
+		return fmt.Sprintf(`[{"hooks": [{"type": "command", "command": %q}]}]`, bridgeEnsign+" hook "+ev)
 	}
 	return `{
   "permissions": {
@@ -79,7 +79,7 @@ func hookSettings() string {
   "hooks": {
     "SessionStart":     ` + cmd("SessionStart") + `,
     "UserPromptSubmit": ` + cmd("UserPromptSubmit") + `,
-    "PreToolUse":       [{"matcher": "Agent|Task|Edit|Write|NotebookEdit", "hooks": [{"type": "command", "command": "ensign hook PreToolUse"}]}],
+    "PreToolUse":       [{"matcher": "Agent|Task|Edit|Write|NotebookEdit", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", bridgeEnsign+" hook PreToolUse") + `}]}],
     "SubagentStop":     ` + cmd("SubagentStop") + `,
     "Stop":             ` + cmd("Stop") + `
   }
@@ -248,9 +248,30 @@ var frontmatterField = func(name string) *regexp.Regexp {
 	return regexp.MustCompile(`(?m)^` + name + `:\s*(.*)$`)
 }
 
+// bridgeEnsign is how hooks run the bridge's own ensign: every bridge has its copy, so
+// nothing is installed for the machine and PATH doesn't matter.
+const bridgeEnsign = `"$CLAUDE_PROJECT_DIR/.starship/bin/ensign"`
+
+// ensignFile is where a bridge keeps its own ensign, relative to the bridge.
+func ensignFile() string { return ".starship/bin/" + exeName() }
+
 // generatedFiles is everything link writes into a bridge, by path relative to it.
 func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte, error) {
 	files := map[string][]byte{}
+	// The bridge's ensign: its pinned release's, or, for a bridge that follows a local
+	// control plane (development), the one running now.
+	src := pinnedBinary(bridge)
+	if src == "" {
+		if bf.ControlPlane.Path == "" {
+			return nil, fmt.Errorf("the pinned release has no ensign for %s", platformKey())
+		}
+		src, _ = os.Executable()
+	}
+	bin, err := os.ReadFile(src)
+	if err != nil {
+		return nil, fmt.Errorf("reading ensign: %v", err)
+	}
+	files[ensignFile()] = bin
 	manual, err := os.ReadFile(filepath.Join(cp, "manual", "session.md"))
 	if err != nil {
 		return nil, err
@@ -331,10 +352,7 @@ func link(bridge string, force bool, out io.Writer) error {
 	for rel, data := range want {
 		p := filepath.Join(bridge, filepath.FromSlash(rel))
 		if cur, err := os.ReadFile(p); err != nil || !bytes.Equal(cur, data) {
-			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(p, data, 0o644); err != nil {
+			if err := replaceFile(p, data, rel == ensignFile()); err != nil {
 				return err
 			}
 			changed++
@@ -352,6 +370,28 @@ func link(bridge string, force bool, out io.Writer) error {
 	}
 	if out != nil {
 		fmt.Fprintf(out, "linked %d files from %s (%d changed)\n", len(want), cp, changed)
+	}
+	return nil
+}
+
+// replaceFile writes a file under a temporary name and renames it into place, so a
+// binary can be replaced while it is running (the hook that relinks is that binary).
+func replaceFile(p string, data []byte, executable bool) error {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o644)
+	if executable {
+		mode = 0o755
+	}
+	tmp := p + ".new"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	os.Chmod(tmp, mode)
+	if err := os.Rename(tmp, p); err != nil {
+		os.Remove(tmp)
+		return err
 	}
 	return nil
 }

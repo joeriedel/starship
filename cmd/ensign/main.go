@@ -18,7 +18,6 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
-	handoff()
 	var err error
 	switch os.Args[1] {
 	case "run":
@@ -209,7 +208,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
 		env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err == nil {
-			_, err = fmt.Fprintf(env, "export STARSHIP_SESSION=%s\n", in.SessionID)
+			// The session's own commands run the bridge's ensign, found on PATH.
+			_, err = fmt.Fprintf(env, "export STARSHIP_SESSION=%s\nexport PATH=%s:\"$PATH\"\n",
+				in.SessionID, shellQuote(filepath.ToSlash(filepath.Join(bridge, ".starship", "bin"))))
 			env.Close()
 		}
 		if err != nil {

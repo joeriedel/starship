@@ -187,8 +187,8 @@ When asked to make a starship bridge in a folder:
 
    `<platform>` is `linux-amd64`, `windows-amd64` (the binary is `ensign.exe`),
    `darwin-arm64` (a Mac with Apple silicon) or `darwin-amd64` (an Intel Mac).
-   `init` pins the bridge to that release, puts `ensign` on PATH, and commits the
-   bridge's files. It refuses to overwrite files already in the folder; if it does,
+   `init` pins the bridge to that release, gives it its own copy of `ensign` (nothing is
+   installed outside the folder), and commits the bridge's files. It refuses to overwrite files already in the folder; if it does,
    tell the user which ones and let them decide.
 2. Tell the user to restart `claude` in the folder and type `help`. Suggest they push the
    bridge to a private repo of their own, never to starship.

@@ -514,7 +514,8 @@ func TestSessionStartRecordsTheSession(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	data, _ := os.ReadFile(env)
-	if string(data) != "export STARSHIP_SESSION=abc\n" || !strings.HasPrefix(out.String(), "STARSHIP-READY") {
+	wantEnv := "export STARSHIP_SESSION=abc\nexport PATH=" + shellQuote(filepath.ToSlash(filepath.Join(w.bridge, ".starship", "bin"))) + ":\"$PATH\"\n"
+	if string(data) != wantEnv || !strings.HasPrefix(out.String(), "STARSHIP-READY") {
 		t.Fatalf("env file %q, stdout %q", data, out.String())
 	}
 	_ = w

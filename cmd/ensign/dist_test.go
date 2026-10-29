@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -33,7 +34,6 @@ func releaseRepo(t *testing.T) string {
 
 func TestPinnedBridge(t *testing.T) {
 	repo := releaseRepo(t)
-	t.Setenv("STARSHIP_BIN_DIR", filepath.Join(t.TempDir(), "bin"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
 	t.Setenv("HOME", t.TempDir())
 
@@ -56,9 +56,8 @@ func TestPinnedBridge(t *testing.T) {
 	if err := cmdSetup([]string{"--projects", projects}, &out); err != nil {
 		t.Fatalf("setup: %v\n%s", err, out.String())
 	}
-	installed, _ := os.ReadFile(filepath.Join(os.Getenv("STARSHIP_BIN_DIR"), exeName()))
-	if !strings.Contains(string(installed), "released ensign") {
-		t.Errorf("setup should install the pinned release's ensign")
+	if own, _ := os.ReadFile(filepath.Join(bridge, filepath.FromSlash(ensignFile()))); !strings.Contains(string(own), "released ensign") {
+		t.Errorf("the bridge should have its pinned release's ensign")
 	}
 	if m := loadMachine(bridge); m.Projects != filepath.ToSlash(projects) {
 		t.Errorf("machine projects = %q", m.Projects)
@@ -121,7 +120,6 @@ func TestPinnedBridge(t *testing.T) {
 // run that clone's ensign init with only --projects.
 func TestInitFromAReleaseClone(t *testing.T) {
 	repo := releaseRepo(t)
-	t.Setenv("STARSHIP_BIN_DIR", filepath.Join(t.TempDir(), "bin"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
 	t.Setenv("HOME", t.TempDir())
 	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
@@ -150,8 +148,14 @@ func TestInitFromAReleaseClone(t *testing.T) {
 	if bf.ControlPlane.Remote != "file://"+repo || bf.ControlPlane.Tag != "v0.1.0" {
 		t.Errorf("pinned %q at %q, want the clone's origin at v0.1.0", bf.ControlPlane.Remote, bf.ControlPlane.Tag)
 	}
-	if installed, _ := os.ReadFile(filepath.Join(os.Getenv("STARSHIP_BIN_DIR"), exeName())); !strings.Contains(string(installed), "released ensign") {
-		t.Errorf("init --projects should install the release's ensign")
+	if own, _ := os.ReadFile(filepath.Join(bridge, filepath.FromSlash(ensignFile()))); !strings.Contains(string(own), "released ensign") {
+		t.Errorf("the bridge should have its release's ensign")
+	}
+	if fi, err := os.Stat(filepath.Join(bridge, filepath.FromSlash(ensignFile()))); err != nil || (runtime.GOOS != "windows" && fi.Mode()&0o111 == 0) {
+		t.Errorf("the bridge's ensign should be executable: %v", err)
+	}
+	if settings, _ := os.ReadFile(filepath.Join(bridge, ".claude/settings.json")); !strings.Contains(string(settings), `$CLAUDE_PROJECT_DIR/.starship/bin/ensign`) {
+		t.Errorf("hooks should run the bridge's own ensign:\n%s", settings)
 	}
 	if m := loadMachine(bridge); m.Projects != filepath.ToSlash(projects) {
 		t.Errorf("machine projects = %q", m.Projects)

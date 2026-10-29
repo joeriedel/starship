@@ -14,7 +14,8 @@ import (
 )
 
 // Distribution: each bridge runs a pinned release of the control plane, cloned into
-// .starship/control-plane, and a launcher on PATH hands off to that release's ensign.
+// .starship/control-plane, and keeps that release's ensign as .starship/bin/ensign.
+// Nothing is installed for the machine.
 
 func cpCloneDir(bridge string) string { return filepath.Join(bridge, ".starship", "control-plane") }
 
@@ -86,40 +87,6 @@ func pinnedBinary(bridge string) string {
 	return ""
 }
 
-// installDir is where setup puts the launcher. STARSHIP_BIN_DIR overrides it (tests).
-func installDir() (string, error) {
-	if d := os.Getenv("STARSHIP_BIN_DIR"); d != "" {
-		return d, nil
-	}
-	if runtime.GOOS == "windows" {
-		base := os.Getenv("LOCALAPPDATA")
-		if base == "" {
-			return "", fmt.Errorf("LOCALAPPDATA is not set")
-		}
-		return filepath.Join(base, "starship", "bin"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "bin"), nil
-}
-
-func copyFile(from, to string, mode os.FileMode) error {
-	data, err := os.ReadFile(from)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
-		return err
-	}
-	tmp := to + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, to)
-}
-
 func registryFile() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
@@ -184,27 +151,6 @@ func setupBridge(bridge, projects string, out io.Writer) error {
 		fmt.Fprintf(out, "control plane %s at %s\n", bf.ControlPlane.Remote, pinRef(bf))
 	}
 
-	src := pinnedBinary(bridge)
-	if src == "" {
-		src, _ = os.Executable()
-	}
-	dir, err := installDir()
-	if err != nil {
-		return err
-	}
-	dest := filepath.Join(dir, exeName())
-	if same, _ := sameFile(src, dest); !same {
-		if err := copyFile(src, dest, 0o755); err != nil {
-			return fmt.Errorf("installing ensign: %v", err)
-		}
-	}
-	fmt.Fprintf(out, "ensign installed at %s\n", dest)
-	if note, err := ensureOnPath(dir); err != nil {
-		return err
-	} else if note != "" {
-		fmt.Fprintln(out, note)
-	}
-
 	if projects != "" {
 		abs, _ := filepath.Abs(projects)
 		m := loadMachine(bridge)
@@ -222,27 +168,6 @@ func setupBridge(bridge, projects string, out io.Writer) error {
 	}
 	fmt.Fprintln(out, "bridge ready — restart claude")
 	return nil
-}
-
-func sameFile(a, b string) (bool, error) {
-	fa, err := os.Stat(a)
-	if err != nil {
-		return false, err
-	}
-	fb, err := os.Stat(b)
-	if err != nil {
-		return false, err
-	}
-	return os.SameFile(fa, fb), nil
-}
-
-func onPath(dir string) bool {
-	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
-		if filepath.Clean(p) == filepath.Clean(dir) {
-			return true
-		}
-	}
-	return false
 }
 
 var semverRe = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)$`)
@@ -341,30 +266,4 @@ func cmdUpdate(args []string, out io.Writer) error {
 		return pushBridge(bridge, out)
 	}
 	return nil
-}
-
-// handoff runs the bridge's pinned ensign instead of this one, when there is one and
-// this isn't it. It returns only if no handoff is needed.
-func handoff() {
-	if os.Getenv("STARSHIP_HANDOFF") != "" || len(os.Args) < 2 {
-		return
-	}
-	switch os.Args[1] {
-	case "setup", "init", "version", "--version", "selftest", "selftest-hook":
-		return
-	}
-	bridge, err := cwdBridge()
-	if err != nil {
-		return
-	}
-	target := pinnedBinary(bridge)
-	if target == "" {
-		return
-	}
-	self, _ := os.Executable()
-	if same, _ := sameFile(self, target); same {
-		return
-	}
-	os.Setenv("STARSHIP_HANDOFF", "1")
-	execReplace(target, os.Args)
 }

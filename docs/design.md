@@ -1103,13 +1103,15 @@ and `ref` to any commit instead of a tag, to try changes before release. The bin
 an untagged commit are those of the last release, so such runs are marked `dev` in
 their snapshot and in `help`.
 
-**The launcher.** `ensign setup` (§12) installs `ensign` into a per-user directory on
-PATH; there are no per-platform install scripts. Hooks call `ensign hook <event>`,
-identical on every platform. When invoked, `ensign` finds the
-bridge (from `CLAUDE_PROJECT_DIR`, read by the program rather than expanded by a shell,
-or by walking up from the working directory) and hands off to that bridge's pinned
-binary, so every bridge runs the `ensign` that matches its pipelines. Outside a bridge,
-hook events are no-ops.
+**Each bridge has its own `ensign`; nothing is installed for the machine.** `ensign
+link` copies the pinned release's binary to `.starship/bin/ensign` (gitignored, per
+machine), replacing it by rename so a running copy can be updated. Hooks call it by
+path, `"$CLAUDE_PROJECT_DIR/.starship/bin/ensign" hook <event>`, so the committed
+`settings.json` is the same on every machine and platform, and two bridges pinned to
+different releases never share a binary. The SessionStart hook puts `.starship/bin` on
+the PATH of the session's own shell (through `CLAUDE_ENV_FILE`), so the session runs
+plain `ensign …`. A bridge that follows a local control plane (development) gets a copy
+of the `ensign` that ran `link`. Outside a bridge, hook events are no-ops.
 
 ### 11.4 Portability rules
 
@@ -1132,8 +1134,8 @@ hook events are no-ops.
 4. Claude notices the bridge isn't set up, says so, and asks to set it up. Say yes.
 5. Restart `claude` when it says the bridge is ready.
 
-Nothing else is installed by hand. Setup fetches code and puts a binary on PATH, so
-Claude asks first; it is an ordinary confirmation, not `go`, because no agents are
+Nothing else is installed by hand. Setup fetches code into the bridge and changes
+nothing outside it; Claude still asks first; it is an ordinary confirmation, not `go`, because no agents are
 spawned.
 
 ### 12.2 What setup does
@@ -1149,9 +1151,10 @@ git clone --depth 1 --branch <tag from bridge.yaml> <remote> .starship/control-p
 
 `ensign setup`, in Go and therefore the same on both platforms:
 
-- installs itself into a per-user directory and adds it to the user's PATH (the user
-  PATH in the registry on Windows, `~/.local/bin` on Linux);
-- runs `ensign link` to generate the bridge's role and skill files;
+- runs `ensign link` to generate the bridge's role and skill files and its own
+  `.starship/bin/ensign`;
+- registers the bridge for this machine (the control plane's commit gates read every
+  registered bridge's denylist);
 - writes `.starship/machine.yaml` (gitignored): this machine's paths, such as the
   `$PROJECTS` root. Claude asks for them in conversation and passes them as flags. A task
   that needs a path that isn't set stops with a clear message.
@@ -1162,8 +1165,8 @@ exists and stops if not.
 ### 12.3 The restart
 
 The session that ran setup cannot switch over to the result: it started before the
-control plane's `CLAUDE.md` and the role files existed, and its process still has the old
-PATH, so its hooks cannot find `ensign`. Setup ends with "bridge ready — restart claude".
+bridge's hook settings, manual and role files existed, and Claude Code reads those at
+session start. Setup ends with "bridge ready — restart claude".
 
 The same applies after `ensign update`. SessionStart records the pin a session started
 on; after an update, the driver refuses to start a new run in that session and asks for a
@@ -1192,8 +1195,8 @@ would make a missing `ensign` visible, but a PreToolUse `allow` does not lift it
 so it would also prompt when everything is working.
 
 In practice the hole is only at session start. During a session `ensign` can hardly go
-missing: the Claude Code process keeps the PATH it started with, and `ensign update`
-swapping the binary is already handled (§12.3). Deleting the binary mid-session is the
+missing: hooks call the bridge's own copy by path, and `ensign update` swapping it is
+already handled (§12.3). Deleting the binary mid-session is the
 only silent case, and rare enough to accept.
 
 So there are two defences:
@@ -1264,7 +1267,7 @@ runs against Claude Code, except where listed below.
 | Command | Does |
 |---|---|
 | `ensign init <dir> (--control-plane <path> \| --remote <url> --tag <tag>)` | create a bridge |
-| `ensign setup [--projects <path>]` | fetch the pinned control plane, install the launcher, record machine paths, register the bridge, link |
+| `ensign setup [--projects <path>]` | fetch the pinned control plane, record machine paths, register the bridge, link (including the bridge's own `ensign`) |
 | `ensign update [<tag>]` | move the bridge to a newer release |
 | `ensign link [--force]` | regenerate the bridge's role, skill and manual files |
 | `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path>]` / `ensign task open <p>/<t>` | scaffold and open; a project records where its code is, and a new task uses it unless given a different location |

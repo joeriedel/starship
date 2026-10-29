@@ -17,8 +17,10 @@ import (
 // changes to prose an agent reads get a clean-room review by a model that knows no
 // project. Install them in a control-plane clone with `ensign gate install`.
 
-const preCommitHook = "#!/bin/sh\nexec ensign gate pre-commit\n"
-const commitMsgHook = "#!/bin/sh\nexec ensign gate commit-msg \"$1\"\n"
+// The git hooks run the ensign that installed them, by its full path: nothing puts
+// ensign on PATH. Run gate install again if that binary moves.
+const preCommitHook = "#!/bin/sh\nexec %s gate pre-commit\n"
+const commitMsgHook = "#!/bin/sh\nexec %s gate commit-msg \"$1\"\n"
 
 func repoTop() (string, error) {
 	wd, _ := os.Getwd()
@@ -53,7 +55,12 @@ func cmdGate(args []string, out io.Writer) error {
 		if !filepath.IsAbs(hooks) {
 			hooks = filepath.Join(top, hooks)
 		}
-		for name, body := range map[string]string{"pre-commit": preCommitHook, "commit-msg": commitMsgHook} {
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		exe := shellQuote(filepath.ToSlash(self))
+		for name, body := range map[string]string{"pre-commit": fmt.Sprintf(preCommitHook, exe), "commit-msg": fmt.Sprintf(commitMsgHook, exe)} {
 			if err := writeFile(filepath.Join(hooks, name), body); err != nil {
 				return err
 			}
