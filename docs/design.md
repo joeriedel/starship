@@ -393,7 +393,7 @@ What this encodes:
 A run may start at any stage, and may sync the workspace first:
 
 ```
-ensign resolve <task> --sync --start test
+ensign run <task> --sync --start test
 ```
 
 - `--sync` runs `@sync` as a `require` handler at `run.start`, before anything else, so
@@ -500,7 +500,7 @@ Reason codes come from whichever edge or budget ended the run (`blocked`,
 
 **An `ensign` error during pipeline work is an immediate failure:** the run ends as
 `error: ensign` with `ensign`'s message. This covers a hook that fails and a command
-Claude runs (`ensign resolve`, `ensign journal commit`, …) that fails. It is never
+Claude runs (`ensign run`, `ensign journal commit`, …) that fails. It is never
 retried in a loop and never worked around — no falling back to raw `git`, no dispatching
 without the driver. The fix is to `ensign` or its configuration, then a new run or
 `ensign resume`.
@@ -527,10 +527,21 @@ The driver rejects a report whose `outcome` is missing or not among the stage's 
 outcomes, and blocks the agent's stop with the valid outcomes listed. Stages may require
 further fields (the `code` stage requires `files` when `git-catalog` is enabled).
 
-### 6.3 Resolver and snapshot
+### 6.3 Creating a run: the resolver and the snapshot
 
-`ensign resolve <task>` merges control plane → bridge → project → task and writes a
-frozen snapshot. Hooks read only the snapshot.
+`ensign run <task> [--sync] [--start <stage>]` creates a run:
+
+1. **Merges** the pinned control plane → bridge → project → task, plus every bundle they
+   enable, applying each layer's ops in order and recording every field's source.
+2. **Validates**: every required binding defined for this platform (or declared
+   not-applicable), every brief, skill and dimension present, no lock weakened, nesting
+   within the cap, help text present. Any failure stops with the reason.
+3. **Writes a frozen snapshot** and an initial state, stamped with the pinned tag. Hooks
+   read only the snapshot, so editing config mid-run changes nothing for that run.
+4. **Prints a summary** — stages, budgets, bindings resolved to commands, skills per
+   role, overrides — which Claude puts in the plan it shows.
+
+The run then waits for `go`. Until then the hooks refuse its lead dispatch.
 
 ```
 <bridge>/.starship/runs/<run-id>/
@@ -539,7 +550,8 @@ frozen snapshot. Hooks read only the snapshot.
   reports/         each stage's report block as received
 ```
 
-`ensign explain <task>` prints the resolved pipeline with provenance:
+`ensign explain <task> [--start <stage>]` shows what a run would be, with provenance, and
+creates nothing:
 
 ```
 stage security          from project:supernova/pipelines/coding.yaml:4
@@ -661,8 +673,8 @@ Session words
   help [topic]           this text, or detail on one topic
 
 Commands (run in a terminal, or ask me to run them)
-  ensign resolve <task>      merge the layers into a run snapshot
-  ensign explain <task>      show the resolved pipeline and where each part came from
+  ensign run <task>          create a run (waits for go)
+  ensign explain <task>      show what a run would be and where each part came from
   ensign resume <run>        continue a run that ended as ask-user
   ensign squash <task>       squash the run's catalog (git-catalog)
   ensign style ingest ...    add a style source (style-learning)
