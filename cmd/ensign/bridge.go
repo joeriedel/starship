@@ -384,7 +384,10 @@ func linkStale(bridge string) bool {
 }
 
 const projectTemplate = `# Project: %s
-#
+
+# Where this project's code is. New tasks use it unless they name a different location.
+workspace: %s
+
 # Bindings say what each @name means here. Declare every binding the pipelines need,
 # or declare it not applicable with a reason; a missing one stops a run.
 bindings:
@@ -400,14 +403,20 @@ bindings:
 `
 
 func cmdProject(args []string, out io.Writer) error {
-	if len(args) != 2 || args[0] != "new" {
-		return fmt.Errorf("usage: ensign project new <name>")
+	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path>")
+	if len(args) != 4 || args[0] != "new" || args[2] != "--workspace" {
+		return usage
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
 		return err
 	}
-	name := args[1]
+	name, ws := args[1], filepath.ToSlash(args[3])
+	if dir, err := expandWorkspace(bridge, ws); err != nil {
+		return err
+	} else if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return fmt.Errorf("%s is not a folder on this machine; ask the user where the code is, never guess", dir)
+	}
 	if !validName(name) {
 		return fmt.Errorf("project names are lower-case letters, digits and dashes")
 	}
@@ -415,7 +424,7 @@ func cmdProject(args []string, out io.Writer) error {
 	if _, err := os.Stat(p); err == nil {
 		return fmt.Errorf("project %s already exists", name)
 	}
-	if err := writeFile(p, fmt.Sprintf(projectTemplate, name)); err != nil {
+	if err := writeFile(p, fmt.Sprintf(projectTemplate, name, ws)); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "created %s; define its bindings before starting a run\n", relTo(bridge, p))
@@ -474,7 +483,7 @@ New.
 `
 
 func cmdTask(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign task new <project>/<task> --workspace <path> [--branch <branch>] | ensign task open <project>/<task>")
+	usage := fmt.Errorf("usage: ensign task new <project>/<task> [--workspace <path>] [--branch <branch>] | ensign task open <project>/<task>")
 	if len(args) < 2 {
 		return usage
 	}
@@ -500,11 +509,17 @@ func cmdTask(args []string, out io.Writer) error {
 				return usage
 			}
 		}
-		if ws == "" {
-			return fmt.Errorf("a task needs --workspace: ask the user for the path, never guess it")
+		pf := filepath.Join(bridge, "projects", parts[0], "project.yaml")
+		if _, err := os.Stat(pf); err != nil {
+			return fmt.Errorf("no project %s (ensign project new %s --workspace <path>)", parts[0], parts[0])
 		}
-		if _, err := os.Stat(filepath.Join(bridge, "projects", parts[0], "project.yaml")); err != nil {
-			return fmt.Errorf("no project %s (ensign project new %s)", parts[0], parts[0])
+		if ws == "" {
+			var l Layer
+			readYAML(pf, &l)
+			ws = l.Workspace
+		}
+		if ws == "" {
+			return fmt.Errorf("project %s has no workspace, so the task needs --workspace: ask the user for the path, never guess it", parts[0])
 		}
 		if _, err := os.Stat(filepath.Join(taskDir, "task.md")); err == nil {
 			return fmt.Errorf("task %s already exists", args[1])

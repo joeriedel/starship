@@ -242,7 +242,7 @@ type Layer struct {
 	Bindings  yaml.Node                `yaml:"bindings"`
 	Use       []string                 `yaml:"use"`
 	Skills    yaml.Node                `yaml:"skills"`
-	Workspace string                   `yaml:"workspace"` // a project's default, for project-wide runs
+	Workspace string                   `yaml:"workspace"` // a project's code location: new tasks start with it, and project-wide runs use it
 	Events    map[string][]HandlerSpec `yaml:"events"`
 	Journal   struct {
 		Commit string `yaml:"commit"`

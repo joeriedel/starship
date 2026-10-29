@@ -113,14 +113,27 @@ func TestProjectAndTask(t *testing.T) {
 	if err := cmdTask([]string{"new", "nova/first", "--workspace", ws}, &out); err == nil {
 		t.Fatalf("a task in a missing project should be refused")
 	}
-	if err := cmdProject([]string{"new", "nova"}, &out); err != nil {
+	if err := cmdProject([]string{"new", "nova"}, &out); err == nil {
+		t.Fatalf("a project without its code's location should be refused")
+	}
+	if err := cmdProject([]string{"new", "nova", "--workspace", filepath.Join(ws, "missing")}, &out); err == nil || !strings.Contains(err.Error(), "never guess") {
+		t.Fatalf("a project whose folder doesn't exist should be refused: %v", err)
+	}
+	if err := cmdProject([]string{"new", "nova", "--workspace", ws}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdTask([]string{"new", "nova/first"}, &out); err == nil || !strings.Contains(err.Error(), "never guess") {
-		t.Fatalf("a task without a workspace should be refused: %v", err)
-	}
-	if err := cmdTask([]string{"new", "nova/first", "--workspace", ws, "--branch", "feature"}, &out); err != nil {
+	if err := cmdTask([]string{"new", "nova/first", "--branch", "feature"}, &out); err != nil {
 		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(b, "projects/nova/tasks/first/task.md")); !strings.Contains(string(data), "workspace: "+filepath.ToSlash(ws)+"\n") {
+		t.Errorf("a new task should use the project's workspace:\n%s", data)
+	}
+	other := t.TempDir()
+	if err := cmdTask([]string{"new", "nova/second", "--workspace", other}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(b, "projects/nova/tasks/second/task.md")); !strings.Contains(string(data), "workspace: "+filepath.ToSlash(other)+"\n") {
+		t.Errorf("--workspace should override the project's:\n%s", data)
 	}
 	task := filepath.Join(b, "projects/nova/tasks/first/task.md")
 	data, _ := os.ReadFile(task)
@@ -139,7 +152,7 @@ func TestProjectAndTask(t *testing.T) {
 	}
 
 	help := sessionWord(b, "sess", "help")
-	for _, want := range []string{"Bridge: home · Project: nova · Task: first", "Getting around", "nova (1 task)"} {
+	for _, want := range []string{"Bridge: home · Project: nova · Task: first", "Getting around", "nova (2 tasks)"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("help is missing %q:\n%s", want, help)
 		}

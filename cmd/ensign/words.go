@@ -41,8 +41,8 @@ var fixedHelp = []struct {
 }{
 	{"Getting around", []HelpEntry{
 		{`"open <project> / <task>"`, "pick up a task where it left off", ""},
-		{`"new task <name> in <project>"`, "start a task (I'll ask where its workspace is)", ""},
-		{`"new project <name>"`, "add a project to this bridge", ""},
+		{`"new task <name> in <project>"`, "start a task in the project's code (or name a different location)", ""},
+		{`"new project <name>, its code is in <folder>"`, "add a project to this bridge", ""},
 		{"status", "where the current task and run stand", ""},
 		{"help <project or task>", "more on one project or task", ""},
 	}},

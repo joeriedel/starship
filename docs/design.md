@@ -1267,7 +1267,7 @@ runs against Claude Code, except where listed below.
 | `ensign setup [--projects <path>]` | fetch the pinned control plane, install the launcher, record machine paths, register the bridge, link |
 | `ensign update [<tag>]` | move the bridge to a newer release |
 | `ensign link [--force]` | regenerate the bridge's role, skill and manual files |
-| `ensign project new <name>` / `ensign task new <p>/<t> --workspace <path>` / `ensign task open <p>/<t>` | scaffold and open |
+| `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path>]` / `ensign task open <p>/<t>` | scaffold and open; a project records where its code is, and a new task uses it unless given a different location |
 | `ensign run <p>/<t> [--start <stage>] [--sync] [--dry-run]` | create a run for a task |
 | `ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]` | create a project- or bridge-wide run |
 | `ensign next [--run <id>]` | what to dispatch next |

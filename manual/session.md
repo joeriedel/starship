@@ -11,15 +11,17 @@ one.
 
 - `ensign task open <project>/<task>` checks the task, its workspace and VCS state, and
   prints where it stands. Report that, then wait for the work.
-- `ensign task new <project>/<task> --workspace <path>` creates one. **Ask for the
-  workspace path; never guess it.**
+- `ensign task new <project>/<task>` creates one, using the project's code location.
+  Add `--workspace <path>` only when the user names a different location.
 - **The projects folder.** A workspace path can be written as `$PROJECTS/<name>`, so the
   task works on machines that keep code in different places. The first time the user
-  gives a workspace path and this machine has no projects folder yet, offer to record the
+  gives a code location and this machine has no projects folder yet, offer to record the
   folder holding it (`~/src` for `~/src/foobar`) with `ensign setup --projects <folder>`,
   and write the path as `$PROJECTS/foobar`. If they'd rather not, use the path as given.
-- `ensign project new <project>` creates a project; ask which bindings it needs
-  (`@build`, `@test`, …) rather than assuming.
+- `ensign project new <project> --workspace <path>` creates a project. **Ask where its
+  code is if the user hasn't said; never guess it.** Then fill in its bindings
+  (`@build`, `@test`, …): read the code and propose commands for the user to confirm,
+  rather than assuming.
 
 Never guess a workspace path, and never substitute a similar-looking directory.
 

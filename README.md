@@ -42,18 +42,21 @@ too, push it to a private repo; on another machine, clone it and start `claude` 
 **2. Add a project.** Tell Claude about a codebase you work on:
 
 ```
-> add a project called foobar
+> add a project called foobar, its code is in ~/projects/foobar
 ```
 
-Claude asks how the project builds and runs its tests, or reads the code and suggests
-the commands for you to confirm.
+Claude reads the code and suggests how the project builds and runs its tests, for you to
+confirm. If you don't say where the code is, it asks.
 
 **3. Start a task and describe the work.**
 
 ```
-> new task fix-login in foobar, the code is in ~/projects/foobar
+> new task fix-login in foobar
 > logins fail when the password has a trailing space; fix it and add a test
 ```
+
+A task works in the project's code unless you name a different location, such as a
+second checkout.
 
 Claude reads the code and comes back with a plan. Type `go` to start the run, and you'll
 get a report when it's done.
