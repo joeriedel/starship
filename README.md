@@ -39,7 +39,7 @@ Now the crew goes to work:
 - A **style reviewer** tidies it to match how your project actually writes code.
 - A **tester** builds it and runs the real suite, slow parts included. A test fails, so
   it goes back to the coder again.
-- Second time round it passes. Everyone is mildly surprised, as is traditional.
+- Second time round it passes. Everyone is mildly surprised.
 
 You get a report: what changed, every finding and what was decided about it, and anything
 deferred.
