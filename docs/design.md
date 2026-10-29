@@ -1278,6 +1278,14 @@ runs against Claude Code, except where listed below.
   bridge's `CLAUDE.md` and commits that, unless the file has uncommitted edits.
   `ensign selftest` checks the hook's output reaches the model whole and stays out of
   subagents, and a unit test keeps the manual under the size it checks (9 KB).
+- **A `claude` started from inside another Claude Code session is a child session.**
+  Its prompt reaches UserPromptSubmit with a `Claude` line in front, so `help` doesn't
+  match, and it inherits the parent's project directory. This is why `help` once went to
+  the model in testing; a user's own session isn't affected. `ensign` starts its own
+  `claude` (the selftest, the clean-room review) without the variables a session sets
+  about itself, and live tests should do the same.
+- **`ensign init` commits the new bridge.** Before, the first session in a new bridge
+  was asked to commit the empty-folder placeholders as journal changes.
 - **Stages run in the foreground.** PreToolUse rewrites `run_in_background` to `false`
   on every stage dispatch, and `ensign selftest` checks the rewrite works. Inside a
   subagent, asking for the background does launch the agent in the background: a
@@ -1303,6 +1311,3 @@ runs against Claude Code, except where listed below.
 - **Nested leads** are rejected by validation.
 - **Style-guide metrics** (style diff size per run, flagging entries hit repeatedly)
   are recorded only as report history; nothing summarises them yet.
-- **Help said nothing once:** in the very first session of a freshly created bridge,
-  `help` went to the model instead of being intercepted. Four later sessions intercepted
-  it; the cause is unknown.

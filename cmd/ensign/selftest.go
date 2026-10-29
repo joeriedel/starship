@@ -115,7 +115,7 @@ func cmdSelftest(out io.Writer) error {
 	}
 	fmt.Fprintln(out, "running a probe session with haiku (a few cents)…")
 	cmd := exec.Command("claude", "-p", "--model", "haiku", "--allowedTools", "Agent", "--output-format", "json")
-	cmd.Dir = dir
+	cmd.Dir, cmd.Env = dir, cleanClaudeEnv()
 	cmd.Stdin = strings.NewReader(`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". ` +
 		`When it finishes, find the text the SessionStart hook added to your context and reply with only its lines that start with ` +
 		manualEnd + `, exactly as written, in order.`)

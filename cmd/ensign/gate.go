@@ -206,6 +206,31 @@ The diff:
 
 `
 
+// cleanClaudeEnv is this process's environment without the variables Claude Code sets
+// for its own commands. A claude started with them runs as a child of the calling
+// session: it is told that session's project directory, and its prompt arrives with a
+// "Claude" line in front, so `help` no longer matches.
+// Only the variables a running session sets about itself are removed; configuration a
+// user sets (a provider, a token, limits) is kept.
+func cleanClaudeEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if !sessionVars[name] {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+var sessionVars = map[string]bool{
+	"CLAUDECODE": true, "CLAUDE_PID": true, "CLAUDE_PROJECT_DIR": true, "CLAUDE_EFFORT": true,
+	"CLAUDE_ENV_FILE": true, "CLAUDE_CODE_CHILD_SESSION": true, "CLAUDE_CODE_SESSION_ID": true,
+	"CLAUDE_CODE_SESSION_ATTENDED": true, "CLAUDE_CODE_MESSAGING_SOCKET": true,
+	"CLAUDE_CODE_MESSAGING_TOKEN": true, "CLAUDE_CODE_ENTRYPOINT": true, "CLAUDE_CODE_EXECPATH": true,
+	"STARSHIP_SESSION": true,
+}
+
 // cleanRoomReview asks a model with no project context whether the change leaks.
 func cleanRoomReview(top, diff string, out io.Writer) error {
 	if _, err := exec.LookPath("claude"); err != nil {
@@ -214,6 +239,7 @@ func cleanRoomReview(top, diff string, out io.Writer) error {
 	fmt.Fprintln(out, "starship: clean-room review of the change…")
 	cmd := exec.Command("claude", "-p", "--model", "sonnet", "--output-format", "json", "--max-turns", "1")
 	cmd.Dir = os.TempDir() // no project context: not run inside any repo
+	cmd.Env = cleanClaudeEnv()
 	cmd.Stdin = strings.NewReader(reviewPrompt + diff)
 	raw, err := cmd.Output()
 	if err != nil {
