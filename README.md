@@ -7,8 +7,9 @@ repositories — roles, pipelines, and the rules that govern them. You open a se
 bridge, name a project and a task, and say what you want done; which agents run, in what
 order, on which model, under which project's rules, is resolved from configuration.
 
-> **Status: design.** The design is in [`docs/design.md`](docs/design.md). Nothing is
-> implemented yet.
+> **Status: working, not yet released.** Everything in the design is built and tested,
+> including live runs against Claude Code; no release has been cut yet. The design is in
+> [`docs/design.md`](docs/design.md), and §15 lists what is and isn't done.
 
 ## The idea in one picture
 
@@ -45,6 +46,25 @@ improvements to the process can flow back from any of them.
 - **Task journals are the memory.** Verbose, committed, and good enough for a fresh
   session to pick the work up.
 - **Type `help`** in a session for a guide generated from the configuration you're in.
+
+## Getting started
+
+Starship runs on Linux and Windows, and needs Claude Code and git. The `ensign` binary
+(starship's resolver, hook driver and CLI) ships prebuilt with each release.
+
+```
+git clone --branch <release tag> https://github.com/joeriedel/starship.git
+starship/bin/<linux-amd64|windows-amd64>/ensign setup        # installs ensign on PATH
+ensign init ~/bridges/home --remote https://github.com/joeriedel/starship.git --tag <release tag>
+cd ~/bridges/home && claude                                  # then type: help
+```
+
+On another machine, clone the bridge and run `claude` in it; Claude sets it up. To check
+that the Claude Code harness still behaves the way starship relies on, run
+`ensign selftest` after upgrading Claude Code.
+
+Building `ensign` yourself needs Go: `go build ./cmd/ensign`. Committed binaries come only
+from the release workflow.
 
 ## License
 
