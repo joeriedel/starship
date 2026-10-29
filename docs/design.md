@@ -457,6 +457,13 @@ The resolver prints every unlock prominently.
 
 Reason codes come from whichever edge or budget ended the run (`blocked`,
 `test-error`, `budget:loop`, `budget:test`, `done-check`), so they are deterministic.
+
+**An `ensign` error during pipeline work is an immediate failure:** the run ends as
+`error: ensign` with `ensign`'s message. This covers a hook that fails and a command
+Claude runs (`ensign resolve`, `ensign journal commit`, …) that fails. It is never
+retried in a loop and never worked around — no falling back to raw `git`, no dispatching
+without the driver. The fix is to `ensign` or its configuration, then a new run or
+`ensign resume`.
 Handlers attach to `run.finish:error`; filtering by code is not supported until a real
 case needs it.
 
@@ -1060,7 +1067,7 @@ So there are two defences:
   errors, say so plainly and do nothing except help fix it** — no pipeline, no agent
   spawn, no workspace change, no commit. This is a model-level rule, not a guarantee; it
   turns a silent failure into a visible one.
-- **`ensign` fails closed.** Any internal error — a crash, a corrupt state file, an
+- **`ensign` fails closed, and its errors end the run** (§6.1). Any internal error — a crash, a corrupt state file, an
   unreadable snapshot — exits 2 with the reason, so the action is blocked rather than let
   through. (A Go panic already exits 2.) One exception: when a stop arrives with
   `stop_hook_active` set and the error repeats, the stop is let through, so a persistent
