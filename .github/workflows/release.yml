@@ -72,4 +72,13 @@ jobs:
         run: |
           flag=""
           if [ "$PRERELEASE" = "true" ]; then flag="--prerelease"; fi
-          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes $flag
+          # The binaries also go on the release page, named by platform. Bridges don't
+          # need them there: they clone the tag, which carries bin/.
+          mkdir -p dist
+          for f in bin/*/ensign*; do
+            p=$(basename "$(dirname "$f")"); ext=""
+            case "$f" in *.exe) ext=.exe ;; esac
+            cp "$f" "dist/ensign-$p$ext"
+          done
+          (cd dist && sha256sum ensign-* > SHA256SUMS)
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes $flag dist/*
