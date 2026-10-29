@@ -1235,9 +1235,7 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
 
 ## 14. Open questions
 
-1. **How Claude Code runs hook commands on Windows** (Git Bash, PowerShell, or direct
-   process launch). `ensign hook <event>` is designed to work under all three; verify on
-   a Windows machine.
+None at the moment. Deferred work is in the backlog (§15.4).
 
 ---
 
@@ -1314,8 +1312,15 @@ runs against Claude Code, except where listed below.
 
 - **No release has been cut.** The release workflow exists but has never run, so there
   is no tag for a bridge to pin; pinning is tested against local tags.
-- **How Claude Code runs hook commands on Windows** is unverified (§14). The code and its
-  tests pass on Windows in CI.
 - **Nested leads** are rejected by validation.
 - **Style-diff size** isn't measured: the report counts corrections the style reviewer
   reports, not lines it changed, which would need a VCS-specific diff.
+
+### 15.4 Backlog
+
+Deliberately deferred; not reported as open work.
+
+- **Windows hooks.** How Claude Code runs hook commands on Windows (Git Bash, PowerShell,
+  or direct process launch) is unverified. `ensign hook <event>` is designed to work under
+  all three, and the code and its tests pass on Windows in CI. Verify by running
+  `ensign selftest` on a Windows machine.
