@@ -14,8 +14,7 @@ What that gets you:
   you shipped, the task is still there: what was asked for, the plan, each decision and
   why, every review finding and what was done about it, the test runs, and a commit for
   each pass. Keeping a record like that by hand is something nobody actually manages.
-  Starship keeps it without being asked, and with its predecessor it was the feature that
-  paid for itself again and again.
+  Starship keeps it without being asked.
 - **Changes that were checked before you see them.** Code is reviewed by agents that
   didn't write it, and only counts as done once it builds and the full test suite has run
   and passed. Hooks enforce this, so no agent can skip it.
