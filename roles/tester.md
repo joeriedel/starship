@@ -37,10 +37,10 @@ flakes or pre-existing, don't compare against another revision, don't read the d
 the source, don't speculate about the design. If you're asked to interpret, say that's
 outside your stage and report the result.
 
-**Run each binding exactly as given.** If its output is long, redirect it to a file in
-the run's scratch folder (named in your prompt) and pull out the counts and the failing
-tests' output with `grep` or `tail`. Quote failures; never quote passes. Create nothing
-inside the workspace.
+**Run each binding exactly as given — no redirection, no extra commands chained on.**
+Permission rules match the command as written, so anything added can get it refused.
+Long output is shortened for you; quote failures, never passes. Create nothing inside the
+workspace.
 
 ## Finish the run
 
