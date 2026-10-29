@@ -9,6 +9,9 @@ import (
 	"strings"
 )
 
+// version is set at release build time with -ldflags "-X main.version=…".
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -20,6 +23,19 @@ func main() {
 		err = cmdRun(os.Args[2:], os.Stdout)
 	case "next":
 		err = cmdNext(os.Args[2:])
+	case "init":
+		err = cmdInit(os.Args[2:], os.Stdout)
+	case "link":
+		var bridge string
+		if bridge, err = cwdBridge(); err == nil {
+			err = link(bridge, len(os.Args) > 2 && os.Args[2] == "--force", os.Stdout)
+		}
+	case "project":
+		err = cmdProject(os.Args[2:], os.Stdout)
+	case "task":
+		err = cmdTask(os.Args[2:], os.Stdout)
+	case "version", "--version":
+		fmt.Println("ensign", version)
 	case "hook":
 		if len(os.Args) != 3 {
 			usage()
@@ -38,6 +54,11 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
+  ensign init <dir> (--control-plane <path> | --remote <url> --tag <tag>)
+  ensign link [--force]
+  ensign project new <name>
+  ensign task new <project>/<task> --workspace <path> [--branch <branch>]
+  ensign task open <project>/<task>
   ensign run <project>/<task> [--start <stage>] [--dry-run]
   ensign next [--bridge <dir>] [--run <id>]
   ensign hook <SessionStart|PreToolUse|SubagentStop|UserPromptSubmit>`)
@@ -59,8 +80,22 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return 0 // outside a bridge, hook events are no-ops
 	}
-	if event == "SessionStart" {
+	switch event {
+	case "SessionStart":
 		return hookSessionStart(&in, bridge, stdout, stderr)
+	case "UserPromptSubmit":
+		if text := sessionWord(bridge, in.SessionID, in.Prompt); text != "" {
+			json.NewEncoder(stdout).Encode(map[string]any{"decision": "block", "reason": text})
+			return 0
+		}
+	case "PreToolUse":
+		if in.ToolName != "Agent" && in.ToolName != "Task" {
+			if why := controlPlaneEdit(bridge, &in); why != "" {
+				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
+					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}})
+			}
+			return 0
+		}
 	}
 	r, err := openSessionRun(bridge, in.SessionID)
 	if err != nil {
@@ -135,6 +170,20 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			return 2
 		}
 	}
-	fmt.Fprintf(stdout, "STARSHIP-READY ensign bridge %s\n", bridge)
+	bf, err := loadBridgeFile(bridge)
+	if err == nil {
+		_, err = controlPlaneDir(bridge, bf)
+	}
+	if err != nil {
+		fmt.Fprintf(stdout, "starship: this bridge is not ready: %v\n", err)
+		return 0
+	}
+	if linkStale(bridge) && len(liveRuns(bridge)) == 0 {
+		if err := link(bridge, false, nil); err != nil {
+			fmt.Fprintf(stdout, "starship: this bridge is not ready: %v\n", err)
+			return 0
+		}
+	}
+	fmt.Fprintf(stdout, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
 	return 0
 }

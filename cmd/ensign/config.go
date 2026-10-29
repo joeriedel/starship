@@ -240,14 +240,80 @@ type Layer struct {
 type BridgeFile struct {
 	Layer        `yaml:",inline"`
 	ControlPlane struct {
-		Path string `yaml:"path"`
+		Path   string `yaml:"path"`   // a local control plane, used directly (development)
+		Remote string `yaml:"remote"` // otherwise: cloned into .starship/control-plane …
+		Tag    string `yaml:"tag"`    // … at a release tag,
+		Ref    string `yaml:"ref"`    // … or any ref, for testing unreleased changes
 	} `yaml:"control-plane"`
+	// Roles adjusts generated role files for this bridge, e.g. a cheaper model.
+	Roles map[string]struct {
+		Model string `yaml:"model"`
+	} `yaml:"roles"`
+}
+
+func loadBridgeFile(bridge string) (*BridgeFile, error) {
+	var bf BridgeFile
+	if err := readYAML(filepath.Join(bridge, "bridge.yaml"), &bf); err != nil {
+		return nil, err
+	}
+	return &bf, nil
+}
+
+// controlPlaneDir is where this bridge reads the control plane from.
+func controlPlaneDir(bridge string, bf *BridgeFile) (string, error) {
+	if p := bf.ControlPlane.Path; p != "" {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(bridge, p)
+		}
+		return p, nil
+	}
+	if bf.ControlPlane.Remote == "" {
+		return "", fmt.Errorf("bridge.yaml: control-plane needs a path, or a remote with a tag or ref")
+	}
+	dir := filepath.Join(bridge, ".starship", "control-plane")
+	if _, err := os.Stat(filepath.Join(dir, "pipelines")); err != nil {
+		return "", fmt.Errorf("this bridge is not set up on this machine: %s is missing (run setup)", dir)
+	}
+	return dir, nil
+}
+
+// Machine is this machine's settings for a bridge, kept out of git.
+type Machine struct {
+	Projects string `yaml:"projects"` // the root that $PROJECTS in workspace paths expands to
+}
+
+func machineFile(bridge string) string { return filepath.Join(bridge, ".starship", "machine.yaml") }
+
+func loadMachine(bridge string) Machine {
+	var m Machine
+	readYAML(machineFile(bridge), &m)
+	return m
+}
+
+// expandWorkspace resolves $PROJECTS against this machine's root.
+func expandWorkspace(bridge, ws string) (string, error) {
+	rest, ok := strings.CutPrefix(ws, "$PROJECTS")
+	if !ok {
+		return ws, nil
+	}
+	root := loadMachine(bridge).Projects
+	if root == "" {
+		return "", fmt.Errorf("workspace %s uses $PROJECTS, which is not set on this machine (.starship/machine.yaml: projects)", ws)
+	}
+	return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(rest, "/"))), nil
+}
+
+type TaskVcs struct {
+	Kind   string `yaml:"kind"`
+	Branch string `yaml:"branch"`
+	Client string `yaml:"client"`
 }
 
 type TaskFile struct {
 	Layer     `yaml:",inline"`
-	Pipeline  string `yaml:"pipeline"`
-	Workspace string `yaml:"workspace"`
+	Pipeline  string  `yaml:"pipeline"`
+	Workspace string  `yaml:"workspace"`
+	Vcs       TaskVcs `yaml:"vcs"`
 }
 
 // Config is everything a run is built from, after merging the layers.
@@ -319,17 +385,14 @@ func loadConfig(bridge, task string) (*Config, error) {
 	}
 	c := &Config{Bridge: bridge, Project: parts[0], Task: task, Bindings: map[string]Binding{}}
 
-	var bf BridgeFile
 	bridgeFile := filepath.Join(bridge, "bridge.yaml")
-	if err := readYAML(bridgeFile, &bf); err != nil {
+	bfp, err := loadBridgeFile(bridge)
+	if err != nil {
 		return nil, err
 	}
-	if bf.ControlPlane.Path == "" {
-		return nil, fmt.Errorf("%s: control-plane.path is not set", bridgeFile)
-	}
-	c.ControlPlane = bf.ControlPlane.Path
-	if !filepath.IsAbs(c.ControlPlane) {
-		c.ControlPlane = filepath.Join(bridge, c.ControlPlane)
+	bf := *bfp
+	if c.ControlPlane, err = controlPlaneDir(bridge, bfp); err != nil {
+		return nil, err
 	}
 
 	projectDir := filepath.Join(bridge, "projects", c.Project)
@@ -349,8 +412,10 @@ func loadConfig(bridge, task string) (*Config, error) {
 	if err := yaml.Unmarshal(front, &tf); err != nil {
 		return nil, fmt.Errorf("%s: %v", taskFile, err)
 	}
-	c.Workspace = tf.Workspace
-	c.WorkItem = strings.TrimSpace(string(body))
+	if c.Workspace, err = expandWorkspace(bridge, tf.Workspace); err != nil {
+		return nil, err
+	}
+	c.WorkItem = workItem(string(body))
 	name := tf.Pipeline
 	if name == "" {
 		name = "coding"
@@ -770,4 +835,17 @@ func (c *Config) findFile(rel string) (string, error) {
 func (c *Config) roleExists(role string) bool {
 	_, err := c.findFile("roles/" + role + ".md")
 	return err == nil
+}
+
+func yamlUnmarshal(data []byte, out any) error { return yaml.Unmarshal(data, out) }
+
+func writeYAML(path string, v any) error {
+	data, err := yaml.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
 }
