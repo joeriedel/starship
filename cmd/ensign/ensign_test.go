@@ -298,6 +298,39 @@ func TestOrderIsEnforced(t *testing.T) {
 	}
 }
 
+func TestStagesRunInTheForeground(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	res, code := w.hook("PreToolUse", map[string]any{"agent_id": lead, "agent_type": "orchestrator",
+		"tool_name": "Agent", "tool_input": map[string]any{"subagent_type": "coder", "prompt": "go", "run_in_background": true}})
+	if code != 0 || dig(res, "hookSpecificOutput", "permissionDecision") != "allow" {
+		t.Fatalf("coder dispatch: %d %v", code, res)
+	}
+	if bg := res["hookSpecificOutput"].(map[string]any)["updatedInput"].(map[string]any)["run_in_background"]; bg != false {
+		t.Fatalf("run_in_background = %v, want false", bg)
+	}
+
+	// The lead ending its turn while that stage still runs is a wait, not giving up.
+	for i := 0; i < 5; i++ {
+		if r := w.stop(lead, "orchestrator", "Waiting for the coder.", i > 0); r != "" {
+			t.Fatalf("waiting lead was blocked: %s", r)
+		}
+	}
+	if st := w.state(); st.Status != "running" {
+		t.Fatalf("status %s (%s), want running", st.Status, st.Reason)
+	}
+}
+
+func TestForegroundDispatchAddsNoField(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	res, _ := w.hook("PreToolUse", map[string]any{"agent_id": lead, "agent_type": "orchestrator",
+		"tool_name": "Agent", "tool_input": map[string]any{"subagent_type": "coder", "prompt": "go"}})
+	if _, ok := res["hookSpecificOutput"].(map[string]any)["updatedInput"].(map[string]any)["run_in_background"]; ok {
+		t.Fatalf("run_in_background was added to an input that didn't have it")
+	}
+}
+
 func TestFreeRolePassesThrough(t *testing.T) {
 	w := newWorld(t)
 	w.run("supernova/auth-refactor")

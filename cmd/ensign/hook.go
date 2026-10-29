@@ -220,6 +220,11 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 		updated[k] = v
 	}
 	updated["prompt"] = prompt
+	// A stage runs in the foreground, so the lead never has a turn spent waiting on it.
+	// Waiting turns are where agents poll, send filler and invent results.
+	if bg, _ := updated["run_in_background"].(bool); bg {
+		updated["run_in_background"] = false
+	}
 	return map[string]any{"hookSpecificOutput": map[string]any{
 		"hookEventName":      "PreToolUse",
 		"permissionDecision": "allow",
@@ -247,9 +252,10 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 			d.Done = true
 			return nil, nil
 		}
-		if waiting := m.runningIn(s.ID); waiting != "" {
-			// Waiting on a running stage is not giving up, so it doesn't count.
-			return block("stage " + waiting + " is still running; wait for its result, then run the next command."), nil
+		if m.runningIn(s.ID) != "" {
+			// Stages run in the foreground, so this means one ran in the background anyway.
+			// Ending the turn is how the lead waits for it; blocking would force filler.
+			return nil, nil
 		}
 		d.StopBlocks++
 		if d.StopBlocks > 3 {

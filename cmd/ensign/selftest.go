@@ -21,7 +21,8 @@ tools: Agent
 model: haiku
 ---
 You are a harness selftest. Do exactly these steps, then stop:
-1. Use the Agent tool with subagent_type "probe-leaf" and prompt "Reply with the word done."
+1. Use the Agent tool with subagent_type "probe-leaf", run_in_background set to true, and
+   prompt "Reply with the word ` + leafToken + `."
 2. Use the Agent tool with subagent_type "probe-denied" and prompt "Reply with the word done."
 3. Reply with one line saying what happened to each.
 `
@@ -34,6 +35,10 @@ model: haiku
 ---
 Reply with exactly what your prompt asks.
 `
+
+// leafToken is the leaf probe's reply. Finding it in the result of the orchestrator's own
+// Agent call proves the dispatch ran in the foreground.
+const leafToken = "SELFTEST-LEAF-RESULT"
 
 func cmdSelftest(out io.Writer) error {
 	if _, err := exec.LookPath("claude"); err != nil {
@@ -118,6 +123,7 @@ func cmdSelftest(out io.Writer) error {
 		sessions[str(e, "session_id")] = true
 	}
 	secondStopActive := len(orchStops) >= 2 && orchStops[1]["stop_hook_active"] == true
+	askedBackground, foreground := backgroundProbe(events, orchStops)
 	checks := []struct {
 		name string
 		ok   bool
@@ -130,6 +136,14 @@ func cmdSelftest(out io.Writer) error {
 			len(leafStops) > 0 && str(leafStops[0], "agent_transcript_path") != "" && leafStops[0]["last_assistant_message"] != nil},
 		{"SubagentStop block makes the agent continue (stop_hook_active on the next stop)", secondStopActive},
 		{"session_id is the same for the session and its agents", len(sessions) == 1},
+	}
+	if askedBackground {
+		checks = append(checks, struct {
+			name string
+			ok   bool
+		}{"PreToolUse turns a background dispatch into a foreground one", foreground})
+	} else {
+		fmt.Fprintln(out, "  note the probe never asked for a background dispatch, so the foreground rewrite was not exercised")
 	}
 	failed := 0
 	for _, c := range checks {
@@ -144,6 +158,56 @@ func cmdSelftest(out io.Writer) error {
 	}
 	fmt.Fprintln(out, "all harness checks passed")
 	return nil
+}
+
+// backgroundProbe reports whether the orchestrator probe asked to run its leaf in the
+// background, and whether, after the hook's rewrite, it ran in the foreground anyway:
+// the leaf's reply came back as the result of the Agent call, and the leaf finished before
+// the orchestrator first stopped.
+func backgroundProbe(events []map[string]any, orchStops []map[string]any) (asked, foreground bool) {
+	leafStop, orchStop := -1, -1
+	for i, e := range events {
+		switch {
+		case e["hook_event_name"] == "PreToolUse":
+			ti, _ := e["tool_input"].(map[string]any)
+			if ti["subagent_type"] == "probe-leaf" && ti["run_in_background"] == true {
+				asked = true
+			}
+		case e["hook_event_name"] == "SubagentStop" && e["agent_type"] == "probe-leaf" && leafStop < 0:
+			leafStop = i
+		case e["hook_event_name"] == "SubagentStop" && e["agent_type"] == "probe-orch" && orchStop < 0:
+			orchStop = i
+		}
+	}
+	if !asked || len(orchStops) == 0 || leafStop < 0 || orchStop < leafStop {
+		return asked, false
+	}
+	path, _ := orchStops[0]["agent_transcript_path"].(string)
+	data, _ := os.ReadFile(path)
+	return asked, toolResultContains(string(data), leafToken)
+}
+
+// toolResultContains reports whether any tool result in a transcript contains text.
+func toolResultContains(transcript, text string) bool {
+	for _, line := range strings.Split(transcript, "\n") {
+		var rec struct {
+			Message struct {
+				Content any `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &rec) != nil {
+			continue
+		}
+		blocks, _ := rec.Message.Content.([]any)
+		for _, b := range blocks {
+			if m, _ := b.(map[string]any); m["type"] == "tool_result" {
+				if raw, _ := json.Marshal(m["content"]); strings.Contains(string(raw), text) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // cmdSelftestHook is the probe's hook: it logs every event and exercises each decision.
@@ -172,6 +236,9 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 		switch ti["subagent_type"] {
 		case "probe-leaf":
 			ti["prompt"] = fmt.Sprint(ti["prompt"]) + " SELFTEST-INJECTED"
+			if bg, _ := ti["run_in_background"].(bool); bg {
+				ti["run_in_background"] = false
+			}
 			return reply(map[string]any{"hookSpecificOutput": map[string]any{
 				"hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": ti}})
 		case "probe-denied":

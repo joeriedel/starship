@@ -686,7 +686,11 @@ invocation takes a file lock on the run, and outside a bridge every event is a n
    for a branch), the dimension and stage briefs, the workspace and its resolved
    bindings, the original prompt, and the report instructions. A lead's prompt instead
    lists the stages it leads and the `ensign next` command (below).
-6. Record the dispatch.
+6. Force the stage into the foreground: `run_in_background: true` becomes `false`. A
+   lead then never spends a turn waiting on a stage. Waiting turns are where agents
+   poll, send filler reports, dispatch placeholder agents and write invented results.
+   Parallel branches still run together, dispatched in one message.
+7. Record the dispatch.
 
 **SubagentStop**
 
@@ -696,7 +700,9 @@ invocation takes a file lock on the run, and outside a bridge every event is a n
 3. Apply the transition, spend and reset budgets, run `stage.after` handlers. For a
    branch, record its outcome; the transition applies when the last branch joins.
 4. If the stopping agent is a lead whose pipeline hasn't reached a run outcome, block it
-   and name the stage that hasn't run.
+   and name the stage that hasn't run. The exception is a lead with a stage still
+   running, which can only happen if a stage ran in the background anyway: ending its
+   turn is how it waits, so the stop is allowed and not counted.
 
 **SessionStart**
 
@@ -734,6 +740,7 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | PreToolUse `deny` on a nested spawn | yes; the agent never started and the caller saw the reason |
 | SubagentStop identifies the agent and its output | yes: `agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message` |
 | SubagentStop `decision: block` forces the agent to continue | yes; the second stop arrives with `stop_hook_active: true` |
+| PreToolUse can force a nested spawn into the foreground | yes; with `run_in_background` rewritten to `false`, the leaf's reply came back as the Agent call's result. Without the rewrite it ran in the background |
 | UserPromptSubmit `decision: block` shows its `reason` with no model call | yes; zero turns, zero cost. The harness frames it as "operation blocked by hook" |
 | SessionStart hook stdout reaches the session's context | yes; appears as `SessionStart:startup hook success: <stdout>` |
 | A missing hook command blocks anything | no; non-blocking error, tool calls proceed |
@@ -1261,8 +1268,13 @@ runs against Claude Code, except where listed below.
   shell variables such as `echo $?`, which Claude Code's permission checks refuse unless
   allowed.
 - **Bridges allow `Bash(ensign:*)` by default**, and the lead calls plain `ensign next`.
-- **A lead waiting on a running stage is not "stopping early"**; it is blocked with a
-  reminder to wait, and not counted towards `lead-stopped`.
+- **Stages run in the foreground.** PreToolUse rewrites `run_in_background` to `false`
+  on every stage dispatch, and `ensign selftest` checks the rewrite works. Inside a
+  subagent, asking for the background does launch the agent in the background: a
+  control run without the rewrite failed the check. A lead that still ends up waiting
+  on a running stage is allowed to end its turn, and that isn't counted towards
+  `lead-stopped`. Blocking it would force the filler turns the waiting rules exist to
+  prevent.
 - **The `@done` check** runs before a run may end as `success`; a failure ends it as
   `error: done-check`.
 - **Events on stages a pipeline doesn't have are inactive for it**, so a bundle or layer
