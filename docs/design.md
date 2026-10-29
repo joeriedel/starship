@@ -1094,9 +1094,7 @@ the design assumes one bridge per machine:
   denylist of every registered bridge, so on a shared machine a change is checked
   against all of them.
 - In a container, the container is the machine: setup runs inside it, and its registry
-  holds only the bridges in that container. A control-plane edit made outside the
-  container is not checked against them — make control-plane edits where the relevant
-  bridges are registered.
+  holds the bridges in that container.
 
 ---
 
