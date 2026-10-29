@@ -190,6 +190,88 @@ The control plane ships generic bundles (no project names). An overlay may ship 
 in the same format. A project or task enables bundles with `use: [<name>, ...]`. A
 bundle declares the bindings it requires, so it cannot be enabled where it doesn't fit.
 
+### 4.4 Skills
+
+**A skill is knowledge of a technology.** The test for whether a fact belongs in one:
+*would it be true on a different project using the same technology?* If yes, it is skill
+material. Facts about one codebase — its types, conventions, servers — belong in the
+project's rules or the task journal.
+
+**Definitions** live at three layers:
+
+| Layer | Holds | Example |
+|---|---|---|
+| control plane `skills/` | public technology knowledge | `go`, `cpp`, `proto` |
+| overlay `skills/` | technology knowledge that must stay in that context | an internal framework; engine facts learned on the job |
+| project `skills/` | rare: a technology only this project uses | a project-private DSL |
+
+A skill of the same name at a lower layer **extends** the one above it (the overlay's
+`go.md` adds to the control plane's). Replacing it outright needs `replace: true`.
+
+**Selection** happens at the project and task layers:
+
+```yaml
+# skills/go.md frontmatter
+description: Go language and standard library
+default-roles: [coder, reviewer, style-reviewer]
+delivery: inject
+
+# project config
+skills: [go, proto]
+
+# task.md: this job also touches the build scripts
+skills:
+  add: [cmake]
+  remove: [proto]
+  roles: { cmake: [coder] }
+```
+
+**Delivery** is per skill:
+
+- **`inject`** (default): the driver adds the skill as an augment at `stage.before` for
+  each stage whose role is in the skill's role list. Guaranteed; costs the skill's full
+  length on every such dispatch. For skills a role must not work without.
+- **`on-demand`**: the skill is exposed as a Claude Code skill. Only its description sits
+  in context; the agent loads the body when it judges it relevant. Cheaper for large
+  reference skills. The driver records which on-demand skills each stage actually loaded
+  (from the agent's transcript), so a skill that should have been loaded and wasn't shows
+  up in the run history and can be switched to `inject`.
+
+Probed on 2.1.312 (§7.1): subagents with a relevant on-demand skill loaded it in 10 of 10
+runs and followed it each time, as did the session agent in 6 of 6. Those conditions
+were favourable — two skills, descriptions that matched the task closely, rules the model
+could not have guessed. The risk grows with many skills, vague descriptions, and
+technology the model believes it already knows, which is why `inject` stays the default.
+
+**Learning.** Every loop role may report facts it had to dig out:
+
+```
+facts:
+  - skill: go
+    fact: "json.Marshal omits a nil slice but emits [] for an empty one"
+    evidence: "encoding/json/encode.go:… — verified with a test"
+```
+
+The driver appends them to `skills/pending/<skill>.yaml` in the overlay at
+`stage.after`, without slowing the run. A `skill-curate` pipeline, dispatched by the
+session (no lead), runs the `curator` role over each skill with pending facts: it
+consolidates the skill, applies the facts, and reports a ledger accounting for every
+existing entry — the same pass and the same checks as the style guide (§9.5). `help`
+shows how many facts are pending.
+
+**Learned facts land in the overlay's copy of the skill, never the control plane's.**
+Promoting one into a public skill goes through the proposal path (§3.2) under the
+high-risk gate (§3.3).
+
+### 4.5 The curator
+
+One `curator` role maintains every curated document: style guides (§9) and skills
+(§4.4). It is the only writer of those documents. Each document type supplies a brief
+(`briefs/curate-style.md`, `briefs/curate-skill.md`) saying what an entry is and what
+counts as evidence; the consolidation pass, the ledger, and the driver's checks are the
+same for all of them. The curator's context is deliberately small — the document, the
+proposals, and any binding that outranks them — so its attention goes to consistency.
+
 ---
 
 ## 5. Pipelines
@@ -492,6 +574,7 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | SubagentStop identifies the agent and its output | yes: `agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message` |
 | SubagentStop `decision: block` forces the agent to continue | yes; the second stop arrives with `stop_hook_active: true` |
 | UserPromptSubmit `decision: block` shows its `reason` with no model call | yes; zero turns, zero cost. The harness frames it as "operation blocked by hook" |
+| Subagents load relevant Claude Code skills on demand | yes; 10 of 10 subagent runs and 6 of 6 session runs loaded the matching skill and followed it (favourable conditions; see §4.4) |
 
 SubagentStop identifies the role but not the stage, which is why dispatches are tagged.
 Harness behaviour changes between builds, so the probe belongs in this repo as a
@@ -617,10 +700,9 @@ short list of evidence (a correction at `file:line`, or a source location).
 |---|---|---|
 | `style-reviewer` | fixes style in the diff; reports the rules behind its corrections | diff, guide, `@style` |
 | `style-generator` | reads one source; proposes rules with evidence from it | one source, guide, `@style` |
-| `style-curator` | the only writer of the guide: consolidates it, then applies proposed rules | guide, proposals, `@style` |
+| `curator` (§4.5) | the only writer of the guide: consolidates it, then applies proposed rules | guide, proposals, `@style` |
 
-The curator's context is deliberately small — no diff, no source — so its attention goes
-to consistency.
+The curator runs with `briefs/curate-style.md`.
 
 ### 9.3 Learning from the style pass
 
@@ -631,7 +713,8 @@ The bundle adds a `curate` stage to the coding pipeline:
 name: style-learning
 ops:
   - set:    { stage: style, outcomes: { learned: next, done: { goto: test } } }
-  - insert: { after: style, stage: { id: curate, role: style-curator,
+  - insert: { after: style, stage: { id: curate, role: curator,
+              brief: briefs/curate-style.md,
               outcomes: { updated: next, unchanged: next } } }
 events:
   stage.before:code:   [{ augment: style/learned.md, status: active }]
@@ -684,7 +767,8 @@ stages:
     parallel: { over: unprocessed-sources, join: all }
     outcomes: { proposed: next, nothing: next }
   - id: curate
-    role: style-curator
+    role: curator
+    brief: briefs/curate-style.md
     dispatched-by: session
     outcomes: { updated: { finish: success }, unchanged: { finish: success } }
 ```
@@ -876,11 +960,10 @@ on Windows they need developer mode, and git checks them out as plain files by d
 3. **Nesting depth.** One lead level is specified; deeper nesting is forbidden until a
    second case needs it.
 4. **Who may unlock** a lock: overlay and project only, or tasks too.
-5. **Skill promotion policy** for technology facts learned inside an overlay.
-6. **Integration scripts** (issue trackers, review systems): generic bundles in the
+5. **Integration scripts** (issue trackers, review systems): generic bundles in the
    control plane with configuration from the overlay, or overlay-only.
-7. **Same machine or separate machines** for different overlays, which affects whether a
+6. **Same machine or separate machines** for different overlays, which affects whether a
    denylist check sees more than one overlay.
-8. **A fast path for trivial control-plane fixes**, or always the proposal handoff.
-9. **Committing to the personal repo from a work machine** is an employment-agreement
+7. **A fast path for trivial control-plane fixes**, or always the proposal handoff.
+8. **Committing to the personal repo from a work machine** is an employment-agreement
    question, separate from content cleanliness. The user's call.
