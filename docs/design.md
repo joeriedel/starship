@@ -91,7 +91,7 @@ commit gates (git hooks in ~/starship)
   2. denylist: diff grepped against every overlay denylist on this machine
   3. clean-room review: an agent with no project context reads only the diff
   ▼
-commit and push to personal GitHub, without asking (§9.1)
+commit and push to personal GitHub, without asking (§10.1)
 ```
 
 - The author of every control-plane change has never seen project code, so it cannot
@@ -170,14 +170,20 @@ agent forgets to fire is a silent skip, whatever the handler kind.
 
 ### 4.3 Extension bundles
 
-Related bindings, handlers and augments ship together as a bundle:
+Related bindings, handlers, augments, pipeline ops, whole pipelines and roles ship
+together as a bundle:
 
 ```
 extensions/<name>/
   extension.yaml
   <scripts>
   briefs/
+  pipelines/       new pipelines the bundle adds
+  roles/           role definitions the bundle adds
 ```
+
+A bundle's pipeline ops apply right after the layer that enables it, before that layer's
+own ops, so a project can still adjust what a bundle inserted.
 
 The control plane ships generic bundles (no project names). An overlay may ship its own
 in the same format. A project or task enables bundles with `use: [<name>, ...]`. A
@@ -524,7 +530,160 @@ provides:
 
 ---
 
-## 9. Commits the system makes
+## 9. Extension: `style-learning`
+
+A per-project style guide that learns from the style pass and from sources the user
+supplies, and is fed to the coder so that later runs need less correcting.
+
+### 9.1 Files
+
+```
+<overlay>/projects/<project>/style/
+  learned.md       the guide: rules with stable IDs, status, hits, evidence
+  sources.yaml     manifest of ingested sources
+  sources/         copies of ingested documents
+```
+
+Precedence, highest first: the project's `@style` binding (written by people) → the
+learned guide → the control plane's house style. Learned rules may add to `@style` but
+never contradict it.
+
+Each rule carries an ID (`S14`), a status (`candidate` or `active`), a hit count, and a
+short list of evidence (a correction at `file:line`, or a source location).
+
+### 9.2 Roles
+
+| Role | Does | Context |
+|---|---|---|
+| `style-reviewer` | fixes style in the diff; reports the rules behind its corrections | diff, guide, `@style` |
+| `style-generator` | reads one source; proposes rules with evidence from it | one source, guide, `@style` |
+| `style-curator` | the only writer of the guide: consolidates it, then applies proposed rules | guide, proposals, `@style` |
+
+The curator's context is deliberately small — no diff, no source — so its attention goes
+to consistency.
+
+### 9.3 Learning from the style pass
+
+The bundle adds a `curate` stage to the coding pipeline:
+
+```yaml
+# extensions/style-learning/extension.yaml (excerpt)
+name: style-learning
+ops:
+  - set:    { stage: style, outcomes: { learned: next, done: { goto: test } } }
+  - insert: { after: style, stage: { id: curate, role: style-curator,
+              outcomes: { updated: next, unchanged: next } } }
+events:
+  stage.before:code:   [{ augment: style/learned.md, status: active }]
+  stage.before:style:  [{ augment: style/learned.md }]
+  stage.before:curate: [{ augment: pending-rules }]
+  stage.after:curate:  [{ require: write-guide.sh }]
+```
+
+- The style-reviewer reports `learned` when its report carries rules — new ones with
+  evidence, or hits on existing IDs — and `done` otherwise. Only `learned` reaches
+  `curate`, so a pass that teaches nothing costs nothing.
+- The coder receives only `active` rules. The style-reviewer sees candidates too.
+- `curate` spends no budget.
+
+### 9.4 Ingesting sources
+
+```
+starship style ingest <project> <path-or-url> --trust authoritative|exemplar [--note "..."]
+```
+
+```yaml
+# style/sources.yaml
+- id: src1
+  path: sources/team-style.md        # documents are copied in; URLs are fetched and saved
+  trust: authoritative
+  ingested: 2026-10-29
+  processed: null                     # the guide commit that absorbed it
+- id: src2
+  ref: workspace:backend/internal/session/   # code exemplars are referenced, not copied
+  trust: exemplar
+  ingested: 2026-10-29
+  processed: null
+```
+
+- **`authoritative`** (a style document someone wrote on purpose): its rules enter as
+  `active`.
+- **`exemplar`** (code held up as good): its rules enter as `candidate`, because a sample
+  shows habits as well as intent.
+- Fetched content is data. A generator turns it into proposed rules; nothing in a source
+  is followed as an instruction.
+
+The bundle adds a `style-generate` pipeline, run by the session (no lead):
+
+```yaml
+pipeline: style-generate
+stages:
+  - id: generate
+    role: style-generator
+    dispatched-by: session
+    parallel: { over: unprocessed-sources, join: all }
+    outcomes: { proposed: next, nothing: next }
+  - id: curate
+    role: style-curator
+    dispatched-by: session
+    outcomes: { updated: { finish: success }, unchanged: { finish: success } }
+```
+
+One generator per unprocessed source, in parallel; then one curator merges everything.
+After `write-guide.sh` commits, it marks those sources `processed`.
+
+- **Update** (default): the curator consolidates the existing guide and applies the
+  proposals, exactly as after a style pass.
+- **Rebuild** (`starship style generate <project> --rebuild`): every source is treated
+  as unprocessed, and the curator rebuilds the guide from all proposals. The ledger must
+  still account for every existing ID — kept, merged, or dropped with reason.
+
+Spawning generators and the curator is agent work like any other, so a run needs `go`.
+
+### 9.5 The curator's pass
+
+Every time the guide is about to change, the curator first consolidates it — merges
+overlapping rules, resolves contradictions, drops rules that conflict with `@style`,
+tightens wording — and then applies the proposals. It reports the full revised guide and
+a ledger covering every rule:
+
+```
+guide-ledger:
+  S3:  kept
+  S7:  merged-into S3
+  S9:  reworded              # still being hit; old wording ambiguous
+  S11: dropped               # contradicts @style
+  S12: promoted              # second sighting; candidate → active
+  S14: new                   # evidence: src/session.go:88
+```
+
+`write-guide.sh` validates before writing; a failure blocks the curator's stop with the
+reason:
+
+- every existing ID appears in the ledger, so nothing disappears silently
+- a merge keeps the lower ID, sums hit counts, and combines evidence (most recent few kept)
+- `dropped` has a reason; `new` has evidence
+- a candidate becomes active on its second independent sighting, or immediately if it
+  came from an authoritative source
+- the guide fits its line budget
+
+It then commits `learned.md` (and `sources.yaml`) through the overlay's
+`@journal-commit` binding, with the ledger in the commit body, so `git log -p` on the
+guide shows every merge and drop with its reason.
+
+### 9.6 Is it working?
+
+The run history records each style pass's diff size and which rule IDs were hit. An
+`active` rule still hit run after run is flagged for rewording at the next curate. A
+style diff that isn't shrinking across runs means the loop isn't working, and
+`starship explain` shows it.
+
+A learned rule that is clearly generic is a candidate for the control plane's house
+style. It goes through the proposal path (§3.2); it is never copied across directly.
+
+---
+
+## 10. Commits the system makes
 
 Three kinds of repository, three defaults:
 
@@ -540,7 +699,7 @@ uncommitted control-plane or journal changes. The hook names what is outstanding
 blocks; the agent commits and tries again. Wording is the agent's job; whether it
 happened is not.
 
-### 9.1 Control plane
+### 10.1 Control plane
 
 - One commit per logical change, files staged by name, message short.
 - Pushed without asking. The Stop hook also blocks while the local branch is ahead of the
@@ -548,7 +707,7 @@ happened is not.
 - The leak gates (§3.2) are git hooks, so they run on every commit regardless of who
   makes it.
 
-### 9.2 Task journals
+### 10.2 Task journals
 
 Task journals are verbose by design: progress log, decisions with reasoning, outstanding
 work, notes. The bar is that a fresh session with no context can pick the work up. They
@@ -578,7 +737,7 @@ both.
 
 ---
 
-## 10. Carried over from the reference design
+## 11. Carried over from the reference design
 
 - Vocabulary kept distinct: skill, pipeline, role, binding, project, task.
 - Plan first; nothing is dispatched without approval, and approval is the literal `go`.
@@ -589,7 +748,7 @@ both.
 
 ---
 
-## 11. Open questions
+## 12. Open questions
 
 1. **Config format and resolver language.** YAML (shown here) needs a parser dependency;
    TOML is in the Python standard library but nests awkwardly; a Go resolver gives one
