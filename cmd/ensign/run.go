@@ -49,6 +49,7 @@ type Dispatch struct {
 	// Fields holds the report's other lines (files, rules, facts …).
 	Fields     map[string][]string `json:"fields,omitempty"`
 	StopBlocks int                 `json:"stop_blocks,omitempty"`
+	Usage      *Usage              `json:"usage,omitempty"` // from the agent's transcript
 }
 
 type ScopeState struct {
@@ -91,6 +92,7 @@ type State struct {
 	Answers    []string       `json:"answers,omitempty"`    // the user's answers on resume
 	Rebuild    bool           `json:"rebuild,omitempty"`    // style-generate: rebuild from every source
 	StartHead  string         `json:"start_head,omitempty"` // the workspace's commit when the run started (git)
+	Transcript string         `json:"transcript,omitempty"` // the session's transcript; agents' sit beside it
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 }

@@ -250,6 +250,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		}
 		d.AgentID = in.AgentID
 	}
+	recordUsage(r, d)
 	m := &machine{snap: r.Snap, st: r.State}
 	s := m.stage(d.Stage)
 

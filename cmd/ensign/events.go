@@ -224,7 +224,7 @@ func runEntry(r *RunFiles) string {
 	} else if st.StartHead != "" {
 		line += fmt.Sprintf(" Started at %s; nothing committed.", short(st.StartHead))
 	}
-	return line
+	return line + costLine(r)
 }
 
 // logRunInJournal adds the run's line to the end of its task's progress log, so every

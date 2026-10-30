@@ -1009,7 +1009,11 @@ work, notes. The bar is that a fresh session with no context can pick the work u
 **Every run is in the progress log.** When a run ends (or pauses to ask the user),
 ensign appends a line of facts to its task's progress log: date, run id, pipeline,
 outcome, coder passes, files changed, and the workspace commits (from the run's starting
-commit, in git). The session writes the account under it from the lead's report: what
+commit, in git), and the cost by stage at API prices. The cost is read from each agent's
+transcript when the line is written (token usage per model response, priced by model;
+`state.json` keeps each dispatch's usage too). The lead's last turn, its report, comes
+after the line, so the lead's figure is slightly short. On a subscription nothing is
+billed per token, but the figure still shows which stages a run spends on. The session writes the account under it from the lead's report: what
 changed and why, each finding and its ruling, what was deferred. That paragraph, written
 while the details are fresh, is what makes the journal worth reading weeks later; the
 line guarantees no run is missing from it. Run directories, with every agent's full

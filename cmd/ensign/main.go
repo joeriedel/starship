@@ -159,6 +159,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if r != nil {
 		defer r.close()
+		if r.State.Transcript == "" && in.TranscriptPath != "" {
+			r.State.Transcript = in.TranscriptPath
+		}
 	}
 
 	wasTerminal := r != nil && r.State.terminal()
