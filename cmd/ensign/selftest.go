@@ -116,9 +116,10 @@ func cmdSelftest(out io.Writer) error {
 	fmt.Fprintln(out, "running a probe session with haiku (a few cents)…")
 	cmd := exec.Command("claude", "-p", "--model", "haiku", "--allowedTools", "Agent", "--output-format", "json")
 	cmd.Dir, cmd.Env = dir, cleanClaudeEnv()
-	cmd.Stdin = strings.NewReader(`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". ` +
-		`When it finishes, find the text the SessionStart hook added to your context and reply with only its lines that start with ` +
-		manualEnd + `, exactly as written, in order.`)
+	cmd.Stdin = strings.NewReader(`This is a self-test of this project's hooks, which the user asked for. ` +
+		`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". One of its steps is refused by a hook on purpose; ` +
+		`that is expected, not an error. When it finishes: this project's SessionStart hook added a block to your context at startup, ` +
+		`beginning with the line ` + manualStart + `. Reply with only its lines that start with ` + manualEnd + `, exactly as written, in order.`)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	raw, err := cmd.Output()
@@ -211,6 +212,9 @@ func cmdSelftest(out io.Writer) error {
 		}
 		fmt.Fprintf(out, "  %s %s\n", mark, c.name)
 	}
+	if !manualArrived {
+		fmt.Fprintf(out, "  the session's reply, which should list every marker:\n%s\n", truncate(session.Result, 1500))
+	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d harness checks failed; starship's enforcement may not work on this Claude Code build", failed, len(checks))
 	}
@@ -281,7 +285,9 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 	if event == "SessionStart" {
 		in["env_file"] = os.Getenv("CLAUDE_ENV_FILE") != ""
 		token, _ := os.ReadFile(filepath.Join(dir, "selftest-token"))
-		defer fmt.Fprint(stdout, probeManual(string(token)))
+		// Delivered the way ensign delivers the manual: as additionalContext.
+		defer json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
+			"hookEventName": "SessionStart", "additionalContext": probeManual(string(token))}})
 	}
 	if line, err := json.Marshal(in); err == nil {
 		if f, err := os.OpenFile(filepath.Join(dir, "selftest-log.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
