@@ -195,6 +195,17 @@ func (w *world) startLead(args ...string) string {
 	return lead
 }
 
+func TestHelpAnswersWithoutTheModel(t *testing.T) {
+	w := newWorld(t)
+	res, code := w.hook("UserPromptSubmit", map[string]any{"prompt": "help"})
+	if code != 0 || res["continue"] != false || res["decision"] != nil {
+		t.Fatalf("help should stop the prompt with continue:false, got %d %v", code, res)
+	}
+	if r, _ := res["stopReason"].(string); !strings.HasPrefix(r, "\n") || !strings.Contains(r, "Getting around") {
+		t.Fatalf("help text missing: %q", r)
+	}
+}
+
 func TestMergeAndProvenance(t *testing.T) {
 	w := newWorld(t)
 	c, err := loadConfig(w.bridge, "supernova/auth-refactor")

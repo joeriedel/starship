@@ -741,7 +741,7 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | SubagentStop identifies the agent and its output | yes: `agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message` |
 | SubagentStop `decision: block` forces the agent to continue | yes; the second stop arrives with `stop_hook_active: true` |
 | PreToolUse can force a nested spawn into the foreground | yes; with `run_in_background` rewritten to `false`, the leaf's reply came back as the Agent call's result. Without the rewrite it ran in the background |
-| UserPromptSubmit `decision: block` shows its `reason` with no model call | yes; zero turns, zero cost. The harness frames it as "operation blocked by hook" |
+| UserPromptSubmit `continue: false` shows its `stopReason` with no model call | yes; zero turns, zero cost. The prompt is kept as sent and the input clears, under "Operation stopped by hook:". `decision: block` also works but leaves the word in the input box under "operation blocked by hook" |
 | SessionStart hook stdout reaches the session's context | yes; appears as `SessionStart:startup hook success: <stdout>` |
 | SessionStart stdout reaches the model whole, and only the session | yes; the model repeated ten markers spread through 9 KB and 60 KB blocks, and no subagent transcript contained any of it |
 | The project `CLAUDE.md`, with its imports, reaches subagents | yes; every agent in a live run carried the session manual while it was imported there |

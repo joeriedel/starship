@@ -126,7 +126,10 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return hookSessionStart(&in, bridge, stdout, stderr)
 	case "UserPromptSubmit":
 		if text := sessionWord(bridge, in.SessionID, in.Prompt); text != "" {
-			json.NewEncoder(stdout).Encode(map[string]any{"decision": "block", "reason": text})
+			// continue:false, not decision:block: the prompt is kept as sent and the input
+			// box clears, where a block leaves the word in the box under an "operation
+			// blocked" warning. The text starts on its own line, under the harness's label.
+			json.NewEncoder(stdout).Encode(map[string]any{"continue": false, "stopReason": "\n" + text})
 			return 0
 		}
 	case "PreToolUse":
