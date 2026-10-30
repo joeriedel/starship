@@ -118,6 +118,12 @@ release (a tag), then each bridge updates
   every diff in front of the user before it lands.
 - **Examples in the control plane use a fictional project** (`supernova`). Lessons are
   written as the mechanism alone, or retold in the fictional project.
+- **A task can skip the pull request.** The branch step is a binding, `@branch`, run at
+  `run.start`, so a task can replace it and `@test` in its own settings with
+  `.starship/direct.sh`: start puts the checkout on master, up to date; test commits,
+  pushes master and waits for CI on that commit. Nobody reads the diff before it is
+  public, so the `public` review is the only check; it is for changes the user has
+  chosen to land directly.
 - **Use a checkout of its own** for the starship project: runs switch its branch, and
   refuse to start if it has uncommitted changes on another branch.
 

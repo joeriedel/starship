@@ -3,14 +3,18 @@
 #
 # Every task works on its own branch, task/<name>. The test stage is CI: the branch is
 # pushed, its pull request opened, and the run waits for the checks, so nothing needs Go
-# installed locally. Use a checkout of its own for this project: runs switch its branch.
+# installed locally. Runs switch the checkout's branch.
+#
+# A task can go straight to master instead, with no branch and no pull request, by
+# replacing @branch and @test in its own settings; .starship/direct.sh says how.
 
 bindings:
-  build: { not-applicable: "no Go toolchain is installed locally; CI builds every push" }
-  test:  { command: 'sh "$STARSHIP_WORKSPACE/.starship/pull-request.sh"', plain: true }
+  build:  { not-applicable: "no Go toolchain is installed locally; CI builds every push" }
+  branch: { command: 'sh "$STARSHIP_WORKSPACE/.starship/task-branch.sh"' }
+  test:   { command: 'sh "$STARSHIP_WORKSPACE/.starship/pull-request.sh"', plain: true }
 
 events:
-  run.start: [{ require: 'sh "$STARSHIP_WORKSPACE/.starship/task-branch.sh"' }]
+  run.start: [{ require: "@branch" }]
 
 pipelines:
   coding:

@@ -231,6 +231,23 @@ func TestShippedProjectSettings(t *testing.T) {
 		t.Errorf("starship's tests run through CI as a plain @test")
 	}
 
+	// A task goes straight to master by replacing @branch and @test in its own settings.
+	task := filepath.Join(b, "projects/starship/tasks/tidy/task.md")
+	data, _ := os.ReadFile(task)
+	direct := "bindings:\n" +
+		"  branch: { command: 'sh \"$STARSHIP_WORKSPACE/.starship/direct.sh\" start' }\n" +
+		"  test: { command: 'sh \"$STARSHIP_WORKSPACE/.starship/direct.sh\" test', plain: true }\n---\n"
+	write(t, task, strings.Replace(string(data), "\n---\n", "\n"+direct, 1)) // before the frontmatter's closing line
+	if c, err = loadConfig(b, "starship/tidy"); err != nil {
+		t.Fatal(err)
+	}
+	if errs := validate(c); len(errs) > 0 {
+		t.Fatalf("a direct task should validate:\n%s", strings.Join(errs, "\n"))
+	}
+	if !strings.Contains(c.Bindings["branch"].Command, "direct.sh\" start") || !strings.Contains(c.Bindings["test"].Command, "direct.sh\" test") || !c.Bindings["test"].Plain {
+		t.Errorf("the task's bindings should replace the project's: %+v %+v", c.Bindings["branch"], c.Bindings["test"])
+	}
+
 	// A shipped file may not choose the workspace.
 	ws := t.TempDir()
 	write(t, filepath.Join(ws, ".starship", "project.yaml"), "workspace: /elsewhere\n")
