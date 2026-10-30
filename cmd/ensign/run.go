@@ -96,12 +96,20 @@ type State struct {
 	Rebuild    bool           `json:"rebuild,omitempty"`    // style-generate: rebuild from every source
 	StartHead  string         `json:"start_head,omitempty"` // the workspace's commit when the run started (git)
 	Transcript string         `json:"transcript,omitempty"` // the session's transcript; agents' sit beside it
+	Notes      []string       `json:"notes,omitempty"`      // what handlers left for the report, e.g. a pull request
+	Finished   bool           `json:"finished,omitempty"`   // the end-of-run steps have run
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 }
 
 func (st *State) terminal() bool {
 	return st.Status == "success" || st.Status == "error" || st.Status == "ask-user"
+}
+
+// note keeps something for the run's report and progress log.
+func (st *State) note(s string) {
+	st.Notes = append(st.Notes, s)
+	st.log("note", "", "", s)
 }
 
 func (st *State) log(kind, stage, dispatch, detail string) {

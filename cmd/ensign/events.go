@@ -173,6 +173,10 @@ func internalHandler(r *RunFiles, args []string, d *Dispatch) error {
 // then the run.finish handlers.
 func finishRun(r *RunFiles) {
 	st := r.State
+	if st.Finished {
+		return
+	}
+	st.Finished = true
 	m := &machine{snap: r.Snap, st: st}
 	if st.Status == "success" {
 		if b, ok := r.Snap.Bindings["done"]; ok && b.Command != "" {
@@ -240,6 +244,9 @@ func runEntry(r *RunFiles) string {
 		line += fmt.Sprintf(" Commits: %s..%s.", short(st.StartHead), short(head))
 	} else if st.StartHead != "" {
 		line += fmt.Sprintf(" Started at %s; nothing committed.", short(st.StartHead))
+	}
+	for _, n := range st.Notes {
+		line += " " + n + "."
 	}
 	return line + costLine(r)
 }

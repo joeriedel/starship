@@ -123,6 +123,9 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	}
 	report += "\nFull output: " + logFile + "\n"
 	completeDispatch(r, m, d, s, outcome, summary, nil, report)
+	if r.State.terminal() {
+		finishRun(r) // now, so what it adds (a pull request, say) is in the reply
+	}
 
 	return fmt.Sprintf("ensign ran stage %q itself, because this project's @test binding is plain; no %s agent was started. "+
 		"Outcome: %s.\n\n%s\nNext: %s", s.ID, s.Role, outcome, report, m.expect(scope))

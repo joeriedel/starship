@@ -151,7 +151,7 @@ func (m *machine) resume(answer string, extra map[string]int) error {
 		st.Extra[b] += n
 	}
 	question := st.Reason
-	st.Status, st.Reason, st.Approved = "running", "", true
+	st.Status, st.Reason, st.Approved, st.Finished = "running", "", true, false
 	st.Answers = append(st.Answers, fmt.Sprintf("Q: %s\nA: %s", question, answer))
 	st.log("resumed", "", "", answer)
 	p := st.Resume
@@ -181,7 +181,11 @@ func join(s *Stage, outcomes []string) string {
 // expect describes what a scope should dispatch next, in words an agent can act on.
 func (m *machine) expect(scope string) string {
 	if m.st.terminal() {
-		return fmt.Sprintf("The run is finished: %s (%s). Stop and report this.", m.st.Status, m.st.Reason)
+		msg := fmt.Sprintf("The run is finished: %s (%s).", m.st.Status, m.st.Reason)
+		if len(m.st.Notes) > 0 {
+			msg += " " + strings.Join(m.st.Notes, " ") + "."
+		}
+		return msg + " Stop and report this."
 	}
 	sc := m.st.Scopes[scope]
 	if sc == nil || sc.Stage == "" {
