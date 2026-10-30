@@ -150,7 +150,7 @@ events:
   stage.after:test: [{ observe: scripts/post-summary.sh }]
 ```
 
-Two extensions ship in the box:
+Three extensions ship in the box:
 
 - **[`git-catalog`](extensions/git-catalog)** commits each coder pass, so the
   orchestrator can see how the work evolved. It squashes everything into one commit when
@@ -158,6 +158,9 @@ Two extensions ship in the box:
 - **[`style-learning`](extensions/style-learning)** turns what the style pass finds into
   a per-project style guide. The coder reads it on later runs, so the same style
   issues don't keep coming up. You can seed it with style docs or exemplar code.
+- **[`github-pr`](extensions/github-pr)** works each task on its own branch and ends it
+  as a pull request on GitHub, with the repository's CI as the test stage. A task can go
+  straight to the main branch instead, if you ask.
 
 A repository can also ship its own project settings in `.starship/project.yaml`. Adding
 it as a project then needs nothing filled in. Starship ships one, so you can improve

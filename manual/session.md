@@ -142,9 +142,8 @@ other code: as a task in a project whose workspace is a starship checkout. If th
 has no such project, offer to add one; the checkout should be one of its own, since runs
 switch its branch. Starship ships its project settings in `.starship/project.yaml`, so
 `ensign project new` needs nothing filled in. Each task works on its own branch and its
-test stage opens the pull request and waits for CI; the user reviews and merges it. If
-the user wants a task to go straight to master instead, give that task the bindings
-`.starship/direct.sh` describes.
+test stage opens the pull request and waits for CI; the user reviews and merges it. A
+task can go straight to master instead, with no pull request, if the user asks for it.
 
 Starship is public. Nothing from this bridge's other projects goes into it: describe
 the change in general terms, and use the fictional project `supernova` in examples.

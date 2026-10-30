@@ -152,6 +152,10 @@ func internalHandler(r *RunFiles, args []string, d *Dispatch) error {
 	case "style record":
 		return styleRecord(r, d)
 	}
+	if len(args) > 0 && args[0] == "github-pr" {
+		_, err := githubCommand(r, args[1:], time.Now().Add(handlerTimeout))
+		return err
+	}
 	return fmt.Errorf("unknown built-in handler: ensign %s", strings.Join(args, " "))
 }
 

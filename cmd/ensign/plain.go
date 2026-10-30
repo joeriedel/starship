@@ -49,6 +49,19 @@ func preToolUseTimeout(bridge string) time.Duration {
 	return 600 * time.Second // Claude Code's default for a command hook
 }
 
+// runBinding runs a plain binding's command: an ensign built-in, or a command line. A
+// built-in reports failed tests as errTestsFailed; any other error means no verdict.
+func runBinding(r *RunFiles, d *Dispatch, command string, deadline time.Time) (string, error) {
+	if args, ok := strings.CutPrefix(strings.TrimSpace(command), "ensign "); ok {
+		f := strings.Fields(args)
+		if len(f) > 0 && f[0] == "github-pr" {
+			return githubCommand(r, f[1:], deadline)
+		}
+		return "", internalHandler(r, f, d)
+	}
+	return shellFor(r.Snap.Workspace, command, handlerEnv(r, d), time.Until(deadline))
+}
+
 // couldNotRun is an exit code that means the command could not do its job at all, as
 // opposed to finding failures: 126 and 127 from the shell, and 125 for a script to say so
 // itself (as git bisect uses it).
@@ -64,21 +77,29 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	deadline := time.Now().Add(limit)
 	outcome := "pass"
 	var steps, log []string
-	failed := ""
+	failed, last := "", ""
 	for _, name := range []string{"build", "test"} {
 		b, ok := r.Snap.Bindings[name]
 		if !ok || b.NotApplicable != "" || b.Command == "" {
 			continue
 		}
 		start := time.Now()
-		out, err := shellFor(r.Snap.Workspace, b.Command, handlerEnv(r, d), time.Until(deadline))
+		out, err := runBinding(r, d, b.Command, deadline)
 		took := time.Since(start).Round(time.Second)
 		log = append(log, fmt.Sprintf("$ %s\n%s", b.Command, out))
 		var exit *exec.ExitError
 		switch {
 		case err == nil:
-			steps = append(steps, fmt.Sprintf("@%s `%s`: exit 0 (%s)", name, b.Command, took))
+			result := "exit 0"
+			if strings.HasPrefix(strings.TrimSpace(b.Command), "ensign ") {
+				result = "passed"
+			}
+			steps = append(steps, fmt.Sprintf("@%s `%s`: %s (%s)", name, b.Command, result, took))
+			last = out
 			continue
+		case errors.Is(err, errTestsFailed):
+			outcome = "fail"
+			steps = append(steps, fmt.Sprintf("@%s `%s`: failed (%s)", name, b.Command, took))
 		case errors.As(err, &exit) && !couldNotRun(exit.ExitCode()):
 			outcome = "fail"
 			steps = append(steps, fmt.Sprintf("@%s `%s`: exit %d (%s)", name, b.Command, exit.ExitCode(), took))
@@ -94,8 +115,11 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 
 	summary := strings.Join(steps, "; ")
 	report := "Run by ensign: this project's @test binding is plain.\n\n- " + strings.Join(steps, "\n- ") + "\n"
-	if failed != "" {
+	switch {
+	case failed != "":
 		report += "\nThe end of the failing command's output:\n\n```\n" + lastLines(failed, 40) + "\n```\n"
+	case strings.TrimSpace(last) != "":
+		report += "\nThe end of its output:\n\n```\n" + lastLines(last, 10) + "\n```\n"
 	}
 	report += "\nFull output: " + logFile + "\n"
 	completeDispatch(r, m, d, s, outcome, summary, nil, report)

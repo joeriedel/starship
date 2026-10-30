@@ -44,6 +44,8 @@ func main() {
 		err = cmdTask(os.Args[2:], os.Stdout)
 	case "journal":
 		err = cmdJournal(os.Args[2:], os.Stdout)
+	case "github-pr":
+		err = cmdGithubPR(os.Args[2:], os.Stdout)
 	case "git-catalog":
 		err = cmdCatalog(os.Args[2:], os.Stdout)
 	case "resume":
@@ -98,6 +100,7 @@ func usage() {
   ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]
   ensign journal commit -m <message> [files…] | ensign journal push
   ensign git-catalog squash <project>/<task> -m <message>
+  ensign github-pr direct <project>/<task>
   ensign next [--bridge <dir>] [--run <id>]
   ensign hook <SessionStart|UserPromptSubmit|PreToolUse|SubagentStop|Stop>`)
 }

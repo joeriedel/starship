@@ -1,0 +1,30 @@
+# Copyright (c) 2026 Joseph Riedel
+# Licensed under the MIT License. See LICENSE.
+
+name: github-pr
+summary: Each task works on its own branch and ends as a pull request, with the repository's CI on GitHub as its test stage.
+
+# Needs git and gh (signed in) on the machine, and CI that runs on pull requests.
+#
+# At run start the workspace moves to the task's branch, task/<name>, created from the
+# default branch the first time; a run won't start on top of uncommitted work on another
+# branch. The test stage commits what the run changed, pushes the branch, opens its pull
+# request if there isn't one, and waits for every check. A failing check goes back to
+# the coder with the end of its log.
+#
+# A task can go straight to the default branch instead, with no pull request: it then
+# starts from the default branch, up to date, and its test stage pushes there and waits
+# for the checks on that commit. `ensign github-pr direct <project>/<task>` sets that up
+# in the task's settings.
+
+help:
+  - say: '"send this task straight to the main branch, with no pull request"'
+    does: the task's changes are pushed directly once CI passes
+    run: ensign github-pr direct <project>/<task>
+
+bindings:
+  branch: { command: "ensign github-pr branch" }
+  test:   { command: "ensign github-pr pull-request", plain: true }
+
+events:
+  run.start: [{ require: "@branch" }]

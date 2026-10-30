@@ -93,7 +93,7 @@ bridge session
   │  "improve starship": a task in the starship project
   │  plan, go
   ▼
-run (the coding pipeline, with starship's own project settings)
+run (the coding pipeline; starship's project uses the github-pr extension)
   │  run.start      the checkout moves to the task's branch, task/<name>
   │  code ⇄ review  reviewers include the `public` focus: nothing from a private context
   │  style
@@ -107,10 +107,17 @@ release (a tag), then each bridge updates
 
 - **Starship ships its project settings** in `.starship/project.yaml`, which
   `ensign project new` copies in when the project is created (§4.1). Any repository can
-  do the same. Starship's settings make `@build` not applicable, since no Go toolchain is
-  installed locally, and make `@test` a plain script that turns the branch into a pull
-  request and returns CI's verdict. A CI failure goes back to the coder with the end of
-  the failing log, like any test failure.
+  do the same. Starship's settings use the `github-pr` extension and make `@build` not
+  applicable, since no Go toolchain is installed locally.
+- **`github-pr`** is a general extension for any repository on GitHub with CI, built
+  into ensign so it runs the same on every platform; it needs git and a signed-in `gh`.
+  Its `@branch` binding runs at `run.start` and moves the workspace to `task/<name>`,
+  created from the default branch the first time; a run won't start over uncommitted
+  work on another branch. Its `@test` is a plain built-in: commit what the run changed,
+  push the branch, open the pull request if there isn't one, and poll the commit's
+  check runs until all have finished. A failing check is a `fail`, with the end of each
+  failing Actions log, and goes back to the coder; no checks appearing, or a push that
+  fails, is an `error`.
 - **What keeps project knowledge out is structural.** The bridge holds everything about
   its projects and starship never reads a bridge, so nothing crosses on its own. What
   remains is an agent with project context writing a detail into a role or doc. The
@@ -118,12 +125,11 @@ release (a tag), then each bridge updates
   every diff in front of the user before it lands.
 - **Examples in the control plane use a fictional project** (`supernova`). Lessons are
   written as the mechanism alone, or retold in the fictional project.
-- **A task can skip the pull request.** The branch step is a binding, `@branch`, run at
-  `run.start`, so a task can replace it and `@test` in its own settings with
-  `.starship/direct.sh`: start puts the checkout on master, up to date; test commits,
-  pushes master and waits for CI on that commit. Nobody reads the diff before it is
-  public, so the `public` review is the only check; it is for changes the user has
-  chosen to land directly.
+- **A task can skip the pull request.** `ensign github-pr direct <project>/<task>`
+  replaces `@branch` and `@test` in that task's settings: the run starts on the default
+  branch, up to date, and its test stage pushes there and waits for the checks on that
+  commit. Nobody reads the diff before it is public, so the `public` review is the only
+  check; it is for changes the user has chosen to land directly.
 - **Use a checkout of its own** for the starship project: runs switch its branch, and
   refuse to start if it has uncommitted changes on another branch.
 
@@ -219,7 +225,9 @@ extensions/<name>/
 ```
 
 An extension's pipeline ops apply right after the layer that enables it, before that layer's
-own ops, so a project can still adjust what an extension inserted.
+own ops, so a project can still adjust what an extension inserted. Its bindings are
+defaults in the same way: they apply when the layer enables it, and that layer or any
+later one can replace them (`github-pr`'s direct mode is a task replacing two).
 
 The control plane ships generic extensions (no project names). A bridge may ship its own
 in the same format. A project or task enables extensions with `use: [<name>, ...]`. A
