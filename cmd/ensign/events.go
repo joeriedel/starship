@@ -101,7 +101,12 @@ func handlerEnv(r *RunFiles, d *Dispatch) []string {
 
 // shell runs a command line through the platform's shell.
 func shell(dir, command string, env []string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
+	return shellFor(dir, command, env, handlerTimeout)
+}
+
+// shellFor runs a command line through the platform's shell with a time limit.
+func shellFor(dir, command string, env []string, limit time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	var c *exec.Cmd
 	switch {
@@ -119,7 +124,7 @@ func shell(dir, command string, env []string) (string, error) {
 	c.Stdout, c.Stderr = &out, &out
 	err := c.Run()
 	if ctx.Err() != nil {
-		err = fmt.Errorf("timed out after %s", handlerTimeout)
+		err = fmt.Errorf("timed out after %s", limit.Round(time.Second))
 	}
 	return out.String(), err
 }

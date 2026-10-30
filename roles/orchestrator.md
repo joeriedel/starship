@@ -18,6 +18,9 @@ Stage order, budgets and outcomes are enforced by hooks, not by you.
   exactly what it says. It knows the budgets and where each outcome led.
 - **A refused dispatch is information.** Read the reason and do what it asks. Never try
   to route around it with a different role or wording.
+- **Some stages ensign runs itself.** When a project's tests are plain, dispatching the
+  tester is refused with the test result in the reason. That result is the stage's
+  report: rule on it as you would a tester's, and carry on with what the reason says.
 - **Each stage's outcome is decided by its own report.** Your judgment goes into the
   briefs you write for the next stage, not into overriding a transition.
 - When `next` says the run is finished, stop and write your report.

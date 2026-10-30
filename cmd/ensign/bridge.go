@@ -72,7 +72,15 @@ const bridgeDenylist = `# Terms that must never reach the public control plane f
 # case-insensitively. The control plane refuses commits while this list is empty.
 `
 
-func hookSettings() string {
+func hookSettings() string { return hookSettingsWith(hookTimeout) }
+
+// hookSettingsWith is the generated settings.json. Timeout 0 gives the form ensign wrote
+// before the PreToolUse hook had a timeout, which SessionStart upgrades.
+func hookSettingsWith(timeout int) string {
+	pre := fmt.Sprintf(`{"type": "command", "command": %q}`, bridgeEnsign+" hook PreToolUse")
+	if timeout > 0 {
+		pre = fmt.Sprintf(`{"type": "command", "command": %q, "timeout": %d}`, bridgeEnsign+" hook PreToolUse", timeout)
+	}
 	cmd := func(ev string) string {
 		return fmt.Sprintf(`[{"hooks": [{"type": "command", "command": %q}]}]`, bridgeEnsign+" hook "+ev)
 	}
@@ -83,7 +91,7 @@ func hookSettings() string {
   "hooks": {
     "SessionStart":     ` + cmd("SessionStart") + `,
     "UserPromptSubmit": ` + cmd("UserPromptSubmit") + `,
-    "PreToolUse":       [{"matcher": "Agent|Task|Edit|Write|NotebookEdit", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", bridgeEnsign+" hook PreToolUse") + `}]}],
+    "PreToolUse":       [{"matcher": "Agent|Task|Edit|Write|NotebookEdit", "hooks": [` + pre + `]}],
     "SubagentStop":     ` + cmd("SubagentStop") + `,
     "Stop":             ` + cmd("Stop") + `
   }

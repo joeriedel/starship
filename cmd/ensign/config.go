@@ -201,7 +201,10 @@ type Binding struct {
 	Command       string `json:"command,omitempty"`
 	Guidance      string `json:"guidance,omitempty"`
 	NotApplicable string `json:"not_applicable,omitempty"`
-	Source        string `json:"source"`
+	// Plain says the command needs no judgement to run: ensign runs it and reads the exit
+	// code. On @test it means ensign runs the test stage itself, with no tester agent.
+	Plain  bool   `json:"plain,omitempty"`
+	Source string `json:"source"`
 }
 
 // parseBinding resolves platform variants for this machine.
@@ -225,11 +228,18 @@ func parseBinding(n *yaml.Node, source string) (Binding, error) {
 			b.Guidance = v.Value
 		case "not-applicable":
 			b.NotApplicable = v.Value
+		case "plain":
+			if err := v.Decode(&b.Plain); err != nil {
+				return b, fmt.Errorf("%s: plain must be true or false", source)
+			}
 		case "linux", "windows", "darwin":
 			return b, fmt.Errorf("%s: has platform variants but none for %s", source, runtime.GOOS)
 		default:
 			return b, fmt.Errorf("%s: unknown binding key %q", source, k)
 		}
+	}
+	if b.Plain && b.Command == "" {
+		return b, fmt.Errorf("%s: a plain binding needs a command", source)
 	}
 	return b, nil
 }

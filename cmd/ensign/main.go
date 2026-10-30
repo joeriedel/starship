@@ -246,6 +246,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		}
 	}
 	dropSessionImport(bridge)
+	upgradeHookSettings(bridge)
 	fmt.Fprintf(stdout, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
 	// The manual goes to the session through this hook, not CLAUDE.md, because Claude
 	// Code gives CLAUDE.md to every subagent too. SessionStart also fires after a
@@ -260,6 +261,20 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stdout, "\n%s", cmds)
 	}
 	return 0
+}
+
+// upgradeHookSettings gives the PreToolUse hook its timeout in a bridge whose
+// settings.json is exactly what an older ensign wrote, and commits that. A settings file
+// someone has edited is left alone.
+func upgradeHookSettings(bridge string) {
+	f := filepath.Join(bridge, ".claude", "settings.json")
+	data, err := os.ReadFile(f)
+	if err != nil || string(data) != hookSettingsWith(0) {
+		return
+	}
+	if os.WriteFile(f, []byte(hookSettings()), 0o644) == nil && isGit(bridge) {
+		git(bridge, "commit", "-q", "-m", "Give the PreToolUse hook a timeout", "--", ".claude/settings.json")
+	}
 }
 
 // dropSessionImport removes the manual's import from a bridge's CLAUDE.md, left there by

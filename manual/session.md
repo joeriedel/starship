@@ -21,7 +21,8 @@ one.
 - `ensign project new <project> --workspace <path>` creates a project. **Ask where its
   code is if the user hasn't said; never guess it.** Then fill in its bindings
   (`@build`, `@test`, …): read the code and propose commands for the user to confirm,
-  rather than assuming.
+  rather than assuming. If the tests are one command that needs no services or setup,
+  propose `plain: true` on `@test`: ensign then runs them itself, with no tester agent.
 
 Never guess a workspace path, and never substitute a similar-looking directory.
 

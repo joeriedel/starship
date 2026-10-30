@@ -202,6 +202,9 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	}
 	r.State.Dispatches = append(r.State.Dispatches, d)
 	r.State.log("dispatch", s.ID, d.ID, role+" "+d.Dim)
+	if !s.isLead() && plainStage(r, s) {
+		return deny(r, s.ID, runPlainStage(r, m, d, s, scope)), nil
+	}
 
 	original, _ := in.ToolInput["prompt"].(string)
 	var prompt string
@@ -298,6 +301,13 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 			return block(problem), nil
 		}
 	}
+	completeDispatch(r, m, d, s, outcome, summary, fields, in.LastMessage)
+	return nil, nil
+}
+
+// completeDispatch records a finished stage's report and, once its stage is complete,
+// fires stage.after and takes the transition for the outcome.
+func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, summary string, fields map[string][]string, report string) {
 	if d.Fields == nil {
 		d.Fields = map[string][]string{}
 	}
@@ -306,26 +316,26 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 	}
 	d.Done, d.Outcome, d.Summary = true, outcome, summary
 	recordFacts(r, d)
-	os.WriteFile(filepath.Join(r.Dir, "reports", d.ID+".md"), []byte(in.LastMessage), 0o644)
+	os.WriteFile(filepath.Join(r.Dir, "reports", d.ID+".md"), []byte(report), 0o644)
 	r.State.log("report", s.ID, d.ID, outcome+": "+summary)
 	if r.State.terminal() {
-		return nil, nil
+		return
 	}
 
 	sc := r.State.Scopes[d.Scope]
 	if sc == nil || sc.Stage != s.ID {
-		return nil, nil // a stale stage; recorded, but it no longer drives the run
+		return // a stale stage; recorded, but it no longer drives the run
 	}
 	if s.Parallel != nil {
 		var got []string
 		for _, dim := range s.Dimensions {
 			id, ok := sc.Branches[dim]
 			if !ok {
-				return nil, nil
+				return
 			}
 			b := r.State.dispatch(id)
 			if !b.Done {
-				return nil, nil
+				return
 			}
 			got = append(got, b.Outcome)
 		}
@@ -333,10 +343,9 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 	}
 	if err := fire(r, "stage.after:"+s.ID, d); err != nil {
 		m.fail("handler", err.Error())
-		return nil, nil
+		return
 	}
 	m.apply(d.Scope, s, outcome)
-	return nil, nil
 }
 
 // claimRun binds the newest pending run that no session owns to this session, and opens it.
