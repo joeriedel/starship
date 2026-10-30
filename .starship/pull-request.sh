@@ -28,8 +28,8 @@ gh pr view "$branch" --json url --jq .url
 # Checks take a few seconds to register after a push.
 sha=$(git rev-parse HEAD)
 i=0
-until [ "$(gh pr view "$branch" --json statusCheckRollup --jq "[.statusCheckRollup[]] | length")" != "0" ] &&
-	[ "$(gh pr view "$branch" --json headRefOid --jq .headRefOid)" = "$sha" ]; do
+until [ "$(gh pr view "$branch" --json headRefOid --jq .headRefOid)" = "$sha" ] &&
+	[ "$(gh pr checks "$branch" --json name --jq length 2>/dev/null || true)" -gt 0 ] 2>/dev/null; do
 	i=$((i + 1))
 	if [ $i -gt 30 ]; then
 		echo "no CI checks appeared for $sha" >&2
