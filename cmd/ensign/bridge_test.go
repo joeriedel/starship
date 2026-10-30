@@ -44,7 +44,7 @@ func TestInitAndLink(t *testing.T) {
 	if changed := journalChanges(b); len(changed) != 0 {
 		t.Errorf("a new bridge should have no journal changes: %v", changed)
 	}
-	for _, f := range []string{"bridge.yaml", "CLAUDE.md", ".gitignore", ".claude/settings.json", "denylist.txt",
+	for _, f := range []string{"bridge.yaml", "CLAUDE.md", ".gitignore", ".claude/settings.json",
 		".claude/agents/coder.md", ".claude/agents/orchestrator.md", ".starship/session.md", ".starship/link.yaml"} {
 		if _, err := os.Stat(filepath.Join(b, f)); err != nil {
 			t.Errorf("init did not create %s", f)
@@ -200,5 +200,41 @@ func TestControlPlaneEditsAreRefused(t *testing.T) {
 	}
 	if res := try(filepath.Join(b, "projects/x/project.yaml")); res != nil {
 		t.Errorf("an edit inside the bridge was refused: %v", res)
+	}
+}
+
+// Starship ships its own project settings, so a bridge can work on it with nothing to
+// fill in: adding it as a project gives a configuration that validates.
+func TestShippedProjectSettings(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	b := newBridge(t)
+	var out bytes.Buffer
+	if err := cmdProject([]string{"new", "starship", "--workspace", repoRoot(t)}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "from the code's own .starship/project.yaml") {
+		t.Errorf("project new should say where the settings came from: %s", out.String())
+	}
+	if err := cmdTask([]string{"new", "starship/tidy"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	c, err := loadConfig(b, "starship/tidy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if errs := validate(c); len(errs) > 0 {
+		t.Fatalf("the shipped settings should validate:\n%s", strings.Join(errs, "\n"))
+	}
+	if !c.Bindings["test"].Plain {
+		t.Errorf("starship's tests run through CI as a plain @test")
+	}
+
+	// A shipped file may not choose the workspace.
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, ".starship", "project.yaml"), "workspace: /elsewhere\n")
+	if err := cmdProject([]string{"new", "other", "--workspace", ws}, &out); err == nil {
+		t.Fatal("a shipped workspace should be refused")
 	}
 }

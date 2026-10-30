@@ -312,3 +312,28 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 	}
 	return 0
 }
+
+// cleanClaudeEnv is this process's environment without the variables Claude Code sets
+// for its own commands. A claude started with them runs as a child of the calling
+// session: it is told that session's project directory, and its prompt arrives with a
+// "Claude" line in front, so `help` no longer matches.
+// Only the variables a running session sets about itself are removed; configuration a
+// user sets (a provider, a token, limits) is kept.
+func cleanClaudeEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if !sessionVars[name] {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+var sessionVars = map[string]bool{
+	"CLAUDECODE": true, "CLAUDE_PID": true, "CLAUDE_PROJECT_DIR": true, "CLAUDE_EFFORT": true,
+	"CLAUDE_ENV_FILE": true, "CLAUDE_CODE_CHILD_SESSION": true, "CLAUDE_CODE_SESSION_ID": true,
+	"CLAUDE_CODE_SESSION_ATTENDED": true, "CLAUDE_CODE_MESSAGING_SOCKET": true,
+	"CLAUDE_CODE_MESSAGING_TOKEN": true, "CLAUDE_CODE_ENTRYPOINT": true, "CLAUDE_CODE_EXECPATH": true,
+	"STARSHIP_SESSION": true,
+}

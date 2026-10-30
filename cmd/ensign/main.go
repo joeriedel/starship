@@ -51,10 +51,6 @@ func main() {
 		if len(os.Args) == 3 {
 			os.Exit(cmdSelftestHook(os.Args[2], os.Stdin, os.Stdout))
 		}
-	case "gate":
-		err = cmdGate(os.Args[2:], os.Stdout)
-	case "proposal":
-		err = cmdProposal(os.Args[2:], os.Stdout)
 	case "style":
 		err = cmdStyle(os.Args[2:], os.Stdout)
 	case "skill":
@@ -88,8 +84,6 @@ func usage() {
   ensign update [<tag>]
   ensign link [--force]
   ensign selftest
-  ensign gate install --identity <email>      (in a control-plane clone)
-  ensign proposal check <file>
   ensign project new <name>
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
   ensign task open <project>/<task>

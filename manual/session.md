@@ -21,7 +21,8 @@ one.
 - `ensign project new <project> --workspace <path>` creates a project. **Ask where its
   code is if the user hasn't said; never guess it.** Then fill in its bindings
   (`@build`, `@test`, …): read the code and propose commands for the user to confirm,
-  rather than assuming. If the tests are one command that needs no services or setup,
+  rather than assuming. If the code ships `.starship/project.yaml`, `project new` copies
+  it in; show the user its bindings to confirm rather than deriving new ones. If the tests are one command that needs no services or setup,
   propose `plain: true` on `@test`: ensign then runs them itself, with no tester agent.
 
 Never guess a workspace path, and never substitute a similar-looking directory.
@@ -124,12 +125,19 @@ with `ensign journal commit`.
 ## Pushing and landing
 
 Workspace commits, pushes and submits need the user's explicit approval **every time**;
-approval doesn't carry forward. Never open a pull request; the user does. Never add an
+approval doesn't carry forward. Never open a pull request yourself; the user does, unless
+the project's own bindings do it inside a run the user approved with go (starship's
+do). Never add an
 agent attribution line to anything — no co-author trailer, no "generated with".
 
 ## Improving starship
 
-You cannot edit the control plane from a bridge. When you notice a process improvement,
-offer to write it up as a proposal: `proposals/<slug>.md` in the bridge, stated in
-general terms with no project names, types or paths. It is carried into starship
-separately.
+The bridge's copy of starship is pinned and never edited. Starship is improved like any
+other code: as a task in a project whose workspace is a starship checkout. If the bridge
+has no such project, offer to add one; the checkout should be one of its own, since runs
+switch its branch. Starship ships its project settings in `.starship/project.yaml`, so
+`ensign project new` needs nothing filled in. Each task works on its own branch and its
+test stage opens the pull request and waits for CI; the user reviews and merges it.
+
+Starship is public. Nothing from this bridge's other projects goes into it: describe
+the change in general terms, and use the fictional project `supernova` in examples.

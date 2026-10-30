@@ -1,0 +1,18 @@
+# What a starship bridge needs to work on this repository. `ensign project new` copies it
+# into the bridge's project.yaml when the project is created.
+#
+# Every task works on its own branch, task/<name>. The test stage is CI: the branch is
+# pushed, its pull request opened, and the run waits for the checks, so nothing needs Go
+# installed locally. Use a checkout of its own for this project: runs switch its branch.
+
+bindings:
+  build: { not-applicable: "no Go toolchain is installed locally; CI builds every push" }
+  test:  { command: 'sh "$STARSHIP_WORKSPACE/.starship/pull-request.sh"', plain: true }
+
+events:
+  run.start: [{ require: 'sh "$STARSHIP_WORKSPACE/.starship/task-branch.sh"' }]
+
+pipelines:
+  coding:
+    ops:
+      - append: { stage: review, dimensions: [public] }

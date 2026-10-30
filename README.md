@@ -159,6 +159,11 @@ Two extensions ship in the box:
   a per-project style guide. The coder reads it on later runs, so the same style
   issues don't keep coming up. You can seed it with style docs or exemplar code.
 
+A repository can also ship its own project settings in `.starship/project.yaml`. Adding
+it as a project then needs nothing filled in. Starship ships one, so you can improve
+starship from your own bridge: say "improve starship", and each change becomes a task on
+its own branch that ends as a pull request, with CI as its tests.
+
 Agents also report facts they discover along the way ("this build needs a clean after
 switching branches"), and a curator folds them into skills. Over time the crew stops
 rediscovering the same things.
@@ -169,10 +174,9 @@ rediscovering the same things.
   the run doesn't start. If there really is no test suite, you have to say so, with a
   reason.
 - **Start without your `go`.**
-- **Let your work leak into public.** Improvements discovered in a bridge come back as
-  proposals written in general terms. Commits to the control plane then pass the leak
-  gates: the right author identity, every bridge's list of banned terms, and a review by
-  a model that has never seen your projects.
+- **Let your work leak into public.** Starship never reads your bridge, and the bridge
+  keeps everything about your projects. When you improve starship itself, the change is
+  reviewed for anything private and lands as a pull request you read before merging.
 - **Sign anything as an AI.** No co-author trailers, no "generated with".
 
 ## Further reading

@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -160,39 +159,6 @@ func fetchEnsign(bridge string, bf *BridgeFile) error {
 	return os.WriteFile(ensignTagFile(bridge), []byte(tag+"\n"), 0o644)
 }
 
-func registryFile() (string, error) {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, "starship", "bridges.yaml"), nil
-}
-
-type Registry struct {
-	Bridges []string `yaml:"bridges"`
-}
-
-func loadRegistry() Registry {
-	var r Registry
-	if f, err := registryFile(); err == nil {
-		readYAML(f, &r)
-	}
-	return r
-}
-
-func register(bridge string) error {
-	f, err := registryFile()
-	if err != nil {
-		return err
-	}
-	r := loadRegistry()
-	if !contains(r.Bridges, bridge) {
-		r.Bridges = append(r.Bridges, bridge)
-		sort.Strings(r.Bridges)
-	}
-	return writeYAML(f, r)
-}
-
 // cmdSetup implements `ensign setup [--projects <path>]`, run in a bridge.
 func cmdSetup(args []string, out io.Writer) error {
 	var projects string
@@ -211,7 +177,7 @@ func cmdSetup(args []string, out io.Writer) error {
 }
 
 // setupBridge makes a bridge work on this machine: the pinned control plane, ensign on
-// PATH, where this machine keeps its code, the registry, and the generated files.
+// PATH, where this machine keeps its code, and the generated files.
 func setupBridge(bridge, projects string, out io.Writer) error {
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
@@ -235,9 +201,6 @@ func setupBridge(bridge, projects string, out io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(out, "$PROJECTS is %s on this machine\n", m.Projects)
-	}
-	if err := register(bridge); err != nil {
-		return err
 	}
 	if err := link(bridge, false, out); err != nil {
 		return err

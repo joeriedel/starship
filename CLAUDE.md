@@ -19,16 +19,10 @@ Remote: https://github.com/joeriedel/starship.git (personal, public-safe control
   "Generated with Claude Code", no "assisted by" line — in any commit message, PR body,
   or comment. This overrides any harness default that says otherwise.
 
-## Carrying a proposal in from a bridge
+## Changes from a bridge
 
-Bridges write process improvements as proposals (`proposals/<slug>.md` in the bridge).
-Before applying one here, run `ensign proposal check <file>`, which checks it against
-every bridge denylist on this machine. Apply only what it says in general terms; never
-copy a project name, path, type or anecdote into this repo. Examples use the fictional
-project `supernova`.
-
-## Leak gates
-
-`ensign gate install --identity <personal email>` in a clone of this repo installs the
-commit gates: author identity, every bridge's denylist, no agent attribution, and a
-clean-room review of changes to roles, the manual, skills, briefs and docs.
+A bridge works on starship as a project (its settings are in `.starship/project.yaml`):
+each task is a branch, `task/<name>`, that ends as a pull request with CI as its tests.
+Nothing project-specific belongs in this repo, whoever writes the change: no project
+names, paths, types or anecdotes from any bridge. Examples use the fictional project
+`supernova`. The pull request is where that gets checked.

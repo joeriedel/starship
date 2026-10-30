@@ -9,7 +9,7 @@ import (
 )
 
 // Journals — task journals and the other records a bridge keeps under projects/ and
-// proposals/ — are committed and pushed in the bridge's own git, whatever VCS the
+// skills/ — are committed and pushed in the bridge's own git, whatever VCS the
 // projects use.
 
 func isGit(dir string) bool {
@@ -17,10 +17,10 @@ func isGit(dir string) bool {
 	return err == nil
 }
 
-// journalChanges lists changed files under projects/ and proposals/, leaving out
+// journalChanges lists changed files under projects/ and skills/, leaving out
 // projects that turned journal commits off.
 func journalChanges(bridge string) []string {
-	status, err := gitOut(bridge, "status", "--porcelain", "--untracked-files=all", "--", "projects", "proposals", "skills")
+	status, err := gitOut(bridge, "status", "--porcelain", "--untracked-files=all", "--", "projects", "skills")
 	if err != nil || status == "" {
 		return nil
 	}

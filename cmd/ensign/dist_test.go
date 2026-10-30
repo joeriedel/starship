@@ -76,9 +76,6 @@ func TestPinnedBridge(t *testing.T) {
 	if ws, _ := expandWorkspace(bridge, "$PROJECTS/app"); ws != filepath.Join(projects, "app") {
 		t.Errorf("$PROJECTS expanded to %q", ws)
 	}
-	if reg := loadRegistry(); !contains(reg.Bridges, bridge) {
-		t.Errorf("bridge not registered: %v", reg.Bridges)
-	}
 
 	// A session that started on v0.1.0 can't start a run after the bridge moves on.
 	t.Setenv("STARSHIP_SESSION", "s1")

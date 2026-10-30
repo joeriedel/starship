@@ -52,7 +52,7 @@ var fixedHelp = []struct {
 	}},
 	{"Housekeeping", []HelpEntry{
 		{`"update the bridge"`, "move to the latest starship release", "ensign update"},
-		{`"suggest an improvement to starship"`, "write it up as a proposal", ""},
+		{`"improve starship"`, "work on starship as a project; the change ends as a pull request", ""},
 	}},
 }
 
@@ -330,7 +330,7 @@ func controlPlaneEdit(bridge string, in *HookInput) string {
 			root = r
 		}
 		if rel, err := filepath.Rel(root, resolveExisting(abs)); err == nil && !strings.HasPrefix(rel, "..") {
-			return "this session can't edit the starship control plane. Write the idea up as a proposal in proposals/ instead, in general terms with no project names."
+			return "this is the bridge's pinned copy of starship, which isn't edited. To change starship, work on a starship checkout as a project task; the change lands as a pull request."
 		}
 	}
 	return ""

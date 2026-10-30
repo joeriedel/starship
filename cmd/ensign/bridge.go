@@ -67,11 +67,6 @@ const bridgeGitignore = `# Generated per machine by ensign; never committed.
 .claude/settings.local.json
 `
 
-const bridgeDenylist = `# Terms that must never reach the public control plane from this bridge:
-# project names, codenames, internal hostnames, usernames. One per line; matched
-# case-insensitively. The control plane refuses commits while this list is empty.
-`
-
 func hookSettings() string { return hookSettingsWith(hookTimeout) }
 
 // hookSettingsWith is the generated settings.json. Timeout 0 gives the form ensign wrote
@@ -147,9 +142,7 @@ func cmdInit(args []string, out io.Writer) error {
 		"CLAUDE.md":             fmt.Sprintf(bridgeClaudeMD, filepath.Base(dir)),
 		".gitignore":            bridgeGitignore,
 		".claude/settings.json": hookSettings(),
-		"denylist.txt":          bridgeDenylist,
 		"projects/.gitkeep":     "",
-		"proposals/.gitkeep":    "",
 	}
 	paths := sortedKeys(files)
 	// The folder may already hold the user's own files. Never overwrite one.
@@ -414,11 +407,13 @@ func linkStale(bridge string) bool {
 	return false
 }
 
-const projectTemplate = `# Project: %s
+const projectHeader = `# Project: %s
 
 # Where this project's code is. New tasks use it unless they name a different location.
 workspace: %s
+`
 
+const projectTemplate = projectHeader + `
 # Bindings say what each @name means here. Declare every binding the pipelines need,
 # or declare it not applicable with a reason; a missing one stops a run.
 bindings:
@@ -443,9 +438,11 @@ func cmdProject(args []string, out io.Writer) error {
 		return err
 	}
 	name, ws := args[1], filepath.ToSlash(args[3])
-	if dir, err := expandWorkspace(bridge, ws); err != nil {
+	dir, err := expandWorkspace(bridge, ws)
+	if err != nil {
 		return err
-	} else if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("%s is not a folder on this machine; ask the user where the code is, never guess", dir)
 	}
 	if !validName(name) {
@@ -455,11 +452,44 @@ func cmdProject(args []string, out io.Writer) error {
 	if _, err := os.Stat(p); err == nil {
 		return fmt.Errorf("project %s already exists", name)
 	}
-	if err := writeFile(p, fmt.Sprintf(projectTemplate, name, ws)); err != nil {
+	content := fmt.Sprintf(projectTemplate, name, ws)
+	shipped, err := shippedProject(dir)
+	if err != nil {
 		return err
+	}
+	if shipped != "" {
+		content = fmt.Sprintf(projectHeader, name, ws) + "\n# From the code's own " + shippedProjectFile + ":\n\n" + shipped
+	}
+	if err := writeFile(p, content); err != nil {
+		return err
+	}
+	if shipped != "" {
+		fmt.Fprintf(out, "created %s from the code's own %s; confirm its bindings with the user\n", relTo(bridge, p), shippedProjectFile)
+		return nil
 	}
 	fmt.Fprintf(out, "created %s; define its bindings before starting a run\n", relTo(bridge, p))
 	return nil
+}
+
+// A repository can ship the project settings a bridge needs to work on it, so adding it
+// as a project needs nothing filled in. It is read once, when the project is created.
+const shippedProjectFile = ".starship/project.yaml"
+
+func shippedProject(dir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(shippedProjectFile)))
+	if err != nil {
+		return "", nil
+	}
+	var l struct {
+		Workspace string `yaml:"workspace"`
+	}
+	if err := yamlUnmarshal(data, &l); err != nil {
+		return "", fmt.Errorf("%s in %s is not valid YAML: %v", shippedProjectFile, dir, err)
+	}
+	if l.Workspace != "" {
+		return "", fmt.Errorf("%s in %s sets a workspace; that is the bridge's to decide", shippedProjectFile, dir)
+	}
+	return string(data), nil
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)

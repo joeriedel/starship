@@ -35,7 +35,7 @@ control plane   ~/starship            personal GitHub; public-safe
 bridge          bridges/work/         hosted wherever that context requires
    │            bridges/home/         (a work bridge never touches personal GitHub)
    │            projects, tasks, project skills, integration scripts,
-   │            platform roots, denylist.txt, proposals/, local extensions
+   │            platform roots, local extensions
    ▼
 project         <bridge>/projects/<project>/
    │            bindings, pipeline extensions, rules
@@ -57,12 +57,14 @@ Each later layer may extend or override the one before it, except locked invaria
   `.starship/control-plane/`, checked out at a release tag recorded in `bridge.yaml`
   (§11.3). Runs are reproducible, bridges can sit on different releases, and nothing
   reaches a bridge until it is released and the bridge is updated with `ensign update`.
-- **A writable clone, `~/starship`, exists only where the control plane is developed.**
-  Improvements are made and committed there (§3.2), released as a tag, and picked up by
-  each bridge when it updates. A machine that only uses starship doesn't need it.
-- **Bridge sessions cannot write to the control plane** — neither the pinned clone nor
-  `~/starship`. A permission deny on both paths, backed by a PreToolUse hook, makes this
-  structural.
+- **A writable checkout of starship exists only where starship is developed.** A bridge
+  works on it as an ordinary project (§3.2); changes land as pull requests, are released
+  as a tag, and are picked up by each bridge when it updates. A machine that only uses
+  starship doesn't need one.
+- **A bridge's pinned copy of starship is never edited.** A PreToolUse hook refuses
+  edits there, and to a development bridge's `control-plane: path`, and points at the
+  project route instead. A development bridge's path should not also be the workspace of
+  its starship project.
 
 ---
 
@@ -83,48 +85,41 @@ The last three are channels, not mistakes, and need structural answers.
 
 ### 3.2 The improvement path
 
+Starship is improved the way any code is: as a task in a bridge project whose workspace
+is a starship checkout.
+
 ```
-bridge session (cwd: <bridge>)
-  │  notices a process improvement
-  │  writes proposals/<slug>.md, stated abstractly
+bridge session
+  │  "improve starship": a task in the starship project
+  │  plan, go
   ▼
-control-plane session (cwd: ~/starship, fresh context)
-  │  reads only the proposal and control-plane files
-  │  makes the edit
+run (the coding pipeline, with starship's own project settings)
+  │  run.start      the checkout moves to the task's branch, task/<name>
+  │  code ⇄ review  reviewers include the `public` focus: nothing from a private context
+  │  style
+  │  test           plain: commit, push the branch, open the pull request, wait for CI
   ▼
-commit gates (git hooks in ~/starship)
-  1. identity: author email must be the personal address
-  2. denylist: diff grepped against the denylist of every bridge registered here (§12.6)
-  3. clean-room review: an agent with no project context reads only the diff
+pull request on GitHub
+  │  the user reads the diff and merges
   ▼
-commit and push to personal GitHub, without asking (§10.1)
+release (a tag), then each bridge updates
 ```
 
-- The author of every control-plane change has never seen project code, so it cannot
-  paraphrase project context into the files. The gates catch literal strings; the fresh
-  session prevents paraphrase. Both are needed.
-- **Proposals are linted on read**, against the same denylists, since they are where
-  project context is first abstracted.
-- **Denylists live in their bridge and never enter the control plane.** The check fails
-  closed: a bridge present with a missing or empty `denylist.txt` refuses the commit.
-- **Commit identity is enforced** by a pre-commit hook, not just configured, so a
-  machine's global git identity cannot reach public history.
+- **Starship ships its project settings** in `.starship/project.yaml`, which
+  `ensign project new` copies in when the project is created (§4.1). Any repository can
+  do the same. Starship's settings make `@build` not applicable, since no Go toolchain is
+  installed locally, and make `@test` a plain script that turns the branch into a pull
+  request and returns CI's verdict. A CI failure goes back to the coder with the end of
+  the failing log, like any test failure.
+- **What keeps project knowledge out is structural.** The bridge holds everything about
+  its projects and starship never reads a bridge, so nothing crosses on its own. What
+  remains is an agent with project context writing a detail into a role or doc. The
+  `public` review focus looks for that in every starship run, and the pull request puts
+  every diff in front of the user before it lands.
 - **Examples in the control plane use a fictional project** (`supernova`). Lessons are
   written as the mechanism alone, or retold in the fictional project.
-- **New vocabulary is reviewed too.** A binding or stage name invented for one project
-  becomes public once a pipeline uses it; the clean-room review checks that new names
-  make sense without the project behind them.
-
-### 3.3 Gates by kind of change
-
-| Change | Risk | Gates |
-|---|---|---|
-| role or pipeline wording, budgets, choreography | low | identity, denylist |
-| operating lessons with a worked example | medium | + clean-room review; example uses the fictional project |
-| skill facts (engine or framework behaviour) | high | + clean-room review |
-
-All tiers commit and push automatically once their gates pass. A failing gate refuses
-the commit and nothing is pushed.
+- **Use a checkout of its own** for the starship project: runs switch its branch, and
+  refuse to start if it has uncommitted changes on another branch.
 
 ---
 
@@ -151,13 +146,17 @@ Carried over from the reference design:
   a target that doesn't exist. Never substitute an equivalent.
 - Platform variants are declared per platform; a binding with variants but none for the
   detected platform is a stop.
+- **A repository can ship its project settings** in `.starship/project.yaml`: bindings,
+  pipeline ops, events, extensions, in the project.yaml format but without a workspace.
+  `ensign project new` copies it into the bridge's project.yaml when the project is
+  created; from then on the bridge's copy is the one used, and the user can change it.
 - **`plain: true`** says a command needs no judgement to run: it passes or it fails by
   its exit code. On `@test` it means ensign runs the test stage itself. When the lead
   dispatches the tester, ensign runs `@build` (if bound) and `@test` inside the
   PreToolUse hook, records the result as that stage's report and transition, keeps the
   full output in the run's `reports/`, and refuses the dispatch with the outcome, the end
-  of any failing output, and the next step. No agent reads the log. Exit 126 or 127, a
-  timeout, or a command that can't start is `error`; any other non-zero exit is `fail`.
+  of any failing output, and the next step. No agent reads the log. Exit 125 (a script saying
+  it could not run), 126 or 127, a timeout, or a command that can't start is `error`; any other non-zero exit is `fail`.
   A suite that needs services started, or a judgement about whether it really ran, keeps
   the tester. The hook has a one-hour timeout in the generated settings, and ensign
   stops a plain stage a minute before whatever timeout the bridge actually has, because
@@ -288,8 +287,8 @@ given are cleared either way. A skill's learned entries are appended to its text
 wherever it is delivered.
 
 **Learned facts land in the bridge's copy of the skill, never the control plane's.**
-Promoting one into a public skill goes through the proposal path (§3.2) under the
-high-risk gate (§3.3).
+Promoting one into a public skill is a starship task like any other change (§3.2), stated
+as a fact about the technology alone.
 
 ### 4.5 The curator
 
@@ -539,7 +538,7 @@ a session types `go`, which claims the newest such run.
 ### 5.6 Locks
 
 A few invariants are **locked** in the control plane: the `go` approval gate, no
-workspace push without approval, no agent attribution, and the control-plane leak gates.
+workspace push without approval, and no agent attribution.
 A lower layer may add to them (another gate, a stricter rule) but cannot weaken or remove
 them; the resolver rejects any layer that tries. There is no unlock. If an invariant is
 wrong, it is changed in the control plane, for everyone.
@@ -729,8 +728,7 @@ agent's promise.
 If the message is `help` or `help <topic>`, print the help text and end the turn without
 calling the model (§7.2).
 
-**Git hooks** run `commit.before` and `push.before` through the same script, including
-the control-plane leak gates (§3.2).
+**Git hooks** run `commit.before` and `push.before` through the same script.
 
 **How a lead knows what to dispatch.** Hooks can refuse a wrong spawn, but they cannot
 speak to a lead between stages. So a lead's prompt includes a command,
@@ -809,7 +807,7 @@ Style
 
 Housekeeping
   "update the bridge"                         move to the latest starship release
-  "suggest an improvement to starship"        write it up as a proposal
+  "improve starship"                          work on starship as a project; ends as a pull request
 
 Projects: supernova (3 tasks), nebula (1 task)
 ```
@@ -970,7 +968,7 @@ It is committed with the journal, so it covers every machine; run directories do
 per pass early and late, and lists entries hit in three of the last ten passes. An
 active entry hit run after run is badly worded, or isn't reaching the coder; the curator
 is given those entries and told to reword them. A learned rule that is clearly generic is a candidate for the control plane's
-house style, through the proposal path (§3.2) — never copied across directly.
+house style, as a starship task (§3.2) — never copied across directly.
 
 ---
 
@@ -995,8 +993,6 @@ happened is not.
 - One commit per logical change, files staged by name, message short.
 - Pushed without asking. The Stop hook also blocks while the local branch is ahead of the
   remote, checked with `git ls-remote`, not the local tracking ref.
-- The leak gates (§3.2) are git hooks, so they run on every commit regardless of who
-  makes it.
 - **From a work machine, the control plane is the only thing pushed to the personal
   repo.** Bridges, journals and workspaces in a work context stay on that context's
   infrastructure.
@@ -1172,8 +1168,6 @@ release's checksums.
 
 - runs `ensign link` to generate the bridge's role and skill files and its own
   `.starship/bin/ensign`;
-- registers the bridge for this machine (the control plane's commit gates read every
-  registered bridge's denylist);
 - writes `.starship/machine.yaml` (gitignored): this machine's paths, such as the
   `$PROJECTS` root. Claude asks for them in conversation and passes them as flags. A task
   that needs a path that isn't set stops with a clear message.
@@ -1240,12 +1234,8 @@ Bridges may share a machine, live on separate machines, or run in containers. No
 the design assumes one bridge per machine:
 
 - Machine-specific state is per bridge (`.starship/machine.yaml`), not per machine.
-- `ensign setup` registers each bridge in a per-user registry (`~/.config/starship/` on
-  Linux, `%APPDATA%\starship\` on Windows). The control plane's denylist gate checks the
-  denylist of every registered bridge, so on a shared machine a change is checked
-  against all of them.
-- In a container, the container is the machine: setup runs inside it, and its registry
-  holds the bridges in that container.
+- Nothing is recorded per user: each bridge carries its own ensign and settings.
+- In a container, the container is the machine: setup runs inside it.
 
 A bridge is normally **shared by every machine working in its context** — say a Linux and
 a Windows machine on the same project, often doing platform-specific work. Splitting it
@@ -1299,8 +1289,6 @@ runs against Claude Code, except where listed below.
 | `ensign journal commit -m <msg>` / `ensign journal push` | commit and push the bridge's records |
 | `ensign git-catalog squash <p>/<t> -m <msg>` | collapse a task's catalog into one commit |
 | `ensign style ingest <project> <path-or-url> --trust <t>` | add a style source |
-| `ensign gate install --identity <email>` | install the leak gates in a control-plane clone |
-| `ensign proposal check <file>` | check a proposal against every denylist |
 | `ensign selftest` | re-check the Claude Code behaviour starship depends on |
 | `ensign hook <event>` | the hook driver |
 
@@ -1323,7 +1311,7 @@ runs against Claude Code, except where listed below.
   Its prompt reaches UserPromptSubmit with a `Claude` line in front, so `help` doesn't
   match, and it inherits the parent's project directory. This is why `help` once went to
   the model in testing; a user's own session isn't affected. `ensign` starts its own
-  `claude` (the selftest, the clean-room review) without the variables a session sets
+  `claude` (the selftest) without the variables a session sets
   about itself, and live tests should do the same.
 - **`ensign init` commits the new bridge.** Before, the first session in a new bridge
   was asked to commit the empty-folder placeholders as journal changes.
