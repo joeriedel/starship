@@ -168,17 +168,6 @@ Agents also report facts they discover along the way ("this build needs a clean 
 switching branches"), and a curator folds them into skills. Over time the crew stops
 rediscovering the same things.
 
-## Things it won't do
-
-- **Guess.** If a pipeline needs `@test` and the project hasn't said what that means,
-  the run doesn't start. If there really is no test suite, you have to say so, with a
-  reason.
-- **Start without your `go`.**
-- **Let your work leak into public.** Starship never reads your bridge, and the bridge
-  keeps everything about your projects. When you improve starship itself, the change is
-  reviewed for anything private and lands as a pull request you read before merging.
-- **Sign anything as an AI.** No co-author trailers, no "generated with".
-
 ## Further reading
 
 [`docs/design.md`](docs/design.md) has the full design: layers, pipelines, the hook
