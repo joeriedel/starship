@@ -131,12 +131,36 @@ func (w *world) spawn(caller, callerType, role string) (string, string) {
 	return id, ""
 }
 
-// stop ends an agent with a final message; it returns the block reason, or "".
+// handback is an agent's SubagentHandback call, which carries its report; it returns the
+// reason the call was refused, or "".
+func (w *world) handback(agent, agentType, message string) string {
+	w.t.Helper()
+	res, code := w.hook("PreToolUse", map[string]any{
+		"agent_id": agent, "agent_type": agentType, "tool_name": "SubagentHandback",
+		"tool_input": map[string]any{"message": message},
+	})
+	if code != 0 {
+		w.t.Fatalf("SubagentHandback exited %d: %v", code, res)
+	}
+	if res != nil {
+		return res["hookSpecificOutput"].(map[string]any)["permissionDecisionReason"].(string)
+	}
+	return ""
+}
+
+// stop ends an agent with a final message and no handback; it returns the block reason, or "".
 func (w *world) stop(agent, agentType, message string, active bool) string {
 	w.t.Helper()
+	return w.stopWith(agent, agentType, message, active, nil)
+}
+
+// stopWith ends an agent's turn without a handback, listing the session's background tasks.
+func (w *world) stopWith(agent, agentType, last string, active bool, tasks []map[string]any) string {
+	w.t.Helper()
 	res, code := w.hook("SubagentStop", map[string]any{
-		"agent_id": agent, "agent_type": agentType, "last_assistant_message": message,
+		"agent_id": agent, "agent_type": agentType, "last_assistant_message": last,
 		"agent_transcript_path": agentTranscript(w.session, agent), "stop_hook_active": active,
+		"background_tasks": tasks,
 	})
 	if code != 0 {
 		w.t.Fatalf("SubagentStop exited %d: %v", code, res)
@@ -145,6 +169,17 @@ func (w *world) stop(agent, agentType, message string, active bool) string {
 		return res["reason"].(string)
 	}
 	return ""
+}
+
+// launched is the PostToolUse of an agent that started a background task.
+func (w *world) launched(agent, agentType, tool string, response map[string]any) {
+	w.t.Helper()
+	res, code := w.hook("PostToolUse", map[string]any{
+		"agent_id": agent, "agent_type": agentType, "tool_name": tool, "tool_response": response,
+	})
+	if code != 0 || res != nil {
+		w.t.Fatalf("PostToolUse should be silent, got %d: %v", code, res)
+	}
 }
 
 func report(outcome string) string {
@@ -590,5 +625,104 @@ func TestSessionStartDeliversTheManual(t *testing.T) {
 	}
 	if dirty, _ := gitOut(w.bridge, "status", "--porcelain", "--", "CLAUDE.md"); dirty != "" {
 		t.Errorf("removing the import should be committed: %q", dirty)
+	}
+}
+
+func TestWaitOnOwnBackgroundTask(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	// The lead waits on a background explorer while no stage is running.
+	w.launched(lead, "orchestrator", "Agent", map[string]any{"status": "async_launched", "agentId": "explorer1"})
+	task := []map[string]any{{"id": "explorer1", "type": "subagent", "status": "running"}}
+	if r := w.stopWith(lead, "orchestrator", "Waiting for the explorer.", false, task); r != "" {
+		t.Fatalf("a lead waiting on its own background agent should be let stop: %s", r)
+	}
+	if st := w.state(); st.byAgent(lead).StopBlocks != 0 {
+		t.Fatalf("a wait must not spend the stop budget, got %d", st.byAgent(lead).StopBlocks)
+	}
+
+	// A stage waits on a background Bash command.
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	w.launched(coder, "coder", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	w.launched(coder, "coder", "Bash", map[string]any{"stdout": "foreground call"})
+	shell := []map[string]any{{"id": "bash1", "type": "shell", "status": "running"}}
+	if r := w.stopWith(coder, "coder", "Waiting for the build.", false, shell); r != "" {
+		t.Fatalf("a stage waiting on its own task should be let stop: %s", r)
+	}
+	st := w.state()
+	if d := st.byAgent(coder); d.Done || d.StopBlocks != 0 {
+		t.Fatalf("a wait is not a report: done=%v blocks=%d", d.Done, d.StopBlocks)
+	}
+
+	// Someone else's task does not excuse the stop, and neither does a finished one.
+	other := []map[string]any{{"id": "explorer1", "type": "subagent", "status": "running"}}
+	if r := w.stopWith(coder, "coder", "Still waiting.", false, other); !strings.Contains(r, "no starship-report") {
+		t.Fatalf("a task the stage does not own should not excuse it: %q", r)
+	}
+	if r := w.stopWith(coder, "coder", "The build finished.", true, nil); !strings.Contains(r, "no starship-report") {
+		t.Fatalf("a task no longer in flight should not excuse it: %q", r)
+	}
+}
+
+func TestHandbackIsTheReport(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	// A refused handback is refused at the call, with the reason, and can be resent.
+	if r := w.handback(coder, "coder", "I did it, no report."); !strings.Contains(r, "no starship-report") {
+		t.Fatalf("an invalid handback should be refused with the reason: %q", r)
+	}
+	if r := w.handback(coder, "coder", report("finished")); !strings.Contains(r, `"finished" is not one of`) {
+		t.Fatalf("an unknown outcome should be refused: %q", r)
+	}
+	if d := w.state().byAgent(coder); d.Handback != "" || d.Done {
+		t.Fatalf("a refused handback must not be recorded: %+v", d)
+	}
+	if r := w.handback(coder, "coder", report("compiled")); r != "" {
+		t.Fatalf("a valid handback should be accepted: %s", r)
+	}
+	// The closing text is not the report.
+	if r := w.stopWith(coder, "coder", "Closing text.", false, nil); r != "" {
+		t.Fatalf("a handed-back stage should finish: %s", r)
+	}
+	if d := w.state().byAgent(coder); !d.Done || d.Outcome != "compiled" {
+		t.Fatalf("the handback message should be the report: %+v", d)
+	}
+}
+
+func TestReportInFinalMessageWithoutHandback(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.leaf(lead, "coder", "compiled")
+	if d := w.state().byAgent("agent02"); d == nil || !d.Done || d.Outcome != "compiled" {
+		t.Fatalf("the final message should be the report when there is no handback: %+v", d)
+	}
+}
+
+func TestLeadHandbackWaitsForTheFinishedRun(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.leaf(lead, "coder", "compiled")
+	if r := w.handback(lead, "orchestrator", "All done."); !strings.Contains(r, "not finished") {
+		t.Fatalf("a lead handback before the run is finished should be refused: %q", r)
+	}
+	if d := w.state().byAgent(lead); d.Handback != "" {
+		t.Fatalf("a refused lead handback must not be recorded: %+v", d)
+	}
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+	w.leaf(lead, "tester", "pass")
+	if r := w.handback(lead, "orchestrator", "All done."); r != "" {
+		t.Fatalf("a lead handback after the run finished should be accepted: %s", r)
+	}
+	if d := w.state().byAgent(lead); d.Handback != "All done." {
+		t.Fatalf("an accepted lead handback must be recorded: %+v", d)
 	}
 }

@@ -29,6 +29,20 @@ type HookInput struct {
 	LastMessage         string         `json:"last_assistant_message"`
 	StopHookActive      bool           `json:"stop_hook_active"`
 	Prompt              string         `json:"prompt"`
+
+	// ToolResponse is a PostToolUse result: an object for most tools, but not guaranteed.
+	ToolResponse    any              `json:"tool_response"`
+	BackgroundTasks []BackgroundTask `json:"background_tasks"`
+}
+
+// BackgroundTask is an in-flight task listed on Stop and SubagentStop. On SubagentStop it
+// is scoped to the parent session and names no owner.
+type BackgroundTask struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Status    string `json:"status"`
+	Command   string `json:"command"`
+	AgentType string `json:"agent_type"`
 }
 
 var tagRe = regexp.MustCompile(`\[starship run=(\S+) dispatch=(\S+)`)
@@ -119,6 +133,9 @@ func callerDispatch(r *RunFiles, in *HookInput) *Dispatch {
 }
 
 func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
+	if in.ToolName == "SubagentHandback" {
+		return hookHandback(in, r), nil
+	}
 	if in.ToolName != "Agent" && in.ToolName != "Task" {
 		return nil, nil
 	}
@@ -241,6 +258,76 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	}}, nil
 }
 
+// hookHandback records the message of an agent's SubagentHandback call as its report. A
+// stage's report is checked here and refused with the reason, because the call ends the
+// agent and a block at SubagentStop would reach nobody. Recorded before the call runs,
+// since the call ends the agent's run.
+func hookHandback(in *HookInput, r *RunFiles) any {
+	d := callerDispatch(r, in)
+	if d == nil || in.AgentID == "" {
+		return nil
+	}
+	msg, _ := in.ToolInput["message"].(string)
+	m := &machine{snap: r.Snap, st: r.State}
+	if s := m.stage(d.Stage); s != nil && s.isLead() && !r.State.terminal() {
+		return deny(r, s.ID, "the pipeline is not finished. "+m.expect(s.ID))
+	} else if s != nil && !s.isLead() && !d.Done {
+		outcome, _, _, problem := parseReport(msg, s)
+		if problem != "" {
+			return deny(r, s.ID, problem+" "+reportInstructions(s))
+		}
+		if s.Curates != "" {
+			d.Outcome = outcome
+			if problem := applyCuration(r, s, d, msg); problem != "" {
+				d.Outcome = ""
+				return deny(r, s.ID, problem)
+			}
+		}
+	}
+	d.Handback = msg
+	return nil
+}
+
+// backgroundLaunch returns the id of the background task an agent's tool call started,
+// or "" when the call started none or was not made by an agent.
+func backgroundLaunch(in *HookInput) string {
+	resp, _ := in.ToolResponse.(map[string]any)
+	if in.AgentID == "" || resp == nil {
+		return ""
+	}
+	var task string
+	if in.ToolName == "Bash" {
+		task, _ = resp["backgroundTaskId"].(string)
+	} else if resp["status"] == "async_launched" {
+		task, _ = resp["agentId"].(string)
+	}
+	return task
+}
+
+// hookPostToolUse records which run agent launched a background task, so a later
+// SubagentStop can tell a wait on that task from an early stop.
+func hookPostToolUse(in *HookInput, r *RunFiles) (any, error) {
+	task := backgroundLaunch(in)
+	if task == "" || callerDispatch(r, in) == nil {
+		return nil, nil
+	}
+	if r.State.Tasks == nil {
+		r.State.Tasks = map[string]string{}
+	}
+	r.State.Tasks[task] = in.AgentID
+	return nil, nil
+}
+
+// ownsInFlight reports whether the agent launched a task that is still in flight.
+func ownsInFlight(r *RunFiles, in *HookInput) bool {
+	for _, t := range in.BackgroundTasks {
+		if r.State.Tasks[t.ID] == in.AgentID {
+			return true
+		}
+	}
+	return false
+}
+
 func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 	d := r.State.byAgent(in.AgentID)
 	if d == nil {
@@ -267,6 +354,9 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 			// Ending the turn is how the lead waits for it; blocking would force filler.
 			return nil, nil
 		}
+		if d.Handback == "" && ownsInFlight(r, in) {
+			return nil, nil // waiting on its own background task
+		}
 		d.StopBlocks++
 		if d.StopBlocks > 3 {
 			d.Done = true
@@ -280,7 +370,15 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		return nil, nil
 	}
 
-	outcome, summary, fields, problem := parseReport(in.LastMessage, s)
+	if d.Handback == "" && ownsInFlight(r, in) {
+		return nil, nil // waiting on its own background task
+	}
+	// A handed-back report was checked, and any curation applied, at the handback call.
+	report, handedBack := d.Handback, d.Handback != ""
+	if !handedBack {
+		report = in.LastMessage
+	}
+	outcome, summary, fields, problem := parseReport(report, s)
 	if problem != "" {
 		d.StopBlocks++
 		if d.StopBlocks > 2 {
@@ -291,9 +389,9 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		r.State.log("blocked", s.ID, d.ID, problem)
 		return block(problem + " " + reportInstructions(s)), nil
 	}
-	if s.Curates != "" {
+	if s.Curates != "" && !handedBack {
 		d.Outcome = outcome
-		if problem := applyCuration(r, s, d, in.LastMessage); problem != "" {
+		if problem := applyCuration(r, s, d, report); problem != "" {
 			d.Outcome = ""
 			d.StopBlocks++
 			if d.StopBlocks > 2 {
@@ -305,7 +403,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 			return block(problem), nil
 		}
 	}
-	completeDispatch(r, m, d, s, outcome, summary, fields, in.LastMessage)
+	completeDispatch(r, m, d, s, outcome, summary, fields, report)
 	return nil, nil
 }
 

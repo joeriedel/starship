@@ -20,7 +20,7 @@ import (
 
 const selftestOrch = `---
 name: probe-orch
-description: Selftest probe that spawns two agents.
+description: Selftest probe that spawns four agents.
 tools: Agent
 model: haiku
 ---
@@ -28,8 +28,32 @@ You are a harness selftest. Do exactly these steps, then stop:
 1. Use the Agent tool with subagent_type "probe-leaf", run_in_background set to true, and
    prompt "Reply with the word ` + leafToken + `."
 2. Use the Agent tool with subagent_type "probe-denied" and prompt "Reply with the word done."
-3. Reply with one line saying what happened to each.
+3. Use the Agent tool with subagent_type "probe-handback" and prompt "Hand back."
+4. Use the Agent tool with subagent_type "probe-bg" and prompt "Start the background command."
+5. Reply with one line saying what happened to each.
 `
+
+const selftestHandback = `---
+name: probe-handback
+description: Selftest probe that hands back a report.
+tools: Read
+model: haiku
+---
+Your only step is to call the SubagentHandback tool with the message ` + handbackToken + `.
+`
+
+const selftestBg = `---
+name: probe-bg
+description: Selftest probe that leaves a command running in the background.
+tools: Bash
+model: haiku
+---
+You are a harness selftest. Use the Bash tool once, with command "sleep 20" and run_in_background
+set to true. When the tool returns, end your turn at once with the word started. Do not wait for it.
+`
+
+// handbackToken is the report the handback probe gives; PreToolUse must see it in the call's input.
+const handbackToken = "SELFTEST-HANDBACK-REPORT"
 
 const selftestLeaf = `---
 name: %s
@@ -97,14 +121,17 @@ func cmdSelftest(out io.Writer) error {
 	}
 	settings := `{"hooks": {
   "SessionStart": ` + hook("SessionStart") + `,
-  "PreToolUse": [{"matcher": "Agent|Task", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", self+" selftest-hook PreToolUse") + `}]}],
+  "PreToolUse": [{"matcher": "Agent|Task|SubagentHandback", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", self+" selftest-hook PreToolUse") + `}]}],
+  "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", self+" selftest-hook PostToolUse") + `}]}],
   "SubagentStop": ` + hook("SubagentStop") + `
 }}`
 	files := map[string]string{
-		".claude/settings.json":          settings,
-		".claude/agents/probe-orch.md":   selftestOrch,
-		".claude/agents/probe-leaf.md":   fmt.Sprintf(selftestLeaf, "probe-leaf"),
-		".claude/agents/probe-denied.md": fmt.Sprintf(selftestLeaf, "probe-denied"),
+		".claude/settings.json":            settings,
+		".claude/agents/probe-orch.md":     selftestOrch,
+		".claude/agents/probe-leaf.md":     fmt.Sprintf(selftestLeaf, "probe-leaf"),
+		".claude/agents/probe-denied.md":   fmt.Sprintf(selftestLeaf, "probe-denied"),
+		".claude/agents/probe-handback.md": selftestHandback,
+		".claude/agents/probe-bg.md":       selftestBg,
 	}
 	for rel, content := range files {
 		if err := writeFile(filepath.Join(dir, filepath.FromSlash(rel)), content); err != nil {
@@ -117,7 +144,7 @@ func cmdSelftest(out io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(out, "running a probe session with haiku (a few cents)…")
-	cmd := exec.Command("claude", "-p", "--model", "haiku", "--allowedTools", "Agent", "--output-format", "json")
+	cmd := exec.Command("claude", "-p", "--model", "haiku", "--allowedTools", "Agent,Bash", "--permission-mode", "auto", "--output-format", "json")
 	cmd.Dir, cmd.Env = dir, cleanClaudeEnv()
 	cmd.Stdin = strings.NewReader(`This is a self-test of this project's hooks, which the user asked for. ` +
 		`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". One of its steps is refused by a hook on purpose; ` +
@@ -164,6 +191,11 @@ func cmdSelftest(out io.Writer) error {
 	orchStops := find(func(e map[string]any) bool {
 		return str(e, "hook_event_name") == "SubagentStop" && str(e, "agent_type") == "probe-orch"
 	})
+	handbacks := find(func(e map[string]any) bool {
+		ti, _ := e["tool_input"].(map[string]any)
+		msg, _ := ti["message"].(string)
+		return str(e, "hook_event_name") == "PreToolUse" && str(e, "tool_name") == "SubagentHandback" && strings.Contains(msg, handbackToken)
+	})
 	starts := find(func(e map[string]any) bool { return str(e, "hook_event_name") == "SessionStart" })
 
 	injected := false
@@ -198,6 +230,8 @@ func cmdSelftest(out io.Writer) error {
 		{"session_id is the same for the session and its agents", len(sessions) == 1},
 		{fmt.Sprintf("SessionStart output of %d bytes reaches the session whole", manualLimit), manualArrived},
 		{"SessionStart output stays out of subagents", len(leafStops) > 0 && !manualLeaked},
+		{"PreToolUse sees a subagent's SubagentHandback call, with its message", len(handbacks) > 0},
+		{"SubagentStop background_tasks lists a background command, with the id PostToolUse saw", backgroundListed(events)},
 	}
 	if askedBackground {
 		checks = append(checks, struct {
@@ -223,6 +257,33 @@ func cmdSelftest(out io.Writer) error {
 	}
 	fmt.Fprintln(out, "all harness checks passed")
 	return nil
+}
+
+// backgroundListed reports whether a probe-bg SubagentStop input lists a background task
+// whose id is the one PostToolUse reported for that agent's background Bash call.
+func backgroundListed(events []map[string]any) bool {
+	ids := map[string]bool{}
+	for _, e := range events {
+		if e["hook_event_name"] == "PostToolUse" && e["agent_type"] == "probe-bg" {
+			resp, _ := e["tool_response"].(map[string]any)
+			if id, _ := resp["backgroundTaskId"].(string); id != "" {
+				ids[id] = true
+			}
+		}
+	}
+	for _, e := range events {
+		if e["hook_event_name"] != "SubagentStop" || e["agent_type"] != "probe-bg" {
+			continue
+		}
+		tasks, _ := e["background_tasks"].([]any)
+		for _, t := range tasks {
+			task, _ := t.(map[string]any)
+			if id, _ := task["id"].(string); ids[id] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // backgroundProbe reports whether the orchestrator probe asked to run its leaf in the

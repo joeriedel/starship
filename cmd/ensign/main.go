@@ -105,7 +105,7 @@ func usage() {
   ensign git-catalog squash <project>/<task> -m <message>
   ensign github-pr pull-request|merge <project>/<task>
   ensign next [--bridge <dir>] [--run <id>]
-  ensign hook <SessionStart|UserPromptSubmit|PreToolUse|SubagentStop|Stop>`)
+  ensign hook <SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|SubagentStop|Stop>`)
 }
 
 // cmdHook runs one hook event and returns the exit code for Claude Code.
@@ -136,11 +136,17 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 0
 		}
 	case "PreToolUse":
-		if in.ToolName != "Agent" && in.ToolName != "Task" {
+		if in.ToolName != "Agent" && in.ToolName != "Task" && in.ToolName != "SubagentHandback" {
 			if why := controlPlaneEdit(bridge, &in); why != "" {
 				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
 					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}})
 			}
+			return 0
+		}
+	case "PostToolUse":
+		// Only a background launch is recorded; taking the run lock for any other call
+		// would make every agent's Bash wait on whichever hook holds it.
+		if backgroundLaunch(&in) == "" {
 			return 0
 		}
 	case "Stop":
@@ -172,6 +178,8 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch event {
 	case "PreToolUse":
 		out, err = hookPreToolUse(&in, r)
+	case "PostToolUse":
+		out, err = hookPostToolUse(&in, r)
 	case "SubagentStop":
 		out, err = hookSubagentStop(&in, r)
 	case "UserPromptSubmit":
@@ -286,17 +294,27 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	return reply(show, ctx.String())
 }
 
-// upgradeHookSettings gives the PreToolUse hook its timeout in a bridge whose
-// settings.json is exactly what an older ensign wrote, and commits that. A settings file
-// someone has edited is left alone.
+// beforeHandback is settings as ensign wrote them before it registered PostToolUse and
+// matched SubagentHandback.
+func beforeHandback(settings string) string {
+	i := strings.Index(settings, `    "PostToolUse"`)
+	j := strings.Index(settings[i:], "\n")
+	settings = settings[:i] + settings[i+j+1:]
+	return strings.Replace(settings, "|SubagentHandback", "", 1)
+}
+
+// upgradeHookSettings brings a bridge's settings.json up to date (a timeout on the
+// PreToolUse hook, the PostToolUse hook, SubagentHandback) when it is exactly what an
+// older ensign wrote, and commits that. A settings file someone has edited is left alone.
 func upgradeHookSettings(bridge string) {
 	f := filepath.Join(bridge, ".claude", "settings.json")
 	data, err := os.ReadFile(f)
-	if err != nil || string(data) != hookSettingsWith(0) {
+	if err != nil || (string(data) != hookSettingsWith(0) && string(data) != beforeHandback(hookSettingsWith(0)) &&
+		string(data) != beforeHandback(hookSettings())) {
 		return
 	}
 	if os.WriteFile(f, []byte(hookSettings()), 0o644) == nil && isGit(bridge) {
-		git(bridge, "commit", "-q", "-m", "Give the PreToolUse hook a timeout", "--", ".claude/settings.json")
+		git(bridge, "commit", "-q", "-m", "Update the starship hook settings", "--", ".claude/settings.json")
 	}
 }
 

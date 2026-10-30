@@ -117,6 +117,11 @@ func TestHookSettingsUpgrade(t *testing.T) {
 	if got := preToolUseTimeout(b); got.Seconds() != hookTimeout {
 		t.Fatalf("the upgrade should set the timeout, got %s", got)
 	}
+	write(t, f, beforeHandback(hookSettings()))
+	upgradeHookSettings(b)
+	if data, _ := os.ReadFile(f); string(data) != hookSettings() {
+		t.Fatal("settings from before SubagentHandback should be upgraded")
+	}
 	write(t, f, strings.Replace(hookSettingsWith(0), "ensign:*", "ensign:*\", \"Bash(make:*)", 1))
 	upgradeHookSettings(b)
 	if data, _ := os.ReadFile(f); strings.Contains(string(data), "timeout") {

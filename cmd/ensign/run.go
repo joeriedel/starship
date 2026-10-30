@@ -52,7 +52,8 @@ type Dispatch struct {
 	// Fields holds the report's other lines (files, rules, facts …).
 	Fields     map[string][]string `json:"fields,omitempty"`
 	StopBlocks int                 `json:"stop_blocks,omitempty"`
-	Usage      *Usage              `json:"usage,omitempty"` // from the agent's transcript
+	Handback   string              `json:"handback,omitempty"` // the message of the agent's SubagentHandback call
+	Usage      *Usage              `json:"usage,omitempty"`    // from the agent's transcript
 }
 
 type ScopeState struct {
@@ -100,6 +101,8 @@ type State struct {
 	Finished   bool           `json:"finished,omitempty"`   // the end-of-run steps have run
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
+
+	Tasks map[string]string `json:"tasks,omitempty"` // background task id -> id of the agent that launched it
 }
 
 func (st *State) terminal() bool {

@@ -90,7 +90,8 @@ func hookSettingsWith(timeout int) string {
   "hooks": {
     "SessionStart":     ` + cmd("SessionStart") + `,
     "UserPromptSubmit": ` + cmd("UserPromptSubmit") + `,
-    "PreToolUse":       [{"matcher": "Agent|Task|Edit|Write|NotebookEdit", "hooks": [` + pre + `]}],
+    "PreToolUse":       [{"matcher": "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback", "hooks": [` + pre + `]}],
+    "PostToolUse":      [{"matcher": "Agent|Task|Bash", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", bridgeEnsign+" hook PostToolUse") + `}]}],
     "SubagentStop":     ` + cmd("SubagentStop") + `,
     "Stop":             ` + cmd("Stop") + `
   }

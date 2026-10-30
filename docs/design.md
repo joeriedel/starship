@@ -609,7 +609,8 @@ answer and any budget change recorded there.
 
 ### 6.2 Stage reports
 
-Every dispatched agent ends its final message with a report block:
+Every dispatched agent hands back a report block as the `message` of its
+`SubagentHandback` call (§7), and the report is that message, not its closing text:
 
 ````
 ```starship-report
@@ -622,8 +623,10 @@ files: [src/range.go]
 Each line is `key: value`, split at the first colon, so a summary may contain colons
 (an earlier YAML parse tripped over exactly that in a live run). The driver rejects a
 report whose `outcome` is missing or not among the stage's declared outcomes, and blocks
-the agent's stop with the valid outcomes listed. Stages may require further fields (the
-`code` stage requires `files` when `git-catalog` is enabled).
+the agent with the valid outcomes listed: a handback is denied at the call, so the agent
+can resend it; a final message with no handback is blocked at its stop. A stop with no
+handback and nothing of the agent's own still running is rejected the same way. Stages may
+require further fields (the `code` stage requires `files` when `git-catalog` is enabled).
 
 Agents never have to be taught the format by a role file: the driver appends the report
 instructions, with that stage's outcomes, to every dispatch (§7).
@@ -682,6 +685,7 @@ affect that run.
   "run": "20261029-141649-coding",
   "status": "running",
   "approved": true,
+  "tasks": { "bq81f3": "a5ba254c…" },
   "spent": { "loop": 1, "test": 1 },
   "scopes": {
     "":    { "stage": "run" },
@@ -690,6 +694,7 @@ affect that run.
   "dispatches": [
     { "id": "d7", "stage": "code", "scope": "run", "role": "coder",
       "agent_id": "a5ba254c…", "done": true, "outcome": "compiled", "summary": "…" },
+    // "handback" holds the agent's SubagentHandback message until its report is accepted
     { "id": "d8", "stage": "review", "scope": "run", "dim": "correctness", "role": "reviewer", "done": false }
   ],
   "history": [
@@ -708,8 +713,13 @@ afterwards exactly as it happened.
 
 ## 7. The hook driver
 
-One binary, `ensign hook <event>`, called from harness hooks and git hooks. Every
-invocation takes a file lock on the run, and outside a bridge every event is a no-op.
+One binary, `ensign hook <event>`, called from harness hooks and git hooks. Outside a
+bridge every event is a no-op. Most invocations take a file lock on the run; these return
+before the driver takes it: `SessionStart`, `Stop`, `UserPromptSubmit` when the prompt is
+`help`, `help <topic>` or `status`, `PreToolUse` for any tool but `Agent`, `Task` and
+`SubagentHandback`, and `PostToolUse` for a call that launched no background task. Of
+these, only `help` and `status` take the lock, briefly, to read the run, so they can wait
+behind a holder; the rest, `help <topic>` included, take no lock.
 
 **PreToolUse (Agent tool)**
 
@@ -734,14 +744,38 @@ invocation takes a file lock on the run, and outside a bridge every event is a n
 **SubagentStop**
 
 1. Read the dispatch tag from the first user message in `agent_transcript_path`.
-2. Parse the report from `last_assistant_message`; if invalid, block with the valid
-   outcomes.
-3. Apply the transition, spend and reset budgets, run `stage.after` handlers. For a
+2. If the agent has not handed back and owns a task still listed in `background_tasks`,
+   the stop is a wait: allow it, count nothing, parse nothing. An agent that has handed
+   back is finished.
+3. The report is the agent's handback message, which PreToolUse already checked (see
+   below). With no handback it is `last_assistant_message`, which is the case outside auto
+   mode. If it is invalid, block with the valid outcomes.
+4. Apply the transition, spend and reset budgets, run `stage.after` handlers. For a
    branch, record its outcome; the transition applies when the last branch joins.
-4. If the stopping agent is a lead whose pipeline hasn't reached a run outcome, block it
-   and name the stage that hasn't run. The exception is a lead with a stage still
-   running, which can only happen if a stage ran in the background anyway: ending its
-   turn is how it waits, so the stop is allowed and not counted.
+5. If the stopping agent is a lead whose pipeline hasn't reached a run outcome, block it
+   and name the stage that hasn't run. The exceptions are a lead with a stage still
+   running, which can only happen if a stage ran in the background anyway, and a lead
+   waiting on a background task of its own (step 2): ending its turn is how it waits, so
+   the stop is allowed and not counted.
+
+**PreToolUse (SubagentHandback)**
+
+When a run's agent calls `SubagentHandback`, its `message` is stored in the run state as
+that agent's report. A lead's handback is denied with "the pipeline is not finished." and
+what the pipeline expects next, until the run is finished; nothing is stored when it is
+denied. A stage's report is validated here, as at SubagentStop (and a curator's rewrite
+applied), and a refused one is denied with the reason, so the live agent can fix it and
+hand back again; a block at SubagentStop after a handback would reach nobody. This is
+PreToolUse because the call ends the agent's run. `SubagentHandback` is how an agent
+finishes; any other stop is a pause.
+
+**PostToolUse (Agent, Task, Bash)**
+
+When an agent in the run launches a background task, `tasks` records the task's id against
+the caller's `agent_id`: `tool_response.agentId` for an Agent call whose result is
+`async_launched`, `tool_response.backgroundTaskId` for a Bash call. Foreground calls and
+agents outside the run are ignored, and the hook prints nothing. `SubagentStop`'s
+`background_tasks` names no owner, so this record is how a stop is told to be a wait.
 
 **SessionStart**
 
@@ -783,6 +817,8 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | SessionStart hook stdout reaches the session's context | yes; appears as `SessionStart:startup hook success: <stdout>` |
 | SessionStart stdout reaches the model whole, and only the session | yes; the model repeated ten markers spread through 9 KB and 60 KB blocks, and no subagent transcript contained any of it |
 | The project `CLAUDE.md`, with its imports, reaches subagents | yes; every agent in a live run carried the session manual while it was imported there |
+| `SubagentHandback` reaches PreToolUse with the report as `tool_input.message`; the later SubagentStop's `last_assistant_message` is only closing text | yes (2.1.314) |
+| SubagentStop's `background_tasks` lists in-flight tasks (`id`, `type`, `status`, `command`, `agent_type`), scoped to the parent session with no owner | yes (2.1.314); a background Bash id comes from PostToolUse `tool_response.backgroundTaskId`, a background agent's from `tool_response.agentId` |
 | A missing hook command blocks anything | no; non-blocking error, tool calls proceed |
 | PreToolUse `allow` lifts a permission `ask` rule | no (tested headless); the ask still applies |
 | SessionStart can pass values to the session's later commands | yes; a variable written to `CLAUDE_ENV_FILE` was visible to a Bash command in that session |
