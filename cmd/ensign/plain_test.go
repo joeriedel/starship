@@ -84,6 +84,15 @@ func TestPlainTestThatCannotRunIsAnError(t *testing.T) {
 	}
 }
 
+func TestPlainExit125IsAnError(t *testing.T) {
+	w := plainWorld(t, "exit 125")
+	lead := w.startLead()
+	w.toTest(lead)
+	if _, why := w.spawn(lead, "orchestrator", "tester"); !strings.Contains(why, "Outcome: error") {
+		t.Fatalf("exit 125 means the command could not run: %s", why)
+	}
+}
+
 func TestPlainNeedsACommand(t *testing.T) {
 	w := newWorld(t)
 	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")

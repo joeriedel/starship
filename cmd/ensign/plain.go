@@ -46,6 +46,11 @@ func preToolUseTimeout(bridge string) time.Duration {
 	return 600 * time.Second // Claude Code's default for a command hook
 }
 
+// couldNotRun is an exit code that means the command could not do its job at all, as
+// opposed to finding failures: 126 and 127 from the shell, and 125 for a script to say so
+// itself (as git bisect uses it).
+func couldNotRun(code int) bool { return code >= 125 && code <= 127 }
+
 // runPlainStage runs @build (when bound) and @test in the workspace, completes the
 // dispatch with the result, and returns what the dispatching agent is told.
 func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string) string {
@@ -71,7 +76,7 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 		case err == nil:
 			steps = append(steps, fmt.Sprintf("@%s `%s`: exit 0 (%s)", name, b.Command, took))
 			continue
-		case errors.As(err, &exit) && exit.ExitCode() != 126 && exit.ExitCode() != 127:
+		case errors.As(err, &exit) && !couldNotRun(exit.ExitCode()):
 			outcome = "fail"
 			steps = append(steps, fmt.Sprintf("@%s `%s`: exit %d (%s)", name, b.Command, exit.ExitCode(), took))
 		default:
