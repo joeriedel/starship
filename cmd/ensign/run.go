@@ -294,6 +294,16 @@ func cmdRun(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if c.Task != "" {
+		taskFile := filepath.Join(c.TaskDir, "task.md")
+		_, body, err := splitFrontmatter(taskFile)
+		if err != nil {
+			return fmt.Errorf("task %q: %v", c.Task, err)
+		}
+		if section(string(body), "Goal") == "" && section(string(body), "Scope") == "" {
+			return fmt.Errorf("task %s has no work item: its task file %s has neither a \"## Goal\" nor a \"## Scope\" section with text in it; add one and run again", c.Task, taskFile)
+		}
+	}
 	errs := validate(c)
 	var resolve func(list []*Stage)
 	resolve = func(list []*Stage) {

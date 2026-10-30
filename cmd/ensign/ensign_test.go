@@ -494,7 +494,7 @@ func (w *world) addTask(name string) {
 	ws := filepath.Join(filepath.Dir(w.bridge), "workspace-"+name)
 	os.MkdirAll(ws, 0o755)
 	write(w.t, filepath.Join(w.bridge, "projects/supernova/tasks", name, "task.md"),
-		"---\npipeline: coding\n---\n\nDo "+name+".\n")
+		"---\npipeline: coding\n---\n\n## Goal\n\nDo "+name+".\n")
 	if _, err := setWorkspace(w.bridge, "supernova/"+name, ws); err != nil {
 		w.t.Fatal(err)
 	}
@@ -725,4 +725,21 @@ func TestLeadHandbackWaitsForTheFinishedRun(t *testing.T) {
 	if d := w.state().byAgent(lead); d.Handback != "All done." {
 		t.Fatalf("an accepted lead handback must be recorded: %+v", d)
 	}
+}
+
+func TestRunRefusesATaskWithNoGoalOrScope(t *testing.T) {
+	w := newWorld(t)
+	task := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md")
+	write(t, task, "---\npipeline: coding\n---\n\n# auth-refactor\n\n## Goal\n\n## Notes\n\nSome notes.\n")
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	err := cmdRun([]string{"supernova/auth-refactor"}, &out)
+	if err == nil || !strings.Contains(err.Error(), `neither a "## Goal" nor a "## Scope"`) || !strings.Contains(err.Error(), task) {
+		t.Fatalf("a task with no Goal or Scope should be refused: %v", err)
+	}
+
+	write(t, task, "---\npipeline: coding\n---\n\n## Scope\n\nOnly the multiply function.\n")
+	w.run("supernova/auth-refactor", "--dry-run")
 }

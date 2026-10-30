@@ -113,6 +113,7 @@ func TestPinnedBridge(t *testing.T) {
 	if err := cmdTask([]string{"new", "app/one", "--workspace", ws}, &out); err != nil {
 		t.Fatal(err)
 	}
+	write(t, filepath.Join(bridge, "projects/app/tasks/one/task.md"), "---\npipeline: coding\n---\n\n## Goal\n\nDo one.\n")
 	p := filepath.Join(bridge, "projects/app/project.yaml")
 	data, _ := os.ReadFile(p)
 	write(t, p, strings.Replace(string(data), "bindings:\n", "bindings:\n  build: { command: \"true\" }\n  test: { command: \"true\" }\n", 1))
