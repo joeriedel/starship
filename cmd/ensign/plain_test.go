@@ -61,11 +61,11 @@ func TestPlainTestRunsWithoutAnAgent(t *testing.T) {
 }
 
 func TestPlainTestFailureGoesBackToCode(t *testing.T) {
-	w := plainWorld(t, "echo 'FAIL: TestLogin'; exit 1")
+	w := plainWorld(t, "echo 'FAIL: TestLogin'; echo 'login_test.go:9: rejected'; exit 1")
 	lead := w.startLead()
 	w.toTest(lead)
 	_, why := w.spawn(lead, "orchestrator", "tester")
-	if !strings.Contains(why, "Outcome: fail") || !strings.Contains(why, "FAIL: TestLogin") || !strings.Contains(why, `stage "code"`) {
+	if !strings.Contains(why, "Outcome: fail") || !strings.Contains(why, "FAIL: TestLogin\nlogin_test.go:9: rejected") || !strings.Contains(why, `stage "code"`) {
 		t.Fatalf("a failure should quote the output and send the run back to code: %s", why)
 	}
 	st := w.state()

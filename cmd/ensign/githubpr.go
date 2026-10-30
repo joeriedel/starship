@@ -240,7 +240,7 @@ func checkReport(ws, sha string, runs []checkRun) (string, error) {
 		"--jq", `.[] | select(.conclusion == "failure") | .databaseId`)
 	for _, id := range strings.Fields(ids) {
 		if logs, err := runGH(ws, "run", "view", id, "--log-failed"); err == nil {
-			b.WriteString(lastLines(logs, 80) + "\n")
+			b.WriteString(tailLines(logs, 80) + "\n")
 		}
 	}
 	return b.String(), errTestsFailed

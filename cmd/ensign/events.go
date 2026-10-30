@@ -132,6 +132,16 @@ func shellFor(dir, command string, env []string, limit time.Duration) (string, e
 	return out.String(), err
 }
 
+// tailLines is the last n lines of s, as lines.
+func tailLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// lastLines is the last n lines of s on one line, for an error message.
 func lastLines(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > n {

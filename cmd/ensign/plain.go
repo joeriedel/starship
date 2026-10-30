@@ -117,9 +117,9 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	report := "Run by ensign: this project's @test binding is plain.\n\n- " + strings.Join(steps, "\n- ") + "\n"
 	switch {
 	case failed != "":
-		report += "\nThe end of the failing command's output:\n\n```\n" + lastLines(failed, 40) + "\n```\n"
+		report += "\nThe end of the failing command's output:\n\n```\n" + tailLines(failed, 40) + "\n```\n"
 	case strings.TrimSpace(last) != "":
-		report += "\nThe end of its output:\n\n```\n" + lastLines(last, 10) + "\n```\n"
+		report += "\nThe end of its output:\n\n```\n" + tailLines(last, 10) + "\n```\n"
 	}
 	report += "\nFull output: " + logFile + "\n"
 	completeDispatch(r, m, d, s, outcome, summary, nil, report)
