@@ -106,6 +106,34 @@ func (gh *fakeGH) index(prefix string) int {
 	return -1
 }
 
+// land runs one of the steps the user asks for after the run.
+func (w *world) land(step string) (string, error) {
+	w.t.Helper()
+	var out bytes.Buffer
+	wd, _ := os.Getwd()
+	os.Chdir(w.bridge)
+	defer os.Chdir(wd)
+	err := cmdGithubPR([]string{step, "supernova/auth-refactor"}, &out)
+	return out.String(), err
+}
+
+// passingRun runs the task to success and checks nothing was landed by it.
+func (w *world) passingRun(ws string, gh *fakeGH) {
+	w.t.Helper()
+	lead := w.startLead()
+	w.codeChange(lead, ws)
+	_, why := w.spawn(lead, "orchestrator", "tester")
+	if !strings.Contains(why, "Outcome: pass") || !strings.Contains(why, "committed on task/auth-refactor") {
+		w.t.Fatalf("a passing run should end with its work waiting on the task branch: %s", why)
+	}
+	if st := w.state(); st.Status != "success" {
+		w.t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if gh.index("pr ") >= 0 {
+		w.t.Fatalf("the run should open no pull request; that's the user's step: %v", gh.calls)
+	}
+}
+
 func TestGithubPRWithCIAsTheTests(t *testing.T) {
 	w, ws, remote, gh := githubWorld(t, "success", ciTest)
 	lead := w.startLead()
@@ -117,34 +145,38 @@ func TestGithubPRWithCIAsTheTests(t *testing.T) {
 		t.Fatal("nothing should be committed until the test stage is about to start")
 	}
 	_, why := w.spawn(lead, "orchestrator", "tester")
-	if !strings.Contains(why, "Outcome: pass") || !strings.Contains(why, "Pull request: https://github.com/example/repo/pull/7") {
-		t.Fatalf("a passing run should end with its pull request: %s", why)
+	if !strings.Contains(why, "Outcome: pass") || gh.index("api ") < 0 {
+		t.Fatalf("CI should be the tests: %s %v", why, gh.calls)
 	}
-	if st := w.state(); st.Status != "success" {
-		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	if gh.index("pr ") >= 0 {
+		t.Errorf("the run should open no pull request: %v", gh.calls)
 	}
 	if got := runGit(t, ".", "--git-dir", remote, "show", "task/auth-refactor:lib.txt"); got != "two" {
-		t.Errorf("the tested commit should be on the task branch, got %q", got)
+		t.Errorf("CI tests the pushed task branch, got %q", got)
 	}
-	checks, created := gh.index("api "), gh.index("pr create --head task/auth-refactor --base main")
-	if checks < 0 || created < 0 || created < checks {
-		t.Errorf("the pull request should be opened after CI passes, not before: %v", gh.calls)
+	out, err := w.land("pull-request")
+	if err != nil || !strings.Contains(out, "Pull request: https://github.com/example/repo/pull/7") {
+		t.Fatalf("asked for, the pull request opens: %q %v", out, err)
 	}
-	data, _ := os.ReadFile(filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md"))
-	if !strings.Contains(string(data), "Pull request: https://github.com/example/repo/pull/7.") {
-		t.Errorf("the progress log should name the pull request:\n%s", data)
+	if gh.index("pr create --head task/auth-refactor --base main") < 0 {
+		t.Errorf("no pull request created: %v", gh.calls)
+	}
+	if out, err := w.land("pull-request"); err != nil || !strings.Contains(out, "pull/7") {
+		t.Errorf("asking again finds the open one: %q %v", out, err)
 	}
 }
 
 func TestGithubPRWithLocalTests(t *testing.T) {
 	w, ws, remote, gh := githubWorld(t, "success", localTest)
-	lead := w.startLead()
-	w.codeChange(lead, ws)
-	if _, why := w.spawn(lead, "orchestrator", "tester"); !strings.Contains(why, "Outcome: pass") || !strings.Contains(why, "Pull request:") {
-		t.Fatalf("local tests, then the pull request: %s", why)
-	}
+	w.passingRun(ws, gh)
 	if gh.index("api ") >= 0 {
 		t.Errorf("local tests should not wait on CI: %v", gh.calls)
+	}
+	if out := runGit(t, ".", "--git-dir", remote, "branch", "--list", "task/*"); out != "" {
+		t.Errorf("with local tests nothing is pushed until the user asks: %q", out)
+	}
+	if _, err := w.land("pull-request"); err != nil {
+		t.Fatal(err)
 	}
 	if got := runGit(t, ".", "--git-dir", remote, "show", "task/auth-refactor:lib.txt"); got != "two" {
 		t.Errorf("opening the pull request should push the branch, got %q", got)
@@ -159,8 +191,24 @@ func TestGithubPRFailingChecksGoBackToCode(t *testing.T) {
 	if !strings.Contains(why, "Outcome: fail") || !strings.Contains(why, "--- FAIL: TestLogin\n") || !strings.Contains(why, `stage "code"`) {
 		t.Fatalf("failing checks should quote the log and send the run back to code: %s", why)
 	}
+	if _, err := w.land("pull-request"); err == nil || !strings.Contains(err.Error(), "still going") {
+		t.Errorf("the run is back in code, so nothing can land: %v", err)
+	}
 	if gh.index("pr ") >= 0 {
 		t.Errorf("no pull request while the tests fail: %v", gh.calls)
+	}
+}
+
+func TestGithubPRWontLandUntestedChanges(t *testing.T) {
+	w, ws, _, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	write(t, filepath.Join(ws, "lib.txt"), "three\n")
+	if _, err := w.land("pull-request"); err == nil || !strings.Contains(err.Error(), "never tested") {
+		t.Errorf("uncommitted changes weren't tested: %v", err)
+	}
+	runGit(t, ws, "commit", "-qam", "later")
+	if _, err := w.land("merge"); err == nil || !strings.Contains(err.Error(), "changed since its tests passed") {
+		t.Errorf("a later commit wasn't tested: %v", err)
 	}
 }
 
@@ -174,59 +222,43 @@ func TestGithubPRWontStartOnSomeoneElsesWork(t *testing.T) {
 	}
 }
 
-func (w *world) makeDirect() {
-	w.t.Helper()
-	var out bytes.Buffer
-	wd, _ := os.Getwd()
-	os.Chdir(w.bridge)
-	defer os.Chdir(wd)
-	if err := cmdGithubPR([]string{"direct", "supernova/auth-refactor"}, &out); err != nil {
-		w.t.Fatal(err)
-	}
-}
-
-func TestGithubPRDirect(t *testing.T) {
+func TestGithubPRMerge(t *testing.T) {
 	w, ws, remote, gh := githubWorld(t, "success", localTest)
-	w.makeDirect()
-	c, err := loadConfig(w.bridge, "supernova/auth-refactor")
-	if err != nil {
-		t.Fatal(err)
+	w.passingRun(ws, gh)
+	if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got == "two" {
+		t.Fatal("main should not move until the user asks")
 	}
-	if c.Bindings["land"].Command != "ensign github-pr merge" || c.Bindings["test"].Command != "git --version" {
-		t.Fatalf("direct should replace only @land: %+v %+v", c.Bindings["land"], c.Bindings["test"])
-	}
-	lead := w.startLead()
-	w.codeChange(lead, ws)
-	if _, why := w.spawn(lead, "orchestrator", "tester"); !strings.Contains(why, "Outcome: pass") || !strings.Contains(why, "Pushed to main:") {
-		t.Fatalf("a direct run should end on main: %s", why)
+	out, err := w.land("merge")
+	if err != nil || !strings.Contains(out, "Pushed to main:") {
+		t.Fatalf("merge: %q %v", out, err)
 	}
 	if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got != "two" {
 		t.Errorf("the tested commit should be on main, got %q", got)
 	}
 	if gh.index("pr ") >= 0 {
-		t.Errorf("a direct task opens no pull request: %v", gh.calls)
+		t.Errorf("a merge opens no pull request: %v", gh.calls)
 	}
 	if b := currentBranch(ws); b != "main" {
 		t.Errorf("the workspace should be back on main, it is on %q", b)
 	}
+	if _, err := w.land("merge"); err == nil {
+		t.Error("a task landed once has nothing left to land")
+	}
 }
 
-func TestGithubPRDirectRefusesWhenMainMoved(t *testing.T) {
-	w, ws, remote, _ := githubWorld(t, "success", localTest)
-	w.makeDirect()
-	lead := w.startLead()
+func TestGithubPRMergeRefusesWhenMainMoved(t *testing.T) {
+	w, ws, remote, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
 	other := filepath.Join(t.TempDir(), "other")
 	runGit(t, ".", "clone", "-q", remote, other)
 	write(t, filepath.Join(other, "news.txt"), "meanwhile\n")
 	runGit(t, other, "add", "news.txt")
 	runGit(t, other, "commit", "-q", "-m", "meanwhile")
 	runGit(t, other, "push", "-q", "origin", "main")
-	w.codeChange(lead, ws)
-	_, why := w.spawn(lead, "orchestrator", "tester")
-	if !strings.Contains(why, "has moved since this task branched") {
-		t.Fatalf("main moved, so the tested commit can't go there: %s", why)
+	if _, err := w.land("merge"); err == nil || !strings.Contains(err.Error(), "has moved since this task branched") {
+		t.Fatalf("main moved, so the tested commit can't go there: %v", err)
 	}
-	if st := w.state(); st.Status != "error" {
-		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	if got := runGit(t, ".", "--git-dir", remote, "show", "main:news.txt"); got != "meanwhile" {
+		t.Errorf("main should be untouched, got %q", got)
 	}
 }

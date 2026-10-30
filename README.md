@@ -158,14 +158,14 @@ Three extensions ship in the box:
 - **[`style-learning`](extensions/style-learning)** turns what the style pass finds into
   a per-project style guide. The coder reads it on later runs, so the same style
   issues don't keep coming up. You can seed it with style docs or exemplar code.
-- **[`github-pr`](extensions/github-pr)** works each task on its own branch and, once
-  the tests pass, opens a pull request on GitHub. The tests can be your own or the
-  repository's CI. A task can go straight to the main branch instead, if you ask.
+- **[`github-pr`](extensions/github-pr)** works each task on its own branch. The tests
+  can be your own or the repository's CI. Once a task passes, you ask for a pull request
+  on GitHub, or for it to go straight to the main branch.
 
 A repository can also ship its own project settings in `.starship/project.yaml`. Adding
 it as a project then needs nothing filled in. Starship ships one, so you can improve
 starship from your own bridge: say "improve starship", and each change becomes a task on
-its own branch that ends as a pull request, with CI as its tests.
+its own branch, with CI as its tests, ready for a pull request when you ask.
 
 Agents also report facts they discover along the way ("this build needs a clean after
 switching branches"), and a curator folds them into skills. Over time the crew stops

@@ -2,7 +2,7 @@
 # Licensed under the MIT License. See LICENSE.
 
 name: github-pr
-summary: Each task works on its own branch, and a passing run ends as a pull request.
+summary: Each task works on its own branch; once it passes, you choose a pull request or a push to main.
 
 # Needs git and gh (signed in) on the machine.
 #
@@ -11,28 +11,29 @@ summary: Each task works on its own branch, and a passing run ends as a pull req
 #                      of uncommitted work on another branch.
 #   before the test    what the run changed is committed on the task branch.
 #   test               the project's own @test, as always.
-#   run passed         the branch is pushed and its pull request opened (@land).
+#   run passed         the tested commit is recorded; nothing is pushed or opened.
+#
+# Landing the work is a separate step the user asks for after the run: a pull request,
+# or straight onto the default branch if that's a fast-forward. Either one refuses if
+# the task branch has changed since its tests passed.
 #
 # A project whose tests are its CI on GitHub binds
 #   test: { command: "ensign github-pr ci", plain: true }
 # which pushes the branch and waits for every check on that commit; a failing check goes
 # back to the coder with the end of its log. Its CI must run on pushes to task/**.
-#
-# A task can go straight to the default branch instead, with no pull request: once its
-# run passes, the default branch is moved to the tested commit, if that's a
-# fast-forward. `ensign github-pr direct <project>/<task>` sets that up by replacing
-# @land in the task's settings.
 
 help:
-  - say: '"send this task straight to the main branch, with no pull request"'
-    does: once its tests pass, the task's commit goes straight to the main branch
-    run: ensign github-pr direct <project>/<task>
+  - say: '"open a pull request for <task>"'
+    does: pushes the task's tested branch and opens its pull request
+    run: ensign github-pr pull-request <project>/<task>
+  - say: '"push <task> straight to main"'
+    does: puts the task's tested commit on the main branch, with no pull request
+    run: ensign github-pr merge <project>/<task>
 
 bindings:
   branch: { command: "ensign github-pr branch" }
-  land:   { command: "ensign github-pr open-pull-request" }
 
 events:
   run.start:          [{ require: "@branch" }]
   stage.before:test:  [{ require: "ensign github-pr commit" }]
-  run.finish:success: [{ require: "@land" }]
+  run.finish:success: [{ require: "ensign github-pr ready" }]

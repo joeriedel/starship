@@ -100,7 +100,7 @@ func usage() {
   ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]
   ensign journal commit -m <message> [files…] | ensign journal push
   ensign git-catalog squash <project>/<task> -m <message>
-  ensign github-pr direct <project>/<task>
+  ensign github-pr pull-request|merge <project>/<task>
   ensign next [--bridge <dir>] [--run <id>]
   ensign hook <SessionStart|UserPromptSubmit|PreToolUse|SubagentStop|Stop>`)
 }

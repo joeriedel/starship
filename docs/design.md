@@ -58,7 +58,7 @@ Each later layer may extend or override the one before it, except locked invaria
   (§11.3). Runs are reproducible, bridges can sit on different releases, and nothing
   reaches a bridge until it is released and the bridge is updated with `ensign update`.
 - **A writable checkout of starship exists only where starship is developed.** A bridge
-  works on it as an ordinary project (§3.2); changes land as pull requests, are released
+  works on it as an ordinary project (§3.2); changes land as pull requests the user asks for, are released
   as a tag, and are picked up by each bridge when it updates. A machine that only uses
   starship doesn't need one.
 - **A bridge's pinned copy of starship is never edited.** A PreToolUse hook refuses
@@ -99,7 +99,9 @@ run (the coding pipeline; starship's project uses the github-pr extension)
   │  style
   │  (commit)       the run's changes are committed on the task branch
   │  test           plain: push the branch and wait for CI on that commit
-  │  run passed     the pull request is opened
+  │  run passed     the tested commit waits on the task branch
+  ▼
+the user asks for the pull request (or a push straight to master)
   ▼
 pull request on GitHub
   │  the user reads the diff and merges
@@ -117,13 +119,22 @@ release (a tag), then each bridge updates
   created from the default branch the first time, and a run won't start over
   uncommitted work on another branch; before the test stage, the run's changes are
   committed on the task branch; the tests are the project's own `@test`; and when the run
-  passes, `@land` pushes the branch and opens the pull request. A project whose tests
+  passes, the tested commit is recorded and noted in the finish message. Nothing is pushed
+  or opened by the run. A project whose tests
   are its CI binds `@test` to the plain built-in `ensign github-pr ci`, which pushes the
   branch and polls the commit's check runs until all have finished: a failing check is
   a `fail`, with the end of each failing Actions log, and goes back to the coder; no
   checks appearing, or a push that fails, is an `error`. Its CI must run on pushes to
-  `task/**`. What `@land` and other end-of-run steps report (the pull request) is noted
-  in the run's finish message and its progress-log line.
+  `task/**`. What end-of-run steps report is noted in the run's finish message and its
+  progress-log line.
+- **Landing is the user's step, after the run.** Asked for a pull request,
+  `ensign github-pr pull-request <project>/<task>` pushes the task branch and opens it,
+  or finds the one already open. Asked to skip it, `ensign github-pr merge
+  <project>/<task>` moves the default branch to the tested commit, if that is a
+  fast-forward, and removes the task branch; if the default branch moved meanwhile it
+  refuses and nothing is pushed. Either one refuses unless the task branch still holds
+  exactly the commit that passed, with nothing uncommitted on it, and a new run of the
+  task has to pass again first.
 - **What keeps project knowledge out is structural.** The bridge holds everything about
   its projects and starship never reads a bridge, so nothing crosses on its own. What
   remains is an agent with project context writing a detail into a role or doc. The
@@ -131,12 +142,9 @@ release (a tag), then each bridge updates
   every diff in front of the user before it lands.
 - **Examples in the control plane use a fictional project** (`supernova`). Lessons are
   written as the mechanism alone, or retold in the fictional project.
-- **A task can skip the pull request.** `ensign github-pr direct <project>/<task>`
-  replaces `@land` in that task's settings: once the run passes, the default branch is
-  moved to the tested commit, if that is a fast-forward, and the task branch is removed.
-  If the default branch moved meanwhile, the run ends as an error and nothing is pushed.
-  Nobody reads the diff before it is public, so the `public` review is the only check;
-  it is for changes the user has chosen to land directly.
+- **A task can skip the pull request** when the user asks. Nobody reads the diff before
+  it is public, so the `public` review is the only check; it is for changes the user has
+  chosen to land directly.
 - **Use a checkout of its own** for the starship project: runs switch its branch, and
   refuse to start if it has uncommitted changes on another branch.
 
@@ -234,7 +242,7 @@ extensions/<name>/
 An extension's pipeline ops apply right after the layer that enables it, before that layer's
 own ops, so a project can still adjust what an extension inserted. Its bindings are
 defaults in the same way: they apply when the layer enables it, and that layer or any
-later one can replace them (`github-pr`'s direct mode is a task replacing two).
+later one can replace them.
 
 The control plane ships generic extensions (no project names). A bridge may ship its own
 in the same format. A project or task enables extensions with `use: [<name>, ...]`. A
@@ -828,7 +836,7 @@ Style
 
 Housekeeping
   "update the bridge"                         move to the latest starship release
-  "improve starship"                          work on starship as a project; ends as a pull request
+  "improve starship"                          work on starship as a project; a pull request when you ask
 
 Projects: supernova (3 tasks), nebula (1 task)
 ```

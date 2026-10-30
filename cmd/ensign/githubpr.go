@@ -13,17 +13,19 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // The github-pr extension: each task works on its own branch, task/<name>, and a
-// passing run ends as a pull request. Each step is its own:
+// passing run leaves its tested commit there. Each step is its own:
 //
 //	run.start            @branch: create the task branch if needed, and switch to it
 //	stage.before:test    commit what the run changed
-//	run.finish:success   @land: push the branch and open the pull request; or, for a
-//	                     direct task, move the default branch to the tested commit
+//	run.finish:success   record the tested commit and tell the user it is waiting
+//
+// Landing it is a separate step the user asks for once the run is over: a pull request
+// (`ensign github-pr pull-request`), or straight onto the default branch as a
+// fast-forward (`ensign github-pr merge`). Either one refuses unless the task branch
+// still holds exactly the tested commit.
 //
 // The tests are the project's own @test. A project whose tests are its CI on GitHub
 // binds @test to `ensign github-pr ci`: push the branch and wait for the checks.
@@ -86,8 +88,10 @@ func dirty(ws string) bool {
 }
 
 // githubBranch runs at run.start: the workspace moves to the task's branch, created from
-// the default branch the first time. Work on another branch is never carried along.
+// the default branch the first time. Work on another branch is never carried along, and
+// whatever passed before has to pass again before it can land.
 func githubBranch(r *RunFiles) error {
+	os.Remove(testedFile(r.Snap.Bridge, r.Snap.Task)) // a new run has to pass again
 	ws, want := r.Snap.Workspace, taskBranch(r.Snap.Task)
 	cur := currentBranch(ws)
 	if cur == want {
@@ -161,73 +165,138 @@ func githubCI(r *RunFiles, deadline time.Time) (string, error) {
 	return waitForChecks(ws, sha, deadline)
 }
 
-// githubOpenPR runs when the run succeeds: it pushes the task branch, opens its pull
-// request or finds the one already open, and notes it for the run's report.
-func githubOpenPR(r *RunFiles) error {
+// testedFile records the commit of a task's last passing run, on this machine, so what
+// the user later lands is exactly what was tested.
+func testedFile(bridge, task string) string {
+	return filepath.Join(bridge, ".starship", "tasks", strings.ReplaceAll(task, "/", "--")+".tested")
+}
+
+// githubReady runs when the run succeeds: it records the tested commit and tells the user
+// the work is waiting on the task branch. Nothing is pushed or opened until they ask.
+func githubReady(r *RunFiles) error {
 	ws := r.Snap.Workspace
 	branch, err := onTaskBranch(r)
 	if err != nil {
 		return err
 	}
-	if err := git(ws, "push", "-q", "--force-with-lease", "-u", "origin", branch); err != nil {
+	sha, err := gitOut(ws, "rev-parse", "HEAD")
+	if err != nil {
 		return err
+	}
+	f := testedFile(r.Snap.Bridge, r.Snap.Task)
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(f, []byte(sha+"\n"), 0o644); err != nil {
+		return err
+	}
+	base, _ := defaultBranch(ws)
+	r.State.note(fmt.Sprintf("The tested work is committed on %s (%s). Nothing has been opened yet: the user can ask for a pull request, or for it to go straight to %s",
+		branch, short(sha), orDefault(base)))
+	return nil
+}
+
+func orDefault(b string) string {
+	if b == "" {
+		return "the main branch"
+	}
+	return b
+}
+
+// tested finds a task's tested commit, and checks the task branch still holds exactly it.
+func tested(bridge, task string) (ws, branch, sha string, err error) {
+	for _, ri := range liveRuns(bridge) {
+		if ri.snap.Task == task {
+			return "", "", "", fmt.Errorf("a run of %s is still going; wait for it to finish", task)
+		}
+	}
+	c, err := loadConfig(bridge, task)
+	if err != nil {
+		return "", "", "", err
+	}
+	data, err := os.ReadFile(testedFile(bridge, task))
+	if err != nil {
+		return "", "", "", fmt.Errorf("%s has no passing run on this machine yet; run it first", task)
+	}
+	ws, branch, sha = c.Workspace, taskBranch(task), strings.TrimSpace(string(data))
+	head, err := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+branch)
+	if err != nil {
+		return "", "", "", fmt.Errorf("the task branch %s is gone", branch)
+	}
+	if head != sha {
+		return "", "", "", fmt.Errorf("%s has changed since its tests passed (tested %s, now %s); run the task again", branch, short(sha), short(head))
+	}
+	if currentBranch(ws) == branch && dirty(ws) {
+		return "", "", "", fmt.Errorf("%s has uncommitted changes that were never tested; commit or discard them first", branch)
+	}
+	return ws, branch, sha, nil
+}
+
+// githubOpenPR pushes a tested task branch and opens its pull request, or finds the one
+// already open. It returns the pull request's URL.
+func githubOpenPR(bridge, task string) (string, error) {
+	ws, branch, _, err := tested(bridge, task)
+	if err != nil {
+		return "", err
+	}
+	if err := git(ws, "push", "-q", "--force-with-lease", "-u", "origin", branch); err != nil {
+		return "", err
 	}
 	// Only an open pull request counts: a closed one for the same branch name is history.
 	openPR := func() (string, error) {
 		return runGH(ws, "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url // empty")
 	}
 	url, err := openPR()
-	if err != nil {
-		return err
-	}
-	if url == "" {
-		base, err := defaultBranch(ws)
-		if err != nil {
-			return err
-		}
-		_, name, _ := strings.Cut(r.Snap.Task, "/")
-		commits, _ := gitOut(ws, "log", "--format=- %s", "origin/"+base+"..HEAD")
-		if _, err := runGH(ws, "pr", "create", "--head", branch, "--base", base, "--title", name,
-			"--body", "Opened from a starship task.\n\n"+commits); err != nil {
-			return err
-		}
-		if url, err = openPR(); err != nil || url == "" {
-			return fmt.Errorf("the pull request for %s was created but can't be found: %v", branch, err)
-		}
-	}
-	r.State.note("Pull request: " + url)
-	return nil
-}
-
-// githubMerge runs when a direct task's run succeeds: the default branch moves to the
-// commit CI just passed, if that is a fast-forward, and the task branch is removed.
-func githubMerge(r *RunFiles) error {
-	ws := r.Snap.Workspace
-	branch, err := onTaskBranch(r)
-	if err != nil {
-		return err
+	if err != nil || url != "" {
+		return url, err
 	}
 	base, err := defaultBranch(ws)
 	if err != nil {
-		return err
+		return "", err
+	}
+	_, name, _ := strings.Cut(task, "/")
+	commits, _ := gitOut(ws, "log", "--format=- %s", "origin/"+base+".."+branch)
+	if _, err := runGH(ws, "pr", "create", "--head", branch, "--base", base, "--title", name,
+		"--body", "Opened from a starship task.\n\n"+commits); err != nil {
+		return "", err
+	}
+	if url, err = openPR(); err != nil || url == "" {
+		return "", fmt.Errorf("the pull request for %s was created but can't be found: %v", branch, err)
+	}
+	return url, nil
+}
+
+// githubMerge moves the default branch to a task's tested commit, if that is a
+// fast-forward, and removes the task branch. It returns the default branch's name.
+func githubMerge(bridge, task string) (string, string, error) {
+	ws, branch, sha, err := tested(bridge, task)
+	if err != nil {
+		return "", "", err
+	}
+	base, err := defaultBranch(ws)
+	if err != nil {
+		return "", "", err
 	}
 	if err := git(ws, "fetch", "-q", "origin", base); err != nil {
-		return err
+		return "", "", err
 	}
-	if _, err := gitOut(ws, "merge-base", "--is-ancestor", "origin/"+base, "HEAD"); err != nil {
-		return fmt.Errorf("%s has moved since this task branched from it; the tested commit can't go there as it is. Rebase the task branch and run the tests again", base)
+	if _, err := gitOut(ws, "merge-base", "--is-ancestor", "origin/"+base, sha); err != nil {
+		return "", "", fmt.Errorf("%s has moved since this task branched from it, so the tested commit can't go there as it is. Run the task again to rebase and retest it", base)
 	}
-	sha, _ := gitOut(ws, "rev-parse", "HEAD")
-	if err := git(ws, "push", "-q", "origin", "HEAD:refs/heads/"+base); err != nil {
-		return err
+	if err := git(ws, "push", "-q", "origin", sha+":refs/heads/"+base); err != nil {
+		return "", "", err
 	}
-	git(ws, "push", "-q", "origin", "--delete", branch) // it may never have been pushed under this name
-	if err := git(ws, "switch", "-q", base); err == nil {
-		git(ws, "merge", "-q", "--ff-only", sha)
+	git(ws, "push", "-q", "origin", "--delete", branch) // it may never have been pushed
+	if currentBranch(ws) == branch {
+		if err := git(ws, "switch", "-q", base); err == nil {
+			git(ws, "merge", "-q", "--ff-only", sha)
+		}
+	}
+	if currentBranch(ws) != branch {
 		git(ws, "branch", "-q", "-D", branch)
 	}
-	r.State.note(fmt.Sprintf("Pushed to %s: %s", base, short(sha)))
-	return nil
+	os.Remove(testedFile(bridge, task))
+	return base, sha, nil
 }
 
 type checkRun struct {
@@ -304,74 +373,34 @@ func githubCommand(r *RunFiles, args []string, deadline time.Time) (string, erro
 		return "", githubCommit(r)
 	case "ci":
 		return githubCI(r, deadline)
-	case "open-pull-request":
-		return "", githubOpenPR(r)
-	case "merge":
-		return "", githubMerge(r)
+	case "ready":
+		return "", githubReady(r)
 	}
 	return "", fmt.Errorf("unknown github-pr command: %s", strings.Join(args, " "))
 }
 
-// cmdGithubPR implements `ensign github-pr direct <project>/<task>`: once its run passes
-// CI, the task goes straight to the default branch with no pull request. It replaces
-// @land in the task's own settings.
+// cmdGithubPR implements the steps the user asks for once a task's run has passed:
+// `ensign github-pr pull-request <project>/<task>` and `ensign github-pr merge <project>/<task>`.
 func cmdGithubPR(args []string, out io.Writer) error {
-	if len(args) != 2 || args[0] != "direct" {
-		return fmt.Errorf("usage: ensign github-pr direct <project>/<task>")
+	if len(args) != 2 || (args[0] != "pull-request" && args[0] != "merge") {
+		return fmt.Errorf("usage: ensign github-pr pull-request|merge <project>/<task>")
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
 		return err
 	}
-	p, t, ok := strings.Cut(args[1], "/")
-	if !ok {
-		return fmt.Errorf("name the task as <project>/<task>")
+	if args[0] == "pull-request" {
+		url, err := githubOpenPR(bridge, args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Pull request: %s\n", url)
+		return nil
 	}
-	f := filepath.Join(bridge, "projects", p, "tasks", t, "task.md")
-	front, body, err := splitFrontmatter(f)
+	base, sha, err := githubMerge(bridge, args[1])
 	if err != nil {
 		return err
 	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(front, &doc); err != nil {
-		return fmt.Errorf("%s: %v", f, err)
-	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return fmt.Errorf("%s: the frontmatter is not a mapping", f)
-	}
-	root := doc.Content[0]
-	var bindings *yaml.Node
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Value == "bindings" {
-			bindings = root.Content[i+1]
-		}
-	}
-	if bindings == nil {
-		bindings = &yaml.Node{Kind: yaml.MappingNode}
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "bindings"}, bindings)
-	}
-	set := func(key, command string, plain bool) {
-		v := &yaml.Node{Kind: yaml.MappingNode, Style: yaml.FlowStyle, Content: []*yaml.Node{
-			{Kind: yaml.ScalarNode, Value: "command"}, {Kind: yaml.ScalarNode, Value: command}}}
-		if plain {
-			v.Content = append(v.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "plain"}, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
-		}
-		for i := 0; i+1 < len(bindings.Content); i += 2 {
-			if strings.TrimPrefix(bindings.Content[i].Value, "@") == key {
-				bindings.Content[i+1] = v
-				return
-			}
-		}
-		bindings.Content = append(bindings.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, v)
-	}
-	set("land", "ensign github-pr merge", false)
-	newFront, err := yaml.Marshal(&doc)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(f, []byte("---\n"+string(newFront)+"---\n\n"+string(body)), 0o644); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "%s now goes straight to the default branch, with no pull request\n", args[1])
+	fmt.Fprintf(out, "Pushed to %s: %s\n", base, short(sha))
 	return nil
 }

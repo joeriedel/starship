@@ -22,7 +22,8 @@ Remote: https://github.com/joeriedel/starship.git (personal, public-safe control
 ## Changes from a bridge
 
 A bridge works on starship as a project (its settings are in `.starship/project.yaml`):
-each task is a branch, `task/<name>`, that ends as a pull request with CI as its tests.
+each task is a branch, `task/<name>`, with CI as its tests; once it passes, the user asks
+for a pull request (or a push straight to master).
 Nothing project-specific belongs in this repo, whoever writes the change: no project
 names, paths, types or anecdotes from any bridge. Examples use the fictional project
 `supernova`. The pull request is where that gets checked.
