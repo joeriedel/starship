@@ -25,12 +25,15 @@ type fakeGH struct {
 func (f *fakeGH) run(dir string, args ...string) (string, error) {
 	f.calls = append(f.calls, strings.Join(args, " "))
 	switch {
-	case args[0] == "pr" && args[1] == "view":
-		if f.prs[args[2]] {
+	case args[0] == "pr" && args[1] == "list":
+		if f.prs[args[3]] {
 			return "https://github.com/example/repo/pull/7", nil
 		}
-		return "", fmt.Errorf("no pull requests found for branch %q", args[2])
+		return "", nil // a closed one would not be listed
 	case args[0] == "pr" && args[1] == "create":
+		if f.prs[args[3]] {
+			return "", fmt.Errorf("a pull request for branch %q already exists", args[3])
+		}
 		for i, a := range args {
 			if a == "--head" {
 				f.prs[args[i+1]] = true

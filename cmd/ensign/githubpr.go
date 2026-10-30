@@ -172,8 +172,15 @@ func githubOpenPR(r *RunFiles) error {
 	if err := git(ws, "push", "-q", "--force-with-lease", "-u", "origin", branch); err != nil {
 		return err
 	}
-	url, err := runGH(ws, "pr", "view", branch, "--json", "url", "--jq", ".url")
+	// Only an open pull request counts: a closed one for the same branch name is history.
+	openPR := func() (string, error) {
+		return runGH(ws, "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url // empty")
+	}
+	url, err := openPR()
 	if err != nil {
+		return err
+	}
+	if url == "" {
 		base, err := defaultBranch(ws)
 		if err != nil {
 			return err
@@ -184,8 +191,8 @@ func githubOpenPR(r *RunFiles) error {
 			"--body", "Opened from a starship task.\n\n"+commits); err != nil {
 			return err
 		}
-		if url, err = runGH(ws, "pr", "view", branch, "--json", "url", "--jq", ".url"); err != nil {
-			return err
+		if url, err = openPR(); err != nil || url == "" {
+			return fmt.Errorf("the pull request for %s was created but can't be found: %v", branch, err)
 		}
 	}
 	r.State.note("Pull request: " + url)
