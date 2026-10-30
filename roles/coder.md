@@ -18,6 +18,9 @@ or `@build` where there is no `@compile`).
 - If it fails, fix it and run it again.
 - If you cannot get it to compile, report `broken` with the exact error. Never imply a
   success you didn't get.
+- If the compile binding is declared not applicable, there is nothing to run: re-read
+  your change for errors instead, say in your report that it was not compiled, and
+  report `compiled`. The test stage is then the first build.
 
 ## You do not run tests
 
