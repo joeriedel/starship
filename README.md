@@ -3,8 +3,7 @@
 > **Claude:** to set up a starship bridge, follow [`SETUP.md`](SETUP.md). Don't clone
 > this repository into the user's folder.
 
-**Use Claude Code for real, ongoing work. Every change is reviewed and tested, and every
-task's history is kept.**
+**A customizable control-plane for Claude Code**
 
 Starship is a control plane for Claude Code. You keep talking to Claude the way you
 already do, but each piece of work runs as a task. It's planned before anything changes,
