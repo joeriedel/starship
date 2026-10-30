@@ -1216,9 +1216,12 @@ only silent case, and rare enough to accept.
 
 So there are two defences:
 
-- **A heartbeat at session start.** SessionStart prints
-  `STARSHIP-READY ensign <version> bridge <tag>`, followed by the session manual, which
-  appear in the session's context (§7.1). The bridge's `CLAUDE.md`: **if that line is absent, or starship hooks report
+- **A heartbeat at session start.** SessionStart replies with JSON. Its
+  `additionalContext` holds `STARSHIP-READY ensign <version> bridge <tag>`, followed by
+  the session manual, which appear in the session's context (§7.1). Claude Code cuts
+  `additionalContext` over 10,000 characters to a preview, so a test keeps it under that.
+  Its `systemMessage` shows the user one line at startup, "Starship ready · bridge
+  <name> · <release>", without calling the model. The bridge's `CLAUDE.md`: **if that line is absent, or starship hooks report
   errors, say so plainly and do nothing except help fix it** — no pipeline, no agent
   spawn, no workspace change, no commit. This is a model-level rule, not a guarantee; it
   turns a silent failure into a visible one.

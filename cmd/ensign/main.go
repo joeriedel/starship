@@ -222,42 +222,56 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			return 2
 		}
 	}
+	// The reply is JSON: what Claude reads goes in additionalContext, and one line for
+	// the user goes in systemMessage, shown at startup without calling the model.
+	reply := func(show, context string) int {
+		json.NewEncoder(stdout).Encode(map[string]any{
+			"systemMessage":      show,
+			"hookSpecificOutput": map[string]any{"hookEventName": "SessionStart", "additionalContext": context},
+		})
+		return 0
+	}
 	bf, err := loadBridgeFile(bridge)
 	if err == nil {
 		_, err = controlPlaneDir(bridge, bf)
 	}
 	if err != nil {
-		fmt.Fprintf(stdout, "starship: this bridge is not ready: %v\n", err)
-		return 0
+		return reply("Starship is not ready in this bridge. Ask Claude to set it up.",
+			fmt.Sprintf("starship: this bridge is not ready: %v", err))
 	}
+	var ctx strings.Builder
 	if in.SessionID != "" {
 		writeFile(sessionFile(bridge, in.SessionID)+".pin", pinnedCommit(bridge)+"\n")
 	}
 	if note := syncBridge(bridge); note != "" {
-		fmt.Fprintln(stdout, note)
+		fmt.Fprintln(&ctx, note)
 	}
 	if linkStale(bridge) && len(liveRuns(bridge)) == 0 {
 		if err := link(bridge, false, nil); err != nil {
-			fmt.Fprintf(stdout, "starship: this bridge is not ready: %v\n", err)
-			return 0
+			return reply("Starship is not ready in this bridge. Ask Claude to set it up.",
+				fmt.Sprintf("starship: this bridge is not ready: %v", err))
 		}
 	}
 	dropSessionImport(bridge)
 	upgradeHookSettings(bridge)
-	fmt.Fprintf(stdout, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
+	fmt.Fprintf(&ctx, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
 	// The manual goes to the session through this hook, not CLAUDE.md, because Claude
 	// Code gives CLAUDE.md to every subagent too. SessionStart also fires after a
 	// compaction, so the manual comes back when the context is summarised.
 	manual, err := os.ReadFile(filepath.Join(bridge, ".starship", "session.md"))
 	if err != nil {
-		fmt.Fprintln(stdout, "starship: the session manual is missing; run ensign link")
-		return 0
+		fmt.Fprintln(&ctx, "starship: the session manual is missing; run ensign link")
+		return reply("Starship is not ready in this bridge. Ask Claude to set it up.", ctx.String())
 	}
-	fmt.Fprintf(stdout, "\n%s", manual)
+	fmt.Fprintf(&ctx, "\n%s", manual)
 	if cmds := requestCommands(bridge); cmds != "" {
-		fmt.Fprintf(stdout, "\n%s", cmds)
+		fmt.Fprintf(&ctx, "\n%s", cmds)
 	}
-	return 0
+	show := "Starship ready · bridge " + filepath.Base(bridge)
+	if version != "" && version != "dev" {
+		show += " · " + version
+	}
+	return reply(show, ctx.String())
 }
 
 // upgradeHookSettings gives the PreToolUse hook its timeout in a bridge whose

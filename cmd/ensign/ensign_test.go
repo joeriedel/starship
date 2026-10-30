@@ -526,10 +526,30 @@ func TestSessionStartRecordsTheSession(t *testing.T) {
 	}
 	data, _ := os.ReadFile(env)
 	wantEnv := "export STARSHIP_SESSION=abc\nexport PATH=" + shellQuote(filepath.ToSlash(filepath.Join(w.bridge, ".starship", "bin"))) + ":\"$PATH\"\n"
-	if string(data) != wantEnv || !strings.HasPrefix(out.String(), "STARSHIP-READY") {
-		t.Fatalf("env file %q, stdout %q", data, out.String())
+	show, ctx := sessionStartReply(t, out.Bytes())
+	if string(data) != wantEnv || !strings.HasPrefix(ctx, "STARSHIP-READY") || !strings.HasPrefix(show, "Starship ready · bridge ") {
+		t.Fatalf("env file %q, shown %q, context %q", data, show, ctx)
+	}
+	if strings.Contains(show, "ensign") {
+		t.Errorf("the line shown to the user must not name ensign: %q", show)
 	}
 	_ = w
+}
+
+// sessionStartReply decodes SessionStart's JSON: the line shown to the user and the
+// context Claude reads.
+func sessionStartReply(t *testing.T, out []byte) (string, string) {
+	t.Helper()
+	var r struct {
+		SystemMessage string `json:"systemMessage"`
+		Specific      struct {
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatalf("SessionStart should reply with JSON: %v\n%s", err, out)
+	}
+	return r.SystemMessage, r.Specific.AdditionalContext
 }
 
 func TestSessionStartDeliversTheManual(t *testing.T) {
@@ -552,8 +572,12 @@ func TestSessionStartDeliversTheManual(t *testing.T) {
 	if code := cmdHook("SessionStart", bytes.NewReader(in), &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
-	if !strings.HasPrefix(out.String(), "STARSHIP-READY") || !strings.Contains(out.String(), "# Starship: the session manual") {
-		t.Fatalf("the manual did not follow the heartbeat:\n%s", out.String())
+	if _, ctx := sessionStartReply(t, out.Bytes()); !strings.HasPrefix(ctx, "STARSHIP-READY") || !strings.Contains(ctx, "# Starship: the session manual") {
+		t.Fatalf("the manual did not follow the heartbeat:\n%s", ctx)
+	}
+	// Claude Code cuts additionalContext over 10,000 characters to a preview.
+	if _, ctx := sessionStartReply(t, out.Bytes()); len(ctx) >= 10000 {
+		t.Errorf("the session context is %d characters; over 10,000 it is cut to a preview", len(ctx))
 	}
 	if claude, _ := os.ReadFile(filepath.Join(w.bridge, "CLAUDE.md")); strings.Contains(string(claude), sessionImport) {
 		t.Errorf("the old import should be removed")
