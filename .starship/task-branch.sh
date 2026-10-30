@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (c) 2026 Joseph Riedel
+# Licensed under the MIT License. See LICENSE.
+
 # Run start for a bridge working on this repository: put the checkout on the task's
 # branch, task/<name>, creating it from origin/master the first time.
 set -e

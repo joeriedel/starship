@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (c) 2026 Joseph Riedel
+# Licensed under the MIT License. See LICENSE.
+
 # The test stage for a bridge working on this repository: CI is the test suite. Commits
 # the task's changes, pushes its branch, opens the pull request if there isn't one, and
 # waits for the checks. The exit code is CI's verdict; 125 means it could not get one.

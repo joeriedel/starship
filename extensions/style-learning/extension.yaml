@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Joseph Riedel
+# Licensed under the MIT License. See LICENSE.
+
 name: style-learning
 summary: A per-project style guide, learned from the style pass and from sources you choose, and given to the coder so later runs need less correcting.
 

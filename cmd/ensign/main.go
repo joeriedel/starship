@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Joseph Riedel
+// Licensed under the MIT License. See LICENSE.
+
 // Command ensign is starship's resolver, hook driver and CLI.
 package main
 

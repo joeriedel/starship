@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (c) 2026 Joseph Riedel
+# Licensed under the MIT License. See LICENSE.
+
 # Direct tasks on this repository: no task branch and no pull request; the work goes
 # straight to master. A task opts in by replacing two bindings in its own settings:
 #

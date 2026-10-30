@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Joseph Riedel
+# Licensed under the MIT License. See LICENSE.
+
 # What a starship bridge needs to work on this repository. `ensign project new` copies it
 # into the bridge's project.yaml when the project is created.
 #
