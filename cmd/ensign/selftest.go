@@ -20,7 +20,7 @@ import (
 
 const selftestOrch = `---
 name: probe-orch
-description: Selftest probe that spawns four agents.
+description: Selftest probe that spawns five agents.
 tools: Agent
 model: haiku
 ---
@@ -29,8 +29,9 @@ You are a harness selftest. Do exactly these steps, then stop:
    prompt "Reply with the word ` + leafToken + `."
 2. Use the Agent tool with subagent_type "probe-denied" and prompt "Reply with the word done."
 3. Use the Agent tool with subagent_type "probe-handback" and prompt "Hand back."
-4. Use the Agent tool with subagent_type "probe-bg" and prompt "Start the background command."
-5. Reply with one line saying what happened to each.
+4. Use the Agent tool with subagent_type "probe-redo" and prompt "Hand back."
+5. Use the Agent tool with subagent_type "probe-bg" and prompt "Start the background command."
+6. Reply with one line saying what happened to each.
 `
 
 const selftestHandback = `---
@@ -41,6 +42,22 @@ model: haiku
 ---
 Your only step is to call the SubagentHandback tool with the message ` + handbackToken + `.
 `
+
+const selftestRedo = `---
+name: probe-redo
+description: Selftest probe whose first handback is refused by a hook.
+tools: Read
+model: haiku
+---
+Your only step is to call the SubagentHandback tool with the message ` + redoFirst + `.
+If the call is refused, do what the refusal says and call SubagentHandback again.
+`
+
+// The redo probe's first handback is denied by the hook; the denial asks for redoSecond.
+const (
+	redoFirst  = "SELFTEST-REDO-FIRST"
+	redoSecond = "SELFTEST-REDO-SECOND"
+)
 
 const selftestBg = `---
 name: probe-bg
@@ -111,64 +128,38 @@ func cmdSelftest(out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	dir, err := os.MkdirTemp("", "ensign-selftest-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	hook := func(ev string) string {
-		return fmt.Sprintf(`[{"hooks": [{"type": "command", "command": %q}]}]`, self+" selftest-hook "+ev)
-	}
-	settings := `{"hooks": {
-  "SessionStart": ` + hook("SessionStart") + `,
-  "PreToolUse": [{"matcher": "Agent|Task|SubagentHandback", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", self+" selftest-hook PreToolUse") + `}]}],
-  "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", self+" selftest-hook PostToolUse") + `}]}],
-  "SubagentStop": ` + hook("SubagentStop") + `
-}}`
-	files := map[string]string{
-		".claude/settings.json":            settings,
+	token := fmt.Sprintf("%x", time.Now().UnixNano())
+	fmt.Fprintln(out, "running a probe session with haiku (a few cents)…")
+	events, result, err := runProbeSession(self, token, map[string]string{
 		".claude/agents/probe-orch.md":     selftestOrch,
 		".claude/agents/probe-leaf.md":     fmt.Sprintf(selftestLeaf, "probe-leaf"),
 		".claude/agents/probe-denied.md":   fmt.Sprintf(selftestLeaf, "probe-denied"),
 		".claude/agents/probe-handback.md": selftestHandback,
+		".claude/agents/probe-redo.md":     selftestRedo,
 		".claude/agents/probe-bg.md":       selftestBg,
-	}
-	for rel, content := range files {
-		if err := writeFile(filepath.Join(dir, filepath.FromSlash(rel)), content); err != nil {
-			return err
-		}
-	}
-	git(dir, "init", "-q")
-	token := fmt.Sprintf("%x", time.Now().UnixNano())
-	if err := writeFile(filepath.Join(dir, "selftest-token"), token); err != nil {
+	}, `This is a self-test of this project's hooks, which the user asked for. `+
+		`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". One of its steps is refused by a hook on purpose; `+
+		`that is expected, not an error. When it finishes: this project's SessionStart hook added a block to your context at startup, `+
+		`beginning with the line `+manualStart+`. Reply with only its lines that start with `+manualEnd+`, exactly as written, in order.`,
+		"--allowedTools", "Agent,Bash", "--permission-mode", "auto")
+	if err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "running a probe session with haiku (a few cents)…")
-	cmd := exec.Command("claude", "-p", "--model", "haiku", "--allowedTools", "Agent,Bash", "--permission-mode", "auto", "--output-format", "json")
-	cmd.Dir, cmd.Env = dir, cleanClaudeEnv()
-	cmd.Stdin = strings.NewReader(`This is a self-test of this project's hooks, which the user asked for. ` +
-		`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". One of its steps is refused by a hook on purpose; ` +
-		`that is expected, not an error. When it finishes: this project's SessionStart hook added a block to your context at startup, ` +
-		`beginning with the line ` + manualStart + `. Reply with only its lines that start with ` + manualEnd + `, exactly as written, in order.`)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	raw, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("the probe session failed: %v: %s", err, lastLines(string(raw)+stderr.String(), 5))
-	}
-	var session struct {
-		Result string `json:"result"`
-	}
-	json.Unmarshal(raw, &session)
+	session := struct{ Result string }{result}
 
-	var events []map[string]any
-	data, _ := os.ReadFile(filepath.Join(dir, "selftest-log.jsonl"))
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		var e map[string]any
-		if json.Unmarshal([]byte(line), &e) == nil {
-			events = append(events, e)
-		}
+	// SubagentHandback ends every agent in auto mode, so the block has to be probed in a
+	// session that is not in auto mode.
+	fmt.Fprintln(out, "running a second probe session, outside auto mode…")
+	stopEvents, _, err := runProbeSession(self, token, map[string]string{
+		".claude/agents/probe-stop.md": fmt.Sprintf(selftestLeaf, "probe-stop"),
+	}, `This is a self-test of this project's hooks, which the user asked for. `+
+		`Use the Agent tool with subagent_type "probe-stop" and prompt "Reply with the word done." A hook asks the agent to continue once; that is expected. Then reply with the word finished.`,
+		"--allowedTools", "Agent")
+	if err != nil {
+		return err
 	}
+	stopContinues, stopSawHandback := stopBlockProbe(stopEvents)
+
 	str := func(e map[string]any, k string) string { s, _ := e[k].(string); return s }
 	find := func(match func(map[string]any) bool) []map[string]any {
 		var out []map[string]any
@@ -207,8 +198,7 @@ func cmdSelftest(out io.Writer) error {
 	for _, e := range events {
 		sessions[str(e, "session_id")] = true
 	}
-	secondStopActive := len(orchStops) >= 2 && orchStops[1]["stop_hook_active"] == true
-	askedBackground, foreground := backgroundProbe(events, orchStops)
+	askedBackground, foreground := backgroundProbe(events)
 	// The transcript keeps the whole output even when the model is shown only part of
 	// it, so the model itself has to repeat the markers.
 	manualArrived, manualLeaked := sawWholeManual(session.Result, token), false
@@ -224,9 +214,9 @@ func cmdSelftest(out io.Writer) error {
 		{"PreToolUse fires for spawns inside a subagent, with agent_id", len(nested) > 0 && str(nested[0], "agent_id") != ""},
 		{"PreToolUse updatedInput reaches the spawned agent", injected},
 		{"PreToolUse deny keeps an agent from starting", len(nested) >= 2 && len(deniedStops) == 0},
-		{"SubagentStop gives agent_type, agent_transcript_path, last_assistant_message",
-			len(leafStops) > 0 && str(leafStops[0], "agent_transcript_path") != "" && leafStops[0]["last_assistant_message"] != nil},
-		{"SubagentStop block makes the agent continue (stop_hook_active on the next stop)", secondStopActive},
+		{"SubagentStop gives agent_type and agent_transcript_path; the report is the handback or last_assistant_message", stopReportProbe(events)},
+		{"PreToolUse deny of a SubagentHandback keeps the agent working, and a corrected handback gets through", handbackRedoProbe(events)},
+		{"SubagentStop block makes the agent continue (stop_hook_active on the next stop)", stopContinues},
 		{"session_id is the same for the session and its agents", len(sessions) == 1},
 		{fmt.Sprintf("SessionStart output of %d bytes reaches the session whole", manualLimit), manualArrived},
 		{"SessionStart output stays out of subagents", len(leafStops) > 0 && !manualLeaked},
@@ -240,6 +230,9 @@ func cmdSelftest(out io.Writer) error {
 		}{"PreToolUse turns a background dispatch into a foreground one", foreground})
 	} else {
 		fmt.Fprintln(out, "  note the probe never asked for a background dispatch, so the foreground rewrite was not exercised")
+	}
+	if stopSawHandback {
+		fmt.Fprintln(out, "  note agents hand back outside auto mode too, so the SubagentStop block path cannot be checked")
 	}
 	failed := 0
 	for _, c := range checks {
@@ -257,6 +250,60 @@ func cmdSelftest(out io.Writer) error {
 	}
 	fmt.Fprintln(out, "all harness checks passed")
 	return nil
+}
+
+// runProbeSession runs one claude -p session in a fresh throwaway project holding the
+// probe hooks and the given agent files, and returns the hook log and the session's reply.
+func runProbeSession(self, token string, agents map[string]string, prompt string, claudeArgs ...string) ([]map[string]any, string, error) {
+	dir, err := os.MkdirTemp("", "ensign-selftest-")
+	if err != nil {
+		return nil, "", err
+	}
+	defer os.RemoveAll(dir)
+	hook := func(ev string) string {
+		return fmt.Sprintf(`[{"hooks": [{"type": "command", "command": %q}]}]`, self+" selftest-hook "+ev)
+	}
+	settings := `{"hooks": {
+  "SessionStart": ` + hook("SessionStart") + `,
+  "PreToolUse": [{"matcher": "Agent|Task|SubagentHandback", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", self+" selftest-hook PreToolUse") + `}]}],
+  "PostToolUse": [{"matcher": "Bash|Agent|Task", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", self+" selftest-hook PostToolUse") + `}]}],
+  "SubagentStop": ` + hook("SubagentStop") + `
+}}`
+	files := map[string]string{".claude/settings.json": settings}
+	for rel, content := range agents {
+		files[rel] = content
+	}
+	for rel, content := range files {
+		if err := writeFile(filepath.Join(dir, filepath.FromSlash(rel)), content); err != nil {
+			return nil, "", err
+		}
+	}
+	git(dir, "init", "-q")
+	if err := writeFile(filepath.Join(dir, "selftest-token"), token); err != nil {
+		return nil, "", err
+	}
+	cmd := exec.Command("claude", append([]string{"-p", "--model", "haiku", "--output-format", "json"}, claudeArgs...)...)
+	cmd.Dir, cmd.Env = dir, cleanClaudeEnv()
+	cmd.Stdin = strings.NewReader(prompt)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	raw, err := cmd.Output()
+	if err != nil {
+		return nil, "", fmt.Errorf("the probe session failed: %v: %s", err, lastLines(string(raw)+stderr.String(), 5))
+	}
+	var session struct {
+		Result string `json:"result"`
+	}
+	json.Unmarshal(raw, &session)
+	var events []map[string]any
+	data, _ := os.ReadFile(filepath.Join(dir, "selftest-log.jsonl"))
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var e map[string]any
+		if json.Unmarshal([]byte(line), &e) == nil {
+			events = append(events, e)
+		}
+	}
+	return events, session.Result, nil
 }
 
 // backgroundListed reports whether a probe-bg SubagentStop input lists a background task
@@ -286,54 +333,133 @@ func backgroundListed(events []map[string]any) bool {
 	return false
 }
 
-// backgroundProbe reports whether the orchestrator probe asked to run its leaf in the
-// background, and whether, after the hook's rewrite, it ran in the foreground anyway:
-// the leaf's reply came back as the result of the Agent call, and the leaf finished before
-// the orchestrator first stopped.
-func backgroundProbe(events []map[string]any, orchStops []map[string]any) (asked, foreground bool) {
-	leafStop, orchStop := -1, -1
-	for i, e := range events {
-		switch {
-		case e["hook_event_name"] == "PreToolUse":
-			ti, _ := e["tool_input"].(map[string]any)
-			if ti["subagent_type"] == "probe-leaf" && ti["run_in_background"] == true {
-				asked = true
-			}
-		case e["hook_event_name"] == "SubagentStop" && e["agent_type"] == "probe-leaf" && leafStop < 0:
-			leafStop = i
-		case e["hook_event_name"] == "SubagentStop" && e["agent_type"] == "probe-orch" && orchStop < 0:
-			orchStop = i
-		}
-	}
-	if !asked || len(orchStops) == 0 || leafStop < 0 || orchStop < leafStop {
-		return asked, false
-	}
-	path, _ := orchStops[0]["agent_transcript_path"].(string)
-	data, _ := os.ReadFile(path)
-	return asked, toolResultContains(string(data), leafToken)
+// eventStr returns a string field of an event, or "" when it is missing or not a string.
+func eventStr(e map[string]any, k string) string { s, _ := e[k].(string); return s }
+
+// isHandback reports whether e is a PreToolUse for a SubagentHandback call.
+func isHandback(e map[string]any) bool {
+	return eventStr(e, "hook_event_name") == "PreToolUse" && eventStr(e, "tool_name") == "SubagentHandback"
 }
 
-// toolResultContains reports whether any tool result in a transcript contains text.
-func toolResultContains(transcript, text string) bool {
-	for _, line := range strings.Split(transcript, "\n") {
-		var rec struct {
-			Message struct {
-				Content any `json:"content"`
-			} `json:"message"`
+// handbackMessage returns the message of the last handback the agent attempted. An empty
+// agentID never matches, so two events with no id are not taken for the same agent.
+func handbackMessage(events []map[string]any, agentID string) (string, bool) {
+	if agentID == "" {
+		return "", false
+	}
+	msg, found := "", false
+	for _, e := range events {
+		if isHandback(e) && eventStr(e, "agent_id") == agentID {
+			ti, _ := e["tool_input"].(map[string]any)
+			msg, found = eventStr(ti, "message"), true
 		}
-		if json.Unmarshal([]byte(line), &rec) != nil {
+	}
+	return msg, found
+}
+
+// stopReportProbe checks that the first probe-leaf SubagentStop carries agent_type and
+// agent_transcript_path, and that the leaf's report (its handback message, else the stop's
+// last_assistant_message) holds the leaf token.
+func stopReportProbe(events []map[string]any) bool {
+	for _, e := range events {
+		if eventStr(e, "hook_event_name") != "SubagentStop" || eventStr(e, "agent_type") != "probe-leaf" {
 			continue
 		}
-		blocks, _ := rec.Message.Content.([]any)
-		for _, b := range blocks {
-			if m, _ := b.(map[string]any); m["type"] == "tool_result" {
-				if raw, _ := json.Marshal(m["content"]); strings.Contains(string(raw), text) {
+		if eventStr(e, "agent_transcript_path") == "" {
+			return false
+		}
+		report, ok := handbackMessage(events, eventStr(e, "agent_id"))
+		if !ok {
+			report = eventStr(e, "last_assistant_message")
+		}
+		return strings.Contains(report, leafToken)
+	}
+	return false
+}
+
+// handbackRedoProbe checks that one agent's handback carrying redoFirst was followed by a
+// later handback carrying redoSecond, and then by that agent's SubagentStop.
+func handbackRedoProbe(events []map[string]any) bool {
+	msgOf := func(e map[string]any) string {
+		ti, _ := e["tool_input"].(map[string]any)
+		return eventStr(ti, "message")
+	}
+	for i, first := range events {
+		id := eventStr(first, "agent_id")
+		if !isHandback(first) || id == "" || !strings.Contains(msgOf(first), redoFirst) {
+			continue
+		}
+		for j := i + 1; j < len(events); j++ {
+			second := events[j]
+			if !isHandback(second) || eventStr(second, "agent_id") != id || !strings.Contains(msgOf(second), redoSecond) {
+				continue
+			}
+			for _, stop := range events[j+1:] {
+				if eventStr(stop, "hook_event_name") == "SubagentStop" && eventStr(stop, "agent_type") == "probe-redo" && eventStr(stop, "agent_id") == id {
 					return true
 				}
 			}
 		}
 	}
 	return false
+}
+
+// stopBlockProbe reads the second session's log: continues is whether the second
+// probe-stop SubagentStop has stop_hook_active and no agent handed back; sawHandback is
+// whether any agent handed back, which makes the result meaningless.
+func stopBlockProbe(events []map[string]any) (continues, sawHandback bool) {
+	stops := 0
+	for _, e := range events {
+		if isHandback(e) {
+			sawHandback = true
+		}
+		if eventStr(e, "hook_event_name") == "SubagentStop" && eventStr(e, "agent_type") == "probe-stop" {
+			stops++
+			if stops == 2 && e["stop_hook_active"] == true {
+				continues = true
+			}
+		}
+	}
+	return continues && !sawHandback, sawHandback
+}
+
+// backgroundProbe reports whether the orchestrator probe asked to run its leaf in the
+// background, and whether, after the hook's rewrite, it ran in the foreground anyway.
+// A foreground Agent call returns only after the leaf finishes, so its PostToolUse, paired
+// with the spawn by tool_use_id, comes after the leaf's SubagentStop; a background launch
+// returns at once. The leaf's report (its handback message, else last_assistant_message)
+// must hold leafToken.
+func backgroundProbe(events []map[string]any) (asked, foreground bool) {
+	leafStop, pre, post := -1, -1, -1
+	for i, e := range events {
+		ti, _ := e["tool_input"].(map[string]any)
+		switch {
+		case e["hook_event_name"] == "PreToolUse" && pre < 0:
+			if ti["subagent_type"] == "probe-leaf" && ti["run_in_background"] == true {
+				asked, pre = true, i
+			}
+		case e["hook_event_name"] == "SubagentStop" && e["agent_type"] == "probe-leaf" && leafStop < 0:
+			leafStop = i
+		}
+	}
+	if !asked || leafStop < 0 {
+		return asked, false
+	}
+	id := eventStr(events[pre], "tool_use_id")
+	for i, e := range events {
+		if id != "" && e["hook_event_name"] == "PostToolUse" && eventStr(e, "tool_use_id") == id {
+			post = i
+			break
+		}
+	}
+	if post < leafStop {
+		return asked, false
+	}
+	report, ok := handbackMessage(events, eventStr(events[leafStop], "agent_id"))
+	if !ok {
+		report = eventStr(events[leafStop], "last_assistant_message")
+	}
+	return asked, strings.Contains(report, leafToken)
 }
 
 // cmdSelftestHook is the probe's hook: it logs every event and exercises each decision.
@@ -363,6 +489,11 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 	switch event {
 	case "PreToolUse":
 		ti, _ := in["tool_input"].(map[string]any)
+		if msg, _ := ti["message"].(string); in["tool_name"] == "SubagentHandback" && strings.Contains(msg, redoFirst) {
+			return reply(map[string]any{"hookSpecificOutput": map[string]any{
+				"hookEventName": "PreToolUse", "permissionDecision": "deny",
+				"permissionDecisionReason": "selftest deny: call SubagentHandback again with the message " + redoSecond}})
+		}
 		switch ti["subagent_type"] {
 		case "probe-leaf":
 			ti["prompt"] = fmt.Sprint(ti["prompt"]) + " SELFTEST-INJECTED"
@@ -376,7 +507,7 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 				"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "selftest deny"}})
 		}
 	case "SubagentStop":
-		if in["agent_type"] == "probe-orch" && in["stop_hook_active"] != true {
+		if in["agent_type"] == "probe-stop" && in["stop_hook_active"] != true {
 			return reply(map[string]any{"decision": "block", "reason": "selftest block: reply with one more line, then stop"})
 		}
 	}
