@@ -1,6 +1,5 @@
 ---
 pipeline: coding
-workspace: WORKSPACE
 ---
 
 # auth-refactor

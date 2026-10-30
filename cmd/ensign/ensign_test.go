@@ -31,9 +31,9 @@ func newWorld(t *testing.T) *world {
 	ws := filepath.Join(tmp, "workspace")
 	os.MkdirAll(ws, 0o755)
 	write(t, filepath.Join(bridge, "bridge.yaml"), "control-plane:\n  path: "+root+"\n")
-	task := filepath.Join(bridge, "projects/supernova/tasks/auth-refactor/task.md")
-	data, _ := os.ReadFile(task)
-	write(t, task, strings.Replace(string(data), "WORKSPACE", ws, 1))
+	if _, err := setWorkspace(bridge, "supernova", ws); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CLAUDE_PROJECT_DIR", bridge)
 	t.Setenv("STARSHIP_SESSION", "s1")
 	return &world{t: t, bridge: bridge, session: filepath.Join(tmp, "session.jsonl"), sid: "s1"}
@@ -459,7 +459,10 @@ func (w *world) addTask(name string) {
 	ws := filepath.Join(filepath.Dir(w.bridge), "workspace-"+name)
 	os.MkdirAll(ws, 0o755)
 	write(w.t, filepath.Join(w.bridge, "projects/supernova/tasks", name, "task.md"),
-		"---\npipeline: coding\nworkspace: "+ws+"\n---\n\nDo "+name+".\n")
+		"---\npipeline: coding\n---\n\nDo "+name+".\n")
+	if _, err := setWorkspace(w.bridge, "supernova/"+name, ws); err != nil {
+		w.t.Fatal(err)
+	}
 }
 
 func TestSessionsAreIndependent(t *testing.T) {

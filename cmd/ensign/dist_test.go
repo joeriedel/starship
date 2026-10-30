@@ -69,15 +69,9 @@ func TestPinnedBridge(t *testing.T) {
 	}
 
 	out.Reset()
-	projects := t.TempDir()
-	if err := cmdSetup([]string{"--projects", projects}, &out); err != nil {
+	// An older bridge's CLAUDE.md still passes --projects; it is ignored.
+	if err := cmdSetup([]string{"--projects", t.TempDir()}, &out); err != nil {
 		t.Fatalf("setup: %v\n%s", err, out.String())
-	}
-	if m := loadMachine(bridge); m.Projects != filepath.ToSlash(projects) {
-		t.Errorf("machine projects = %q", m.Projects)
-	}
-	if ws, _ := expandWorkspace(bridge, "$PROJECTS/app"); ws != filepath.Join(projects, "app") {
-		t.Errorf("$PROJECTS expanded to %q", ws)
 	}
 
 	// A session that started on v0.1.0 can't start a run after the bridge moves on.

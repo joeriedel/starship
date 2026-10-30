@@ -44,6 +44,8 @@ func main() {
 		err = cmdTask(os.Args[2:], os.Stdout)
 	case "journal":
 		err = cmdJournal(os.Args[2:], os.Stdout)
+	case "workspace":
+		err = cmdWorkspace(os.Args[2:], os.Stdout)
 	case "github-pr":
 		err = cmdGithubPR(os.Args[2:], os.Stdout)
 	case "git-catalog":
@@ -85,7 +87,8 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   ensign init <dir> (--control-plane <path> | --remote <url> --tag <tag>)
-  ensign setup [--projects <path>]
+  ensign setup
+  ensign workspace <project>[/<task>] [<path>]
   ensign update [<tag>]
   ensign link [--force]
   ensign selftest
@@ -250,6 +253,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		writeFile(sessionFile(bridge, in.SessionID)+".pin", pinnedCommit(bridge)+"\n")
 	}
 	if note := syncBridge(bridge); note != "" {
+		fmt.Fprintln(&ctx, note)
+	}
+	if note := migrateWorkspaces(bridge); note != "" {
 		fmt.Fprintln(&ctx, note)
 	}
 	if linkStale(bridge) && len(liveRuns(bridge)) == 0 {

@@ -255,7 +255,7 @@ type Layer struct {
 	Bindings  yaml.Node                `yaml:"bindings"`
 	Use       []string                 `yaml:"use"`
 	Skills    yaml.Node                `yaml:"skills"`
-	Workspace string                   `yaml:"workspace"` // a project's code location: new tasks start with it, and project-wide runs use it
+	Workspace string                   `yaml:"workspace"` // the old place for a code location, now in machine.yaml; read only to move it
 	Events    map[string][]HandlerSpec `yaml:"events"`
 	Journal   struct {
 		Commit string `yaml:"commit"`
@@ -329,32 +329,6 @@ func controlPlaneDir(bridge string, bf *BridgeFile) (string, error) {
 		return "", fmt.Errorf("this bridge is not set up on this machine: %s is missing (run setup)", dir)
 	}
 	return dir, nil
-}
-
-// Machine is this machine's settings for a bridge, kept out of git.
-type Machine struct {
-	Projects string `yaml:"projects"` // the root that $PROJECTS in workspace paths expands to
-}
-
-func machineFile(bridge string) string { return filepath.Join(bridge, ".starship", "machine.yaml") }
-
-func loadMachine(bridge string) Machine {
-	var m Machine
-	readYAML(machineFile(bridge), &m)
-	return m
-}
-
-// expandWorkspace resolves $PROJECTS against this machine's root.
-func expandWorkspace(bridge, ws string) (string, error) {
-	rest, ok := strings.CutPrefix(ws, "$PROJECTS")
-	if !ok {
-		return ws, nil
-	}
-	root := loadMachine(bridge).Projects
-	if root == "" {
-		return "", fmt.Errorf("workspace %s uses $PROJECTS, which is not set on this machine (.starship/machine.yaml: projects)", ws)
-	}
-	return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(rest, "/"))), nil
 }
 
 type TaskVcs struct {
@@ -519,7 +493,7 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 		if err := yaml.Unmarshal(front, &tf); err != nil {
 			return nil, fmt.Errorf("%s: %v", taskFile, err)
 		}
-		if c.Workspace, err = expandWorkspace(bridge, tf.Workspace); err != nil {
+		if c.Workspace, err = workspaceFor(bridge, c.Project, parts[1]); err != nil {
 			return nil, err
 		}
 		c.WorkItem = workItem(string(body))
@@ -538,10 +512,8 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 			if err := loadProject(); err != nil {
 				return nil, err
 			}
-			if pf.Workspace != "" {
-				if c.Workspace, err = expandWorkspace(bridge, pf.Workspace); err != nil {
-					return nil, err
-				}
+			if ws, err := workspaceFor(bridge, c.Project, ""); err == nil {
+				c.Workspace = ws
 			}
 		}
 	}

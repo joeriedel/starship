@@ -128,15 +128,20 @@ func TestProjectAndTask(t *testing.T) {
 	if err := cmdTask([]string{"new", "nova/first", "--branch", "feature"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if data, _ := os.ReadFile(filepath.Join(b, "projects/nova/tasks/first/task.md")); !strings.Contains(string(data), "workspace: "+filepath.ToSlash(ws)+"\n") {
-		t.Errorf("a new task should use the project's workspace:\n%s", data)
+	if got, _ := workspaceFor(b, "nova", "first"); got != ws {
+		t.Errorf("a new task should use the project's workspace, got %q", got)
+	}
+	for _, f := range []string{"projects/nova/project.yaml", "projects/nova/tasks/first/task.md"} {
+		if data, _ := os.ReadFile(filepath.Join(b, f)); strings.Contains(string(data), "workspace:") {
+			t.Errorf("a path on this machine doesn't belong in the committed %s:\n%s", f, data)
+		}
 	}
 	other := t.TempDir()
 	if err := cmdTask([]string{"new", "nova/second", "--workspace", other}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if data, _ := os.ReadFile(filepath.Join(b, "projects/nova/tasks/second/task.md")); !strings.Contains(string(data), "workspace: "+filepath.ToSlash(other)+"\n") {
-		t.Errorf("--workspace should override the project's:\n%s", data)
+	if got, _ := workspaceFor(b, "nova", "second"); got != other {
+		t.Errorf("--workspace should override the project's, got %q", got)
 	}
 	task := filepath.Join(b, "projects/nova/tasks/first/task.md")
 	data, _ := os.ReadFile(task)

@@ -162,26 +162,23 @@ func fetchEnsign(bridge string, bf *BridgeFile) error {
 	return os.WriteFile(ensignTagFile(bridge), []byte(tag+"\n"), 0o644)
 }
 
-// cmdSetup implements `ensign setup [--projects <path>]`, run in a bridge.
+// cmdSetup implements `ensign setup`, run in a bridge.
 func cmdSetup(args []string, out io.Writer) error {
-	var projects string
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--projects" && i+1 < len(args) {
-			projects, i = args[i+1], i+1
-			continue
-		}
-		return fmt.Errorf("usage: ensign setup [--projects <path>]")
+	// Older bridges' CLAUDE.md passes --projects <folder>; workspaces are now recorded
+	// per project, as each is first needed, so it is accepted and ignored.
+	if len(args) != 0 && !(len(args) == 2 && args[0] == "--projects") {
+		return fmt.Errorf("usage: ensign setup")
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
 		return err
 	}
-	return setupBridge(bridge, projects, out)
+	return setupBridge(bridge, out)
 }
 
 // setupBridge makes a bridge work on this machine: the pinned control plane, ensign on
 // PATH, where this machine keeps its code, and the generated files.
-func setupBridge(bridge, projects string, out io.Writer) error {
+func setupBridge(bridge string, out io.Writer) error {
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
 		return err
@@ -196,14 +193,8 @@ func setupBridge(bridge, projects string, out io.Writer) error {
 		fmt.Fprintf(out, "control plane %s at %s\n", bf.ControlPlane.Remote, pinRef(bf))
 	}
 
-	if projects != "" {
-		abs, _ := filepath.Abs(projects)
-		m := loadMachine(bridge)
-		m.Projects = filepath.ToSlash(abs)
-		if err := writeYAML(machineFile(bridge), m); err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "$PROJECTS is %s on this machine\n", m.Projects)
+	if note := migrateWorkspaces(bridge); note != "" {
+		fmt.Fprintln(out, note)
 	}
 	if err := link(bridge, false, out); err != nil {
 		return err
@@ -299,6 +290,9 @@ func cmdUpdate(args []string, out io.Writer) error {
 	data = tagLineRe.ReplaceAll(data, []byte("${1}"+tag))
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return err
+	}
+	if note := migrateWorkspaces(bridge); note != "" {
+		fmt.Fprintln(out, note)
 	}
 	if err := link(bridge, false, out); err != nil {
 		return err

@@ -964,7 +964,7 @@ sources:
     ingested: 2026-10-29
     processed: 2026-10-29 by run 20261029-…
   - id: src2
-    ref: $PROJECTS/app/internal/session   # code held up as an example is referenced in place
+    ref: $WORKSPACE/internal/session   # code held up as an example is referenced in place
     trust: exemplar
     ingested: 2026-10-29
 ```
@@ -1115,6 +1115,7 @@ SHA256SUMS
   .claude/agents/                generated from the pinned clone (gitignored)
   .claude/skills/                on-demand skills, generated likewise (gitignored)
   CLAUDE.md                      setup steps and the heartbeat rule; no imports
+  machine.yaml                   where this machine keeps each project's code (gitignored)
 ```
 
 **Pinning.** `bridge.yaml` names a release tag. The pinned clone is a shallow fetch of
@@ -1163,7 +1164,8 @@ of the `ensign` that ran `link`. Outside a bridge, hook events are no-ops.
 
 - `.gitattributes` with `* text=auto eol=lf`, so config and scripts are never converted to
   CRLF.
-- Forward slashes in every path; a per-platform `$PROJECTS` root for workspace paths.
+- Forward slashes in every path. Where each project's code is lives in the gitignored
+  `machine.yaml` (§12.6), never in the bridge's committed files.
 - Hook commands in `settings.json` use no shell syntax — no `$VAR`, no quoting tricks —
   because the shell that runs them differs by platform.
 
@@ -1197,9 +1199,9 @@ release's checksums.
 
 - runs `ensign link` to generate the bridge's role and skill files and its own
   `.starship/bin/ensign`;
-- writes `.starship/machine.yaml` (gitignored): this machine's paths, such as the
-  `$PROJECTS` root. Claude asks for them in conversation and passes them as flags. A task
-  that needs a path that isn't set stops with a clear message.
+- leaves `machine.yaml` to be filled in as projects are first needed (§12.6). A task
+  whose project has no folder recorded on this machine stops with a clear message, and
+  the session asks the user.
 
 Product workspaces are not cloned by setup. Opening a task checks that its workspace
 exists and stops if not.
@@ -1223,8 +1225,8 @@ them what to ask, and tells Claude not to clone the repo). Claude follows it: it
 `.starship/bin/ensign init .`. With no flags, `init` pins the release that binary is,
 fetches the control plane at that tag, checks the binary against the release's
 checksums, and does what `setup` does. Where this machine
-keeps code (`$PROJECTS`) isn't asked here; the session offers to record it the first
-time the user gives a workspace path. `init` refuses to overwrite a file already in the folder, and
+keeps code isn't asked here; the session asks for each project's folder the first time
+it is needed. `init` refuses to overwrite a file already in the folder, and
 commits only its own files. Then the user restarts `claude`.
 
 ### 12.5 When `ensign` is missing: fail-open, and the heartbeat
@@ -1265,7 +1267,7 @@ So there are two defences:
 Bridges may share a machine, live on separate machines, or run in containers. Nothing in
 the design assumes one bridge per machine:
 
-- Machine-specific state is per bridge (`.starship/machine.yaml`), not per machine.
+- Machine-specific state is per bridge (`machine.yaml`, `.starship/`), not per machine.
 - Nothing is recorded per user: each bridge carries its own ensign and settings.
 - In a container, the container is the machine: setup runs inside it.
 
@@ -1277,9 +1279,24 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
   local changes, and every automatic commit fetches and rebases before pushing. A
   conflict where both sides only added lines is resolved directly; any other conflict
   stops and asks.
-- Machine paths are per machine (`.starship/machine.yaml`) and task paths go through
-  `$PROJECTS`, so the same `task.md` resolves on every machine. Run state stays on the
-  machine that ran it.
+- **Where the code is, is per machine.** `project.yaml` and `task.md` hold no paths.
+  Each machine has its own `machine.yaml` at the bridge's root, gitignored, mapping a
+  project (or a task with a checkout of its own, as `<project>/<task>`) to a folder:
+
+  ```yaml
+  workspaces:
+    supernova: /home/me/src/supernova
+    supernova/auth-refactor: /home/me/src/supernova-auth
+  ```
+
+  A machine with no entry for a project asks the user once, the first time a task needs
+  it, and records the answer (`ensign workspace <project>[/<task>] <path>`). It sits
+  outside `.starship/` because, unlike everything there, it holds answers that can't be
+  regenerated. A style source in a project's code is written `$WORKSPACE/<path>`, so it
+  resolves on every machine too. Bridges from before this kept a `workspace:` line in
+  their files, often under a `$PROJECTS` root; setup, update and session start move
+  those into `machine.yaml` and leave the edited files for the journal to commit. Run
+  state stays on the machine that ran it.
 
 ---
 
@@ -1310,10 +1327,11 @@ runs against Claude Code, except where listed below.
 | Command | Does |
 |---|---|
 | `ensign init <dir> (--control-plane <path> \| --remote <url> --tag <tag>)` | create a bridge |
-| `ensign setup [--projects <path>]` | fetch the pinned control plane, record machine paths, register the bridge, link (including the bridge's own `ensign`) |
+| `ensign setup` | fetch the pinned control plane, register the bridge, link (including the bridge's own `ensign`) |
+| `ensign workspace <p>[/<t>] [<path>]` | record (or show) where a project's or task's code is on this machine |
 | `ensign update [<tag>]` | move the bridge to a newer release |
 | `ensign link [--force]` | regenerate the bridge's role, skill and manual files |
-| `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path>]` / `ensign task open <p>/<t>` | scaffold and open; a project records where its code is, and a new task uses it unless given a different location |
+| `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path>]` / `ensign task open <p>/<t>` | scaffold and open; where the code is goes into this machine's `machine.yaml`, and a new task uses its project's unless given a different location |
 | `ensign run <p>/<t> [--start <stage>] [--sync] [--dry-run]` | create a run for a task |
 | `ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]` | create a project- or bridge-wide run |
 | `ensign next [--run <id>]` | what to dispatch next |

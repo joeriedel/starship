@@ -48,8 +48,8 @@ set up on this machine. Tell the user, and with their OK run, from the bridge:
 ` + "`<remote>`" + ` and ` + "`<tag>`" + ` are in ` + "`bridge.yaml`" + `. ` + "`<platform>`" + ` is ` + "`linux-amd64`" + `, ` + "`darwin-arm64`" + ` (Apple silicon),
 ` + "`darwin-amd64`" + ` (Intel Mac) or ` + "`windows-amd64.exe`" + ` (save it as ` + "`ensign.exe`" + ` and skip ` + "`chmod`" + `).
 Setup fetches the control plane and checks the binary against the release's checksums.
-If any task's workspace starts with ` + "`$PROJECTS`" + `, ask the user which folder holds their code
-on this machine and add ` + "`--projects <folder>`" + `. Then ask them to restart claude.
+Then ask them to restart claude. Where each project's code is on this machine is asked
+the first time a task needs it.
 
 ## The heartbeat
 
@@ -65,6 +65,7 @@ const sessionImport = "@.starship/session.md"
 
 const bridgeGitignore = `# Generated per machine by ensign; never committed.
 .starship/
+machine.yaml
 .claude/agents/
 .claude/skills/
 .claude/settings.local.json
@@ -97,13 +98,13 @@ func hookSettingsWith(timeout int) string {
 `
 }
 
-const initUsage = "usage: ensign init <dir> [--control-plane <path> | --remote <url> [--tag <tag>]] [--projects <path>]"
+const initUsage = "usage: ensign init <dir> [--control-plane <path> | --remote <url> [--tag <tag>]]"
 
 // cmdInit implements `ensign init`. With neither --control-plane nor --remote, a
 // released ensign pins the release it is: the repo it was built from, at its version. A pinned bridge is also set up, as setup would, so one
 // command makes a working bridge; --projects records where this machine keeps code.
 func cmdInit(args []string, out io.Writer) error {
-	var dir, cpPath, remote, tag, projects string
+	var dir, cpPath, remote, tag string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "--control-plane" && i+1 < len(args):
@@ -112,8 +113,6 @@ func cmdInit(args []string, out io.Writer) error {
 			remote, i = args[i+1], i+1
 		case a == "--tag" && i+1 < len(args):
 			tag, i = args[i+1], i+1
-		case a == "--projects" && i+1 < len(args):
-			projects, i = args[i+1], i+1
 		case !strings.HasPrefix(a, "-") && dir == "":
 			dir = a
 		default:
@@ -176,8 +175,8 @@ func cmdInit(args []string, out io.Writer) error {
 	fmt.Fprintf(out, "bridge created at %s\n", dir)
 	// A bridge pinned to a release is set up on this machine straight away. One that
 	// follows a local control plane (development) is only linked, unless asked.
-	if cpPath == "" || projects != "" {
-		if err := setupBridge(dir, projects, out); err != nil {
+	if cpPath == "" {
+		if err := setupBridge(dir, out); err != nil {
 			return err
 		}
 	} else if err := link(dir, false, out); err != nil {
@@ -412,8 +411,7 @@ func linkStale(bridge string) bool {
 
 const projectHeader = `# Project: %s
 
-# Where this project's code is. New tasks use it unless they name a different location.
-workspace: %s
+# Where its code is differs per machine, so it is in this machine's machine.yaml.
 `
 
 const projectTemplate = projectHeader + `
@@ -440,14 +438,7 @@ func cmdProject(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	name, ws := args[1], filepath.ToSlash(args[3])
-	dir, err := expandWorkspace(bridge, ws)
-	if err != nil {
-		return err
-	}
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return fmt.Errorf("%s is not a folder on this machine; ask the user where the code is, never guess", dir)
-	}
+	name := args[1]
 	if !validName(name) {
 		return fmt.Errorf("project names are lower-case letters, digits and dashes")
 	}
@@ -455,15 +446,25 @@ func cmdProject(args []string, out io.Writer) error {
 	if _, err := os.Stat(p); err == nil {
 		return fmt.Errorf("project %s already exists", name)
 	}
-	content := fmt.Sprintf(projectTemplate, name, ws)
+	dir, err := filepath.Abs(expandHome(args[3]))
+	if err != nil {
+		return err
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return fmt.Errorf("%s is not a folder on this machine; ask the user where the code is, never guess", dir)
+	}
+	content := fmt.Sprintf(projectTemplate, name)
 	shipped, err := shippedProject(dir)
 	if err != nil {
 		return err
 	}
 	if shipped != "" {
-		content = fmt.Sprintf(projectHeader, name, ws) + "\n# From the code's own " + shippedProjectFile + ":\n\n" + shipped
+		content = fmt.Sprintf(projectHeader, name) + "\n# From the code's own " + shippedProjectFile + ":\n\n" + shipped
 	}
 	if err := writeFile(p, content); err != nil {
+		return err
+	}
+	if _, err := setWorkspace(bridge, name, dir); err != nil {
 		return err
 	}
 	if shipped != "" {
@@ -518,7 +519,6 @@ func cwdBridge() (string, error) {
 
 const taskTemplate = `---
 pipeline: coding
-workspace: %s
 %s---
 
 # %s
@@ -577,22 +577,21 @@ func cmdTask(args []string, out io.Writer) error {
 		if _, err := os.Stat(pf); err != nil {
 			return fmt.Errorf("no project %s (ensign project new %s --workspace <path>)", parts[0], parts[0])
 		}
-		if ws == "" {
-			var l Layer
-			readYAML(pf, &l)
-			ws = l.Workspace
-		}
-		if ws == "" {
-			return fmt.Errorf("project %s has no workspace, so the task needs --workspace: ask the user for the path, never guess it", parts[0])
-		}
 		if _, err := os.Stat(filepath.Join(taskDir, "task.md")); err == nil {
 			return fmt.Errorf("task %s already exists", args[1])
+		}
+		if ws != "" {
+			if _, err := setWorkspace(bridge, args[1], ws); err != nil {
+				return err
+			}
+		} else if _, err := workspaceFor(bridge, parts[0], ""); err != nil {
+			return err
 		}
 		vcs := ""
 		if branch != "" {
 			vcs = fmt.Sprintf("vcs: { kind: git, branch: %s }\n", branch)
 		}
-		content := fmt.Sprintf(taskTemplate, filepath.ToSlash(ws), vcs, parts[1], time.Now().Format("2006-01-02"))
+		content := fmt.Sprintf(taskTemplate, vcs, parts[1], time.Now().Format("2006-01-02"))
 		if err := writeFile(filepath.Join(taskDir, "task.md"), content); err != nil {
 			return err
 		}
@@ -616,12 +615,11 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "task       %s\n", task)
-	ws, err := expandWorkspace(bridge, tf.Workspace)
+	project, name, _ := strings.Cut(task, "/")
+	ws, err := workspaceFor(bridge, project, name)
 	switch {
 	case err != nil:
 		fmt.Fprintf(out, "workspace  STOP: %v\n", err)
-	case tf.Workspace == "":
-		fmt.Fprintln(out, "workspace  STOP: not set in task.md")
 	default:
 		if fi, err := os.Stat(ws); err != nil || !fi.IsDir() {
 			fmt.Fprintf(out, "workspace  STOP: %s does not exist\n", ws)

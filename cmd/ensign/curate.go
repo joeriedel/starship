@@ -537,12 +537,8 @@ func cmdStyle(args []string, out io.Writer) error {
 		}
 		if fi.IsDir() || trust == "exemplar" {
 			abs, _ := filepath.Abs(from)
-			s.Ref = filepath.ToSlash(abs)
-			if root := loadMachine(bridge).Projects; root != "" {
-				if rel, err := filepath.Rel(root, abs); err == nil && !strings.HasPrefix(rel, "..") {
-					s.Ref = "$PROJECTS/" + filepath.ToSlash(rel)
-				}
-			}
+			ws, _ := workspaceFor(bridge, project, "")
+			s.Ref = workspaceRef(ws, abs)
 		} else {
 			data, err := os.ReadFile(from)
 			if err != nil {

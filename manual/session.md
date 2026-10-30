@@ -18,11 +18,11 @@ one.
   prints where it stands. Report that, then wait for the work.
 - `ensign task new <project>/<task>` creates one, using the project's code location.
   Add `--workspace <path>` only when the user names a different location.
-- **The projects folder.** A workspace path can be written as `$PROJECTS/<name>`, so the
-  task works on machines that keep code in different places. The first time the user
-  gives a code location and this machine has no projects folder yet, offer to record the
-  folder holding it (`~/src` for `~/src/foobar`) with `ensign setup --projects <folder>`,
-  and write the path as `$PROJECTS/foobar`. If they'd rather not, use the path as given.
+- **Where the code is differs per machine.** It's kept in this machine's own
+  `machine.yaml`, never in the bridge's files. When a task stops because this machine
+  has no folder for its project, ask the user where the code is here and record it with
+  `ensign workspace <project> <path>` (or `<project>/<task>` for a task with a checkout
+  of its own).
 - `ensign project new <project> --workspace <path>` creates a project. **Ask where its
   code is if the user hasn't said; never guess it.** Then fill in its bindings
   (`@build`, `@test`, …): read the code and propose commands for the user to confirm,

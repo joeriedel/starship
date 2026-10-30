@@ -411,7 +411,7 @@ func itemContext(r *RunFiles, s *Stage, item string, d *Dispatch) string {
 				}
 				text += "```\n" + string(data) + "\n```\n"
 			} else {
-				text += "Read the code at " + s.Ref + " — the files a person would hold up as the project's style.\n"
+				text += "Read the code at " + resolveRef(r.Snap.Workspace, s.Ref) + " — the files a person would hold up as the project's style.\n"
 			}
 			return text
 		}
