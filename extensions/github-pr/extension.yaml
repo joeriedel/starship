@@ -2,29 +2,37 @@
 # Licensed under the MIT License. See LICENSE.
 
 name: github-pr
-summary: Each task works on its own branch and ends as a pull request, with the repository's CI on GitHub as its test stage.
+summary: Each task works on its own branch, and a passing run ends as a pull request.
 
-# Needs git and gh (signed in) on the machine, and CI that runs on pull requests.
+# Needs git and gh (signed in) on the machine.
 #
-# At run start the workspace moves to the task's branch, task/<name>, created from the
-# default branch the first time; a run won't start on top of uncommitted work on another
-# branch. The test stage commits what the run changed, pushes the branch, opens its pull
-# request if there isn't one, and waits for every check. A failing check goes back to
-# the coder with the end of its log.
+#   run start          the workspace moves to the task's branch, task/<name>, created
+#                      from the default branch the first time. A run won't start on top
+#                      of uncommitted work on another branch.
+#   before the test    what the run changed is committed on the task branch.
+#   test               the project's own @test, as always.
+#   run passed         the branch is pushed and its pull request opened (@land).
 #
-# A task can go straight to the default branch instead, with no pull request: it then
-# starts from the default branch, up to date, and its test stage pushes there and waits
-# for the checks on that commit. `ensign github-pr direct <project>/<task>` sets that up
-# in the task's settings.
+# A project whose tests are its CI on GitHub binds
+#   test: { command: "ensign github-pr ci", plain: true }
+# which pushes the branch and waits for every check on that commit; a failing check goes
+# back to the coder with the end of its log. Its CI must run on pushes to task/**.
+#
+# A task can go straight to the default branch instead, with no pull request: once its
+# run passes, the default branch is moved to the tested commit, if that's a
+# fast-forward. `ensign github-pr direct <project>/<task>` sets that up by replacing
+# @land in the task's settings.
 
 help:
   - say: '"send this task straight to the main branch, with no pull request"'
-    does: the task's changes are pushed directly once CI passes
+    does: once its tests pass, the task's commit goes straight to the main branch
     run: ensign github-pr direct <project>/<task>
 
 bindings:
   branch: { command: "ensign github-pr branch" }
-  test:   { command: "ensign github-pr pull-request", plain: true }
+  land:   { command: "ensign github-pr open-pull-request" }
 
 events:
-  run.start: [{ require: "@branch" }]
+  run.start:          [{ require: "@branch" }]
+  stage.before:test:  [{ require: "ensign github-pr commit" }]
+  run.finish:success: [{ require: "@land" }]

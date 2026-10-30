@@ -97,7 +97,9 @@ run (the coding pipeline; starship's project uses the github-pr extension)
   │  run.start      the checkout moves to the task's branch, task/<name>
   │  code ⇄ review  reviewers include the `public` focus: nothing from a private context
   │  style
-  │  test           plain: commit, push the branch, open the pull request, wait for CI
+  │  (commit)       the run's changes are committed on the task branch
+  │  test           plain: push the branch and wait for CI on that commit
+  │  run passed     the pull request is opened
   ▼
 pull request on GitHub
   │  the user reads the diff and merges
@@ -107,17 +109,21 @@ release (a tag), then each bridge updates
 
 - **Starship ships its project settings** in `.starship/project.yaml`, which
   `ensign project new` copies in when the project is created (§4.1). Any repository can
-  do the same. Starship's settings use the `github-pr` extension and make `@build` not
-  applicable, since no Go toolchain is installed locally.
+  do the same. Starship's settings use the `github-pr` extension, make `@build` not
+  applicable, since no Go toolchain is installed locally, and make `@test` its CI.
 - **`github-pr`** is a general extension for any repository on GitHub with CI, built
   into ensign so it runs the same on every platform; it needs git and a signed-in `gh`.
-  Its `@branch` binding runs at `run.start` and moves the workspace to `task/<name>`,
-  created from the default branch the first time; a run won't start over uncommitted
-  work on another branch. Its `@test` is a plain built-in: commit what the run changed,
-  push the branch, open the pull request if there isn't one, and poll the commit's
-  check runs until all have finished. A failing check is a `fail`, with the end of each
-  failing Actions log, and goes back to the coder; no checks appearing, or a push that
-  fails, is an `error`.
+  Each step is its own: `@branch` at `run.start` moves the workspace to `task/<name>`,
+  created from the default branch the first time, and a run won't start over
+  uncommitted work on another branch; before the test stage, the run's changes are
+  committed on the task branch; the tests are the project's own `@test`; and when the run
+  passes, `@land` pushes the branch and opens the pull request. A project whose tests
+  are its CI binds `@test` to the plain built-in `ensign github-pr ci`, which pushes the
+  branch and polls the commit's check runs until all have finished: a failing check is
+  a `fail`, with the end of each failing Actions log, and goes back to the coder; no
+  checks appearing, or a push that fails, is an `error`. Its CI must run on pushes to
+  `task/**`. What `@land` and other end-of-run steps report (the pull request) is noted
+  in the run's finish message and its progress-log line.
 - **What keeps project knowledge out is structural.** The bridge holds everything about
   its projects and starship never reads a bridge, so nothing crosses on its own. What
   remains is an agent with project context writing a detail into a role or doc. The
@@ -126,10 +132,11 @@ release (a tag), then each bridge updates
 - **Examples in the control plane use a fictional project** (`supernova`). Lessons are
   written as the mechanism alone, or retold in the fictional project.
 - **A task can skip the pull request.** `ensign github-pr direct <project>/<task>`
-  replaces `@branch` and `@test` in that task's settings: the run starts on the default
-  branch, up to date, and its test stage pushes there and waits for the checks on that
-  commit. Nobody reads the diff before it is public, so the `public` review is the only
-  check; it is for changes the user has chosen to land directly.
+  replaces `@land` in that task's settings: once the run passes, the default branch is
+  moved to the tested commit, if that is a fast-forward, and the task branch is removed.
+  If the default branch moved meanwhile, the run ends as an error and nothing is pushed.
+  Nobody reads the diff before it is public, so the `public` review is the only check;
+  it is for changes the user has chosen to land directly.
 - **Use a checkout of its own** for the starship project: runs switch its branch, and
   refuse to start if it has uncommitted changes on another branch.
 

@@ -17,11 +17,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The github-pr extension: each task works on its own branch, task/<name>, and its test
-// stage is the repository's CI on GitHub. The branch is pushed, its pull request opened,
-// and the run waits for the checks. A task can go straight to the default branch instead
-// ("direct"), with no pull request. Everything here is Go, git and gh, so it runs the same
-// on every platform.
+// The github-pr extension: each task works on its own branch, task/<name>, and a
+// passing run ends as a pull request. Each step is its own:
+//
+//	run.start            @branch: create the task branch if needed, and switch to it
+//	stage.before:test    commit what the run changed
+//	run.finish:success   @land: push the branch and open the pull request; or, for a
+//	                     direct task, move the default branch to the tested commit
+//
+// The tests are the project's own @test. A project whose tests are its CI on GitHub
+// binds @test to `ensign github-pr ci`: push the branch and wait for the checks.
+//
+// Everything here is Go, git and gh, so it runs the same on every platform.
 
 // errTestsFailed marks a built-in test command whose tests ran and failed, as opposed to
 // one that could not get a verdict at all.
@@ -102,23 +109,6 @@ func githubBranch(r *RunFiles) error {
 	return git(ws, "switch", "-q", "-c", want, "origin/"+base)
 }
 
-// githubDirectStart runs at run.start for a direct task: the workspace moves to the
-// default branch, up to date with origin.
-func githubDirectStart(r *RunFiles) error {
-	ws := r.Snap.Workspace
-	if dirty(ws) {
-		return fmt.Errorf("the workspace has uncommitted changes on %s; commit or stash them, then start the run again", orDetached(currentBranch(ws)))
-	}
-	base, err := defaultBranch(ws)
-	if err != nil {
-		return err
-	}
-	if err := git(ws, "switch", "-q", base); err != nil {
-		return err
-	}
-	return git(ws, "pull", "-q", "--ff-only", "origin", base)
-}
-
 func orDetached(b string) string {
 	if b == "" {
 		return "a detached HEAD"
@@ -126,60 +116,111 @@ func orDetached(b string) string {
 	return b
 }
 
-// githubTest is the test stage: commit what the run changed, push, and wait for CI. With
-// direct it pushes the default branch; otherwise the task branch, opening its pull request.
-func githubTest(r *RunFiles, direct bool, deadline time.Time) (string, error) {
-	ws, task := r.Snap.Workspace, r.Snap.Task
-	var log strings.Builder
-	want := taskBranch(task)
-	if direct {
-		base, err := defaultBranch(ws)
-		if err != nil {
-			return "", err
-		}
-		want = base
+// onTaskBranch checks the workspace is on the run's task branch.
+func onTaskBranch(r *RunFiles) (string, error) {
+	want := taskBranch(r.Snap.Task)
+	if cur := currentBranch(r.Snap.Workspace); cur != want {
+		return "", fmt.Errorf("the workspace is on %s, not the task branch %s", orDetached(cur), want)
 	}
-	if cur := currentBranch(ws); cur != want {
-		return "", fmt.Errorf("the workspace is on %s, not %s", orDetached(cur), want)
+	return want, nil
+}
+
+// githubCommit runs before the test stage: everything the run changed is committed on
+// the task branch, so the commit CI tests is exactly the work.
+func githubCommit(r *RunFiles) error {
+	ws := r.Snap.Workspace
+	if _, err := onTaskBranch(r); err != nil {
+		return err
 	}
-	_, name, _ := strings.Cut(task, "/")
+	if !dirty(ws) {
+		return nil
+	}
+	_, name, _ := strings.Cut(r.Snap.Task, "/")
+	if err := git(ws, "add", "-A"); err != nil {
+		return err
+	}
+	return git(ws, "commit", "-q", "-m", name)
+}
+
+// githubCI is a test stage that is the repository's CI: push the task branch and wait
+// for the checks on its commit. It commits nothing; uncommitted changes mean the commit
+// step didn't run.
+func githubCI(r *RunFiles, deadline time.Time) (string, error) {
+	ws := r.Snap.Workspace
+	branch, err := onTaskBranch(r)
+	if err != nil {
+		return "", err
+	}
 	if dirty(ws) {
-		if err := git(ws, "add", "-A"); err != nil {
-			return "", err
-		}
-		if err := git(ws, "commit", "-q", "-m", name); err != nil {
-			return "", err
-		}
+		return "", fmt.Errorf("the workspace has uncommitted changes, so CI would not test them")
 	}
-	push := []string{"push", "-q", "-u", "origin", want}
-	if !direct {
-		push = []string{"push", "-q", "--force-with-lease", "-u", "origin", want}
-	}
-	if err := git(ws, push...); err != nil {
+	if err := git(ws, "push", "-q", "--force-with-lease", "-u", "origin", branch); err != nil {
 		return "", err
 	}
 	sha, _ := gitOut(ws, "rev-parse", "HEAD")
-	if !direct {
-		url, err := runGH(ws, "pr", "view", want, "--json", "url", "--jq", ".url")
-		if err != nil {
-			base, err := defaultBranch(ws)
-			if err != nil {
-				return "", err
-			}
-			commits, _ := gitOut(ws, "log", "--format=- %s", "origin/"+base+"..HEAD")
-			if _, err := runGH(ws, "pr", "create", "--head", want, "--base", base, "--title", name,
-				"--body", "Opened from a starship task.\n\n"+commits); err != nil {
-				return "", err
-			}
-			if url, err = runGH(ws, "pr", "view", want, "--json", "url", "--jq", ".url"); err != nil {
-				return "", err
-			}
-		}
-		fmt.Fprintf(&log, "pull request: %s\n", url)
+	return waitForChecks(ws, sha, deadline)
+}
+
+// githubOpenPR runs when the run succeeds: it pushes the task branch, opens its pull
+// request or finds the one already open, and notes it for the run's report.
+func githubOpenPR(r *RunFiles) error {
+	ws := r.Snap.Workspace
+	branch, err := onTaskBranch(r)
+	if err != nil {
+		return err
 	}
-	out, err := waitForChecks(ws, sha, deadline)
-	log.WriteString(out)
-	return log.String(), err
+	if err := git(ws, "push", "-q", "--force-with-lease", "-u", "origin", branch); err != nil {
+		return err
+	}
+	url, err := runGH(ws, "pr", "view", branch, "--json", "url", "--jq", ".url")
+	if err != nil {
+		base, err := defaultBranch(ws)
+		if err != nil {
+			return err
+		}
+		_, name, _ := strings.Cut(r.Snap.Task, "/")
+		commits, _ := gitOut(ws, "log", "--format=- %s", "origin/"+base+"..HEAD")
+		if _, err := runGH(ws, "pr", "create", "--head", branch, "--base", base, "--title", name,
+			"--body", "Opened from a starship task.\n\n"+commits); err != nil {
+			return err
+		}
+		if url, err = runGH(ws, "pr", "view", branch, "--json", "url", "--jq", ".url"); err != nil {
+			return err
+		}
+	}
+	r.State.note("Pull request: " + url)
+	return nil
+}
+
+// githubMerge runs when a direct task's run succeeds: the default branch moves to the
+// commit CI just passed, if that is a fast-forward, and the task branch is removed.
+func githubMerge(r *RunFiles) error {
+	ws := r.Snap.Workspace
+	branch, err := onTaskBranch(r)
+	if err != nil {
+		return err
+	}
+	base, err := defaultBranch(ws)
+	if err != nil {
+		return err
+	}
+	if err := git(ws, "fetch", "-q", "origin", base); err != nil {
+		return err
+	}
+	if _, err := gitOut(ws, "merge-base", "--is-ancestor", "origin/"+base, "HEAD"); err != nil {
+		return fmt.Errorf("%s has moved since this task branched from it; the tested commit can't go there as it is. Rebase the task branch and run the tests again", base)
+	}
+	sha, _ := gitOut(ws, "rev-parse", "HEAD")
+	if err := git(ws, "push", "-q", "origin", "HEAD:refs/heads/"+base); err != nil {
+		return err
+	}
+	git(ws, "push", "-q", "origin", "--delete", branch) // it may never have been pushed under this name
+	if err := git(ws, "switch", "-q", base); err == nil {
+		git(ws, "merge", "-q", "--ff-only", sha)
+		git(ws, "branch", "-q", "-D", branch)
+	}
+	r.State.note(fmt.Sprintf("Pushed to %s: %s", base, short(sha)))
+	return nil
 }
 
 type checkRun struct {
@@ -212,7 +253,7 @@ func waitForChecks(ws, sha string, deadline time.Time) (string, error) {
 		}
 		switch {
 		case len(runs) == 0 && time.Since(start) > checkAppear:
-			return "", fmt.Errorf("no CI checks appeared for %s; does the repository run CI on pushes and pull requests?", short(sha))
+			return "", fmt.Errorf("no CI checks appeared for %s; does the repository's CI run on pushes to task branches?", short(sha))
 		case len(runs) > 0 && pending == 0:
 			return checkReport(ws, sha, runs)
 		case time.Now().Add(checkPoll).After(deadline):
@@ -246,25 +287,27 @@ func checkReport(ws, sha string, runs []checkRun) (string, error) {
 	return b.String(), errTestsFailed
 }
 
-// githubCommand runs a built-in github-pr command as a binding: from run.start, or as the
-// test stage with a deadline.
+// githubCommand runs a built-in github-pr command: as a handler, or as the test stage
+// with a deadline.
 func githubCommand(r *RunFiles, args []string, deadline time.Time) (string, error) {
 	switch strings.Join(args, " ") {
 	case "branch":
 		return "", githubBranch(r)
-	case "direct-start":
-		return "", githubDirectStart(r)
-	case "pull-request":
-		return githubTest(r, false, deadline)
-	case "direct-test":
-		return githubTest(r, true, deadline)
+	case "commit":
+		return "", githubCommit(r)
+	case "ci":
+		return githubCI(r, deadline)
+	case "open-pull-request":
+		return "", githubOpenPR(r)
+	case "merge":
+		return "", githubMerge(r)
 	}
 	return "", fmt.Errorf("unknown github-pr command: %s", strings.Join(args, " "))
 }
 
-// cmdGithubPR implements `ensign github-pr direct <project>/<task>`: the task goes
-// straight to the default branch, with no pull request, by replacing @branch and @test
-// in its own settings.
+// cmdGithubPR implements `ensign github-pr direct <project>/<task>`: once its run passes
+// CI, the task goes straight to the default branch with no pull request. It replaces
+// @land in the task's own settings.
 func cmdGithubPR(args []string, out io.Writer) error {
 	if len(args) != 2 || args[0] != "direct" {
 		return fmt.Errorf("usage: ensign github-pr direct <project>/<task>")
@@ -314,8 +357,7 @@ func cmdGithubPR(args []string, out io.Writer) error {
 		}
 		bindings.Content = append(bindings.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, v)
 	}
-	set("branch", "ensign github-pr direct-start", false)
-	set("test", "ensign github-pr direct-test", true)
+	set("land", "ensign github-pr merge", false)
 	newFront, err := yaml.Marshal(&doc)
 	if err != nil {
 		return err

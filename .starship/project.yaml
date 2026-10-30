@@ -4,15 +4,16 @@
 # What a starship bridge needs to work on this repository. `ensign project new` copies it
 # into the bridge's project.yaml when the project is created.
 #
-# Each task works on its own branch and ends as a pull request; the test stage is CI on
-# GitHub, so nothing needs Go installed locally (see extensions/github-pr). Runs switch
-# the checkout's branch. A task can go straight to master instead: ask for that, and its
+# Each task works on its own branch and ends as a pull request (see extensions/github-pr).
+# The test stage is CI on GitHub, so nothing needs Go installed locally. Runs switch the
+# checkout's branch. A task can go straight to master instead: ask for that, and its
 # settings are changed to do it.
 
 use: [github-pr]
 
 bindings:
   build: { not-applicable: "no Go toolchain is installed locally; CI builds every push" }
+  test:  { command: "ensign github-pr ci", plain: true }
 
 pipelines:
   coding:
