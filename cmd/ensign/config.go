@@ -399,6 +399,22 @@ func readYAML(path string, out any) error {
 	return nil
 }
 
+// addBindings sets the bindings a layer or extension declares, replacing earlier ones.
+func (c *Config) addBindings(n *yaml.Node, label string) error {
+	if n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(n.Content); i += 2 {
+		key := strings.TrimPrefix(n.Content[i].Value, "@")
+		b, err := parseBinding(n.Content[i+1], fmt.Sprintf("%s:%d", label, n.Content[i].Line))
+		if err != nil {
+			return err
+		}
+		c.Bindings[key] = b
+	}
+	return nil
+}
+
 func splitFrontmatter(path string) (front, body []byte, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -585,6 +601,11 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 			for _, req := range b.RequiresBindings {
 				c.needs[req] = label
 			}
+			// An extension's bindings are defaults: the layer that uses it, and any
+			// later layer, can replace them.
+			if err := c.addBindings(&b.Bindings, label); err != nil {
+				return nil, err
+			}
 		}
 		c.addEvents(l.layer.Events, l.label, filepath.Dir(l.file))
 		if po, ok := l.layer.Pipelines[name]; ok {
@@ -594,16 +615,8 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 				}
 			}
 		}
-		if l.layer.Bindings.Kind == yaml.MappingNode {
-			n := &l.layer.Bindings
-			for i := 0; i < len(n.Content); i += 2 {
-				key := strings.TrimPrefix(n.Content[i].Value, "@")
-				b, err := parseBinding(n.Content[i+1], fmt.Sprintf("%s:%d", l.label, n.Content[i].Line))
-				if err != nil {
-					return nil, err
-				}
-				c.Bindings[key] = b
-			}
+		if err := c.addBindings(&l.layer.Bindings, l.label); err != nil {
+			return nil, err
 		}
 	}
 	if err := c.selectSkills(layers); err != nil {
