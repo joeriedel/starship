@@ -1168,7 +1168,7 @@ func TestRunSurvivesSessionIDChange(t *testing.T) {
 	// A concurrent hook already rebound the run: the binding file is gone here, but the run's
 	// session is current, so no second entry is logged.
 	os.Remove(sessionFile(w.bridge, "s2"))
-	w.leaf(lead, "coder", "compiled")
+	w.leaf(lead, "reviewer", "clean")
 	rebound = 0
 	for _, h := range w.runState(run).History {
 		if h.Kind == "rebound" {
