@@ -528,10 +528,6 @@ pipeline: coding
 
 ## Scope
 
-In:
-
-Out:
-
 ## Status
 
 New.

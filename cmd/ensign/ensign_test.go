@@ -743,3 +743,18 @@ func TestRunRefusesATaskWithNoGoalOrScope(t *testing.T) {
 	write(t, task, "---\npipeline: coding\n---\n\n## Scope\n\nOnly the multiply function.\n")
 	w.run("supernova/auth-refactor", "--dry-run")
 }
+
+func TestRunRefusesAFreshTask(t *testing.T) {
+	w := newWorld(t)
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	if err := cmdTask([]string{"new", "supernova/fresh", "--workspace", t.TempDir()}, &out); err != nil {
+		t.Fatal(err)
+	}
+	err := cmdRun([]string{"supernova/fresh"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "has no work item") {
+		t.Fatalf("a fresh task should be refused: %v", err)
+	}
+}
