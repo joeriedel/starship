@@ -556,10 +556,40 @@ func TestSessionsAreIndependent(t *testing.T) {
 	}
 }
 
-func TestOneLiveRunPerSessionAndWorkspace(t *testing.T) {
+// runState reads a run's state from disk, whichever session it belongs to.
+func (w *world) runState(id string) *State {
+	w.t.Helper()
+	r, err := openRun(w.bridge, id)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	defer r.close()
+	return r.State
+}
+
+func TestNewRunReplacesTheSessionsWaitingRun(t *testing.T) {
 	w := newWorld(t)
 	w.addTask("other")
 	w.run("supernova/auth-refactor")
+	old := w.state().Run
+	out := w.run("supernova/other")
+	cur := w.state()
+	if cur.Run == old {
+		t.Fatalf("session still bound to the old run %s", old)
+	}
+	if !strings.Contains(out, "replaced waiting run "+old) {
+		t.Fatalf("output does not mention the replacement:\n%s", out)
+	}
+	if st := w.runState(old); st.Status != "error" || !strings.Contains(st.Reason, cur.Run) {
+		t.Fatalf("old run: status %s reason %q", st.Status, st.Reason)
+	}
+}
+
+func TestSessionWithAnApprovedRunIsRefused(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.run("supernova/auth-refactor")
+	w.approve()
 	wd, _ := os.Getwd()
 	defer os.Chdir(wd)
 	os.Chdir(w.bridge)
@@ -567,9 +597,27 @@ func TestOneLiveRunPerSessionAndWorkspace(t *testing.T) {
 	if err := cmdRun([]string{"supernova/other"}, &out); err == nil || !strings.Contains(err.Error(), "already has an active run") {
 		t.Fatalf("second run in one session: %v", err)
 	}
+}
+
+func TestOtherSessionsRunsOnTheSameWorkspaceAreUntouched(t *testing.T) {
+	w := newWorld(t)
+	w.run("supernova/auth-refactor")
+	pending := w.state().Run
+
+	b := *w
+	b.sid = "s2"
 	t.Setenv("STARSHIP_SESSION", "s2")
-	if err := cmdRun([]string{"supernova/auth-refactor"}, &out); err == nil || !strings.Contains(err.Error(), "same workspace") {
-		t.Fatalf("second run on one workspace: %v", err)
+	b.run("supernova/auth-refactor")
+	b.approve()
+	running := b.state().Run
+
+	t.Setenv("STARSHIP_SESSION", "s3")
+	w.run("supernova/auth-refactor")
+	if st := w.runState(pending); st.Status != "pending" {
+		t.Fatalf("pending run of another session is now %s", st.Status)
+	}
+	if st := w.runState(running); st.Status != "running" {
+		t.Fatalf("running run of another session is now %s", st.Status)
 	}
 }
 

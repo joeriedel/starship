@@ -349,16 +349,15 @@ func cmdRun(args []string, out io.Writer) error {
 			}
 		}
 	}
+	var replace []string
 	for _, ri := range listRuns(bridge) {
-		if ri.state.terminal() {
+		if ri.state.terminal() || session == "" || ri.state.Session != session {
 			continue
 		}
-		if session != "" && ri.state.Session == session {
+		if ri.state.Approved {
 			return fmt.Errorf("this session already has an active run, %s", ri.id)
 		}
-		if ri.snap.Workspace == c.Workspace {
-			return fmt.Errorf("run %s is still active on the same workspace (%s)", ri.id, c.Workspace)
-		}
+		replace = append(replace, ri.id)
 	}
 
 	label := strings.ReplaceAll(c.Task, "/", "-")
@@ -429,6 +428,31 @@ func cmdRun(args []string, out io.Writer) error {
 	if err := writeJSON(filepath.Join(dir, "state.json"), st); err != nil {
 		return err
 	}
+	var replaced []string
+	for _, old := range replace {
+		r, err := openRun(bridge, old)
+		if err != nil {
+			return err
+		}
+		if r.State.terminal() || r.State.Session != session {
+			r.close()
+			continue
+		}
+		if r.State.Approved {
+			// Approved since the scan: leave it alone and withdraw the run just created.
+			r.close()
+			st.Status, st.Reason = "error", "withdrawn: run "+old+" was approved while this run was being set up"
+			writeJSON(filepath.Join(dir, "state.json"), st)
+			return fmt.Errorf("this session already has an active run, %s", old)
+		}
+		r.State.Status, r.State.Reason = "error", "replaced by run "+snap.Run
+		err = r.save()
+		r.close()
+		if err != nil {
+			return err
+		}
+		replaced = append(replaced, old)
+	}
 	if session != "" {
 		if err := bindSession(bridge, session, snap.Run); err != nil {
 			return err
@@ -436,6 +460,9 @@ func cmdRun(args []string, out io.Writer) error {
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "pipeline.json"))
 	sum := sha256.Sum256(data)
+	for _, old := range replaced {
+		fmt.Fprintf(out, "\nreplaced waiting run %s\n", old)
+	}
 	fmt.Fprintf(out, "\nrun %s created (pipeline sha %s), waiting for go\n", snap.Run, hex.EncodeToString(sum[:])[:12])
 	return nil
 }
