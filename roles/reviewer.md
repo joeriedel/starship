@@ -69,3 +69,7 @@ is a valid result.
 outcome: findings | clean
 summary: <one line: the count and the most serious finding, or "no defects">
 ```
+
+## Where you may edit
+
+Edit, Write and NotebookEdit are limited by a guard: you may edit only the system temp folder and your run's scratch folder. The same limit applies to shell commands that write files (redirection, `sed -i`, `cp`, `git apply`, scripts), and working around it is a failure, not a fix.

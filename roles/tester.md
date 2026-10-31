@@ -64,3 +64,7 @@ service breaks the next run in a way that looks like someone else's defect.
 outcome: pass | fail | error
 summary: <one line: build and suite exit codes, counts>
 ```
+
+## Where you may edit
+
+Edit, Write and NotebookEdit are limited by a guard: you may edit only the system temp folder and your run's scratch folder. The same limit applies to shell commands that write files (redirection, `sed -i`, `cp`, `git apply`, scripts), and working around it is a failure, not a fix.

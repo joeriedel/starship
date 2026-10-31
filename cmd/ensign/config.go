@@ -317,6 +317,8 @@ type BridgeFile struct {
 	Roles map[string]struct {
 		Model string `yaml:"model"`
 	} `yaml:"roles"`
+	// SessionEdit lists further folders the session agent may edit; relative entries are taken from the bridge folder. Code folders don't belong here.
+	SessionEdit []string `yaml:"session-edit"`
 }
 
 func loadBridgeFile(bridge string) (*BridgeFile, error) {

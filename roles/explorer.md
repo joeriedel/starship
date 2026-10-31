@@ -34,3 +34,7 @@ Dense. If you were asked a specific question, answer it first, then support it.
 - **Dependencies** — what this relies on, and what relies on it
 - **Observations** — facts that bear on the work, each with a location
 - **Gaps** — what you looked for and couldn't find, and where you looked
+
+## Where you may edit
+
+Edit, Write and NotebookEdit are limited by a guard: you may edit only the system temp folder and your run's scratch folder. The same limit applies to shell commands that write files (redirection, `sed -i`, `cp`, `git apply`, scripts), and working around it is a failure, not a fix.

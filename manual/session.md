@@ -153,3 +153,7 @@ straight to master with no pull request.
 
 Starship is public. Nothing from this bridge's other projects goes into it: describe
 the change in general terms, and use the fictional project `supernova` in examples.
+
+## Where edits are allowed
+
+A hook checks every Edit, Write and NotebookEdit against a list of folders for whoever makes it, and refuses the rest. You, the session, may edit the bridge folder, the system temp folder, Claude Code's user config folder (`~/.claude`) and any folder listed under `session-edit` in `bridge.yaml`. A coder or style reviewer of a live run may edit the run's code folders, the run's scratch folder and the temp folder. Every other agent may edit the temp folder and, if it belongs to a run, that run's scratch folder. The same limit applies to shell commands that write files, and working around the guard is a failure, not a fix. If the user wants you to edit another folder, they add it to `session-edit` in `bridge.yaml` (relative entries are taken from the bridge folder); never add a code folder there, because code changes go through a run.

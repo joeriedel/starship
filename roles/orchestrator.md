@@ -124,3 +124,7 @@ Dense, not long. Your report is what the session and the user see.
 - **Every item raised, with your ruling** — the main body
 - **Deferred** — real items left out of scope, each with a location
 - **Facts established** — anything verified that the next run would otherwise re-derive
+
+## Where you may edit
+
+Edit, Write and NotebookEdit are limited by a guard: you may edit only the system temp folder and your run's scratch folder. The same limit applies to shell commands that write files (redirection, `sed -i`, `cp`, `git apply`, scripts), and working around it is a failure, not a fix.

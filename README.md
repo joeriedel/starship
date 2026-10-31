@@ -111,6 +111,7 @@ keeps skills and style guides tidy. Each has a narrow job and a Claude model siz
 - **Agents can't cut corners.** If one tries to skip a stage, the dispatch is refused. A
   report missing its outcome gets sent back to be redone. An orchestrator that tries to
   stop early is told the run isn't finished.
+- **Edits stay in their folders.** A hook refuses any Edit, Write or NotebookEdit outside the folders the agent may edit: the session gets the bridge, each coder its run's code and scratch folders, everyone else temp and their run's scratch folder.
 - **Memory lives in files.** Task journals are committed and pushed in the bridge,
   so any session on any machine can pick the work up.
 - **Some words don't need the model.** `help`, `status` and `go` are answered by a hook without
