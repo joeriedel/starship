@@ -1065,11 +1065,12 @@ happened is not.
 
 ### 10.2 Task journals
 
-Task journals are verbose by design: progress log, decisions with reasoning, outstanding
-work, notes. The bar is that a fresh session with no context can pick the work up.
+Task journals are verbose by design: task.md holds status, decisions with reasoning,
+outstanding work and notes, and history.md holds the log of runs. The bar is that a
+fresh session with no context can pick the work up.
 
-**Every run is in the progress log.** When a run ends (or pauses to ask the user),
-ensign appends a line of facts to its task's progress log: date, run id, pipeline,
+**Every run is in history.md.** When a run ends (or pauses to ask the user),
+ensign appends a line of facts to its task's `history.md`: date, run id, pipeline,
 outcome, coder passes, files changed, and the workspace commits (from the run's starting
 commit, in git), and the cost by stage at API prices. The cost is read from each agent's
 transcript when the line is written (token usage per model response, priced by model;

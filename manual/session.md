@@ -96,29 +96,29 @@ moment the conversation ends.
 
 ## The task journal
 
-`task.md` is the task's memory, committed and pushed with the bridge. Keep it current:
+A task's memory is two files, committed and pushed with the bridge. Keep them current:
 after a run, after a decision, after anything that changes the shape of the work. The bar:
-a fresh session with none of this conversation can pick the work up.
+a fresh session can pick the work up.
 
-- **Status** — where the work actually stands
-- **Progress log** — dated: what was done, what came of it
-- **Outstanding** — this task's remaining work only; observations go in Notes
-- **Decisions** — what was decided *and why*; the reason is the part that decays.
-  If it affects the next run, also update Scope or Goal (see "Plan first, always")
-- **Notes** — discoveries and dead ends the next session would otherwise rediscover
+`task.md` is the current state. Edit it, don't append:
 
-**Every run gets an account in the progress log.** When a run ends, ensign adds a line
-with the facts: date, run, outcome, coder passes, files changed, commits. Under it, while
+- **Goal**, **Scope** — what it is for; what is in and out
+- **Status** — where the work stands
+- **Outstanding** — remaining work only; observations go in Notes
+- **Decisions** — what was decided *and why*; the reason decays first.
+  If it affects the next run, update Scope or Goal. A superseded decision moves to `history.md`, dated, with its replacement.
+- **Notes** — discoveries and dead ends
+
+`history.md` is append-only. Read it when a plan touches earlier work, or an old issue returns. A task with a `## Progress log` in `task.md` and no `history.md` is unsplit: write there, don't create one.
+
+**Every run gets an account in history.md.** When a run ends, ensign adds a line
+with the run's facts. Under it, while
 the lead's report is fresh, write one dense paragraph a reader can follow weeks later:
 
 - what changed and why, naming files and functions;
 - each finding a stage raised, and the ruling on it;
-- anything surprising, and where it was established (`path:line`);
-- what was deferred. Deferred work also goes in Outstanding, and new decisions in
-  Decisions.
-
-Weeks later, when an issue turns up, this is what someone reads first. A run with no
-account is a gap in the history nobody can fill.
+- anything surprising, and where (`path:line`);
+- what was deferred. Also in Outstanding.
 
 Commit journal changes with `ensign journal commit -m "<message>"`. A hook won't let a
 turn end with uncommitted journal changes.

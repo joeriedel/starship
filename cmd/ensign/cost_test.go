@@ -60,9 +60,9 @@ func TestRunCostIsLoggedByStage(t *testing.T) {
 	}
 	w.leaf(lead, "style-reviewer", "done")
 	w.leaf(lead, "tester", "pass")
-	data, _ := os.ReadFile(filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md"))
+	data, _ := os.ReadFile(filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/history.md"))
 	want := "Cost at API prices: $1.90 — run $1.00, code $0.50, review $0.40 (2 agents)."
 	if !strings.Contains(string(data), want) {
-		t.Fatalf("the progress log should carry the cost by stage:\n%s", data)
+		t.Fatalf("history.md should carry the cost by stage:\n%s", data)
 	}
 }

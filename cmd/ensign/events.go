@@ -193,11 +193,11 @@ func finishRun(r *RunFiles) {
 		fire(r, "run.finish:error", nil)
 	}
 	if err := logRunInJournal(r); err != nil {
-		st.log("journal", "", "", "the run could not be added to the task's progress log: "+err.Error())
+		st.log("journal", "", "", "the run could not be added to the task's history: "+err.Error())
 	}
 }
 
-// runEntry is the line a finished run adds to its task's progress log: what happened, in
+// runEntry is the line a finished run adds to its task's history: what happened, in
 // facts only. The session writes the account under it.
 func runEntry(r *RunFiles) string {
 	st := r.State
@@ -251,34 +251,52 @@ func runEntry(r *RunFiles) string {
 	return line + costLine(r)
 }
 
-// logRunInJournal adds the run's line to the end of its task's progress log, so every
+// historyHeading is the top of a task's history.md.
+func historyHeading(task string) string { return "# " + task + ": history\n\n" }
+
+// logRunInJournal adds the run's line to the end of its task's history.md, so every
 // run is in the journal even if nothing else gets written.
 func logRunInJournal(r *RunFiles) error {
 	p, t, ok := strings.Cut(r.Snap.Task, "/")
 	if !ok {
 		return nil
 	}
-	f := filepath.Join(r.Snap.Bridge, "projects", p, "tasks", t, "task.md")
-	data, err := os.ReadFile(f)
-	if err != nil {
-		return err
+	dir := filepath.Join(r.Snap.Bridge, "projects", p, "tasks", t)
+	f := filepath.Join(dir, "history.md")
+	if _, err := os.Stat(f); os.IsNotExist(err) {
+		// A task not yet split keeps its log in task.md; the next clean session start moves it all.
+		tf := filepath.Join(dir, "task.md")
+		if data, err := os.ReadFile(tf); err == nil && hasProgressLog(string(data)) {
+			return os.WriteFile(tf, []byte(insertProgress(string(data), runEntry(r))), 0o644)
+		}
 	}
-	return os.WriteFile(f, []byte(insertProgress(string(data), runEntry(r))), 0o644)
+	return appendHistory(f, t, runEntry(r))
 }
 
-// insertProgress puts an entry at the end of the "## Progress log" section, adding the
-// section if there isn't one.
+// hasProgressLog reports whether a task.md has a "## Progress log" section.
+func hasProgressLog(doc string) bool {
+	for _, l := range strings.Split(doc, "\n") {
+		if strings.TrimSpace(l) == "## Progress log" {
+			return true
+		}
+	}
+	return false
+}
+
+// insertProgress puts an entry at the end of the "## Progress log" section of a task.md
+// that has one, using the document's line endings.
 func insertProgress(doc, entry string) string {
 	lines := strings.Split(doc, "\n")
+	cr := ""
+	if strings.Contains(doc, "\r\n") {
+		cr = "\r"
+	}
 	start := -1
 	for i, l := range lines {
 		if strings.TrimSpace(l) == "## Progress log" {
 			start = i
 			break
 		}
-	}
-	if start < 0 {
-		return strings.TrimRight(doc, "\n") + "\n\n## Progress log\n\n" + entry + "\n"
 	}
 	end := len(lines)
 	for i := start + 1; i < len(lines); i++ {
@@ -293,9 +311,37 @@ func insertProgress(doc, entry string) string {
 	}
 	out := append([]string{}, lines[:last+1]...)
 	if last == start {
-		out = append(out, "")
+		out = append(out, cr)
 	}
-	out = append(out, entry)
+	out = append(out, entry+cr)
 	out = append(out, lines[last+1:]...)
 	return strings.Join(out, "\n")
+}
+
+// appendHistory adds entry after a blank line at the end of a history file, creating it
+// if missing. Existing bytes are never changed; the new text follows the file's line endings.
+func appendHistory(f, task, entry string) error {
+	data, err := os.ReadFile(f)
+	if os.IsNotExist(err) {
+		return writeFile(f, historyHeading(task)+entry+"\n")
+	}
+	if err != nil {
+		return err
+	}
+	add := "\n" + entry + "\n"
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		add = "\n" + add
+	}
+	if bytes.Contains(data, []byte("\r\n")) {
+		add = strings.ReplaceAll(add, "\n", "\r\n")
+	}
+	fh, err := os.OpenFile(f, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := fh.WriteString(add); err != nil {
+		fh.Close()
+		return err
+	}
+	return fh.Close()
 }

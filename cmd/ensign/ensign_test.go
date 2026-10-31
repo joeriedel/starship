@@ -999,3 +999,131 @@ func TestRunRefusesAFreshTask(t *testing.T) {
 		t.Fatalf("a fresh task should be refused: %v", err)
 	}
 }
+
+func TestSplitHistory(t *testing.T) {
+	const rel = "projects/supernova/tasks/auth-refactor/"
+	doc := "---\npipeline: coding\n---\n\n# t\n\n## Status\n\nNew.\n\n## Progress log\n\n- one.\n- two.\n\n## Outstanding\n\n- x\n"
+	crlf := func(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
+	setup := func(t *testing.T, content, autocrlf string) *world {
+		w := newWorld(t)
+		git(w.bridge, "init", "-q")
+		git(w.bridge, "config", "core.autocrlf", autocrlf)
+		write(t, filepath.Join(w.bridge, rel, "task.md"), content)
+		git(w.bridge, "add", "-A")
+		git(w.bridge, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "old bridge")
+		t.Setenv("GIT_AUTHOR_NAME", "t")
+		t.Setenv("GIT_AUTHOR_EMAIL", "t@example.com")
+		t.Setenv("GIT_COMMITTER_NAME", "t")
+		t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
+		return w
+	}
+	read := func(w *world, name string) string {
+		b, _ := os.ReadFile(filepath.Join(w.bridge, rel, name))
+		return string(b)
+	}
+	clean := func(t *testing.T, w *world) {
+		t.Helper()
+		if dirty, _ := gitOut(w.bridge, "status", "--porcelain", "--", rel); dirty != "" {
+			t.Errorf("the change should be committed: %q", dirty)
+		}
+	}
+	wantTask := "---\npipeline: coding\n---\n\n# t\n\n## Status\n\nNew.\n\n## Outstanding\n\n- x\n"
+	wantHistory := "# auth-refactor: history\n\n- one.\n- two.\n"
+
+	t.Run("progress log is split out and committed", func(t *testing.T) {
+		w := setup(t, doc, "false")
+		splitHistory(w.bridge)
+		if got := read(w, "task.md"); got != wantTask {
+			t.Errorf("task.md:\n%q", got)
+		}
+		if got := read(w, "history.md"); got != wantHistory {
+			t.Errorf("history.md:\n%q", got)
+		}
+		clean(t, w)
+		if log, _ := gitOut(w.bridge, "log", "--format=%s", "-1"); log != "Move each task's progress log into history.md" {
+			t.Errorf("last commit: %q", log)
+		}
+		splitHistory(w.bridge)
+		if read(w, "task.md") != wantTask {
+			t.Errorf("a second run should change nothing")
+		}
+	})
+	t.Run("dirty task.md is left alone", func(t *testing.T) {
+		w := setup(t, doc, "false")
+		dirty := doc + "my edit\n"
+		write(t, filepath.Join(w.bridge, rel, "task.md"), dirty)
+		splitHistory(w.bridge)
+		if read(w, "task.md") != dirty {
+			t.Errorf("task.md should be unchanged")
+		}
+		if _, err := os.Stat(filepath.Join(w.bridge, rel, "history.md")); err == nil {
+			t.Errorf("history.md should not be created")
+		}
+	})
+	t.Run("existing history.md is left alone", func(t *testing.T) {
+		w := setup(t, doc, "false")
+		write(t, filepath.Join(w.bridge, rel, "history.md"), "mine\n")
+		git(w.bridge, "add", "-A")
+		git(w.bridge, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "history")
+		splitHistory(w.bridge)
+		if read(w, "task.md") != doc || read(w, "history.md") != "mine\n" {
+			t.Errorf("both files should be unchanged")
+		}
+	})
+	t.Run("task without a progress log is left alone", func(t *testing.T) {
+		other := "---\npipeline: coding\n---\n\n# t\n\n## Status\n\nNew.\n"
+		w := setup(t, other, "false")
+		splitHistory(w.bridge)
+		if read(w, "task.md") != other {
+			t.Errorf("task.md should be unchanged")
+		}
+		if _, err := os.Stat(filepath.Join(w.bridge, rel, "history.md")); err == nil {
+			t.Errorf("history.md should not be created")
+		}
+	})
+	t.Run("a bridge that is not git is split without a commit", func(t *testing.T) {
+		w := newWorld(t)
+		write(t, filepath.Join(w.bridge, rel, "task.md"), doc)
+		if note := splitHistory(w.bridge); note != "" {
+			t.Errorf("note: %q", note)
+		}
+		if read(w, "task.md") != wantTask || read(w, "history.md") != wantHistory {
+			t.Errorf("task.md:\n%q\nhistory.md:\n%q", read(w, "task.md"), read(w, "history.md"))
+		}
+	})
+	t.Run("a task with both files returns a note", func(t *testing.T) {
+		w := setup(t, doc, "false")
+		write(t, filepath.Join(w.bridge, rel, "history.md"), "mine\n")
+		if note := splitHistory(w.bridge); !strings.Contains(note, "merge them by hand") {
+			t.Errorf("note: %q", note)
+		}
+	})
+	t.Run("CRLF endings are kept", func(t *testing.T) {
+		w := setup(t, crlf(doc), "false")
+		splitHistory(w.bridge)
+		if got := read(w, "task.md"); got != crlf(wantTask) {
+			t.Errorf("task.md:\n%q", got)
+		}
+		if got := read(w, "history.md"); got != crlf(wantHistory) {
+			t.Errorf("history.md:\n%q", got)
+		}
+		clean(t, w)
+	})
+	t.Run("CRLF working tree with autocrlf true is split and committed", func(t *testing.T) {
+		w := setup(t, crlf(doc), "true")
+		if dirty, _ := gitOut(w.bridge, "status", "--porcelain", "--", rel); dirty != "" {
+			t.Fatalf("setup left task.md dirty: %q", dirty)
+		}
+		splitHistory(w.bridge)
+		if got := read(w, "task.md"); got != crlf(wantTask) {
+			t.Errorf("task.md:\n%q", got)
+		}
+		if got := read(w, "history.md"); got != crlf(wantHistory) {
+			t.Errorf("history.md:\n%q", got)
+		}
+		clean(t, w)
+		if blob, _ := gitOut(w.bridge, "show", "HEAD:"+rel+"history.md"); !strings.Contains(blob, "- one.") {
+			t.Errorf("history.md not committed:\n%s", blob)
+		}
+	})
+}

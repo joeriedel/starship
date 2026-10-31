@@ -319,6 +319,20 @@ func TestJournals(t *testing.T) {
 	if got := runGit(t, remote, "log", "--format=%s", "-1"); got != "Log progress" {
 		t.Fatalf("remote has %q", got)
 	}
+	history := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/history.md")
+	write(t, history, "# auth-refactor: history\n\n- run.\n")
+	if r := stop(false); !strings.Contains(r, "history.md") {
+		t.Fatalf("an uncommitted history.md should block: %q", r)
+	}
+	if err := cmdJournal([]string{"commit", "-m", "Add history"}, &out); err != nil {
+		t.Fatalf("journal commit: %v", err)
+	}
+	if r := stop(false); r != "" {
+		t.Fatalf("after committing history.md: %q", r)
+	}
+	if got := runGit(t, remote, "log", "--format=%s", "-1"); got != "Add history" {
+		t.Fatalf("remote has %q", got)
+	}
 
 	// A project can turn journal commits off.
 	write(t, task, string(data)+"\n- more\n")
@@ -344,27 +358,68 @@ func TestRunIsLoggedInTheJournal(t *testing.T) {
 	if st.Status != "success" {
 		t.Fatalf("status %s (%s)", st.Status, st.Reason)
 	}
-	data, _ := os.ReadFile(filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md"))
-	journal := string(data)
+	dir := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor")
+	data, _ := os.ReadFile(filepath.Join(dir, "history.md"))
+	history := string(data)
 	want := "run " + st.Run + " (coding): success.** 1 coder pass. Changed: lib.txt, new.txt. Started at "
-	if !strings.Contains(journal, want) || !strings.Contains(journal, "nothing committed.") {
-		t.Fatalf("the progress log has no entry for the run:\n%s", journal)
+	if !strings.Contains(history, want) || !strings.Contains(history, "nothing committed.") {
+		t.Fatalf("history.md has no entry for the run:\n%s", history)
 	}
-	log := journal[strings.Index(journal, "## Progress log"):]
-	if next := strings.Index(log[3:], "\n## "); next >= 0 && !strings.Contains(log[:next+3], st.Run) {
-		t.Errorf("the entry should be inside the progress log section")
+	if !strings.HasPrefix(history, "# auth-refactor: history\n\n- ") {
+		t.Errorf("a new history.md should start with its heading:\n%s", history)
+	}
+	if task, _ := os.ReadFile(filepath.Join(dir, "task.md")); strings.Contains(string(task), st.Run) {
+		t.Errorf("task.md should not carry the run's line")
+	}
+}
+
+func TestAppendHistory(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "tasks", "t", "history.md")
+	if err := appendHistory(f, "t", "- new."); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(f); string(got) != "# t: history\n\n- new.\n" {
+		t.Errorf("a missing file is created with its heading:\n%q", got)
+	}
+	write(t, f, "# t: history\n\n- old.\n")
+	if err := appendHistory(f, "t", "- new."); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(f); string(got) != "# t: history\n\n- old.\n\n- new.\n" {
+		t.Errorf("an LF file:\n%q", got)
+	}
+	write(t, f, "# t: history\r\n\r\n- old.\r\n")
+	if err := appendHistory(f, "t", "- new."); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(f); string(got) != "# t: history\r\n\r\n- old.\r\n\r\n- new.\r\n" {
+		t.Errorf("a CRLF file:\n%q", got)
 	}
 }
 
 func TestInsertProgress(t *testing.T) {
-	doc := "# t\n\n## Progress log\n\n- old.\n\n## Outstanding\n\n- x\n"
-	if got := insertProgress(doc, "- new."); got != "# t\n\n## Progress log\n\n- old.\n- new.\n\n## Outstanding\n\n- x\n" {
-		t.Errorf("after the last entry, before the next section:\n%s", got)
+	doc := "# t\n\n## Progress log\n\n- one.\n\n## Outstanding\n\n- x\n"
+	if got, want := insertProgress(doc, "- two."), "# t\n\n## Progress log\n\n- one.\n- two.\n\n## Outstanding\n\n- x\n"; got != want {
+		t.Errorf("LF:\n%q", got)
 	}
-	if got := insertProgress("# t\n\n## Progress log\n\n## Notes\n", "- new."); got != "# t\n\n## Progress log\n\n- new.\n\n## Notes\n" {
-		t.Errorf("into an empty section:\n%q", got)
+	crlf := strings.ReplaceAll(doc, "\n", "\r\n")
+	if got, want := insertProgress(crlf, "- two."), strings.ReplaceAll("# t\n\n## Progress log\n\n- one.\n- two.\n\n## Outstanding\n\n- x\n", "\n", "\r\n"); got != want {
+		t.Errorf("CRLF:\n%q", got)
 	}
-	if got := insertProgress("# t\n", "- new."); got != "# t\n\n## Progress log\n\n- new.\n" {
-		t.Errorf("a missing section is added:\n%q", got)
+}
+
+func TestLogRunBeforeSplit(t *testing.T) {
+	bridge := t.TempDir()
+	dir := filepath.Join(bridge, "projects", "p", "tasks", "t")
+	write(t, filepath.Join(dir, "task.md"), "# t\n\n## Progress log\n\n- one.\n")
+	r := &RunFiles{Snap: &Snapshot{Bridge: bridge, Task: "p/t", Pipeline: &Pipeline{Name: "x"}}, State: &State{}}
+	if err := logRunInJournal(r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "history.md")); err == nil {
+		t.Errorf("history.md should not be created while task.md still has the log")
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "task.md")); strings.Count(string(got), "\n- ") < 2 {
+		t.Errorf("the run should be in task.md's log:\n%s", got)
 	}
 }

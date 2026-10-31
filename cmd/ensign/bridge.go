@@ -542,10 +542,6 @@ pipeline: coding
 
 New.
 
-## Progress log
-
-- %s: created.
-
 ## Outstanding
 
 ## Decisions
@@ -598,8 +594,12 @@ func cmdTask(args []string, out io.Writer) error {
 		if branch != "" {
 			vcs = fmt.Sprintf("vcs: { kind: git, branch: %s }\n", branch)
 		}
-		content := fmt.Sprintf(taskTemplate, vcs, parts[1], time.Now().Format("2006-01-02"))
+		content := fmt.Sprintf(taskTemplate, vcs, parts[1])
 		if err := writeFile(filepath.Join(taskDir, "task.md"), content); err != nil {
+			return err
+		}
+		created := historyHeading(parts[1]) + "- " + time.Now().Format("2006-01-02") + ": created.\n"
+		if err := writeFile(filepath.Join(taskDir, "history.md"), created); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "created %s; fill in its goal and scope\n", relTo(bridge, filepath.Join(taskDir, "task.md")))
@@ -635,11 +635,7 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 			fmt.Fprintln(out, "vcs        "+vcsState(ws, tf.Vcs))
 		}
 	}
-	for _, sec := range []string{"Goal", "Status", "Outstanding"} {
-		if text := section(string(body), sec); text != "" {
-			fmt.Fprintf(out, "\n%s\n%s\n", strings.ToLower(sec), indent(text))
-		}
-	}
+	fmt.Fprintf(out, "\n%s\n", strings.TrimSpace(string(body)))
 	if sid := os.Getenv("STARSHIP_SESSION"); sid != "" {
 		writeFile(sessionFile(bridge, sid)+".task", task+"\n")
 	}

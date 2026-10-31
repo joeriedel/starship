@@ -112,7 +112,7 @@ func (st *State) terminal() bool {
 	return st.Status == "success" || st.Status == "error" || st.Status == "ask-user"
 }
 
-// note keeps something for the run's report and progress log.
+// note keeps something for the run's report and the task's history.
 func (st *State) note(s string) {
 	st.Notes = append(st.Notes, s)
 	st.log("note", "", "", s)

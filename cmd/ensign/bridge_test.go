@@ -136,6 +136,12 @@ func TestProjectAndTask(t *testing.T) {
 			t.Errorf("a path on this machine doesn't belong in the committed %s:\n%s", f, data)
 		}
 	}
+	if data, _ := os.ReadFile(filepath.Join(b, "projects/nova/tasks/first/task.md")); strings.Contains(string(data), "Progress log") {
+		t.Errorf("task.md should not have a progress log:\n%s", data)
+	}
+	if data, err := os.ReadFile(filepath.Join(b, "projects/nova/tasks/first/history.md")); err != nil || !strings.HasPrefix(string(data), "# first: history\n\n- ") || !strings.HasSuffix(string(data), ": created.\n") {
+		t.Errorf("history.md missing or wrong: %v\n%s", err, data)
+	}
 	other := t.TempDir()
 	if err := cmdTask([]string{"new", "nova/second", "--workspace", other}, &out); err != nil {
 		t.Fatal(err)
@@ -154,6 +160,11 @@ func TestProjectAndTask(t *testing.T) {
 	o := out.String()
 	if !strings.Contains(o, "the task expects branch feature") || !strings.Contains(o, "Make it faster.") {
 		t.Errorf("task open output:\n%s", o)
+	}
+	for _, sec := range []string{"## Decisions", "## Notes"} {
+		if !strings.Contains(o, sec) {
+			t.Errorf("task open should print all of task.md, missing %s:\n%s", sec, o)
+		}
 	}
 	if sessionTask(b, "sess") != "nova/first" {
 		t.Errorf("task open did not record the session's task")
@@ -183,7 +194,7 @@ func TestProjectAndTask(t *testing.T) {
 }
 
 func TestWorkItemIsGoalAndScope(t *testing.T) {
-	body := "# t\n\n## Goal\n\nDo X.\n\n## Scope\n\nIn: a\n\n## Progress log\n\n- long history\n"
+	body := "# t\n\n## Goal\n\nDo X.\n\n## Scope\n\nIn: a\n\n## Notes\n\n- long history\n"
 	w := workItem(body)
 	if !strings.Contains(w, "Do X.") || !strings.Contains(w, "In: a") || strings.Contains(w, "long history") {
 		t.Fatalf("work item:\n%s", w)

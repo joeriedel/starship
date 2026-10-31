@@ -280,6 +280,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	dropSessionImport(bridge)
 	updateHeartbeat(bridge)
+	if note := splitHistory(bridge); note != "" {
+		fmt.Fprintln(&ctx, note)
+	}
 	upgradeHookSettings(bridge)
 	fmt.Fprintf(&ctx, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
 	// The manual goes to the session through this hook, not CLAUDE.md, because Claude
@@ -352,6 +355,83 @@ func updateHeartbeat(bridge string) {
 	if os.WriteFile(f, []byte(updated), 0o644) == nil && tracked {
 		git(bridge, "commit", "-q", "-m", "Scope the heartbeat rule to the session agent", "--", "CLAUDE.md")
 	}
+}
+
+// splitHistory moves each task's "## Progress log" section out of task.md into a new
+// history.md beside it, and commits that. In a git bridge, a task with uncommitted changes
+// to either file is left alone, as is one that already has a history.md. It returns what
+// the session needs to be told.
+func splitHistory(bridge string) string {
+	tracked := isGit(bridge)
+	files, _ := filepath.Glob(filepath.Join(bridge, "projects", "*", "tasks", "*", "task.md"))
+	var moved, notes []string
+	for _, tf := range files {
+		dir := filepath.Dir(tf)
+		hf := filepath.Join(dir, "history.md")
+		data, err := os.ReadFile(tf)
+		if err != nil {
+			continue
+		}
+		lines := strings.SplitAfter(string(data), "\n")
+		start := -1
+		for i, l := range lines {
+			if strings.TrimSpace(l) == "## Progress log" {
+				start = i
+				break
+			}
+		}
+		if start < 0 {
+			continue
+		}
+		rel := relTo(bridge, dir)
+		if _, err := os.Stat(hf); err == nil {
+			notes = append(notes, fmt.Sprintf("starship: %s has a progress log in task.md and a history.md; merge them by hand", rel))
+			continue
+		}
+		if tracked {
+			if dirty, _ := gitOut(bridge, "status", "--porcelain", "--", tf, hf); dirty != "" {
+				continue
+			}
+		}
+		end := len(lines)
+		for i := start + 1; i < len(lines); i++ {
+			if strings.HasPrefix(lines[i], "## ") {
+				end = i
+				break
+			}
+		}
+		entries := strings.ReplaceAll(strings.TrimSpace(strings.Join(lines[start+1:end], "")), "\r\n", "\n")
+		rest := lines[:start]
+		if end < len(lines) {
+			rest = append(rest, lines[end:]...)
+		} else {
+			for len(rest) > 1 && strings.TrimSpace(rest[len(rest)-1]) == "" {
+				rest = rest[:len(rest)-1]
+			}
+		}
+		history := historyHeading(filepath.Base(dir)) + entries + "\n"
+		if strings.Contains(string(data), "\r\n") {
+			history = strings.ReplaceAll(history, "\n", "\r\n")
+		}
+		if err := os.WriteFile(hf, []byte(history), 0o644); err != nil {
+			notes = append(notes, fmt.Sprintf("starship: could not write %s: %v", hf, err))
+			continue
+		}
+		if err := os.WriteFile(tf, []byte(strings.Join(rest, "")), 0o644); err != nil {
+			os.Remove(hf)
+			notes = append(notes, fmt.Sprintf("starship: could not write %s: %v", tf, err))
+			continue
+		}
+		moved = append(moved, tf, hf)
+	}
+	if len(moved) > 0 && tracked {
+		if err := git(bridge, append([]string{"add", "--"}, moved...)...); err != nil {
+			notes = append(notes, fmt.Sprintf("starship: split the progress logs but could not stage them: %v", err))
+		} else if err := git(bridge, append([]string{"commit", "-q", "-m", "Move each task's progress log into history.md", "--"}, moved...)...); err != nil {
+			notes = append(notes, fmt.Sprintf("starship: split the progress logs but could not commit them: %v", err))
+		}
+	}
+	return strings.Join(notes, "\n")
 }
 
 // dropSessionImport removes the manual's import from a bridge's CLAUDE.md, left there by
