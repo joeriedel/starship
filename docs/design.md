@@ -683,6 +683,12 @@ bindings
 The snapshot's hash is recorded in the state file. A config change mid-run does not
 affect that run.
 
+#### Sequences
+
+A sequence is an ordered list of steps in one session that the user approves with a single `go`; the session then works through it unattended. A step is a `run` (a run created queued: it belongs to the session but is not bound to it, replaces no waiting run, and does not count as a live run), a `publish` (the publish operation an extension declares, `ensign github-pr merge` for github-pr, carried out in process) or a `do` (an instruction the session carries out and reports with `ensign sequence done`). Steps are kept in `sessions/<session-id>.sequence`, changed under its lock. A step added after `go` goes into a new sequence that needs its own `go`.
+
+After `go`, and each time a run ends, `ensign sequence done|fail` is called or a paused run resumes, the next pending step starts: a run is bound, approved and handed to the session like a plain `go`; a publish is carried out at once. Only one step is under way at a time, and the Stop hook holds the turn open (three times per step) while a run's lead has not been dispatched or a `do` step is active. On a failure the default mode `stop` halts the sequence and cancels the rest; `keep-going` skips the later steps of the same task and carries on with the others. `ensign sequence halt` cancels what has not started. A plain `ensign run` is refused while a sequence has unfinished steps; a plain run waiting for `go` when the first step is added becomes the first step.
+
 ### 6.4 State file
 
 ```json
@@ -1380,6 +1386,9 @@ runs against Claude Code, except where listed below.
 | `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path>]` / `ensign task open <p>/<t>` | scaffold and open; where the code is goes into this machine's `machine.yaml`, and a new task uses its project's unless given a different location |
 | `ensign run <p>/<t> [--start <stage>] [--sync] [--dry-run]` | create a run for a task |
 | `ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]` | create a project- or bridge-wide run |
+| `ensign sequence` | list the session's sequences and their steps |
+| `ensign sequence run <p>/<t> [run flags]` / `publish <p>/<t>` / `do <instruction>` | add a queued run, a publish, or a session-carried step to the open sequence |
+| `ensign sequence mode stop\|keep-going` / `halt [--reason <text>]` / `done <n> [--note <text>]` / `fail <n> --reason <text>` | set how failure is handled, stop the sequence, or end a `do` step |
 | `ensign next [--run <id>]` | what to dispatch next |
 | `ensign resume --answer <text> [--budget <b>=<n>]` | continue an `ask-user` run |
 | `ensign journal commit -m <msg>` / `ensign journal push` | commit and push the bridge's records |

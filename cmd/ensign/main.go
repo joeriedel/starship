@@ -32,6 +32,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		err = cmdRun(os.Args[2:], os.Stdout)
+	case "sequence":
+		err = cmdSequence(os.Args[2:], os.Stdout)
 	case "next":
 		err = cmdNext(os.Args[2:])
 	case "init":
@@ -100,6 +102,7 @@ func usage() {
   ensign task open <project>/<task>
   ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
+  ensign sequence [run <project>/<task> [run flags] | publish <project>/<task> | do <instruction> | mode stop|keep-going | halt [--reason <text>] | done <n> [--note <text>] | fail <n> --reason <text>]
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>]
   ensign style report <project>
   ensign skill new <name> --description <text> | ensign skill discard <name>
@@ -131,6 +134,17 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "SessionStart":
 		return hookSessionStart(&in, bridge, stdout, stderr)
 	case "UserPromptSubmit":
+		if strings.TrimSpace(in.Prompt) == "go" {
+			text, ok, err := approveSequence(bridge, in.SessionID)
+			if err != nil {
+				return failHook(&in, nil, err, stderr)
+			}
+			if ok {
+				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
+					"hookEventName": "UserPromptSubmit", "additionalContext": "starship: " + text}})
+				return 0
+			}
+		}
 		if text := sessionWord(bridge, in.SessionID, in.Prompt); text != "" {
 			// continue:false, not decision:block: the prompt is kept as sent and the input
 			// box clears, where a block leaves the word in the box under an "operation
@@ -222,6 +236,15 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if r != nil && !wasTerminal && r.State.terminal() {
 		finishRun(r)
+		if r.State.Sequence {
+			// Saved first: the next step reads this run's final state from disk.
+			if err := r.save(); err != nil {
+				return failHook(&in, nil, err, stderr)
+			}
+			if _, err := advanceSequence(bridge, r.State.Session); err != nil {
+				fmt.Fprintln(stderr, "starship: could not advance the sequence:", err)
+			}
+		}
 	}
 	if r != nil {
 		err := r.save()

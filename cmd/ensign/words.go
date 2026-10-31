@@ -53,6 +53,7 @@ var fixedHelp = []struct {
 	{"Doing the work", []HelpEntry{
 		{"describe what you want done", "I plan it as a run; type go to start it", ""},
 		{"go", "approve the plan I just showed you", ""},
+		{"describe several steps", "I line them up as a sequence; one go runs them all, one after another", "ensign sequence"},
 	}},
 	{"Housekeeping", []HelpEntry{
 		{`"update the bridge"`, "move to the latest starship release", "ensign update"},
@@ -327,6 +328,9 @@ func statusText(bridge, session string) string {
 		}
 	} else {
 		b.WriteString("No run in this session.\n")
+	}
+	if l := sequenceListing(bridge, session); l != "" {
+		b.WriteString("\n" + l)
 	}
 	if t := sessionTask(bridge, session); t != "" {
 		p, task, _ := strings.Cut(t, "/")

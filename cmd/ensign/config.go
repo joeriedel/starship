@@ -301,6 +301,7 @@ type Extension struct {
 	Summary          string      `yaml:"summary"`
 	RequiresBindings []string    `yaml:"requires-bindings"`
 	Help             []HelpEntry `yaml:"help"`
+	Publish          string      `yaml:"publish"` // the command that publishes a task's tested work; the task is its argument
 	Layer            `yaml:",inline"`
 	dir              string
 }

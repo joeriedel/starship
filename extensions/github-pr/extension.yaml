@@ -29,6 +29,9 @@ summary: Each task works on its own branch; once it passes, you choose a pull re
 # which pushes the branch and waits for every check on that commit; a failing check goes
 # back to the coder with the end of its log. Its CI must run on pushes to task/**.
 
+# The publish operation is what a sequence's publish step carries out for a task.
+publish: ensign github-pr merge
+
 help:
   - say: '"open a pull request for <task>"'
     does: pushes the task's tested branch and opens its pull request

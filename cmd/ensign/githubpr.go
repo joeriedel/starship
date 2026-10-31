@@ -155,7 +155,8 @@ func checkNotBehind(ws, branch string) error {
 // the branch exactly as it was.
 func githubUpdate(bridge, task string) (base, sha string, upToDate bool, err error) {
 	for _, ri := range liveRuns(bridge) {
-		if ri.snap.Task == task {
+		// A queued sequence run has not started, so it does not hold the task.
+		if ri.snap.Task == task && !ri.state.queued() {
 			return "", "", false, fmt.Errorf("a run of %s is still going; wait for it to finish", task)
 		}
 	}
@@ -295,7 +296,8 @@ func orDefault(b string) string {
 // tested finds a task's tested commit, and checks the task branch still holds exactly it.
 func tested(bridge, task string) (ws, branch, sha string, err error) {
 	for _, ri := range liveRuns(bridge) {
-		if ri.snap.Task == task {
+		// A queued sequence run has not started, so it does not hold the task.
+		if ri.snap.Task == task && !ri.state.queued() {
 			return "", "", "", fmt.Errorf("a run of %s is still going; wait for it to finish", task)
 		}
 	}

@@ -519,14 +519,19 @@ func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 	}
 	r.State.Approved, r.State.Status = true, "running"
 	r.State.log("approved", "", "", "")
+	return ctx(approvalText(r)), nil
+}
+
+// approvalText tells the session what to do with a run that has just been approved.
+func approvalText(r *RunFiles) string {
 	lead := r.Snap.Pipeline.Stages[0]
 	if !lead.isLead() {
 		m := &machine{snap: r.Snap, st: r.State}
-		return ctx(fmt.Sprintf("run %s approved. You dispatch its stages yourself: %s After each stage finishes, run `ensign next --run %s` and do what it says.",
-			r.State.Run, m.expect(""), r.State.Run)), nil
+		return fmt.Sprintf("run %s approved. You dispatch its stages yourself: %s After each stage finishes, run `ensign next --run %s` and do what it says.",
+			r.State.Run, m.expect(""), r.State.Run)
 	}
-	return ctx(fmt.Sprintf("run %s approved. Dispatch its lead now: use the Agent tool with subagent_type %q, "+
-		"and pass this work item as the prompt:\n\n%s", r.State.Run, lead.Role, r.Snap.WorkItem)), nil
+	return fmt.Sprintf("run %s approved. Dispatch its lead now: use the Agent tool with subagent_type %q, "+
+		"and pass this work item as the prompt:\n\n%s", r.State.Run, lead.Role, r.Snap.WorkItem)
 }
 
 var reportRe = regexp.MustCompile("(?s)```starship-report\\s*\\n(.*?)```")
@@ -772,6 +777,11 @@ func cmdResume(args []string, out io.Writer) error {
 	if err := r.save(); err != nil {
 		return err
 	}
+	if r.State.Sequence {
+		if _, err := advanceSequence(bridge, r.State.Session); err != nil {
+			return err
+		}
+	}
 	lead := r.Snap.Pipeline.Stages[0]
 	fmt.Fprintf(out, "run %s resumed. Dispatch its lead now: use the Agent tool with subagent_type %q and this work item as the prompt:\n\n%s\n",
 		r.State.Run, lead.Role, r.Snap.WorkItem)
@@ -828,6 +838,7 @@ func carryOverSession(bridge string, in *HookInput) {
 		return
 	}
 	for _, old := range priorSessions(in.TranscriptPath, in.SessionID) {
+		carrySequence(bridge, old, in.SessionID)
 		r, err := openSessionRun(bridge, old)
 		if err != nil || r == nil {
 			continue

@@ -78,6 +78,10 @@ Commit with `ensign journal commit -m "<message>"`; a hook blocks ending a turn 
 
 A fact naming a nonexistent skill is held; `status` lists it. If asked for the skill, read `skills/proposed/<name>/`, write a one-line description of the technology and run `ensign skill new <name> --description "<description>"`. The facts become pending; `skill-curate` folds them in. If told to discard them, run `ensign skill discard <name>`. Commit either way: `ensign journal commit`.
 
+## Sequences
+
+When the user asks for several steps, build a sequence: `ensign sequence run supernova/<task>`, `ensign sequence publish supernova/<task>`, `ensign sequence do <instruction>`. Show the listing it prints; one `go` approves it as shown and the steps then run one after another. Set `ensign sequence mode keep-going` only when asked. After each run write its journal account, and report each step as it finishes. A `do` step is yours to carry out, then `ensign sequence done <n>` or `fail <n> --reason`; never edit a workspace for it (the edit guard still applies). Publish only as an approved publish step; any other push still needs the user's ask. In keep-going mode, if continuing is wasted, run `ensign sequence halt --reason <why>` and say why.
+
 ## Pushing and landing
 
 Workspace commits, pushes and submits need the user's explicit approval **every time**. Open a pull request only when asked, as a separate step after the run. Never add an agent attribution line (no co-author trailer, no "generated with").

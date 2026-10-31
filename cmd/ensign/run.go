@@ -110,7 +110,12 @@ type State struct {
 	History    []HistoryEntry `json:"history"`
 
 	Tasks map[string]string `json:"tasks,omitempty"` // background task id -> id of the agent that launched it
+
+	Sequence bool `json:"sequence,omitempty"` // the run is a step of its session's sequence
 }
+
+// queued reports a sequence run that has not started: it is no session's waiting run.
+func (st *State) queued() bool { return st.Sequence && st.Status == "pending" }
 
 // stopBudget is how many refused stops and handbacks an agent gets before the run fails: the last one fails it.
 const stopBudget = 3
@@ -374,62 +379,85 @@ func writeJSON(path string, v any) error {
 	return os.Rename(tmp, path)
 }
 
-// cmdRun implements `ensign run <project>/<task> [--start <stage>] [--dry-run]`.
-func cmdRun(args []string, out io.Writer) error {
-	var task, start, pipeline, project string
-	dry, sync, rebuild, staleOK := false, false, false, false
+// runOpts is what `ensign run` and `ensign sequence run` accept.
+type runOpts struct {
+	task, start, pipeline, project string
+	dry, sync, rebuild, staleOK    bool
+}
+
+// parseRunArgs reads the flags shared by `ensign run` and `ensign sequence run`; cmd names the command in the usage line.
+func parseRunArgs(cmd string, args []string) (runOpts, error) {
+	var o runOpts
+	usage := fmt.Errorf("usage: %s (<project>/<task> | --pipeline <name> [--project <p>]) [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]", cmd)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dry-run":
-			dry = true
+			o.dry = true
 		case "--sync":
-			sync = true
+			o.sync = true
 		case "--rebuild":
-			rebuild = true
+			o.rebuild = true
 		case "--stale-branch":
-			staleOK = true
+			o.staleOK = true
 		case "--pipeline", "--project":
 			if i+1 >= len(args) {
-				return fmt.Errorf("%s needs a value", args[i])
+				return o, fmt.Errorf("%s needs a value", args[i])
 			}
 			if args[i] == "--pipeline" {
-				pipeline = args[i+1]
+				o.pipeline = args[i+1]
 			} else {
-				project = args[i+1]
+				o.project = args[i+1]
 			}
 			i++
 		case "--start":
 			if i+1 >= len(args) {
-				return fmt.Errorf("--start needs a stage")
+				return o, fmt.Errorf("--start needs a stage")
 			}
 			i++
-			start = args[i]
+			o.start = args[i]
 		default:
-			if strings.HasPrefix(args[i], "-") || task != "" {
-				return fmt.Errorf("usage: ensign run (<project>/<task> | --pipeline <name> [--project <p>]) [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]")
+			if strings.HasPrefix(args[i], "-") || o.task != "" {
+				return o, usage
 			}
-			task = args[i]
+			o.task = args[i]
 		}
 	}
-	if task == "" && pipeline == "" {
-		return fmt.Errorf("usage: ensign run (<project>/<task> | --pipeline <name> [--project <p>]) [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]")
+	if o.task == "" && o.pipeline == "" {
+		return o, usage
+	}
+	return o, nil
+}
+
+// cmdRun implements `ensign run <project>/<task> [--start <stage>] [--dry-run]`.
+func cmdRun(args []string, out io.Writer) error {
+	o, err := parseRunArgs("ensign run", args)
+	if err != nil {
+		return err
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
 		return err
 	}
+	_, err = createRun(bridge, o, false, out)
+	return err
+}
+
+// createRun validates and freezes a run. A queued run (a sequence step) belongs to the session but is not bound to it and replaces nothing. It returns nil for a dry run.
+func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot, error) {
+	task, start, pipeline, project := o.task, o.start, o.pipeline, o.project
+	dry, sync, rebuild, staleOK := o.dry, o.sync, o.rebuild, o.staleOK
 	c, err := loadTarget(bridge, Target{Task: task, Project: project, Pipeline: pipeline})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if c.Task != "" {
 		taskFile := filepath.Join(c.TaskDir, "task.md")
 		_, body, err := splitFrontmatter(taskFile)
 		if err != nil {
-			return fmt.Errorf("task %q: %v", c.Task, err)
+			return nil, fmt.Errorf("task %q: %v", c.Task, err)
 		}
 		if section(string(body), "Goal") == "" && section(string(body), "Scope") == "" {
-			return fmt.Errorf("task %s has no work item: its task file %s has neither a \"## Goal\" nor a \"## Scope\" section with text in it; add one and run again", c.Task, taskFile)
+			return nil, fmt.Errorf("task %s has no work item: its task file %s has neither a \"## Goal\" nor a \"## Scope\" section with text in it; add one and run again", c.Task, taskFile)
 		}
 	}
 	errs := validate(c)
@@ -458,29 +486,34 @@ func cmdRun(args []string, out io.Writer) error {
 		}
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("the run is not valid:\n  - %s", strings.Join(errs, "\n  - "))
+		return nil, fmt.Errorf("the run is not valid:\n  - %s", strings.Join(errs, "\n  - "))
 	}
-	printSummary(out, c, start)
+	if !queued || dry {
+		printSummary(out, c, start)
+	}
 	if dry {
 		fmt.Fprintln(out, "\n(dry run: nothing created)")
-		return nil
+		return nil, nil
 	}
 
 	session := os.Getenv("STARSHIP_SESSION")
 	if session != "" {
 		if data, err := os.ReadFile(sessionFile(bridge, session) + ".pin"); err == nil {
 			if started := strings.TrimSpace(string(data)); started != pinnedCommit(bridge) {
-				return fmt.Errorf("the bridge was updated to a new starship release after this session started; restart claude before starting a run")
+				return nil, fmt.Errorf("the bridge was updated to a new starship release after this session started; restart claude before starting a run")
 			}
 		}
 	}
+	if !queued && session != "" && sequenceUnfinished(bridge, session) {
+		return nil, fmt.Errorf("this session has a sequence in progress; add the run with ensign sequence run, or ensign sequence halt first")
+	}
 	var replace []string
 	for _, ri := range listRuns(bridge) {
-		if ri.state.terminal() || session == "" || ri.state.Session != session {
+		if queued || ri.state.terminal() || session == "" || ri.state.Session != session || ri.state.queued() {
 			continue
 		}
 		if ri.state.Approved {
-			return fmt.Errorf("this session already has an active run, %s", ri.id)
+			return nil, fmt.Errorf("this session already has an active run, %s", ri.id)
 		}
 		replace = append(replace, ri.id)
 	}
@@ -491,7 +524,7 @@ func cmdRun(args []string, out io.Writer) error {
 	}
 	id, dir, err := newRunDir(bridge, time.Now().Format("20060102-150405")+"-"+label)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	snap := &Snapshot{
 		Run:          id,
@@ -520,17 +553,17 @@ func cmdRun(args []string, out io.Writer) error {
 				}
 				data, err := os.ReadFile(f)
 				if err != nil {
-					return err
+					return nil, err
 				}
 				hs[i].Text = string(data)
 			}
 		}
 	}
 	if err := freezeBriefs(c, snap); err != nil {
-		return err
+		return nil, err
 	}
 	st := &State{Run: snap.Run, Session: session, Status: "pending", Spent: map[string]int{}, Scopes: map[string]*ScopeState{},
-		Sync: sync, Extra: map[string]int{}, Rebuild: rebuild, StaleOK: staleOK}
+		Sync: sync, Extra: map[string]int{}, Rebuild: rebuild, StaleOK: staleOK, Sequence: queued}
 	first := c.Pipeline.Stages[0].ID
 	if start != "" {
 		_, _, scope := c.Pipeline.find(start)
@@ -545,13 +578,13 @@ func cmdRun(args []string, out io.Writer) error {
 
 	os.Mkdir(filepath.Join(dir, "scratch"), 0o755)
 	if err := os.Mkdir(filepath.Join(dir, "reports"), 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	if err := writeJSON(filepath.Join(dir, "pipeline.json"), snap); err != nil {
-		return err
+		return nil, err
 	}
 	if err := writeJSON(filepath.Join(dir, "state.json"), st); err != nil {
-		return err
+		return nil, err
 	}
 	var replaced []string
 	for _, old := range replace {
@@ -560,7 +593,7 @@ func cmdRun(args []string, out io.Writer) error {
 			continue
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if r.State.terminal() || r.State.Session != session {
 			r.close()
@@ -572,21 +605,24 @@ func cmdRun(args []string, out io.Writer) error {
 			if nr, err := openRun(bridge, snap.Run); err == nil {
 				retireRun(nr, "withdrawn: run "+old+" was approved while this run was being set up")
 			}
-			return fmt.Errorf("this session already has an active run, %s", old)
+			return nil, fmt.Errorf("this session already has an active run, %s", old)
 		}
 		if err := markRetired(r, "replaced by run "+snap.Run); err != nil {
-			return err
+			return nil, err
 		}
 		replaced = append(replaced, old)
 	}
-	if session != "" {
+	if session != "" && !queued {
 		if err := bindSession(bridge, session, snap.Run); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// Folders go only after the session is bound, so a "go" hook never finds it without a run.
 	for _, old := range replaced {
 		removeRun(filepath.Join(runsDir(bridge), old))
+	}
+	if queued {
+		return snap, nil
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "pipeline.json"))
 	sum := sha256.Sum256(data)
@@ -594,7 +630,7 @@ func cmdRun(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "\nreplaced waiting run %s\n", old)
 	}
 	fmt.Fprintf(out, "\nrun %s created (pipeline sha %s), waiting for go\n", snap.Run, hex.EncodeToString(sum[:])[:12])
-	return nil
+	return snap, nil
 }
 
 // newRunDir creates a run's directory exclusively, adding -2, -3 … if the id is taken,
