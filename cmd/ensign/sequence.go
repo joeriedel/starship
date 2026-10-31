@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofrs/flock"
 )
@@ -28,11 +29,14 @@ const (
 
 type seqStep struct {
 	N           int    `json:"n"`
-	Kind        string `json:"kind"` // run, publish, do
+	Kind        string `json:"kind"` // run, publish, do, release
 	Task        string `json:"task,omitempty"`
 	Run         string `json:"run,omitempty"`
 	Command     string `json:"command,omitempty"` // publish: the extension's operation
 	Instruction string `json:"instruction,omitempty"`
+	Version     string `json:"version,omitempty"` // release: the version to release, fixed when the step is added
+	Started     bool   `json:"started,omitempty"` // release: release-run has begun the project's @release command
+	Token       string `json:"token,omitempty"`   // release: identifies this start, so the result finds the step if the sequence moved to another session
 	Headline    string `json:"headline,omitempty"`
 	Status      string `json:"status"` // pending, active, paused, decide, done, failed, skipped, cancelled
 	Reason      string `json:"reason,omitempty"`
@@ -203,6 +207,8 @@ func (sf *seqFile) listing() string {
 				what += "  " + st.Headline
 			case "do":
 				what = st.Instruction
+			case "release":
+				what += " " + st.Version
 			}
 			line := fmt.Sprintf("  %d  %-7s %s  [%s]", st.N, st.Kind, strings.TrimSpace(what), st.Status)
 			if st.Reason != "" {
@@ -294,7 +300,8 @@ func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
 	why := fmt.Sprintf("step %d failed", failed.N)
 	if seq.Mode == modeKeepGoing {
 		for _, st := range seq.Steps {
-			if st.Status == "pending" && failed.Task != "" && st.Task == failed.Task {
+			if st.Status == "pending" && failed.Task != "" && (st.Task == failed.Task ||
+				(failed.Kind == "release" && strings.HasPrefix(st.Task, failed.Task+"/"))) {
 				cancelStep(bridge, st, "skipped", why)
 			}
 		}
@@ -388,6 +395,10 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 				st.Status = "active"
 				parts = append(parts, fmt.Sprintf("step %d: %s", st.N, doText(st)))
 				return finish(), nil
+			case "release":
+				st.Status = "active"
+				parts = append(parts, fmt.Sprintf("step %d: %s", st.N, releaseText(st)))
+				return finish(), nil
 			}
 		}
 	}
@@ -397,6 +408,11 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 func doText(st *seqStep) string {
 	return fmt.Sprintf("%s\nWhen it is done run `ensign sequence done %d`, or `ensign sequence fail %d --reason …` if it can't be.",
 		st.Instruction, st.N, st.N)
+}
+
+func releaseText(st *seqStep) string {
+	return fmt.Sprintf("Release %s %s. Start `ensign sequence release-run %d` as a background shell command (Bash with run_in_background), wait for its completion notification without polling, then report the outcome. If the command dies without finishing, run `ensign sequence fail %d --reason …`.",
+		st.Task, st.Version, st.N, st.N)
 }
 
 func decideText(st *seqStep) string {
@@ -526,6 +542,10 @@ func sequenceStop(bridge string, in *HookInput) any {
 				case st.Status != "active":
 				case st.Kind == "do":
 					todo = doText(st)
+				case st.Kind == "release":
+					if !st.Started {
+						todo = releaseText(st)
+					}
 				case st.Kind == "run":
 					if r, err := readRun(bridge, st.Run); err == nil && r.State.Approved && r.State.Status == "running" &&
 						!r.State.Started && len(r.State.Dispatches) == 0 {
@@ -571,6 +591,110 @@ func carrySequence(bridge, old, session string) {
 		}
 		return nil
 	})
+}
+
+// releaseCommand finds a project's @release command and the project's workspace.
+func releaseCommand(bridge, project string) (cmd, workspace string, err error) {
+	var l Layer
+	if err := readYAML(filepath.Join(bridge, "projects", project, "project.yaml"), &l); err != nil {
+		return "", "", fmt.Errorf("project %q: %v", project, err)
+	}
+	c := &Config{Bindings: map[string]Binding{}}
+	if err := c.addBindings(&l.Bindings, "project "+project); err != nil {
+		return "", "", err
+	}
+	b := c.Bindings["release"]
+	if b.Command == "" || b.NotApplicable != "" {
+		return "", "", fmt.Errorf("project %s has no @release binding with a command", project)
+	}
+	if workspace, err = workspaceFor(bridge, project, ""); err != nil {
+		return "", "", err
+	}
+	return b.Command, workspace, nil
+}
+
+// releaseRun runs the project's @release command for the release step that is due. The command runs without the sequence lock and without a time limit; the step is marked started first so the Stop hook doesn't ask for a second start.
+func releaseRun(bridge, session string, n int, out io.Writer) error {
+	var project, version string
+	token := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+	err := withSeq(bridge, session, func(sf *seqFile) error {
+		_, st := sf.step(n)
+		if st == nil || st.Kind != "release" || st.Status != "active" || st.Started {
+			return fmt.Errorf("step %d is not a release step that is due", n)
+		}
+		st.Started, st.Token = true, token
+		project, version = st.Task, st.Version
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	cmd, ws, err := releaseCommand(bridge, project)
+	if err == nil {
+		var output string
+		output, err = shellFor(ws, cmd, append(os.Environ(), "VERSION="+version), 0)
+		if err != nil {
+			err = fmt.Errorf("%v: %s", err, lastLines(output, 5))
+		}
+	}
+	finish := func(owner string) (bool, error) {
+		found := false
+		werr := withSeq(bridge, owner, func(sf *seqFile) error {
+			var seq *sequence
+			var st *seqStep
+			for _, q := range sf.Sequences {
+				for _, c := range q.Steps {
+					if c.Kind == "release" && c.Token == token {
+						seq, st = q, c
+					}
+				}
+			}
+			if st == nil {
+				return nil
+			}
+			found = true
+			if st.Status != "active" {
+				fmt.Fprintf(out, "step %d is %s; the release command ended with: %v\n", st.N, st.Status, err)
+				return nil
+			}
+			var note string
+			if err != nil {
+				st.Status, st.Reason = "failed", err.Error()
+				sf.failed(bridge, seq, st)
+				note = fmt.Sprintf("step %d (release %s %s) failed: %v", st.N, project, version, err)
+			} else {
+				st.Status, st.Reason = "done", ""
+				note = fmt.Sprintf("step %d (release %s %s) done.", st.N, project, version)
+			}
+			text, aerr := sf.advance(bridge, owner)
+			if text == "" {
+				text = sf.listing()
+			}
+			fmt.Fprintf(out, "%s\n%s", note, text)
+			return aerr
+		})
+		return found, werr
+	}
+	// The sequence may have been carried to a new session while the command ran.
+	if found, werr := finish(session); found || werr != nil {
+		return werr
+	}
+	files, _ := filepath.Glob(filepath.Join(filepath.Dir(seqPath(bridge, session)), "*.sequence"))
+	for _, f := range files {
+		owner := strings.TrimSuffix(filepath.Base(f), ".sequence")
+		if owner == session {
+			continue
+		}
+		if found, werr := finish(owner); found || werr != nil {
+			return werr
+		}
+	}
+	outcome := "done"
+	if err != nil {
+		outcome = "failed: " + err.Error()
+	}
+	fmt.Fprintf(out, "step %d (release %s %s) %s\n", n, project, version, outcome)
+	return fmt.Errorf("step %d is no longer in any session's sequence; its release outcome was not recorded", n)
 }
 
 // cmdSequence implements `ensign sequence [run|publish|do|mode|halt|done|fail …]`.
@@ -630,6 +754,23 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		}
 		return seqAdd(bridge, session, out, &seqStep{Kind: "do", Instruction: text})
+	case "release":
+		if len(rest) != 2 || strings.TrimSpace(rest[1]) == "" {
+			return fmt.Errorf("usage: ensign sequence release <project> <version>")
+		}
+		if _, _, err := releaseCommand(bridge, rest[0]); err != nil {
+			return err
+		}
+		if err := checkAddable(bridge, session); err != nil {
+			return err
+		}
+		return seqAdd(bridge, session, out, &seqStep{Kind: "release", Task: rest[0], Version: strings.TrimSpace(rest[1])})
+	case "release-run":
+		n, err := stepArg(rest, "usage: ensign sequence release-run <n>")
+		if err != nil {
+			return err
+		}
+		return releaseRun(bridge, session, n, out)
 	case "mode":
 		if len(rest) != 1 || (rest[0] != modeStop && rest[0] != modeKeepGoing) {
 			return fmt.Errorf("usage: ensign sequence mode stop|keep-going")
@@ -673,7 +814,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				switch {
 				case st.Status == "paused":
 					paused = append(paused, &seqStep{N: st.N, Run: st.Run})
-				case st.Status == "pending" || st.deciding() || (st.Status == "active" && st.Kind == "do"):
+				case st.Status == "pending" || st.deciding() || (st.Status == "active" && (st.Kind == "do" || (st.Kind == "release" && !st.Started))):
 					cancelStep(bridge, st, "cancelled", reason)
 				}
 			}
@@ -754,7 +895,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			case seq.Halted:
 				return fmt.Errorf("the sequence is halted; step %d can't be retried", n)
 			case st.Kind != "run":
-				return fmt.Errorf("step %d is a %s step; only run steps can be retried, not publish or do steps", n, st.Kind)
+				return fmt.Errorf("step %d is a %s step; only run steps can be retried, not publish, do or release steps", n, st.Kind)
 			case st.Prev != "":
 				return fmt.Errorf("step %d was already retried; a step gets one retry", n)
 			case !st.deciding():
@@ -809,8 +950,8 @@ func cmdSequence(args []string, out io.Writer) error {
 		}
 		return withSeq(bridge, session, func(sf *seqFile) error {
 			seq, st := sf.step(n)
-			if st == nil || st.Kind != "do" || st.Status != "active" {
-				return fmt.Errorf("step %d is not an active do step", n)
+			if st == nil || st.Status != "active" || st.Kind != "do" && !(st.Kind == "release" && args[0] == "fail") {
+				return fmt.Errorf("step %d is not an active do step (or, for fail, an active release step)", n)
 			}
 			st.Reason = why
 			if args[0] == "done" {
@@ -827,7 +968,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		})
 	}
-	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | do <instruction> | mode stop|keep-going | halt | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> | fail <n> --reason <text>]")
+	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <n> | do <instruction> | mode stop|keep-going | halt | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> | fail <n> --reason <text>]")
 }
 
 func stepArg(args []string, usage string) (int, error) {

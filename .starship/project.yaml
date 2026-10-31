@@ -13,6 +13,29 @@ use: [github-pr]
 bindings:
   build: { not-applicable: "no Go toolchain is installed locally; CI builds every push" }
   test:  { command: "ensign github-pr ci", plain: true }
+  release:
+    command: |
+      set -e
+      sha=$(git rev-parse HEAD) || { echo "release: can't read HEAD" >&2; exit 1; }
+      git fetch -q origin master || { echo "release: can't fetch origin master" >&2; exit 1; }
+      [ "$sha" = "$(git rev-parse origin/master)" ] || { echo "release: HEAD is not master's head" >&2; exit 1; }
+      ciid=$(gh run list --workflow ci --branch master --event push --commit "$sha" --json databaseId -q '.[0].databaseId') && [ -n "$ciid" ] || { echo "release: no ci run for $sha" >&2; exit 1; }
+      [ "$(gh run view "$ciid" --json status,conclusion -q '.status + " " + .conclusion')" = "completed success" ] || { echo "release: ci run $ciid for $sha has not completed with success" >&2; exit 1; }
+      bad=$(gh run view "$ciid" --json jobs -q '[.jobs[] | select(.conclusion != "success")] | length')
+      jobs=$(gh run view "$ciid" --json jobs -q '.jobs | length')
+      [ "$bad" = 0 ] && [ "$jobs" = 3 ] || { echo "release: ci run $ciid needs all 3 matrix jobs to succeed ($jobs jobs, $bad not successful)" >&2; exit 1; }
+      before=$(gh run list --workflow release --event workflow_dispatch --limit 1 --json databaseId -q '.[0].databaseId // 0')
+      gh workflow run release -f version="$VERSION" || { echo "release: could not dispatch the release workflow" >&2; exit 1; }
+      rid=
+      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        rid=$(gh run list --workflow release --event workflow_dispatch --limit 1 --json databaseId -q ".[0].databaseId | select(. > $before)")
+        [ -n "$rid" ] && break
+        sleep 3
+      done
+      [ -n "$rid" ] || { echo "release: the dispatched release run did not appear" >&2; exit 1; }
+      gh run watch "$rid" --exit-status || { echo "release: release run $rid did not succeed" >&2; exit 1; }
+      gh release view "v$VERSION" >/dev/null || { echo "release: no GitHub release v$VERSION after run $rid" >&2; exit 1; }
+      echo "released v$VERSION (run $rid)"
 
 pipelines:
   coding:

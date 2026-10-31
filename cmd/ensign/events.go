@@ -107,9 +107,15 @@ func shell(dir, command string, env []string) (string, error) {
 	return shellFor(dir, command, env, handlerTimeout)
 }
 
-// shellFor runs a command line through the platform's shell with a time limit.
+// shellFor runs a command line through the platform's shell with a time limit; a limit of zero or less means none.
 func shellFor(dir, command string, env []string, limit time.Duration) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if limit > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), limit)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	defer cancel()
 	var c *exec.Cmd
 	switch {

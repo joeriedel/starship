@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -636,5 +637,177 @@ func TestSequenceHaltedSequenceDoesNotWaitOnALateFailure(t *testing.T) {
 	w.wantStatus("failed", "cancelled")
 	if _, err := w.seq("retry", "1", "--diagnosis", "x", "--state", "y"); err == nil {
 		t.Error("retry on a halted sequence should be refused")
+	}
+}
+
+// releaseWorld gives the fixture project a @release that records $VERSION in the workspace and exits with code.
+func releaseWorld(t *testing.T, code int) *world {
+	t.Helper()
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"),
+		"bindings:\n  build: { command: \"./build.sh\" }\n  release: { command: \"echo $VERSION >> released.txt; echo boom; exit "+strconv.Itoa(code)+"\" }\n")
+	return w
+}
+
+func (w *world) released() string {
+	data, _ := os.ReadFile(filepath.Join(filepath.Dir(w.bridge), "workspace", "released.txt"))
+	return strings.TrimSpace(string(data))
+}
+
+func TestSequenceReleaseRunsReleaseWithVersionAndAdvances(t *testing.T) {
+	w := releaseWorld(t, 0)
+	out := w.mustSeq("release", "supernova", "1.2.3")
+	if !strings.Contains(out, "supernova 1.2.3") {
+		t.Fatalf("the listing should show the version:\n%s", out)
+	}
+	w.mustSeq("do", "report")
+	ctx := w.goContext()
+	if !strings.Contains(ctx, "ensign sequence release-run 1") {
+		t.Fatalf("go should name release-run: %s", ctx)
+	}
+	w.wantStatus("active", "pending")
+	if w.released() != "" {
+		t.Fatal("the release must not run inside the hook")
+	}
+	res := w.stopHook()
+	if r := dig(res, "reason"); !strings.Contains(r, "ensign sequence release-run 1") {
+		t.Fatalf("the Stop hook should name release-run: %v", res)
+	}
+	out = w.mustSeq("release-run", "1")
+	if w.released() != "1.2.3" {
+		t.Errorf("released.txt = %q", w.released())
+	}
+	w.wantStatus("done", "active")
+	if !strings.Contains(out, "report") {
+		t.Errorf("release-run should hand over the next step:\n%s", out)
+	}
+	if _, err := w.seq("release-run", "1"); err == nil {
+		t.Error("a second release-run of a finished step should be refused")
+	}
+}
+
+func TestSequenceStopHookDoesNotBlockOnceReleaseStarted(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.goContext()
+	_, st := readSeq(w.bridge, w.sid).step(1)
+	if st.Started {
+		t.Fatal("not started yet")
+	}
+	withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		_, st := sf.step(1)
+		st.Started = true
+		return nil
+	})
+	if res := w.stopHook(); dig(res, "reason") != "" {
+		t.Errorf("a started release should not block the turn: %v", res)
+	}
+	if _, err := w.seq("release-run", "1"); err == nil {
+		t.Error("a started release can't be started again")
+	}
+}
+
+func TestSequenceReleaseFailureHaltsInStopMode(t *testing.T) {
+	w := releaseWorld(t, 1)
+	w.mustSeq("release", "supernova", "2.0.0")
+	w.mustSeq("do", "later")
+	w.goContext()
+	w.mustSeq("release-run", "1")
+	w.wantStatus("failed", "cancelled")
+	if r := w.step(1).Reason; !strings.Contains(r, "boom") {
+		t.Errorf("the reason should carry the output: %q", r)
+	}
+	if !readSeq(w.bridge, w.sid).Sequences[0].Halted {
+		t.Error("the sequence should be halted")
+	}
+}
+
+func TestSequenceReleaseFailureSkipsSameProjectInKeepGoing(t *testing.T) {
+	w := releaseWorld(t, 1)
+	w.addTask("other")
+	w.mustSeq("release", "supernova", "2.0.0")
+	w.mustSeq("publish", "supernova/other")
+	w.mustSeq("do", "report")
+	w.mustSeq("mode", "keep-going")
+	w.goContext()
+	w.mustSeq("release-run", "1")
+	w.wantStatus("failed", "skipped", "active")
+}
+
+func TestSequenceReleaseNeedsBindingAndVersion(t *testing.T) {
+	w := newWorld(t)
+	if _, err := w.seq("release", "supernova", "1.0.0"); err == nil || !strings.Contains(err.Error(), "no @release") {
+		t.Errorf("a project without @release should be refused: %v", err)
+	}
+	w = releaseWorld(t, 0)
+	if _, err := w.seq("release", "supernova", "  "); err == nil {
+		t.Error("an empty version should be refused")
+	}
+}
+
+func TestSequenceReleaseRunRefusesStepsNotDue(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.mustSeq("do", "first")
+	w.mustSeq("release", "supernova", "1.0.0")
+	if _, err := w.seq("release-run", "2"); err == nil {
+		t.Error("a pending release step is not due")
+	}
+	w.goContext()
+	if _, err := w.seq("release-run", "1"); err == nil {
+		t.Error("a do step can't be release-run")
+	}
+	if w.released() != "" {
+		t.Error("nothing should have been released")
+	}
+}
+
+func TestSequenceRetryRefusesReleaseStep(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.goContext()
+	_, err := w.seq("retry", "1", "--diagnosis", "x", "--state", "y")
+	if err == nil || !strings.Contains(err.Error(), "release") {
+		t.Errorf("retry should refuse a release step: %v", err)
+	}
+}
+
+func TestSequenceFailEndsStartedRelease(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.mustSeq("do", "later")
+	w.goContext()
+	withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		_, st := sf.step(1)
+		st.Started = true
+		return nil
+	})
+	if _, err := w.seq("done", "1"); err == nil {
+		t.Error("done must stay do-only")
+	}
+	w.mustSeq("fail", "1", "--reason", "runner died")
+	w.wantStatus("failed", "cancelled")
+	if !readSeq(w.bridge, w.sid).Sequences[0].Halted {
+		t.Error("the sequence should be halted")
+	}
+	if _, err := w.seq("release-run", "1"); err == nil {
+		t.Error("a failed release can't be run")
+	}
+}
+
+func TestSequenceReleaseResultFollowsCarriedSequence(t *testing.T) {
+	w := newWorld(t)
+	moved := filepath.Join(w.bridge, ".starship", "sessions", "other.sequence")
+	write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"),
+		"bindings:\n  build: { command: \"./build.sh\" }\n  release: { command: \"mv '"+seqPath(w.bridge, w.sid)+"' '"+moved+"'\" }\n")
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.mustSeq("do", "report")
+	w.goContext()
+	w.mustSeq("release-run", "1")
+	sf := readSeq(w.bridge, "other")
+	if _, st := sf.step(1); st == nil || st.Status != "done" {
+		t.Fatalf("the new owner should hold the finished release: %+v", sf)
+	}
+	if _, st := sf.step(2); st == nil || st.Status != "active" {
+		t.Errorf("the new owner should have advanced: %+v", sf)
 	}
 }
