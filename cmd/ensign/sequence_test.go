@@ -644,8 +644,13 @@ func TestSequenceHaltedSequenceDoesNotWaitOnALateFailure(t *testing.T) {
 func releaseWorld(t *testing.T, code int) *world {
 	t.Helper()
 	w := newWorld(t)
-	write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"),
-		"bindings:\n  build: { command: \"./build.sh\" }\n  release: { command: \"echo $VERSION >> released.txt; echo boom; exit "+strconv.Itoa(code)+"\" }\n")
+	path := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	base, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, strings.Replace(string(base), "bindings:\n",
+		"bindings:\n  release: { command: \"echo $VERSION >> released.txt; echo boom; exit "+strconv.Itoa(code)+"\" }\n", 1))
 	return w
 }
 
