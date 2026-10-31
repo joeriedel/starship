@@ -94,13 +94,20 @@ func githubBranch(r *RunFiles) error {
 	os.Remove(testedFile(r.Snap.Bridge, r.Snap.Task)) // a new run has to pass again
 	ws, want := r.Snap.Workspace, taskBranch(r.Snap.Task)
 	cur := currentBranch(ws)
+	_, verr := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want)
+	exists := verr == nil
+	if exists && !r.State.StaleOK {
+		if err := checkNotBehind(ws, want); err != nil {
+			return err
+		}
+	}
 	if cur == want {
 		return nil
 	}
 	if dirty(ws) {
 		return fmt.Errorf("the workspace has uncommitted changes on %s; commit or stash them, then start the run again", orDetached(cur))
 	}
-	if _, err := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want); err == nil {
+	if exists {
 		return git(ws, "switch", "-q", want)
 	}
 	base, err := defaultBranch(ws)
@@ -111,6 +118,88 @@ func githubBranch(r *RunFiles) error {
 		return err
 	}
 	return git(ws, "switch", "-q", "-c", want, "origin/"+base)
+}
+
+// branchBehind fetches the remote's default branch and tells whether it has commits that
+// the branch lacks.
+func branchBehind(ws, branch string) (base string, behind bool, err error) {
+	if base, err = defaultBranch(ws); err != nil {
+		return "", false, err
+	}
+	if err = git(ws, "fetch", "-q", "origin", base); err != nil {
+		return "", false, err
+	}
+	err = exec.Command("git", "-C", ws, "merge-base", "--is-ancestor", "origin/"+base, "refs/heads/"+branch).Run()
+	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+		return base, true, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("checking %s against origin/%s: %v", branch, base, err)
+	}
+	return base, false, nil
+}
+
+// checkNotBehind refuses a task branch that lacks commits of the remote's default branch.
+func checkNotBehind(ws, branch string) error {
+	base, behind, err := branchBehind(ws, branch)
+	if err != nil {
+		return err
+	}
+	if behind {
+		return fmt.Errorf("task branch %s is behind %s: origin/%s has commits it doesn't contain. Ask to update the branch (rebases it onto %s), or start the run again with --stale-branch to run on it as it is", branch, base, base, base)
+	}
+	return nil
+}
+
+// githubUpdate rebases a task's branch onto the remote's default branch. A conflict leaves
+// the branch exactly as it was.
+func githubUpdate(bridge, task string) (base, sha string, upToDate bool, err error) {
+	for _, ri := range liveRuns(bridge) {
+		if ri.snap.Task == task {
+			return "", "", false, fmt.Errorf("a run of %s is still going; wait for it to finish", task)
+		}
+	}
+	c, err := loadConfig(bridge, task)
+	if err != nil {
+		return "", "", false, err
+	}
+	ws, want := c.Workspace, taskBranch(task)
+	orig, err := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want)
+	if err != nil {
+		return "", "", false, fmt.Errorf("the task branch %s doesn't exist; there is nothing to update", want)
+	}
+	cur := currentBranch(ws)
+	if dirty(ws) {
+		return "", "", false, fmt.Errorf("the workspace has uncommitted changes on %s; commit or stash them first", orDetached(cur))
+	}
+	base, behind, err := branchBehind(ws, want)
+	if err != nil {
+		return "", "", false, err
+	}
+	if !behind {
+		return base, short(orig), true, nil
+	}
+	if out, err := exec.Command("git", "-C", ws, "rebase", "origin/"+base, want).CombinedOutput(); err != nil {
+		files, _ := gitOut(ws, "diff", "--name-only", "--diff-filter=U")
+		git(ws, "rebase", "--abort")
+		if cur != "" && cur != want {
+			git(ws, "switch", "-q", cur)
+		}
+		if head, _ := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want); head != orig {
+			return "", "", false, fmt.Errorf("rebasing %s onto origin/%s failed and the branch could not be restored (was %s, now %s): %s", want, base, short(orig), short(head), strings.TrimSpace(string(out)))
+		}
+		if files == "" {
+			return "", "", false, fmt.Errorf("rebasing %s onto origin/%s failed; the branch was left as it was: %s", want, base, strings.TrimSpace(string(out)))
+		}
+		return "", "", false, fmt.Errorf("rebasing %s onto origin/%s conflicts in: %s. The branch was left as it was", want, base, strings.Join(strings.Fields(files), ", "))
+	}
+	if cur != "" && cur != want {
+		if err := git(ws, "switch", "-q", cur); err != nil {
+			return "", "", false, err
+		}
+	}
+	head, _ := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want)
+	return base, short(head), false, nil
 }
 
 func orDetached(b string) string {
@@ -380,14 +469,26 @@ func githubCommand(r *RunFiles, args []string, deadline time.Time) (string, erro
 }
 
 // cmdGithubPR implements the steps the user asks for once a task's run has passed:
-// `ensign github-pr pull-request <project>/<task>` and `ensign github-pr merge <project>/<task>`.
+// `ensign github-pr pull-request|merge|update <project>/<task>`.
 func cmdGithubPR(args []string, out io.Writer) error {
-	if len(args) != 2 || (args[0] != "pull-request" && args[0] != "merge") {
-		return fmt.Errorf("usage: ensign github-pr pull-request|merge <project>/<task>")
+	if len(args) != 2 || (args[0] != "pull-request" && args[0] != "merge" && args[0] != "update") {
+		return fmt.Errorf("usage: ensign github-pr pull-request|merge|update <project>/<task>")
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
 		return err
+	}
+	if args[0] == "update" {
+		base, sha, upToDate, err := githubUpdate(bridge, args[1])
+		if err != nil {
+			return err
+		}
+		if upToDate {
+			fmt.Fprintf(out, "%s is up to date with origin/%s\n", taskBranch(args[1]), base)
+			return nil
+		}
+		fmt.Fprintf(out, "Rebased %s onto origin/%s: %s\n", taskBranch(args[1]), base, sha)
+		return nil
 	}
 	if args[0] == "pull-request" {
 		url, err := githubOpenPR(bridge, args[1])

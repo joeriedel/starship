@@ -88,17 +88,18 @@ type State struct {
 	Scopes   map[string]*ScopeState `json:"scopes"`
 	// StartChild is the --start stage inside a lead, applied when the lead's scope opens.
 	StartChild string         `json:"start_child,omitempty"`
-	Started    bool           `json:"started,omitempty"`    // run.start has fired
-	Sync       bool           `json:"sync,omitempty"`       // run @sync before run.start
-	Base       string         `json:"base,omitempty"`       // git-catalog: HEAD when the run started
-	Extra      map[string]int `json:"extra,omitempty"`      // budget added on resume
-	Resume     *ResumePoint   `json:"resume,omitempty"`     // where an ask-user run continues
-	Answers    []string       `json:"answers,omitempty"`    // the user's answers on resume
-	Rebuild    bool           `json:"rebuild,omitempty"`    // style-generate: rebuild from every source
-	StartHead  string         `json:"start_head,omitempty"` // the workspace's commit when the run started (git)
-	Transcript string         `json:"transcript,omitempty"` // the session's transcript; agents' sit beside it
-	Notes      []string       `json:"notes,omitempty"`      // what handlers left for the report, e.g. a pull request
-	Finished   bool           `json:"finished,omitempty"`   // the end-of-run steps have run
+	Started    bool           `json:"started,omitempty"`      // run.start has fired
+	Sync       bool           `json:"sync,omitempty"`         // run @sync before run.start
+	Base       string         `json:"base,omitempty"`         // git-catalog: HEAD when the run started
+	Extra      map[string]int `json:"extra,omitempty"`        // budget added on resume
+	Resume     *ResumePoint   `json:"resume,omitempty"`       // where an ask-user run continues
+	Answers    []string       `json:"answers,omitempty"`      // the user's answers on resume
+	Rebuild    bool           `json:"rebuild,omitempty"`      // style-generate: rebuild from every source
+	StaleOK    bool           `json:"stale_branch,omitempty"` // github-pr: run on a task branch that is behind the default branch
+	StartHead  string         `json:"start_head,omitempty"`   // the workspace's commit when the run started (git)
+	Transcript string         `json:"transcript,omitempty"`   // the session's transcript; agents' sit beside it
+	Notes      []string       `json:"notes,omitempty"`        // what handlers left for the report, e.g. a pull request
+	Finished   bool           `json:"finished,omitempty"`     // the end-of-run steps have run
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 
@@ -251,7 +252,7 @@ func writeJSON(path string, v any) error {
 // cmdRun implements `ensign run <project>/<task> [--start <stage>] [--dry-run]`.
 func cmdRun(args []string, out io.Writer) error {
 	var task, start, pipeline, project string
-	dry, sync, rebuild := false, false, false
+	dry, sync, rebuild, staleOK := false, false, false, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dry-run":
@@ -260,6 +261,8 @@ func cmdRun(args []string, out io.Writer) error {
 			sync = true
 		case "--rebuild":
 			rebuild = true
+		case "--stale-branch":
+			staleOK = true
 		case "--pipeline", "--project":
 			if i+1 >= len(args) {
 				return fmt.Errorf("%s needs a value", args[i])
@@ -278,13 +281,13 @@ func cmdRun(args []string, out io.Writer) error {
 			start = args[i]
 		default:
 			if strings.HasPrefix(args[i], "-") || task != "" {
-				return fmt.Errorf("usage: ensign run (<project>/<task> | --pipeline <name> [--project <p>]) [--start <stage>] [--sync] [--rebuild] [--dry-run]")
+				return fmt.Errorf("usage: ensign run (<project>/<task> | --pipeline <name> [--project <p>]) [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]")
 			}
 			task = args[i]
 		}
 	}
 	if task == "" && pipeline == "" {
-		return fmt.Errorf("usage: ensign run (<project>/<task> | --pipeline <name> [--project <p>]) [--start <stage>] [--sync] [--rebuild] [--dry-run]")
+		return fmt.Errorf("usage: ensign run (<project>/<task> | --pipeline <name> [--project <p>]) [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]")
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
@@ -403,7 +406,7 @@ func cmdRun(args []string, out io.Writer) error {
 		return err
 	}
 	st := &State{Run: snap.Run, Session: session, Status: "pending", Spent: map[string]int{}, Scopes: map[string]*ScopeState{},
-		Sync: sync, Extra: map[string]int{}, Rebuild: rebuild}
+		Sync: sync, Extra: map[string]int{}, Rebuild: rebuild, StaleOK: staleOK}
 	first := c.Pipeline.Stages[0].ID
 	if start != "" {
 		_, _, scope := c.Pipeline.find(start)

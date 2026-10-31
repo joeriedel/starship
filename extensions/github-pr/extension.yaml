@@ -29,6 +29,9 @@ help:
   - say: '"push <task> straight to main"'
     does: puts the task's tested commit on the main branch, with no pull request
     run: ensign github-pr merge <project>/<task>
+  - say: '"update <task>''s branch"'
+    does: rebases the task branch onto the default branch
+    run: ensign github-pr update <project>/<task>
 
 bindings:
   branch: { command: "ensign github-pr branch" }

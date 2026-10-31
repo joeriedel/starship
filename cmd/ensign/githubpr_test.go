@@ -262,3 +262,86 @@ func TestGithubPRMergeRefusesWhenMainMoved(t *testing.T) {
 		t.Errorf("main should be untouched, got %q", got)
 	}
 }
+
+// staleBranch makes task/auth-refactor with one commit on lib.txt, then moves origin's main
+// on by one commit that writes file with content. The workspace ends on main.
+func staleBranch(t *testing.T, ws, remote, file, content string) string {
+	t.Helper()
+	t.Setenv("GIT_COMMITTER_NAME", "t") // the rebase under test commits
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
+	runGit(t, ws, "switch", "-q", "-c", "task/auth-refactor")
+	write(t, filepath.Join(ws, "lib.txt"), "mine\n")
+	runGit(t, ws, "commit", "-qam", "mine")
+	runGit(t, ws, "switch", "-q", "main")
+	other := filepath.Join(t.TempDir(), "other")
+	runGit(t, ".", "clone", "-q", remote, other)
+	write(t, filepath.Join(other, file), content)
+	runGit(t, other, "add", file)
+	runGit(t, other, "commit", "-q", "-m", "meanwhile")
+	runGit(t, other, "push", "-q", "origin", "main")
+	return runGit(t, ws, "rev-parse", "task/auth-refactor")
+}
+
+func TestGithubPRRefusesStaleBranch(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	staleBranch(t, ws, remote, "news.txt", "meanwhile\n")
+	w.run("supernova/auth-refactor")
+	w.approve()
+	if lead, why := w.spawn("", "", "orchestrator"); lead != "" || !strings.Contains(why, "task branch task/auth-refactor is behind main") || !strings.Contains(why, "--stale-branch") {
+		t.Fatalf("a run should not start on a branch behind main: %q %s", lead, why)
+	}
+}
+
+func TestGithubPRStaleBranchOverride(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	staleBranch(t, ws, remote, "news.txt", "meanwhile\n")
+	w.run("supernova/auth-refactor", "--stale-branch")
+	w.approve()
+	if lead, why := w.spawn("", "", "orchestrator"); lead == "" {
+		t.Fatalf("--stale-branch should let the run start: %s", why)
+	}
+	if b := currentBranch(ws); b != "task/auth-refactor" {
+		t.Errorf("the run should be on the task branch, it is on %q", b)
+	}
+}
+
+func TestGithubPRUpdateRebases(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	old := staleBranch(t, ws, remote, "news.txt", "meanwhile\n")
+	out, err := w.land("update")
+	if err != nil || !strings.Contains(out, "Rebased task/auth-refactor onto origin/main:") {
+		t.Fatalf("update: %q %v", out, err)
+	}
+	if now := runGit(t, ws, "rev-parse", "task/auth-refactor"); now == old {
+		t.Error("the branch should have moved")
+	}
+	if b := currentBranch(ws); b != "main" {
+		t.Errorf("the workspace should be back on main, it is on %q", b)
+	}
+	if out, err := w.land("update"); err != nil || !strings.Contains(out, "up to date") {
+		t.Errorf("a second update has nothing to do: %q %v", out, err)
+	}
+	w.run("supernova/auth-refactor")
+	w.approve()
+	if lead, why := w.spawn("", "", "orchestrator"); lead == "" {
+		t.Fatalf("the updated branch should start: %s", why)
+	}
+}
+
+func TestGithubPRUpdateConflict(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	old := staleBranch(t, ws, remote, "lib.txt", "theirs\n")
+	_, err := w.land("update")
+	if err == nil || !strings.Contains(err.Error(), "lib.txt") || !strings.Contains(err.Error(), "left as it was") {
+		t.Fatalf("a conflict should name the file: %v", err)
+	}
+	if now := runGit(t, ws, "rev-parse", "task/auth-refactor"); now != old {
+		t.Errorf("the branch moved from %s to %s", old, now)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".git", "rebase-merge")); err == nil {
+		t.Error("a rebase is still in progress")
+	}
+	if b := currentBranch(ws); b != "main" {
+		t.Errorf("the workspace should be on main, it is on %q", b)
+	}
+}
