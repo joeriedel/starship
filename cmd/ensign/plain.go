@@ -68,8 +68,15 @@ func runBinding(r *RunFiles, d *Dispatch, command string, deadline time.Time) (s
 func couldNotRun(code int) bool { return code >= 125 && code <= 127 }
 
 // runPlainStage runs @build (when bound) and @test in the workspace, completes the
-// dispatch with the result, and returns what the dispatching agent is told.
-func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string) string {
+// dispatch with the result, and returns what the dispatching agent is told. The commands
+// run without the run lock, so other hooks are not held up for minutes; r comes back
+// locked and holding the state as it is then on disk.
+func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string) (string, error) {
+	if err := r.save(); err != nil {
+		return "", err
+	}
+	r.lock.Unlock()
+	nHistory, nNotes := len(r.State.History), len(r.State.Notes)
 	limit := preToolUseTimeout(r.Snap.Bridge) - time.Minute
 	if limit < 30*time.Second {
 		limit = 30 * time.Second
@@ -122,11 +129,35 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 		report += "\nThe end of its output:\n\n```\n" + tailLines(last, 10) + "\n```\n"
 	}
 	report += "\nFull output: " + logFile + "\n"
-	completeDispatch(r, m, d, s, outcome, summary, nil, report)
-	if r.State.terminal() {
-		finishRun(r) // now, so what it adds (a pull request, say) is in the reply
+
+	newHistory, newNotes := r.State.History[nHistory:], r.State.Notes[nNotes:]
+	if err := r.lock.Lock(); err != nil {
+		return "", fmt.Errorf("locking run %s: %v", filepath.Base(r.Dir), err)
+	}
+	snap, st := &Snapshot{}, &State{}
+	err1 := readJSON(filepath.Join(r.Dir, "pipeline.json"), snap)
+	if err := errors.Join(err1, readJSON(filepath.Join(r.Dir, "state.json"), st)); err != nil {
+		r.lock.Unlock() // r still holds the stale state, which must not be saved
+		return "", err
+	}
+	r.Snap, r.State = snap, st
+	st.History = append(st.History, newHistory...)
+	st.Notes = append(st.Notes, newNotes...)
+	m = &machine{snap: snap, st: st}
+	s = m.stage(s.ID)
+
+	switch cur := st.dispatch(d.ID); {
+	case cur == nil || cur.Done:
+		os.WriteFile(filepath.Join(r.Dir, "reports", d.ID+".md"), []byte(report), 0o644)
+		st.log("report", s.ID, d.ID, outcome+": "+summary+" (dispatch no longer running; not applied)")
+	default:
+		wasTerminal := st.terminal()
+		completeDispatch(r, m, cur, s, outcome, summary, nil, report)
+		if !wasTerminal && st.terminal() {
+			finishRun(r) // now, so what it adds (a pull request, say) is in the reply
+		}
 	}
 
 	return fmt.Sprintf("ensign ran stage %q itself, because this project's @test binding is plain; no %s agent was started. "+
-		"Outcome: %s.\n\n%s\nNext: %s", s.ID, s.Role, outcome, report, m.expect(scope))
+		"Outcome: %s.\n\n%s\nNext: %s", s.ID, s.Role, outcome, report, m.expect(scope)), nil
 }

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // plainWorld is a world whose project marks @test plain, with the given test command.
@@ -126,5 +127,115 @@ func TestHookSettingsUpgrade(t *testing.T) {
 	upgradeHookSettings(b)
 	if data, _ := os.ReadFile(f); strings.Contains(string(data), "timeout") {
 		t.Fatal("an edited settings file must be left alone")
+	}
+}
+
+// gatedPlainRun starts a plain test stage whose command blocks until the returned release
+// is called, and waits until it is running. wait returns the hook's decision.
+func gatedPlainRun(t *testing.T) (w *world, run string, release func(), wait func() map[string]any) {
+	t.Helper()
+	dir := t.TempDir()
+	started, gate := filepath.Join(dir, "started"), filepath.Join(dir, "gate")
+	w = plainWorld(t, "touch "+started+"; i=0; while [ ! -f "+gate+" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; echo gated")
+	lead := w.startLead()
+	w.toTest(lead)
+	run = w.state().Run
+	done := make(chan map[string]any, 1)
+	go func() {
+		res, _ := w.hook("PreToolUse", map[string]any{
+			"tool_name":  "Agent",
+			"tool_input": map[string]any{"subagent_type": "tester", "prompt": "x", "description": "x"},
+			"agent_id":   lead, "agent_type": "orchestrator",
+		})
+		done <- res
+	}()
+	for i := 0; ; i++ {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if i > 400 {
+			t.Fatal("the test command never started")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	release = func() { os.WriteFile(gate, nil, 0o644) }
+	wait = func() map[string]any {
+		select {
+		case res := <-done:
+			return res
+		case <-time.After(20 * time.Second):
+			t.Fatal("the hook did not finish")
+			return nil
+		}
+	}
+	return
+}
+
+// lockRun opens the run from outside the hook, failing if its lock is still held.
+func lockRun(t *testing.T, w *world, run string) *RunFiles {
+	t.Helper()
+	got := make(chan *RunFiles, 1)
+	go func() {
+		r, err := openRun(w.bridge, run)
+		if err != nil {
+			t.Error(err)
+		}
+		got <- r
+	}()
+	select {
+	case r := <-got:
+		return r
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run lock is held while the plain stage's commands run")
+		return nil
+	}
+}
+
+func TestPlainStageDoesNotHoldTheLockWhileRunning(t *testing.T) {
+	w, run, release, wait := gatedPlainRun(t)
+	r := lockRun(t, w, run)
+	d := r.State.Dispatches[len(r.State.Dispatches)-1]
+	if d.Role != "tester" || d.Done {
+		t.Fatalf("the dispatch should be recorded as running: %+v", d)
+	}
+	r.State.note("left by another hook")
+	r.save()
+	r.close()
+
+	release()
+	res := wait()
+	if !strings.Contains(dig(res, "hookSpecificOutput", "permissionDecisionReason"), "Outcome: pass") {
+		t.Fatalf("unexpected decision: %v", res)
+	}
+	st := w.state()
+	d = st.dispatch(d.ID)
+	if st.Status != "success" || !d.Done || d.Outcome != "pass" {
+		t.Fatalf("status %s, dispatch %+v", st.Status, d)
+	}
+	if !strings.Contains(strings.Join(st.Notes, "\n"), "left by another hook") {
+		t.Fatalf("a change made while the commands ran was lost: %v", st.Notes)
+	}
+}
+
+func TestPlainStageResultDoesNotChangeARunThatEndedMeanwhile(t *testing.T) {
+	w, run, release, wait := gatedPlainRun(t)
+	r := lockRun(t, w, run)
+	r.State.Status, r.State.Reason = "error", "stopped by the user"
+	r.State.Finished = true
+	r.save()
+	r.close()
+
+	release()
+	wait()
+	st := w.state()
+	d := st.Dispatches[len(st.Dispatches)-1]
+	if st.Status != "error" || st.Reason != "stopped by the user" {
+		t.Fatalf("the run's outcome changed: %s (%s)", st.Status, st.Reason)
+	}
+	if !d.Done || d.Outcome != "pass" {
+		t.Fatalf("the result should still be recorded: %+v", d)
+	}
+	if _, err := os.Stat(filepath.Join(w.bridge, ".starship", "runs", run, "reports", d.ID+".log")); err != nil {
+		t.Fatal(err)
 	}
 }

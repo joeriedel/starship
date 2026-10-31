@@ -211,7 +211,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 // failHook ends the run as error: ensign, and blocks the action. A stop that is already
 // being forced to continue is let through, so a persistent fault can't trap an agent.
 func failHook(in *HookInput, r *RunFiles, err error, stderr io.Writer) int {
-	if r != nil && !r.State.terminal() {
+	if r != nil && r.lock.Locked() && !r.State.terminal() { // unlocked: the state is stale
 		m := &machine{snap: r.Snap, st: r.State}
 		m.fail("ensign", err.Error())
 		r.save()

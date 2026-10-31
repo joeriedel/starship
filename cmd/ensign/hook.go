@@ -223,7 +223,11 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	r.State.Dispatches = append(r.State.Dispatches, d)
 	r.State.log("dispatch", s.ID, d.ID, role+" "+d.Dim)
 	if !s.isLead() && plainStage(r, s) {
-		return deny(r, s.ID, runPlainStage(r, m, d, s, scope)), nil
+		msg, err := runPlainStage(r, m, d, s, scope)
+		if err != nil {
+			return nil, err
+		}
+		return deny(r, s.ID, msg), nil
 	}
 
 	original, _ := in.ToolInput["prompt"].(string)
