@@ -422,6 +422,30 @@ func TestSessionSpawnOfNonStageRolePasses(t *testing.T) {
 	}
 }
 
+func TestLeadSpawnOfNonStageRolePasses(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	before := len(w.state().Dispatches)
+	for _, role := range []string{"general-purpose", "Explore", "claude-code-guide"} {
+		in := map[string]any{"agent_id": lead, "agent_type": "orchestrator",
+			"tool_name": "Agent", "tool_input": map[string]any{"subagent_type": role, "prompt": "look"}}
+		if res, code := w.hook("PreToolUse", in); code != 0 || res != nil {
+			t.Fatalf("%s: code %d res %v", role, code, res)
+		}
+	}
+	if after := len(w.state().Dispatches); after != before {
+		t.Fatalf("dispatches %d -> %d, want unchanged", before, after)
+	}
+	if id, why := w.spawn(lead, "orchestrator", "tester"); id != "" ||
+		!strings.Contains(why, "stages run in the pipeline's order") || !strings.Contains(why, `next stage is "code"`) {
+		t.Fatalf("tester before code: id %q why %q", id, why)
+	}
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	if id, why := w.spawn(coder, "coder", "general-purpose"); id != "" || !strings.Contains(why, "cannot dispatch") {
+		t.Fatalf("coder spawning general-purpose: id %q why %q", id, why)
+	}
+}
+
 func TestFindingsLoopAndJoinPrecedence(t *testing.T) {
 	w := newWorld(t)
 	lead := w.startLead()

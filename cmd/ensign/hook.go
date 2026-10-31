@@ -165,6 +165,9 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 			return deny(r, "", fmt.Sprintf("a %s cannot dispatch pipeline stages; only roles listed as free (%s) may be spawned here",
 				caller.Role, strings.Join(r.Snap.Pipeline.FreeRoles, ", "))), nil
 		}
+		if !r.Snap.Pipeline.hasStageRole(role) {
+			return nil, nil
+		}
 		scope = caller.Stage
 	}
 	if r.State.terminal() {
@@ -176,7 +179,7 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	}
 	s := m.stage(sc.Stage)
 	if role != s.Role {
-		return deny(r, s.ID, fmt.Sprintf("refused %s: the next stage is %q, role %s. %s", role, s.ID, s.Role, m.expect(scope))), nil
+		return deny(r, s.ID, fmt.Sprintf("refused %s: stages run in the pipeline's order, and only the next one may start. The next stage is %q, role %s. %s", role, s.ID, s.Role, m.expect(scope))), nil
 	}
 	if s.isLead() && !r.State.Approved {
 		return deny(r, s.ID, "the run is not approved yet; the user must type go"), nil

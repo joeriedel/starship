@@ -47,6 +47,8 @@ and hands back a summary, so **delegate reading by default**, batching every que
 brief needs into one explorer brief: named files, line ranges, what it must report.
 Keep inline only single-line state checks and bytes you must quote exactly.
 
+You may use any agent that isn't a pipeline stage (an `explorer`, Explore, Plan, general-purpose, the Claude Code guide) to gather information. Never use one to change the workspace: edits come only from the coder and style stages.
+
 ## Write narrow briefs
 
 **Every stage gets an explicit list of paths and an explicit out-of-scope.** If you
