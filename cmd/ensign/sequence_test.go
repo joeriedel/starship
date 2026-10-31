@@ -726,7 +726,7 @@ func TestSequenceReleaseFailureSkipsSameProjectInKeepGoing(t *testing.T) {
 	w := releaseWorld(t, 1)
 	w.addTask("other")
 	w.mustSeq("release", "supernova", "2.0.0")
-	w.mustSeq("publish", "supernova/other")
+	w.mustSeq("run", "supernova/other")
 	w.mustSeq("do", "report")
 	w.mustSeq("mode", "keep-going")
 	w.goContext()
