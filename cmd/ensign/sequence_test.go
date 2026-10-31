@@ -556,10 +556,11 @@ func TestSequenceFailedRetrySkipsTheTasksLaterStepsInKeepGoingMode(t *testing.T)
 }
 
 func TestSequenceSecondRetryAndBadRetriesAreRefused(t *testing.T) {
-	w := newWorld(t)
+	w, _, _, _ := githubWorld(t, "success", localTest)
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.mustSeq("publish", "supernova/auth-refactor")
 	w.mustSeq("do", "report")
+	w.mustSeq("mode", "keep-going")
 	w.approve()
 	lead, _ := w.spawn("", "", "orchestrator")
 	if _, err := w.seq("retry", "1", "--diagnosis", "x", "--state", "y"); err == nil || !strings.Contains(err.Error(), "not waiting") {
@@ -588,7 +589,7 @@ func TestSequenceSecondRetryAndBadRetriesAreRefused(t *testing.T) {
 }
 
 func TestSequenceRetryRefusesPublishAndDoSteps(t *testing.T) {
-	w := newWorld(t)
+	w, _, _, _ := githubWorld(t, "success", localTest)
 	w.mustSeq("publish", "supernova/auth-refactor")
 	w.mustSeq("do", "report")
 	for _, n := range []string{"1", "2"} {
