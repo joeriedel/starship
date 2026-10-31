@@ -1127,3 +1127,115 @@ func TestSplitHistory(t *testing.T) {
 		}
 	})
 }
+
+func TestRunSurvivesSessionIDChange(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	run := w.state().Run
+	w.leaf(lead, "coder", "compiled")
+
+	write(t, sessionFile(w.bridge, "s1")+".task", "proj/task\n")
+	w.sid = "s2"
+	w.leaf(lead, "reviewer", "clean")
+
+	st := w.runState(run)
+	if got := sessionTask(w.bridge, "s2"); got != "proj/task" {
+		t.Errorf("task copied to s2 = %q", got)
+	}
+	if got := sessionTask(w.bridge, "s1"); got != "proj/task" {
+		t.Errorf("s1 task file was disturbed: %q", got)
+	}
+	if st.Session != "s2" {
+		t.Errorf("State.Session = %q, want s2", st.Session)
+	}
+	data, err := os.ReadFile(sessionFile(w.bridge, "s2"))
+	if err != nil || strings.TrimSpace(string(data)) != run {
+		t.Errorf("session s2 file = %q, %v; want %s", data, err, run)
+	}
+	rebound := 0
+	for _, h := range st.History {
+		if h.Kind == "rebound" && strings.Contains(h.Detail, "s1 -> s2") {
+			rebound++
+		}
+	}
+	if rebound != 1 {
+		t.Errorf("want one rebound history entry, got %d: %v", rebound, st.History)
+	}
+	if got := w.state(); got.Run != run {
+		t.Errorf("lookup by the new session found %s, want %s", got.Run, run)
+	}
+
+	// A concurrent hook already rebound the run: the binding file is gone here, but the run's
+	// session is current, so no second entry is logged.
+	os.Remove(sessionFile(w.bridge, "s2"))
+	w.leaf(lead, "coder", "compiled")
+	rebound = 0
+	for _, h := range w.runState(run).History {
+		if h.Kind == "rebound" {
+			rebound++
+		}
+	}
+	if rebound != 1 {
+		t.Errorf("want one rebound entry after a repeat, got %d", rebound)
+	}
+}
+
+func TestUntiedAgentCannotSpawnStages(t *testing.T) {
+	w := newWorld(t)
+	w.startLead()
+	w.sid = "s3"
+	spawn := func(role string) (map[string]any, int) {
+		return w.hook("PreToolUse", map[string]any{"agent_id": "ghost", "agent_type": "orchestrator",
+			"tool_name": "Agent", "tool_input": map[string]any{"subagent_type": role, "prompt": "x"}})
+	}
+	res, code := spawn("coder")
+	if why := dig(res, "hookSpecificOutput", "permissionDecisionReason"); code != 0 || !strings.Contains(why, "can't be found") {
+		t.Fatalf("stage spawn by an untied agent: %d %v", code, res)
+	}
+	if res, code := spawn("explorer"); code != 0 || res != nil {
+		t.Fatalf("free role should pass: %d %v", code, res)
+	}
+	if _, err := os.Stat(sessionFile(w.bridge, "s3")); err == nil {
+		t.Errorf("an untied agent bound its session")
+	}
+}
+
+func TestSessionStartCarriesBindingOver(t *testing.T) {
+	w := newWorld(t)
+	w.startLead()
+	run := w.state().Run
+	rec, _ := json.Marshal(map[string]any{"type": "user", "sessionId": "s1"})
+	write(t, w.session, string(rec)+"\n")
+
+	w.sid = "s2"
+	if _, code := w.hook("SessionStart", map[string]any{"source": "startup"}); code != 0 {
+		t.Fatalf("SessionStart exited %d", code)
+	}
+	if _, err := os.Stat(sessionFile(w.bridge, "s2")); err == nil {
+		t.Fatalf("a fresh startup carried a binding over")
+	}
+	if _, code := w.hook("SessionStart", map[string]any{"source": "resume"}); code != 0 {
+		t.Fatalf("SessionStart exited %d", code)
+	}
+	if got := w.state(); got.Run != run || got.Session != "s2" {
+		t.Errorf("after resume: run %s session %s", got.Run, got.Session)
+	}
+}
+
+func TestLastSeenAndStatus(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	if s := statusText(w.bridge, w.sid); !strings.Contains(s, "Lead last seen: not yet seen. Last activity: not yet seen.") {
+		t.Errorf("status before any agent call:\n%s", s)
+	}
+	w.leaf(lead, "coder", "compiled")
+	for _, d := range w.state().Dispatches {
+		if d.Role == "orchestrator" && d.LastSeen == "" {
+			t.Errorf("the lead's LastSeen was not set")
+		}
+	}
+	s := statusText(w.bridge, w.sid)
+	if !strings.Contains(s, "Lead last seen: ") || strings.Contains(s, "not yet seen") {
+		t.Errorf("status after agent calls:\n%s", s)
+	}
+}

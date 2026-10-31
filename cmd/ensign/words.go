@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // HelpEntry is one plain-language request a pipeline or extension answers to.
@@ -123,6 +124,41 @@ func runLine(bridge, session string) string {
 		parts = append(parts, fmt.Sprintf("%d of %d %s", st.Spent[k], r.Snap.Pipeline.Budgets[k], budgetWord(k)))
 	}
 	return line + " · " + strings.Join(parts, " · ")
+}
+
+// seenLine says how long ago the live run's lead and its agents last made a hook call.
+func seenLine(bridge, session string) string {
+	r, err := openSessionRun(bridge, session)
+	if err != nil || r == nil {
+		return ""
+	}
+	defer r.close()
+	if r.State.terminal() || r.State.Status == "pending" {
+		return ""
+	}
+	var lead, any time.Time
+	for _, d := range r.State.Dispatches {
+		t, err := time.Parse(time.RFC3339, d.LastSeen)
+		if err != nil {
+			continue
+		}
+		if t.After(any) {
+			any = t
+		}
+		if d.Stage == r.Snap.Pipeline.Stages[0].ID && t.After(lead) {
+			lead = t
+		}
+	}
+	ago := func(t time.Time) string {
+		if t.IsZero() {
+			return "not yet seen"
+		}
+		return time.Since(t).Round(time.Second).String() + " ago"
+	}
+	if !r.Snap.Pipeline.Stages[0].isLead() {
+		return fmt.Sprintf("Last activity: %s.", ago(any))
+	}
+	return fmt.Sprintf("Lead last seen: %s. Last activity: %s.", ago(lead), ago(any))
 }
 
 func budgetWord(b string) string {
@@ -286,6 +322,9 @@ func statusText(bridge, session string) string {
 	b.WriteString(header(bridge, session) + "\n")
 	if l := runLine(bridge, session); l != "" {
 		b.WriteString(l + "\n")
+		if l := seenLine(bridge, session); l != "" {
+			b.WriteString(l + "\n")
+		}
 	} else {
 		b.WriteString("No run in this session.\n")
 	}

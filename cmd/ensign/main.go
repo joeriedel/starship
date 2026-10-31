@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // version and releaseRepo are set at release build time with -ldflags
@@ -161,11 +162,22 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failHook(&in, nil, err, stderr)
 	}
+	if r == nil && in.AgentID != "" {
+		if r, err = openAgentRun(bridge, &in); err != nil {
+			return failHook(&in, nil, err, stderr)
+		}
+	}
 	if r == nil && event == "UserPromptSubmit" && strings.TrimSpace(in.Prompt) == "go" {
 		if r, err = claimRun(bridge, in.SessionID); err != nil {
 			return failHook(&in, nil, err, stderr)
 		}
 	} else if r == nil {
+		role, _ := in.ToolInput["subagent_type"].(string)
+		if event == "PreToolUse" && in.AgentID != "" && stageRoleAnywhere(bridge, role) {
+			json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
+				"hookEventName": "PreToolUse", "permissionDecision": "deny",
+				"permissionDecisionReason": "starship: this agent's run can't be found: the session restarted and the agent could not be tied to any live run, so it can't dispatch stages"}})
+		}
 		return 0
 	}
 	if r != nil {
@@ -193,6 +205,11 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		return failHook(&in, r, err, stderr)
+	}
+	if r != nil && in.AgentID != "" {
+		if d := r.State.byAgent(in.AgentID); d != nil {
+			d.LastSeen = time.Now().Format(time.RFC3339)
+		}
 	}
 	if r != nil && !wasTerminal && r.State.terminal() {
 		finishRun(r)
@@ -232,6 +249,7 @@ func failHook(in *HookInput, r *RunFiles, err error, stderr io.Writer) int {
 // hookSessionStart gives the session's commands its id, so `ensign run` can bind the run
 // to this session, and prints the heartbeat the bridge's CLAUDE.md checks for.
 func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) int {
+	carryOverSession(bridge, in)
 	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
 		env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err == nil {

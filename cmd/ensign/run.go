@@ -48,6 +48,7 @@ type Dispatch struct {
 	Role        string `json:"role"`
 	CallerAgent string `json:"caller_agent,omitempty"`
 	AgentID     string `json:"agent_id,omitempty"`
+	LastSeen    string `json:"last_seen,omitempty"` // RFC3339: the agent's latest hook call
 	Done        bool   `json:"done"`
 	Outcome     string `json:"outcome,omitempty"`
 	Summary     string `json:"summary,omitempty"`
@@ -198,6 +199,63 @@ func openSessionRun(bridge, session string) (*RunFiles, error) {
 	return r, err
 }
 
+// openAgentRun finds the live run an agent belongs to when its session has no run: the run
+// its transcript's dispatch tag names, then any live run with a dispatch bound to its agent
+// id. It rebinds the session to that run. It returns nil, nil when there is none. Each
+// candidate is opened and closed in turn, so no two run locks are held.
+func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
+	if in.AgentID == "" || in.SessionID == "" {
+		return nil, nil
+	}
+	try := func(id string, match func(*State) bool) (*RunFiles, error) {
+		r, err := openRun(bridge, id)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if r.State.terminal() || !match(r.State) {
+			r.close()
+			return nil, nil
+		}
+		return r, nil
+	}
+	var r *RunFiles
+	var err error
+	tp := in.AgentTranscriptPath
+	if tp == "" {
+		tp = agentTranscript(in.TranscriptPath, in.AgentID)
+	}
+	if run, d := readTag(tp); run != "" {
+		r, err = try(run, func(st *State) bool { return st.dispatch(d) != nil })
+	}
+	if r == nil && err == nil {
+		for _, ri := range liveRuns(bridge) {
+			if ri.state.byAgent(in.AgentID) == nil {
+				continue
+			}
+			if r, err = try(ri.id, func(st *State) bool { return st.byAgent(in.AgentID) != nil }); r != nil || err != nil {
+				break
+			}
+		}
+	}
+	if r == nil || err != nil {
+		return nil, err
+	}
+	if r.State.Session == in.SessionID {
+		return r, nil
+	}
+	if err := bindSession(bridge, in.SessionID, r.State.Run); err != nil {
+		r.close()
+		return nil, err
+	}
+	copySessionTask(bridge, r.State.Session, in.SessionID)
+	r.State.log("rebound", "", "", fmt.Sprintf("session %s -> %s, found through agent %s", r.State.Session, in.SessionID, in.AgentID))
+	r.State.Session = in.SessionID
+	return r, nil
+}
+
 // markRetired marks an open run as error and releases it. The lock is released before any
 // delete, since a folder with an open file cannot be removed on Windows.
 func markRetired(r *RunFiles, reason string) error {
@@ -223,6 +281,18 @@ func retireRun(r *RunFiles, reason string) error {
 	}
 	removeRun(dir)
 	return nil
+}
+
+// copySessionTask gives a session without a task file the task of the session it replaces,
+// since the status header reads it. The old session's files stay in place.
+func copySessionTask(bridge, from, to string) {
+	dst := sessionFile(bridge, to) + ".task"
+	if _, err := os.Stat(dst); err == nil {
+		return
+	}
+	if data, err := os.ReadFile(sessionFile(bridge, from) + ".task"); err == nil {
+		os.WriteFile(dst, data, 0o644)
+	}
 }
 
 // bindSession records that a run belongs to a session.

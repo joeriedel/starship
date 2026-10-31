@@ -20,6 +20,7 @@ import (
 // HookInput is the part of Claude Code's hook payload that ensign reads.
 type HookInput struct {
 	Event               string         `json:"hook_event_name"`
+	Source              string         `json:"source"` // SessionStart: startup, resume, clear or compact
 	SessionID           string         `json:"session_id"`
 	Cwd                 string         `json:"cwd"`
 	ToolName            string         `json:"tool_name"`
@@ -767,4 +768,110 @@ func shellQuote(p string) string {
 		return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 	}
 	return p
+}
+
+// priorSessions lists the session ids, other than current, that records of a session
+// transcript carry, latest first. A resumed transcript keeps the earlier session's records.
+func priorSessions(transcript, current string) []string {
+	f, err := os.Open(transcript)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var out []string
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	for sc.Scan() {
+		var rec struct {
+			SessionID string `json:"sessionId"`
+		}
+		if json.Unmarshal(sc.Bytes(), &rec) != nil || rec.SessionID == "" || rec.SessionID == current {
+			continue
+		}
+		if len(out) == 0 || out[0] != rec.SessionID {
+			out = append([]string{rec.SessionID}, out...)
+		}
+	}
+	return out
+}
+
+// carryOverSession binds a restarted session to the live run of the session it continues.
+// It assumes a resumed, cleared or compacted session's transcript still holds records
+// stamped with the earlier session's id. Failures are ignored: SessionStart never fails
+// over this.
+func carryOverSession(bridge string, in *HookInput) {
+	switch in.Source {
+	case "resume", "compact", "clear":
+	default:
+		return
+	}
+	if in.SessionID == "" || in.TranscriptPath == "" {
+		return
+	}
+	if _, err := os.Stat(sessionFile(bridge, in.SessionID)); err == nil {
+		return
+	}
+	for _, old := range priorSessions(in.TranscriptPath, in.SessionID) {
+		r, err := openSessionRun(bridge, old)
+		if err != nil || r == nil {
+			continue
+		}
+		if r.State.terminal() {
+			r.close()
+			continue
+		}
+		if r.State.Session == in.SessionID {
+			r.close()
+			return
+		}
+		if bindSession(bridge, in.SessionID, r.State.Run) == nil {
+			copySessionTask(bridge, old, in.SessionID)
+			r.State.Session = in.SessionID
+			r.State.log("rebound", "", "", fmt.Sprintf("session %s -> %s (%s)", old, in.SessionID, in.Source))
+			r.save()
+		}
+		r.close()
+		return
+	}
+}
+
+// stageRoleAnywhere reports whether role is a stage role, not free, in a live run's
+// pipeline or in a pipeline file of the bridge's control plane and extensions.
+func stageRoleAnywhere(bridge, role string) bool {
+	if role == "" {
+		return false
+	}
+	isStage := func(p *Pipeline) bool {
+		for _, fr := range p.FreeRoles {
+			if fr == role {
+				return false
+			}
+		}
+		return p.hasStageRole(role)
+	}
+	for _, ri := range liveRuns(bridge) {
+		if ri.snap.Pipeline != nil && isStage(ri.snap.Pipeline) {
+			return true
+		}
+	}
+	bf, err := loadBridgeFile(bridge)
+	if err != nil {
+		return false
+	}
+	cp, err := controlPlaneDir(bridge, bf)
+	if err != nil {
+		return false
+	}
+	files, _ := filepath.Glob(filepath.Join(cp, "pipelines", "*.yaml"))
+	for _, dir := range extensionDirs(bridge, cp) {
+		more, _ := filepath.Glob(filepath.Join(dir, "pipelines", "*.yaml"))
+		files = append(files, more...)
+	}
+	for _, f := range files {
+		var p Pipeline
+		if readYAML(f, &p) == nil && isStage(&p) {
+			return true
+		}
+	}
+	return false
 }

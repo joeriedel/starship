@@ -564,6 +564,10 @@ as belonging to that session (`.starship/sessions/<session_id>`), and hooks look
 by session. A run created outside any session — from a terminal — belongs to no one until
 a session types `go`, which claims the newest such run.
 
+The session id can change while the run lives: restarting Claude Code, resuming a session or compacting may give the same conversation a new `session_id`. A hook that finds no run for its session but carries an `agent_id` looks the run up by agent instead: first the run named by the dispatch tag in the agent's transcript (`agent_transcript_path`, else the path derived from `transcript_path`), then any live run with a dispatch bound to that agent id. A live run found this way is rebound: the new session's file is written, `State.Session` is updated, and the history records the old and new ids. If no run is found and the agent is spawning a stage role (a stage role in a live run's pipeline or any pipeline of the control plane or its extensions, and not a free role), the spawn is denied with a message that the agent's run can't be found; other spawns, and calls with no `agent_id`, pass as before.
+
+SessionStart also tries to carry a binding over. It assumes that when `source` is `resume`, `compact` or `clear`, the session transcript at `transcript_path` still holds records stamped with the earlier session's `sessionId`, and that the payload has a `source` field at all; if either is false nothing is carried over and the agent-based lookup remains. When the new session id has no binding, the earlier ids found in the transcript are tried latest first, and the first one bound to a live run hands that run to the new session. This never fails SessionStart.
+
 ### 5.6 Locks
 
 A few invariants are **locked** in the control plane: the `go` approval gate, no
