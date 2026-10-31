@@ -171,6 +171,20 @@ type Pipeline struct {
 	Sources map[string]string `yaml:"-" json:"sources"`
 }
 
+// hasStageRole reports whether any stage, nested ones included, has this role.
+func (p *Pipeline) hasStageRole(role string) bool {
+	var walk func(list []*Stage) bool
+	walk = func(list []*Stage) bool {
+		for _, s := range list {
+			if s.Role == role || walk(s.Stages) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(p.Stages)
+}
+
 // find returns the stage with this id, and the list (scope) that holds it.
 func (p *Pipeline) find(id string) (*Stage, *[]*Stage, string) {
 	var walk func(list *[]*Stage, scope string) (*Stage, *[]*Stage, string)

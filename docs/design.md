@@ -729,7 +729,8 @@ behind a holder; the rest, `help <topic>` included, take no lock.
    undispatched branch. A caller that is a stage agent rather than a lead may spawn only
    free roles.
 3. If the requested `subagent_type` doesn't match the stage's role, deny with the
-   expected stage named. Free roles pass without changing state.
+   expected stage named. Free roles pass without changing state, and so does a session
+   spawn of a role that is no stage's role.
 4. Run `stage.before` handlers; a failing `require` denies the spawn.
 5. Rewrite the prompt: a tag `[starship run=… dispatch=d7 stage=review]` (plus `dim=…`
    for a branch), the dimension and stage briefs, the workspace and its resolved

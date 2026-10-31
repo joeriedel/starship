@@ -391,6 +391,36 @@ func TestFreeRolePassesThrough(t *testing.T) {
 	}
 }
 
+func TestSessionSpawnOfNonStageRolePasses(t *testing.T) {
+	w := newWorld(t)
+	w.run("supernova/auth-refactor")
+	pass := func(role string) {
+		t.Helper()
+		in := map[string]any{"tool_name": "Agent", "tool_input": map[string]any{"subagent_type": role, "prompt": "look"}}
+		if res, code := w.hook("PreToolUse", in); code != 0 || res != nil {
+			t.Fatalf("%s: code %d res %v", role, code, res)
+		}
+	}
+	for _, role := range []string{"general-purpose", "Explore", "claude-code-guide"} {
+		pass(role)
+	}
+	if id, why := w.spawn("", "", "coder"); id != "" || !strings.Contains(why, "next stage is") {
+		t.Fatalf("session coder: id %q why %q", id, why)
+	}
+	if id, why := w.spawn("", "", "orchestrator"); id != "" || !strings.Contains(why, "not approved") {
+		t.Fatalf("lead before go: id %q why %q", id, why)
+	}
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	for _, role := range []string{"general-purpose", "Explore", "claude-code-guide"} {
+		pass(role)
+	}
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	if id, why := w.spawn(coder, "coder", "general-purpose"); id != "" || !strings.Contains(why, "cannot dispatch") {
+		t.Fatalf("coder spawning general-purpose: id %q why %q", id, why)
+	}
+}
+
 func TestFindingsLoopAndJoinPrecedence(t *testing.T) {
 	w := newWorld(t)
 	lead := w.startLead()

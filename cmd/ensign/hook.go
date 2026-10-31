@@ -147,6 +147,10 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 		}
 	}
 
+	if in.AgentID == "" && !r.Snap.Pipeline.hasStageRole(role) {
+		return nil, nil
+	}
+
 	scope := ""
 	var caller *Dispatch
 	if in.AgentID != "" {
