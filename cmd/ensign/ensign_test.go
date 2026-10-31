@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // world is a copy of the fixture bridge with a fake Claude Code session around it.
@@ -580,8 +581,81 @@ func TestNewRunReplacesTheSessionsWaitingRun(t *testing.T) {
 	if !strings.Contains(out, "replaced waiting run "+old) {
 		t.Fatalf("output does not mention the replacement:\n%s", out)
 	}
-	if st := w.runState(old); st.Status != "error" || !strings.Contains(st.Reason, cur.Run) {
-		t.Fatalf("old run: status %s reason %q", st.Status, st.Reason)
+	if _, err := os.Stat(filepath.Join(runsDir(w.bridge), old)); !os.IsNotExist(err) {
+		t.Fatalf("replaced run folder still exists: %v", err)
+	}
+}
+
+func TestRunApprovedDuringSetupIsKeptAndTheNewRunDeleted(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.run("supernova/auth-refactor")
+	old := w.state().Run
+	held, err := openRun(w.bridge, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	done := make(chan error, 1)
+	go func() {
+		var out bytes.Buffer
+		done <- cmdRun([]string{"supernova/other"}, &out)
+	}()
+	// state.json of the new run is written before the replace loop blocks on the old run's lock.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		entries, _ := os.ReadDir(runsDir(w.bridge))
+		found := false
+		for _, e := range entries {
+			if e.Name() == old {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(runsDir(w.bridge), e.Name(), "state.json")); err == nil {
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			held.close()
+			t.Fatal("new run was never created")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	held.State.Approved = true
+	if err := held.save(); err != nil {
+		t.Fatal(err)
+	}
+	held.close()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "already has an active run") {
+			t.Fatalf("cmdRun: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cmdRun did not return")
+	}
+	entries, _ := os.ReadDir(runsDir(w.bridge))
+	if len(entries) != 1 || entries[0].Name() != old {
+		t.Fatalf("runs left: %v", entries)
+	}
+	if st := w.state(); st.Run != old || !st.Approved {
+		t.Fatalf("session run %s approved %v", st.Run, st.Approved)
+	}
+}
+
+func TestHookWithABoundRunThatIsGoneDoesNotFail(t *testing.T) {
+	w := newWorld(t)
+	w.run("supernova/auth-refactor")
+	if err := os.RemoveAll(filepath.Join(runsDir(w.bridge), w.state().Run)); err != nil {
+		t.Fatal(err)
+	}
+	res, code := w.hook("UserPromptSubmit", map[string]any{"prompt": "hello"})
+	if code != 0 {
+		t.Fatalf("hook failed: %v", res)
 	}
 }
 

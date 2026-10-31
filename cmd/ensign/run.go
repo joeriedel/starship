@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -154,12 +156,16 @@ type RunFiles struct {
 	lock  *flock.Flock
 }
 
-// openRun locks and loads one run.
+// openRun locks and loads one run. A run whose folder is gone gives an error matching fs.ErrNotExist.
 func openRun(bridge, id string) (*RunFiles, error) {
 	dir := filepath.Join(runsDir(bridge), id)
+	// flock creates its file, so a missing folder is caught first.
+	if _, err := os.Stat(dir); err != nil {
+		return nil, fmt.Errorf("run %s: %w", id, err)
+	}
 	l := flock.New(filepath.Join(dir, "lock"))
 	if err := l.Lock(); err != nil {
-		return nil, fmt.Errorf("locking run %s: %v", id, err)
+		return nil, fmt.Errorf("locking run %s: %w", id, err)
 	}
 	r := &RunFiles{Dir: dir, lock: l, Snap: &Snapshot{}, State: &State{}}
 	if err := readJSON(filepath.Join(dir, "pipeline.json"), r.Snap); err != nil {
@@ -185,7 +191,38 @@ func openSessionRun(bridge, session string) (*RunFiles, error) {
 	if err != nil {
 		return nil, err
 	}
-	return openRun(bridge, strings.TrimSpace(string(data)))
+	r, err := openRun(bridge, strings.TrimSpace(string(data)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return r, err
+}
+
+// markRetired marks an open run as error and releases it. The lock is released before any
+// delete, since a folder with an open file cannot be removed on Windows.
+func markRetired(r *RunFiles, reason string) error {
+	r.State.Status, r.State.Reason = "error", reason
+	err := r.save()
+	r.close()
+	return err
+}
+
+// removeRun deletes a retired run's folder. A failed delete leaves a run that is already
+// terminal, so it is only a warning.
+func removeRun(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not delete run folder %s: %v\n", dir, err)
+	}
+}
+
+// retireRun marks an open run as error and deletes its folder.
+func retireRun(r *RunFiles, reason string) error {
+	dir := r.Dir
+	if err := markRetired(r, reason); err != nil {
+		return err
+	}
+	removeRun(dir)
+	return nil
 }
 
 // bindSession records that a run belongs to a session.
@@ -431,6 +468,9 @@ func cmdRun(args []string, out io.Writer) error {
 	var replaced []string
 	for _, old := range replace {
 		r, err := openRun(bridge, old)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -441,14 +481,12 @@ func cmdRun(args []string, out io.Writer) error {
 		if r.State.Approved {
 			// Approved since the scan: leave it alone and withdraw the run just created.
 			r.close()
-			st.Status, st.Reason = "error", "withdrawn: run "+old+" was approved while this run was being set up"
-			writeJSON(filepath.Join(dir, "state.json"), st)
+			if nr, err := openRun(bridge, snap.Run); err == nil {
+				retireRun(nr, "withdrawn: run "+old+" was approved while this run was being set up")
+			}
 			return fmt.Errorf("this session already has an active run, %s", old)
 		}
-		r.State.Status, r.State.Reason = "error", "replaced by run "+snap.Run
-		err = r.save()
-		r.close()
-		if err != nil {
+		if err := markRetired(r, "replaced by run "+snap.Run); err != nil {
 			return err
 		}
 		replaced = append(replaced, old)
@@ -457,6 +495,10 @@ func cmdRun(args []string, out io.Writer) error {
 		if err := bindSession(bridge, session, snap.Run); err != nil {
 			return err
 		}
+	}
+	// Folders go only after the session is bound, so a "go" hook never finds it without a run.
+	for _, old := range replaced {
+		removeRun(filepath.Join(runsDir(bridge), old))
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "pipeline.json"))
 	sum := sha256.Sum256(data)

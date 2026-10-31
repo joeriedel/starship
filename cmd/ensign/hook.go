@@ -6,8 +6,10 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -466,6 +468,9 @@ func claimRun(bridge, session string) (*RunFiles, error) {
 			continue
 		}
 		r, err := openRun(bridge, ri.id)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -667,6 +672,9 @@ func cmdNext(args []string) error {
 	var r *RunFiles
 	if run != "" {
 		r, err = openRun(bridge, run)
+		if errors.Is(err, fs.ErrNotExist) {
+			err = nil
+		}
 	} else {
 		r, err = openSessionRun(bridge, os.Getenv("STARSHIP_SESSION"))
 	}
@@ -722,6 +730,9 @@ func cmdResume(args []string, out io.Writer) error {
 	var r *RunFiles
 	if run != "" {
 		r, err = openRun(bridge, run)
+		if errors.Is(err, fs.ErrNotExist) {
+			err = nil
+		}
 	} else {
 		r, err = openSessionRun(bridge, os.Getenv("STARSHIP_SESSION"))
 	}

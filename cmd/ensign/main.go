@@ -6,8 +6,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,7 +198,11 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		finishRun(r)
 	}
 	if r != nil {
-		if err := r.save(); err != nil {
+		err := r.save()
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0 // the run was replaced and deleted while this hook held it
+		}
+		if err != nil {
 			return failHook(&in, nil, err, stderr)
 		}
 	}
