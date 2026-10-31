@@ -101,6 +101,8 @@ type State struct {
 	Resume     *ResumePoint   `json:"resume,omitempty"`       // where an ask-user run continues
 	Answers    []string       `json:"answers,omitempty"`      // the user's answers on resume
 	Rebuild    bool           `json:"rebuild,omitempty"`      // style-generate: rebuild from every source
+	RetryOf    string         `json:"retry_of,omitempty"`     // the failed run this one retries; its leftover changes are kept
+	Carried    []string       `json:"carried,omitempty"`      // a retry: the paths already dirty when it started, committed with the coder's files
 	StaleOK    bool           `json:"stale_branch,omitempty"` // github-pr: run on a task branch that is behind the default branch
 	StartHead  string         `json:"start_head,omitempty"`   // the workspace's commit when the run started (git)
 	Transcript string         `json:"transcript,omitempty"`   // the session's transcript; agents' sit beside it
@@ -383,6 +385,8 @@ func writeJSON(path string, v any) error {
 type runOpts struct {
 	task, start, pipeline, project string
 	dry, sync, rebuild, staleOK    bool
+	// A retry inside a sequence: the failed run's id and base, and the work item to freeze instead of the task's.
+	retryOf, retryBase, workItem string
 }
 
 // parseRunArgs reads the flags shared by `ensign run` and `ensign sequence run`; cmd names the command in the usage line.
@@ -544,6 +548,9 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		Project:      c.Project,
 		Created:      time.Now().Format(time.RFC3339),
 	}
+	if o.workItem != "" {
+		snap.WorkItem = o.workItem
+	}
 	for _, hs := range snap.Events {
 		for i := range hs {
 			if hs[i].Kind == "augment" && !strings.HasPrefix(hs[i].Text, "@") {
@@ -563,7 +570,8 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		return nil, err
 	}
 	st := &State{Run: snap.Run, Session: session, Status: "pending", Spent: map[string]int{}, Scopes: map[string]*ScopeState{},
-		Sync: sync, Extra: map[string]int{}, Rebuild: rebuild, StaleOK: staleOK, Sequence: queued}
+		Sync: sync, Extra: map[string]int{}, Rebuild: rebuild, StaleOK: staleOK, Sequence: queued,
+		RetryOf: o.retryOf, Base: o.retryBase}
 	first := c.Pipeline.Stages[0].ID
 	if start != "" {
 		_, _, scope := c.Pipeline.find(start)

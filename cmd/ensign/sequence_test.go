@@ -172,6 +172,8 @@ func TestSequenceStopModeHaltsAndCancelledRunsAreNotWaiting(t *testing.T) {
 	w.approve()
 	lead, _ := w.spawn("", "", "orchestrator")
 	w.failRun(lead)
+	w.wantStatus("decide", "pending", "pending")
+	w.mustSeq("accept", "1")
 	w.wantStatus("failed", "cancelled", "cancelled")
 	if sf := readSeq(w.bridge, w.sid); !sf.Sequences[0].Halted {
 		t.Error("the sequence should be halted")
@@ -200,6 +202,8 @@ func TestSequenceKeepGoingSkipsLaterStepsOfTheFailedTask(t *testing.T) {
 	w.approve()
 	lead, _ := w.spawn("", "", "orchestrator")
 	w.failRun(lead)
+	w.wantStatus("decide", "pending", "pending", "pending")
+	w.mustSeq("accept", "1")
 	w.wantStatus("failed", "skipped", "active", "pending")
 	if r := w.step(2).Reason; !strings.Contains(r, "step 1 failed") {
 		t.Errorf("the skip should name the failed step: %q", r)
@@ -454,5 +458,182 @@ func TestRetireIfLeavesAResumedRunAlone(t *testing.T) {
 	}
 	if st := w.runState(id); st.Status != "running" {
 		t.Errorf("run is %s, want running", st.Status)
+	}
+}
+
+func TestSequenceFailedRunWaitsForADecisionAndStopHoldsTheTurn(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("do", "report")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("decide", "pending")
+	if sf := readSeq(w.bridge, w.sid); sf.Sequences[0].Halted {
+		t.Error("the sequence should wait, not halt")
+	}
+	res := w.stopHook()
+	reason, _ := res["reason"].(string)
+	if res["decision"] != "block" || !strings.Contains(reason, "sequence retry 1") || !strings.Contains(reason, "sequence accept 1") {
+		t.Fatalf("the Stop hook should hold the turn and name both commands: %v", res)
+	}
+	for i := 0; i < seqStopBudget; i++ {
+		w.stopHook()
+	}
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Errorf("the hold should run out: %v", res)
+	}
+}
+
+func (w *world) retryStep(n string) string {
+	w.t.Helper()
+	return w.mustSeq("retry", n, "--diagnosis", "the fixture path was wrong", "--state", "only the login test is left")
+}
+
+func TestSequenceRetryStartsWithoutGoAndCarriesTheState(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	first := w.step(1).Run
+	w.retryStep("1")
+	st := w.step(1)
+	if st.Status != "active" || st.Run == first || st.Prev != first {
+		t.Fatalf("the retry should be under way: %+v", st)
+	}
+	if old := w.runState(first); old.Status != "error" {
+		t.Errorf("the old run should be left alone: %s", old.Status)
+	}
+	if cur := w.state(); cur.Run != st.Run || !cur.Approved || cur.RetryOf != first {
+		t.Errorf("the retry run should be bound and approved: %+v", cur)
+	}
+	r, err := readRun(w.bridge, st.Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## Current state", "the fixture path was wrong", "only the login test is left"} {
+		if !strings.Contains(r.Snap.WorkItem, want) {
+			t.Errorf("the work item lacks %q:\n%s", want, r.Snap.WorkItem)
+		}
+	}
+	listing := w.mustSeq()
+	if !strings.Contains(listing, "attempt 2/2") || !strings.Contains(listing, "the fixture path was wrong") {
+		t.Errorf("the listing should show the attempt and diagnosis:\n%s", listing)
+	}
+}
+
+func TestSequenceFailedRetryHaltsInStopMode(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("do", "later")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.retryStep("1")
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("failed", "cancelled")
+	if sf := readSeq(w.bridge, w.sid); !sf.Sequences[0].Halted {
+		t.Error("the sequence should be halted")
+	}
+}
+
+func TestSequenceFailedRetrySkipsTheTasksLaterStepsInKeepGoingMode(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.retryStep("1")
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("failed", "skipped", "active")
+}
+
+func TestSequenceSecondRetryAndBadRetriesAreRefused(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("publish", "supernova/auth-refactor")
+	w.mustSeq("do", "report")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	if _, err := w.seq("retry", "1", "--diagnosis", "x", "--state", "y"); err == nil || !strings.Contains(err.Error(), "not waiting") {
+		t.Errorf("an active step can't be retried: %v", err)
+	}
+	w.failRun(lead)
+	for _, args := range [][]string{
+		{"retry", "1", "--state", "left"},
+		{"retry", "1", "--diagnosis", "why"},
+		{"retry", "1", "--diagnosis", " ", "--state", "left"},
+		{"retry", "2", "--diagnosis", "why", "--state", "left"},
+		{"retry", "3", "--diagnosis", "why", "--state", "left"},
+	} {
+		if _, err := w.seq(args...); err == nil {
+			t.Errorf("%v should be refused", args)
+		}
+	}
+	w.wantStatus("decide")
+	w.retryStep("1")
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	_, err := w.seq("retry", "1", "--diagnosis", "again", "--state", "left")
+	if err == nil || !strings.Contains(err.Error(), "already retried") {
+		t.Errorf("a second retry should be refused: %v", err)
+	}
+}
+
+func TestSequenceRetryRefusesPublishAndDoSteps(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("publish", "supernova/auth-refactor")
+	w.mustSeq("do", "report")
+	for _, n := range []string{"1", "2"} {
+		_, err := w.seq("retry", n, "--diagnosis", "x", "--state", "y")
+		if err == nil || !strings.Contains(err.Error(), "only run steps") {
+			t.Errorf("step %s: %v", n, err)
+		}
+	}
+}
+
+func TestSequenceAcceptNeedsAWaitingStep(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	if _, err := w.seq("accept", "1"); err == nil {
+		t.Error("accept of an active step should be refused")
+	}
+}
+
+func TestSequenceHaltCancelsAStepWaitingForADecision(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("do", "later")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("decide", "pending")
+	w.mustSeq("halt", "--reason", "enough")
+	w.wantStatus("cancelled", "cancelled")
+}
+
+func TestSequenceHaltedSequenceDoesNotWaitOnALateFailure(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("do", "later")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.mustSeq("halt", "--reason", "enough")
+	w.wantStatus("active", "cancelled")
+	w.failRun(lead)
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Errorf("a halted sequence must not hold the turn: %v", res)
+	}
+	w.wantStatus("failed", "cancelled")
+	if _, err := w.seq("retry", "1", "--diagnosis", "x", "--state", "y"); err == nil {
+		t.Error("retry on a halted sequence should be refused")
 	}
 }

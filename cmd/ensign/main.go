@@ -102,7 +102,7 @@ func usage() {
   ensign task open <project>/<task>
   ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
-  ensign sequence [run <project>/<task> [run flags] | publish <project>/<task> | do <instruction> | mode stop|keep-going | halt [--reason <text>] | done <n> [--note <text>] | fail <n> --reason <text>]
+  ensign sequence [run <project>/<task> [run flags] | publish <project>/<task> | do <instruction> | mode stop|keep-going | halt [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> [--note <text>] | fail <n> --reason <text>]
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>]
   ensign style report <project>
   ensign skill new <name> --description <text> | ensign skill discard <name>

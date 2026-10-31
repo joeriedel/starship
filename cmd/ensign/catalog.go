@@ -29,7 +29,8 @@ func catalogRecordBase(r *RunFiles) error {
 	if err != nil {
 		return fmt.Errorf("git status: %v", err)
 	}
-	if status != "" {
+	retry := r.State.RetryOf != ""
+	if status != "" && !retry {
 		return fmt.Errorf("the workspace has uncommitted changes; the run won't start on top of someone's work: %s",
 			lastLines(status, 10))
 	}
@@ -37,7 +38,19 @@ func catalogRecordBase(r *RunFiles) error {
 	if err != nil {
 		return fmt.Errorf("the workspace has no commits yet")
 	}
-	r.State.Base = head
+	if !retry || r.State.Base == "" {
+		r.State.Base = head
+	}
+	if retry {
+		dirty, err := dirtyPaths(ws)
+		if err != nil {
+			return fmt.Errorf("git status: %v", err)
+		}
+		r.State.Carried = nil
+		for _, d := range dirty {
+			r.State.Carried = append(r.State.Carried, d.path)
+		}
+	}
 	tb := taskBaseFile(r.Snap.Bridge, r.Snap.Task)
 	if _, err := os.Stat(tb); err != nil {
 		if err := writeFile(tb, head+"\n"); err != nil {
@@ -45,6 +58,31 @@ func catalogRecordBase(r *RunFiles) error {
 		}
 	}
 	return nil
+}
+
+type dirtyPath struct {
+	path     string
+	unstaged bool // the working tree differs from the index
+}
+
+// dirtyPaths lists the staged, unstaged and untracked paths of the workspace.
+func dirtyPaths(ws string) ([]dirtyPath, error) {
+	status, err := gitOut(ws, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	var out []dirtyPath
+	for _, line := range strings.Split(status, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		path := strings.Trim(line[3:], `"`)
+		if _, after, ok := strings.Cut(path, " -> "); ok {
+			path = after
+		}
+		out = append(out, dirtyPath{path, line[1] != ' '})
+	}
+	return out, nil
 }
 
 // catalogCommitPass runs after each coder pass: it commits exactly the files the coder
@@ -66,27 +104,30 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 		}
 		files = append(files, filepath.ToSlash(filepath.Clean(f)))
 	}
+	listed := map[string]bool{}
+	for _, f := range files {
+		listed[f] = true
+	}
+	// A retry starts on the previous attempt's leftovers; those still dirty count as reported.
+	dirty, _ := dirtyPaths(ws)
+	for _, d := range dirty {
+		for _, c := range r.State.Carried {
+			if d.path == c && !listed[c] {
+				listed[c] = true
+				files = append(files, c)
+			}
+		}
+	}
 	if len(files) > 0 {
 		if err := git(ws, append([]string{"add", "--"}, files...)...); err != nil {
 			return err
 		}
 	}
-	listed := map[string]bool{}
-	for _, f := range files {
-		listed[filepath.ToSlash(filepath.Clean(f))] = true
-	}
-	status, _ := gitOut(ws, "status", "--porcelain")
+	dirty, _ = dirtyPaths(ws)
 	var stray []string
-	for _, line := range strings.Split(status, "\n") {
-		if len(line) < 4 {
-			continue
-		}
-		path := strings.Trim(line[3:], `"`)
-		if _, after, ok := strings.Cut(path, " -> "); ok {
-			path = after
-		}
-		if line[1] != ' ' || !listed[path] {
-			stray = append(stray, path)
+	for _, d := range dirty {
+		if d.unstaged || !listed[d.path] {
+			stray = append(stray, d.path)
 		}
 	}
 	if len(stray) > 0 {

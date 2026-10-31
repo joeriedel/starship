@@ -423,3 +423,29 @@ func TestLogRunBeforeSplit(t *testing.T) {
 		t.Errorf("the run should be in task.md's log:\n%s", got)
 	}
 }
+
+func TestCatalogRetryCommitsTheLeftoversItKept(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	ws := w.gitWorkspace()
+	w.project("use: [git-catalog]\n")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	write(t, filepath.Join(ws, "lib.txt"), "one\ntwo\n")
+	write(t, filepath.Join(ws, "stray.txt"), "left\n")
+	w.stop(coder, "coder", coderReport("broken", "lib.txt"), false)
+	w.wantFailed("")
+	w.retryStep("1")
+
+	lead, _ = w.spawn("", "", "orchestrator")
+	coder, _ = w.spawn(lead, "orchestrator", "coder")
+	write(t, filepath.Join(ws, "other.txt"), "mine\n")
+	if r := w.stop(coder, "coder", coderReport("compiled", "other.txt"), true); r != "" {
+		t.Fatalf("the retry's first pass was blocked: %s", r)
+	}
+	if status := runGit(t, ws, "status", "--porcelain"); status != "" {
+		t.Errorf("the leftovers should be committed: %q", status)
+	}
+}

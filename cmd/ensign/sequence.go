@@ -34,9 +34,11 @@ type seqStep struct {
 	Command     string `json:"command,omitempty"` // publish: the extension's operation
 	Instruction string `json:"instruction,omitempty"`
 	Headline    string `json:"headline,omitempty"`
-	Status      string `json:"status"` // pending, active, paused, done, failed, skipped, cancelled
+	Status      string `json:"status"` // pending, active, paused, decide, done, failed, skipped, cancelled
 	Reason      string `json:"reason,omitempty"`
-	Blocks      int    `json:"blocks,omitempty"` // stops held open for this step
+	Blocks      int    `json:"blocks,omitempty"`    // stops held open for this step
+	Prev        string `json:"prev_run,omitempty"`  // the run this step's run retries
+	Diagnosis   string `json:"diagnosis,omitempty"` // why the previous run failed, as the session wrote it
 }
 
 type sequence struct {
@@ -112,10 +114,13 @@ func sequenceListing(bridge, session string) string {
 }
 
 func (s *seqStep) open() bool {
-	return s.Status == "pending" || s.Status == "active" || s.Status == "paused"
+	return s.Status == "pending" || s.Status == "active" || s.Status == "paused" || s.Status == "decide"
 }
 
 func (s *seqStep) holds() bool { return s.Status == "active" || s.Status == "paused" }
+
+// deciding reports that a step's run failed and the sequence waits for the session to retry it or accept the failure.
+func (s *seqStep) deciding() bool { return s.Status == "decide" }
 
 func (s *sequence) unfinished() bool {
 	for _, st := range s.Steps {
@@ -128,7 +133,7 @@ func (s *sequence) unfinished() bool {
 
 func (s *sequence) holding() bool {
 	for _, st := range s.Steps {
-		if st.holds() {
+		if st.holds() || st.deciding() {
 			return true
 		}
 	}
@@ -203,6 +208,17 @@ func (sf *seqFile) listing() string {
 			if st.Reason != "" {
 				line += " " + firstLine(st.Reason)
 			}
+			if st.Kind == "run" && (st.Prev != "" || st.deciding()) {
+				n := 1
+				if st.Prev != "" {
+					n = 2
+				}
+				line += fmt.Sprintf(" (attempt %d/2", n)
+				if st.Diagnosis != "" {
+					line += ", retried because: " + firstLine(st.Diagnosis)
+				}
+				line += ")"
+			}
 			b.WriteString(line + "\n")
 		}
 		if !seq.Approved && !seq.Halted {
@@ -257,7 +273,12 @@ func (sf *seqFile) reconcile(bridge string) {
 			case "success":
 				st.Status, st.Reason = "done", ""
 			case "error":
-				st.Status, st.Reason = "failed", r.State.Reason
+				st.Reason = r.State.Reason
+				if st.Prev == "" && !seq.Halted {
+					st.Status = "decide"
+					continue
+				}
+				st.Status = "failed"
 				sf.failed(bridge, seq, st)
 			case "ask-user":
 				st.Status, st.Reason = "paused", r.State.Reason
@@ -378,6 +399,11 @@ func doText(st *seqStep) string {
 		st.Instruction, st.N, st.N)
 }
 
+func decideText(st *seqStep) string {
+	return fmt.Sprintf("Its run failed: %s\nRetry once only for a diagnosed, small, fixable cause: `ensign sequence retry %d --diagnosis \"<why it failed>\" --state \"<what is left>\"`. Otherwise `ensign sequence accept %d`.",
+		firstLine(st.Reason), st.N, st.N)
+}
+
 // startRunStep approves a queued run and binds it to the session. It returns what the session does next, the same text go gives a plain run.
 func startRunStep(bridge, session string, st *seqStep) (string, error) {
 	if data, err := os.ReadFile(sessionFile(bridge, session) + ".pin"); err == nil {
@@ -495,6 +521,8 @@ func sequenceStop(bridge string, in *HookInput) any {
 			for _, st := range seq.Steps {
 				var todo string
 				switch {
+				case st.deciding():
+					todo = decideText(st)
 				case st.Status != "active":
 				case st.Kind == "do":
 					todo = doText(st)
@@ -645,7 +673,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				switch {
 				case st.Status == "paused":
 					paused = append(paused, &seqStep{N: st.N, Run: st.Run})
-				case st.Status == "pending" || (st.Status == "active" && st.Kind == "do"):
+				case st.Status == "pending" || st.deciding() || (st.Status == "active" && st.Kind == "do"):
 					cancelStep(bridge, st, "cancelled", reason)
 				}
 			}
@@ -674,6 +702,90 @@ func cmdSequence(args []string, out io.Writer) error {
 			} else {
 				fmt.Fprint(out, sf.listing())
 			}
+			return err
+		})
+	case "accept":
+		n, err := stepArg(rest, "usage: ensign sequence accept <n>")
+		if err != nil {
+			return err
+		}
+		return withSeq(bridge, session, func(sf *seqFile) error {
+			seq, st := sf.step(n)
+			if st == nil || !st.deciding() {
+				return fmt.Errorf("step %d is not waiting for a decision", n)
+			}
+			st.Status = "failed"
+			sf.failed(bridge, seq, st)
+			text, err := sf.advance(bridge, session)
+			if text == "" {
+				text = sf.listing()
+			}
+			fmt.Fprint(out, text)
+			return err
+		})
+	case "retry":
+		usage := "usage: ensign sequence retry <n> --diagnosis <why it failed> --state <what is left>"
+		if len(rest) < 1 {
+			return errors.New(usage)
+		}
+		n, err := strconv.Atoi(rest[0])
+		if err != nil {
+			return fmt.Errorf("%q is not a step number", rest[0])
+		}
+		var diagnosis, left string
+		for i := 1; i < len(rest); i += 2 {
+			if i+1 >= len(rest) {
+				return errors.New(usage)
+			}
+			switch rest[i] {
+			case "--diagnosis":
+				diagnosis = strings.TrimSpace(rest[i+1])
+			case "--state":
+				left = strings.TrimSpace(rest[i+1])
+			default:
+				return errors.New(usage)
+			}
+		}
+		return withSeq(bridge, session, func(sf *seqFile) error {
+			seq, st := sf.step(n)
+			switch {
+			case st == nil:
+				return fmt.Errorf("there is no step %d", n)
+			case seq.Halted:
+				return fmt.Errorf("the sequence is halted; step %d can't be retried", n)
+			case st.Kind != "run":
+				return fmt.Errorf("step %d is a %s step; only run steps can be retried, not publish or do steps", n, st.Kind)
+			case st.Prev != "":
+				return fmt.Errorf("step %d was already retried; a step gets one retry", n)
+			case !st.deciding():
+				return fmt.Errorf("step %d is not waiting for a decision (it is %s)", n, st.Status)
+			case diagnosis == "":
+				return fmt.Errorf("ensign sequence retry needs --diagnosis <why it failed>")
+			case left == "":
+				return fmt.Errorf("ensign sequence retry needs --state <what is left>")
+			}
+			old, err := readRun(bridge, st.Run)
+			if err != nil {
+				return fmt.Errorf("the failed run can't be read: %v", err)
+			}
+			o := runOpts{start: old.Snap.Start, staleOK: old.State.StaleOK, retryOf: st.Run, retryBase: old.State.Base, rebuild: old.State.Rebuild,
+				workItem: old.Snap.WorkItem + "\n\n## Current state\n\nThis is a retry. The workspace holds the previous attempt's work, uncommitted changes included; build on it.\n\nWhy the previous attempt failed: " + diagnosis + "\n\nWhat is left: " + left + "\n"}
+			if old.Snap.Task != "" {
+				o.task = old.Snap.Task
+			} else {
+				o.pipeline, o.project = old.Snap.Pipeline.Name, old.Snap.Project
+			}
+			snap, err := createRun(bridge, o, true, out)
+			if err != nil {
+				return err
+			}
+			st.Prev, st.Diagnosis, st.Run = st.Run, diagnosis, snap.Run
+			st.Status, st.Reason, st.Blocks = "pending", "", 0
+			text, err := sf.advance(bridge, session)
+			if text == "" {
+				text = sf.listing()
+			}
+			fmt.Fprint(out, text)
 			return err
 		})
 	case "done", "fail":
@@ -715,7 +827,18 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		})
 	}
-	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | do <instruction> | mode stop|keep-going | halt | done <n> | fail <n> --reason <text>]")
+	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | do <instruction> | mode stop|keep-going | halt | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> | fail <n> --reason <text>]")
+}
+
+func stepArg(args []string, usage string) (int, error) {
+	if len(args) != 1 {
+		return 0, errors.New(usage)
+	}
+	n, err := strconv.Atoi(args[0])
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a step number", args[0])
+	}
+	return n, nil
 }
 
 // flagValue reads one optional "--flag value" pair from args.
