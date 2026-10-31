@@ -803,7 +803,7 @@ func TestSequenceReleaseResultFollowsCarriedSequence(t *testing.T) {
 	w := newWorld(t)
 	moved := filepath.Join(w.bridge, ".starship", "sessions", "other.sequence")
 	write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"),
-		"bindings:\n  build: { command: \"./build.sh\" }\n  release: { command: \"mv '"+seqPath(w.bridge, w.sid)+"' '"+moved+"'\" }\n")
+		"bindings:\n  build: { command: \"./build.sh\" }\n  release: { command: \"mv '"+filepath.ToSlash(seqPath(w.bridge, w.sid))+"' '"+filepath.ToSlash(moved)+"'\" }\n")
 	w.mustSeq("release", "supernova", "1.0.0")
 	w.mustSeq("do", "report")
 	w.goContext()
