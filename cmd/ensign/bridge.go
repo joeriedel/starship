@@ -53,11 +53,21 @@ the first time a task needs it.
 
 ## The heartbeat
 
-At session start a starship hook prints a line beginning ` + "`STARSHIP-READY`" + `, followed by
+` + heartbeat + `
+`
+
+// oldHeartbeat is the heartbeat paragraph that bridges made before it was scoped to the
+// session agent carry; SessionStart replaces it with heartbeat.
+const oldHeartbeat = `At session start a starship hook prints a line beginning ` + "`STARSHIP-READY`" + `, followed by
 the session manual. **If that line is not in your context, or starship hooks report
 errors, starship is not working in this session. Say so plainly and do nothing except
-help fix it**: no runs, no agent spawns, no workspace changes, no commits.
-`
+help fix it**: no runs, no agent spawns, no workspace changes, no commits.`
+
+const heartbeat = `At session start a starship hook prints a line beginning ` + "`STARSHIP-READY`" + `, followed by
+the session manual. This rule is for the session agent only; subagents never see that
+line and ignore this section. **If that line is not in your context, or starship hooks
+report errors, starship is not working in this session. Say so plainly and do nothing
+except help fix it**: no runs, no agent spawns, no workspace changes, no commits.`
 
 // sessionImport is the line older bridges used to load the manual through CLAUDE.md,
 // which also put it in every subagent's context. SessionStart now removes it.

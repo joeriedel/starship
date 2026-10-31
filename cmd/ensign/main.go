@@ -279,6 +279,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		}
 	}
 	dropSessionImport(bridge)
+	updateHeartbeat(bridge)
 	upgradeHookSettings(bridge)
 	fmt.Fprintf(&ctx, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
 	// The manual goes to the session through this hook, not CLAUDE.md, because Claude
@@ -321,6 +322,35 @@ func upgradeHookSettings(bridge string) {
 	}
 	if os.WriteFile(f, []byte(hookSettings()), 0o644) == nil && isGit(bridge) {
 		git(bridge, "commit", "-q", "-m", "Update the starship hook settings", "--", ".claude/settings.json")
+	}
+}
+
+// updateHeartbeat replaces the old heartbeat paragraph in a bridge's CLAUDE.md with one
+// scoped to the session agent, and commits that. A CLAUDE.md with someone's uncommitted
+// edits, or without the old paragraph, is left alone.
+func updateHeartbeat(bridge string) {
+	f := filepath.Join(bridge, "CLAUDE.md")
+	data, err := os.ReadFile(f)
+	if err != nil {
+		return
+	}
+	// A checkout with CRLF endings (Windows, core.autocrlf) keeps them.
+	from, to := oldHeartbeat, heartbeat
+	if !strings.Contains(string(data), from) {
+		from, to = strings.ReplaceAll(from, "\n", "\r\n"), strings.ReplaceAll(to, "\n", "\r\n")
+	}
+	if !strings.Contains(string(data), from) {
+		return
+	}
+	tracked := isGit(bridge)
+	if tracked {
+		if dirty, _ := gitOut(bridge, "status", "--porcelain", "--", "CLAUDE.md"); dirty != "" {
+			return
+		}
+	}
+	updated := strings.Replace(string(data), from, to, 1)
+	if os.WriteFile(f, []byte(updated), 0o644) == nil && tracked {
+		git(bridge, "commit", "-q", "-m", "Scope the heartbeat rule to the session agent", "--", "CLAUDE.md")
 	}
 }
 

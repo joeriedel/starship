@@ -780,6 +780,75 @@ func TestSessionStartDeliversTheManual(t *testing.T) {
 	}
 }
 
+func TestHeartbeatMigration(t *testing.T) {
+	claudePath := func(w *world) string { return filepath.Join(w.bridge, "CLAUDE.md") }
+	read := func(w *world) string {
+		b, _ := os.ReadFile(claudePath(w))
+		return string(b)
+	}
+	setup := func(t *testing.T, content string) *world {
+		w := newWorld(t)
+		git(w.bridge, "init", "-q")
+		write(t, claudePath(w), content)
+		git(w.bridge, "add", "CLAUDE.md")
+		git(w.bridge, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "old bridge")
+		t.Setenv("GIT_AUTHOR_NAME", "t")
+		t.Setenv("GIT_AUTHOR_EMAIL", "t@example.com")
+		t.Setenv("GIT_COMMITTER_NAME", "t")
+		t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
+		return w
+	}
+	old := "# Bridge\n\n## The heartbeat\n\n" + oldHeartbeat + "\n"
+
+	t.Run("old paragraph is replaced and committed", func(t *testing.T) {
+		w := setup(t, old)
+		updateHeartbeat(w.bridge)
+		got := read(w)
+		if !strings.Contains(got, heartbeat) || strings.Contains(got, oldHeartbeat) {
+			t.Errorf("heartbeat not replaced:\n%s", got)
+		}
+		if dirty, _ := gitOut(w.bridge, "status", "--porcelain", "--", "CLAUDE.md"); dirty != "" {
+			t.Errorf("the change should be committed: %q", dirty)
+		}
+		updateHeartbeat(w.bridge)
+		if read(w) != got {
+			t.Errorf("a second run should change nothing")
+		}
+	})
+	t.Run("dirty file is left alone", func(t *testing.T) {
+		w := setup(t, old)
+		dirty := old + "my edit\n"
+		write(t, claudePath(w), dirty)
+		updateHeartbeat(w.bridge)
+		if read(w) != dirty {
+			t.Errorf("a dirty CLAUDE.md should be unchanged")
+		}
+	})
+	t.Run("file without the old paragraph is left alone", func(t *testing.T) {
+		other := "# Bridge\n\nSomething else.\n"
+		w := setup(t, other)
+		updateHeartbeat(w.bridge)
+		if read(w) != other {
+			t.Errorf("CLAUDE.md should be unchanged")
+		}
+	})
+	t.Run("CRLF endings are kept", func(t *testing.T) {
+		crlf := func(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
+		w := setup(t, crlf(old))
+		git(w.bridge, "config", "core.autocrlf", "false")
+		updateHeartbeat(w.bridge)
+		want := crlf("# Bridge\n\n## The heartbeat\n\n" + heartbeat + "\n")
+		if got := read(w); got != want {
+			t.Errorf("CRLF heartbeat not migrated cleanly:\n%q", got)
+		}
+	})
+	t.Run("the init template carries the new paragraph", func(t *testing.T) {
+		if tmpl := fmt.Sprintf(bridgeClaudeMD, "x"); !strings.Contains(tmpl, heartbeat) || strings.Contains(tmpl, oldHeartbeat) {
+			t.Errorf("template heartbeat is wrong:\n%s", tmpl)
+		}
+	})
+}
+
 func TestWaitOnOwnBackgroundTask(t *testing.T) {
 	w := newWorld(t)
 	lead := w.startLead()
