@@ -52,6 +52,11 @@ constraints; the lead turns it into files and functions and verifies the mechani
 you catch yourself asserting what code does, either verify it and say so, or hand it over
 as a question.
 
+**Bring Goal and Scope up to date before `ensign run`.** Fold every decision, ruling and
+pertinent note from the task file into them. Only Goal and Scope reach the lead; anything
+left only in Decisions or Notes is lost to the run. This is part of writing the brief: it
+doesn't change the task's scope and needs no separate approval from the user.
+
 **Size a work item for one cycle.** Split unrelated behaviours into separate runs; each
 gets its own verification, which is the point. Settle open design decisions before the
 run, or the loop invents one.
@@ -98,7 +103,8 @@ a fresh session with none of this conversation can pick the work up.
 - **Status** — where the work actually stands
 - **Progress log** — dated: what was done, what came of it
 - **Outstanding** — this task's remaining work only; observations go in Notes
-- **Decisions** — what was decided *and why*; the reason is the part that decays
+- **Decisions** — what was decided *and why*; the reason is the part that decays.
+  If it affects the next run, also update Scope or Goal (see "Plan first, always")
 - **Notes** — discoveries and dead ends the next session would otherwise rediscover
 
 **Every run gets an account in the progress log.** When a run ends, ensign adds a line
