@@ -596,8 +596,8 @@ The driver adds its own:
 | Code | When |
 |---|---|
 | `ensign` | an `ensign` error during the run (below) |
-| `bad-report` | a stage agent failed to produce a valid report after being blocked twice |
-| `lead-stopped` | the lead kept trying to stop before the pipeline finished (blocked three times) |
+| `bad-report` | a stage agent failed to produce a valid report: its third refused stop or handback |
+| `lead-stopped` | the lead kept trying to stop before the pipeline finished: its third refused stop or handback |
 
 **An `ensign` error during pipeline work is an immediate failure:** the run ends as
 `error: ensign` with `ensign`'s message. This covers a hook that fails and a command

@@ -97,6 +97,10 @@ func agentTranscript(sessionTranscript, agentID string) string {
 
 func deny(r *RunFiles, stage, reason string) any {
 	r.State.log("denied", stage, "", reason)
+	return denial(reason)
+}
+
+func denial(reason string) any {
 	return map[string]any{"hookSpecificOutput": map[string]any{
 		"hookEventName":            "PreToolUse",
 		"permissionDecision":       "deny",
@@ -185,8 +189,9 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 		return deny(r, s.ID, "the run is not approved yet; the user must type go"), nil
 	}
 
+	stops := stopBudget
 	d := &Dispatch{ID: fmt.Sprintf("d%d", len(r.State.Dispatches)+1), Stage: s.ID, Scope: scope, Role: role,
-		Fields: map[string][]string{}}
+		Fields: map[string][]string{}, StopsLeft: &stops}
 	if caller != nil {
 		d.CallerAgent = caller.AgentID
 	}
@@ -283,18 +288,29 @@ func hookHandback(in *HookInput, r *RunFiles) any {
 	}
 	msg, _ := in.ToolInput["message"].(string)
 	m := &machine{snap: r.Snap, st: r.State}
-	if s := m.stage(d.Stage); s != nil && s.isLead() && !r.State.terminal() {
-		return deny(r, s.ID, "the pipeline is not finished. "+m.expect(s.ID))
+	s := m.stage(d.Stage)
+	// refuse counts a refused handback; the one that uses up the budget fails the run and is let through.
+	refuse := func(reason, code, why string) any {
+		if d.spendStop() {
+			d.Done = true
+			m.fail(code, why)
+			return nil
+		}
+		r.State.log("denied", s.ID, d.ID, reason)
+		return denial(reason)
+	}
+	if s != nil && s.isLead() && !r.State.terminal() {
+		return refuse("the pipeline is not finished. "+m.expect(s.ID), "lead-stopped", "the lead stopped before the pipeline finished")
 	} else if s != nil && !s.isLead() && !d.Done {
 		outcome, _, _, problem := parseReport(msg, s)
 		if problem != "" {
-			return deny(r, s.ID, problem+" "+reportInstructions(s))
+			return refuse(problem+" "+reportInstructions(s), "bad-report", fmt.Sprintf("%s (%s) never produced a valid report: %s", s.ID, d.ID, problem))
 		}
 		if s.Curates != "" {
 			d.Outcome = outcome
 			if problem := applyCuration(r, s, d, msg); problem != "" {
 				d.Outcome = ""
-				return deny(r, s.ID, problem)
+				return refuse(problem, "bad-report", fmt.Sprintf("%s (%s) never produced a valid rewrite: %s", s.ID, d.ID, problem))
 			}
 		}
 	}
@@ -371,8 +387,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		if d.Handback == "" && ownsInFlight(r, in) {
 			return nil, nil // waiting on its own background task
 		}
-		d.StopBlocks++
-		if d.StopBlocks > 3 {
+		if d.spendStop() {
 			d.Done = true
 			m.fail("lead-stopped", "the lead stopped before the pipeline finished")
 			return nil, nil
@@ -394,8 +409,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 	}
 	outcome, summary, fields, problem := parseReport(report, s)
 	if problem != "" {
-		d.StopBlocks++
-		if d.StopBlocks > 2 {
+		if d.spendStop() {
 			d.Done = true
 			m.fail("bad-report", fmt.Sprintf("%s (%s) never produced a valid report: %s", s.ID, d.ID, problem))
 			return nil, nil
@@ -407,8 +421,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		d.Outcome = outcome
 		if problem := applyCuration(r, s, d, report); problem != "" {
 			d.Outcome = ""
-			d.StopBlocks++
-			if d.StopBlocks > 2 {
+			if d.spendStop() {
 				d.Done = true
 				m.fail("bad-report", fmt.Sprintf("%s (%s) never produced a valid rewrite: %s", s.ID, d.ID, problem))
 				return nil, nil

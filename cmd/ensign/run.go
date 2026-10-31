@@ -53,10 +53,13 @@ type Dispatch struct {
 	Outcome     string `json:"outcome,omitempty"`
 	Summary     string `json:"summary,omitempty"`
 	// Fields holds the report's other lines (files, rules, facts …).
-	Fields     map[string][]string `json:"fields,omitempty"`
-	StopBlocks int                 `json:"stop_blocks,omitempty"`
-	Handback   string              `json:"handback,omitempty"` // the message of the agent's SubagentHandback call
-	Usage      *Usage              `json:"usage,omitempty"`    // from the agent's transcript
+	Fields map[string][]string `json:"fields,omitempty"`
+	// StopBlocks is the legacy count of refused stops, read only to migrate old state.
+	StopBlocks int `json:"stop_blocks,omitempty"`
+	// StopsLeft is the refusals the agent has left before the run fails; nil only in state saved before it existed.
+	StopsLeft *int   `json:"stops_left,omitempty"`
+	Handback  string `json:"handback,omitempty"` // the message of the agent's SubagentHandback call
+	Usage     *Usage `json:"usage,omitempty"`    // from the agent's transcript
 }
 
 type ScopeState struct {
@@ -107,6 +110,15 @@ type State struct {
 	History    []HistoryEntry `json:"history"`
 
 	Tasks map[string]string `json:"tasks,omitempty"` // background task id -> id of the agent that launched it
+}
+
+// stopBudget is how many refused stops and handbacks an agent gets before the run fails: the last one fails it.
+const stopBudget = 3
+
+// spendStop counts one refusal against the dispatch and reports whether the budget is now used up.
+func (d *Dispatch) spendStop() bool {
+	*d.StopsLeft--
+	return *d.StopsLeft <= 0
 }
 
 func (st *State) terminal() bool {
@@ -176,6 +188,12 @@ func openRun(bridge, id string) (*RunFiles, error) {
 	if err := readJSON(filepath.Join(dir, "state.json"), r.State); err != nil {
 		l.Unlock()
 		return nil, err
+	}
+	for _, d := range r.State.Dispatches {
+		if d.StopsLeft == nil {
+			left := max(stopBudget-d.StopBlocks, 1)
+			d.StopsLeft, d.StopBlocks = &left, 0
+		}
 	}
 	return r, nil
 }

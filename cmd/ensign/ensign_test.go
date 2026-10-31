@@ -902,8 +902,8 @@ func TestWaitOnOwnBackgroundTask(t *testing.T) {
 	if r := w.stopWith(lead, "orchestrator", "Waiting for the explorer.", false, task); r != "" {
 		t.Fatalf("a lead waiting on its own background agent should be let stop: %s", r)
 	}
-	if st := w.state(); st.byAgent(lead).StopBlocks != 0 {
-		t.Fatalf("a wait must not spend the stop budget, got %d", st.byAgent(lead).StopBlocks)
+	if st := w.state(); *st.byAgent(lead).StopsLeft != stopBudget {
+		t.Fatalf("a wait must not spend the stop budget, got %d left", *st.byAgent(lead).StopsLeft)
 	}
 
 	// A stage waits on a background Bash command.
@@ -918,8 +918,8 @@ func TestWaitOnOwnBackgroundTask(t *testing.T) {
 		t.Fatalf("a stage waiting on its own task should be let stop: %s", r)
 	}
 	st := w.state()
-	if d := st.byAgent(coder); d.Done || d.StopBlocks != 0 {
-		t.Fatalf("a wait is not a report: done=%v blocks=%d", d.Done, d.StopBlocks)
+	if d := st.byAgent(coder); d.Done || *d.StopsLeft != stopBudget {
+		t.Fatalf("a wait is not a report: done=%v left=%d", d.Done, *d.StopsLeft)
 	}
 
 	// Someone else's task does not excuse the stop, and neither does a finished one.
@@ -989,6 +989,143 @@ func TestLeadHandbackWaitsForTheFinishedRun(t *testing.T) {
 	}
 	if d := w.state().byAgent(lead); d.Handback != "All done." {
 		t.Fatalf("an accepted lead handback must be recorded: %+v", d)
+	}
+}
+
+// stopsLeft is an agent's remaining stop budget.
+func (w *world) stopsLeft(agent string) int {
+	w.t.Helper()
+	return *w.state().byAgent(agent).StopsLeft
+}
+
+func (w *world) wantFailed(code string) {
+	w.t.Helper()
+	if st := w.state(); st.Status != "error" || !strings.HasPrefix(st.Reason, code) {
+		w.t.Fatalf("status %s reason %s, want %s", st.Status, st.Reason, code)
+	}
+}
+
+func TestLeadHandbackBudget(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	for _, left := range []int{2, 1} {
+		if r := w.handback(lead, "orchestrator", "All done."); !strings.Contains(r, "not finished") {
+			t.Fatalf("an early lead handback should be refused: %q", r)
+		}
+		if got := w.stopsLeft(lead); got != left {
+			t.Fatalf("budget %d, want %d", got, left)
+		}
+	}
+	if r := w.handback(lead, "orchestrator", "All done."); r != "" {
+		t.Fatalf("the handback that exhausts the budget should be let through: %s", r)
+	}
+	w.wantFailed("lead-stopped")
+	if r := w.stop(lead, "orchestrator", "done", false); r != "" {
+		t.Fatalf("the stop after the failure should be allowed: %s", r)
+	}
+	if got := w.stopsLeft(lead); got != 0 {
+		t.Fatalf("budget %d, want 0", got)
+	}
+}
+
+func TestStageHandbackBudget(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	for _, left := range []int{2, 1} {
+		if r := w.handback(coder, "coder", "no report"); !strings.Contains(r, "no starship-report") {
+			t.Fatalf("a bad handback should be refused: %q", r)
+		}
+		if got := w.stopsLeft(coder); got != left {
+			t.Fatalf("budget %d, want %d", got, left)
+		}
+	}
+	if r := w.handback(coder, "coder", "no report"); r != "" {
+		t.Fatalf("the handback that exhausts the budget should be let through: %s", r)
+	}
+	w.wantFailed("bad-report")
+	if r := w.stop(coder, "coder", "bye", false); r != "" {
+		t.Fatalf("the stop after the failure should be allowed: %s", r)
+	}
+	if got := w.stopsLeft(coder); got != 0 {
+		t.Fatalf("budget %d, want 0", got)
+	}
+}
+
+func TestCuratingHandbackBudget(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	r, err := openSessionRun(w.bridge, w.sid)
+	if err != nil || r == nil {
+		t.Fatalf("no active run: %v", err)
+	}
+	code, _, _ := r.Snap.Pipeline.find("code")
+	code.Curates = "skill"
+	code.Outcomes = append(code.Outcomes, Outcome{Name: "updated"})
+	err = writeJSON(filepath.Join(r.Dir, "pipeline.json"), r.Snap)
+	r.close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	for _, left := range []int{2, 1} {
+		if r := w.handback(coder, "coder", report("updated")); !strings.Contains(r, "starship-document") {
+			t.Fatalf("a rewrite with no document should be refused: %q", r)
+		}
+		if got := w.stopsLeft(coder); got != left {
+			t.Fatalf("budget %d, want %d", got, left)
+		}
+	}
+	if r := w.handback(coder, "coder", report("updated")); r != "" {
+		t.Fatalf("the handback that exhausts the budget should be let through: %s", r)
+	}
+	w.wantFailed("bad-report")
+	if st := w.state(); !strings.Contains(st.Reason, "valid rewrite") {
+		t.Fatalf("reason %s", st.Reason)
+	}
+}
+
+func TestRefusedHandbacksAndStopsShareTheBudget(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	w.handback(coder, "coder", "no report")
+	w.handback(coder, "coder", "no report")
+	if r := w.stop(coder, "coder", "still nothing", false); r != "" {
+		t.Fatalf("the third refusal should fail the run, not block: %q", r)
+	}
+	w.wantFailed("bad-report")
+}
+
+func TestLegacyStopBlocksMigrate(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	r, err := openSessionRun(w.bridge, w.sid)
+	if err != nil || r == nil {
+		t.Fatalf("no active run: %v", err)
+	}
+	for _, d := range r.State.Dispatches {
+		d.StopsLeft = nil
+		if d.AgentID == coder {
+			d.StopBlocks = 1
+		} else {
+			d.StopBlocks = 7
+		}
+	}
+	err = r.save()
+	r.close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.stopsLeft(coder); got != stopBudget-1 {
+		t.Fatalf("derived budget %d, want %d", got, stopBudget-1)
+	}
+	if got := w.stopsLeft(lead); got != 1 {
+		t.Fatalf("an over-spent legacy count should floor at 1, got %d", got)
 	}
 }
 
