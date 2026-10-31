@@ -8,7 +8,10 @@ summary: Each task works on its own branch; once it passes, you choose a pull re
 #
 #   run start          the workspace moves to the task's branch, task/<name>, created
 #                      from the default branch the first time. A run won't start on top
-#                      of uncommitted work on another branch.
+#                      of uncommitted work on another branch. An existing task branch
+#                      that is behind the default branch (doesn't contain it) is
+#                      refused; set the run up again with --stale-branch to run on it
+#                      as it is.
 #   before the test    what the run changed is committed on the task branch.
 #   test               the project's own @test, as always.
 #   run passed         the tested commit is recorded; nothing is pushed or opened.
@@ -16,6 +19,10 @@ summary: Each task works on its own branch; once it passes, you choose a pull re
 # Landing the work is a separate step the user asks for after the run: a pull request,
 # or straight onto the default branch if that's a fast-forward. Either one refuses if
 # the task branch has changed since its tests passed.
+#
+# Bringing a task branch up to date is also a step the user asks for: a rebase onto the
+# default branch. If it conflicts it aborts and leaves the branch unchanged. An updated
+# branch has to be tested again before it lands.
 #
 # A project whose tests are its CI on GitHub binds
 #   test: { command: "ensign github-pr ci", plain: true }
