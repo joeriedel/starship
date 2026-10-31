@@ -301,6 +301,46 @@ func TestSequenceStopHookHoldsTheTurnForAReadyStep(t *testing.T) {
 	}
 }
 
+func (w *world) stopHookWithBackground() map[string]any {
+	w.t.Helper()
+	res, code := w.hook("Stop", map[string]any{"background_tasks": []map[string]any{{"id": "bash1", "type": "shell", "status": "running"}}})
+	if code != 0 {
+		w.t.Fatalf("Stop exited %d: %v", code, res)
+	}
+	return res
+}
+
+func TestSequenceStopHookLetsTheTurnEndWhileADoStepWaitsOnBackgroundWork(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "tell the user")
+	w.approve()
+	for i := 0; i < seqStopBudget+2; i++ {
+		if res := w.stopHookWithBackground(); res != nil {
+			t.Fatalf("stop %d: background work is in flight, the turn may end: %v", i+1, res)
+		}
+	}
+	if n := w.step(1).Blocks; n != 0 {
+		t.Fatalf("no hold should be spent while waiting, got %d", n)
+	}
+
+	w2 := newWorld(t)
+	w2.mustSeq("do", "tell the user")
+	w2.approve()
+	if res := w2.stopHook(); res["decision"] != "block" {
+		t.Fatalf("nothing in flight, the do step holds the turn: %v", res)
+	}
+	if n := w2.step(1).Blocks; n != 1 {
+		t.Fatalf("a hold should be spent, got %d", n)
+	}
+
+	w3 := newWorld(t)
+	w3.mustSeq("run", "supernova/auth-refactor")
+	w3.approve()
+	if res := w3.stopHookWithBackground(); res["decision"] != "block" {
+		t.Fatalf("a ready run step still holds the turn: %v", res)
+	}
+}
+
 func TestPlainRunIsUnchangedWithoutASequence(t *testing.T) {
 	w := newWorld(t)
 	w.run("supernova/auth-refactor")

@@ -541,7 +541,10 @@ func sequenceStop(bridge string, in *HookInput) any {
 					todo = decideText(st)
 				case st.Status != "active":
 				case st.Kind == "do":
-					todo = doText(st)
+					// Background work in flight means the session is waiting on it, not stopping.
+					if len(in.BackgroundTasks) == 0 {
+						todo = doText(st)
+					}
 				case st.Kind == "release":
 					if !st.Started {
 						todo = releaseText(st)
