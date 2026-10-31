@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -634,6 +636,13 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 			fmt.Fprintf(out, "workspace  %s\n", ws)
 			fmt.Fprintln(out, "vcs        "+vcsState(ws, tf.Vcs))
 		}
+	}
+	notes, err := os.ReadFile(filepath.Join(bridge, "projects", project, "project.md"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if n := strings.TrimSpace(string(notes)); n != "" {
+		fmt.Fprintf(out, "\nnotes      projects/%s/project.md\n\n%s\n", project, n)
 	}
 	fmt.Fprintf(out, "\n%s\n", strings.TrimSpace(string(body)))
 	if sid := os.Getenv("STARSHIP_SESSION"); sid != "" {

@@ -133,3 +133,32 @@ func TestMigrateWorkspacesCommitsItsOwnEdits(t *testing.T) {
 		t.Errorf("machine.yaml should be ignored and only the user's file left: %q", st)
 	}
 }
+
+func TestOpenTaskShowsProjectNotes(t *testing.T) {
+	w := newWorld(t)
+	taskDir := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor")
+	var out bytes.Buffer
+	if err := openTask(w.bridge, "supernova/auth-refactor", taskDir, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "notes      ") {
+		t.Errorf("no project.md, no notes line:\n%s", out.String())
+	}
+	write(t, filepath.Join(w.bridge, "projects/supernova/project.md"), "\nAlways answer in haiku.\n")
+	out.Reset()
+	if err := openTask(w.bridge, "supernova/auth-refactor", taskDir, &out); err != nil {
+		t.Fatal(err)
+	}
+	_, body, err := splitFrontmatter(filepath.Join(taskDir, "task.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	n, b := strings.Index(got, "Always answer in haiku."), strings.Index(got, strings.TrimSpace(string(body)))
+	if !strings.Contains(got, "notes      projects/supernova/project.md") || n < 0 || b < n {
+		t.Errorf("notes should print before the task body:\n%s", got)
+	}
+	if strings.Contains(workItem(string(body)), "haiku") {
+		t.Error("project notes must not reach the work item")
+	}
+}
