@@ -181,14 +181,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	r, err := openSessionRun(bridge, in.SessionID)
+	r, err := openHookRun(bridge, &in)
 	if err != nil {
 		return failHook(&in, nil, err, stderr)
-	}
-	if r == nil && in.AgentID != "" {
-		if r, err = openAgentRun(bridge, &in); err != nil {
-			return failHook(&in, nil, err, stderr)
-		}
 	}
 	if r == nil && event == "UserPromptSubmit" && strings.TrimSpace(in.Prompt) == "go" {
 		if r, err = claimRun(bridge, in.SessionID); err != nil {

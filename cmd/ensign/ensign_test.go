@@ -1346,6 +1346,75 @@ func TestRunSurvivesSessionIDChange(t *testing.T) {
 	}
 }
 
+// restartedOntoOtherRun leaves run A with a live lead, and the session restarted as s2 and bound to a new run B.
+func restartedOntoOtherRun(t *testing.T) (w *world, lead, runA, runB string) {
+	w = newWorld(t)
+	w.addTask("other")
+	lead = w.startLead()
+	runA = w.state().Run
+	w.sid = "s2"
+	t.Setenv("STARSHIP_SESSION", "s2")
+	w.run("supernova/other")
+	w.approve()
+	runB = w.state().Run
+	return
+}
+
+func TestAgentOfOldRunIsCheckedAgainstItsOwnRun(t *testing.T) {
+	w, lead, runA, runB := restartedOntoOtherRun(t)
+	id, why := w.spawn(lead, "orchestrator", "coder")
+	if id == "" {
+		t.Fatalf("the old run's lead was refused: %s", why)
+	}
+	if got := w.state().Run; got != runB {
+		t.Errorf("s2 is bound to %s, want %s", got, runB)
+	}
+	if got := w.runState(runA).Session; got != "s1" {
+		t.Errorf("run A's session = %q, want s1", got)
+	}
+	if got := w.runState(runB).Session; got != "s2" {
+		t.Errorf("run B's session = %q, want s2", got)
+	}
+	if r := w.stop(id, "coder", report("compiled"), false); r != "" {
+		t.Fatalf("the coder's stop was blocked: %s", r)
+	}
+	if st := w.runState(runA); st.Scopes["run"].Stage != "review" {
+		t.Errorf("run A is at %s, want review", st.Scopes["run"].Stage)
+	}
+}
+
+func TestUnknownAgentFallsBackToSessionRun(t *testing.T) {
+	w, _, runA, runB := restartedOntoOtherRun(t)
+	if id, _ := w.spawn("ghost", "orchestrator", "coder"); id != "" {
+		t.Errorf("an unknown agent spawned a stage")
+	}
+	if got := w.state().Run; got != runB {
+		t.Errorf("s2 is bound to %s, want %s", got, runB)
+	}
+	if got := w.runState(runA).Session; got != "s1" {
+		t.Errorf("run A's session = %q, want s1", got)
+	}
+}
+
+func TestEditGuardFindsAgentRunFirst(t *testing.T) {
+	w, lead, runA, runB := restartedOntoOtherRun(t)
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatalf("coder refused: %s", why)
+	}
+	in := &HookInput{SessionID: "s2", AgentID: coder, AgentType: "coder", ToolName: "Write",
+		ToolInput: map[string]any{"file_path": filepath.Join(filepath.Dir(w.bridge), "workspace", "x.go")}}
+	if reason, err := editGuard(w.bridge, in); err != nil || reason != "" {
+		t.Errorf("the coder's write in run A's workspace: %q, %v", reason, err)
+	}
+	if got := w.state().Run; got != runB {
+		t.Errorf("s2 is bound to %s, want %s", got, runB)
+	}
+	if got := w.runState(runA).Session; got != "s1" {
+		t.Errorf("run A's session = %q, want s1", got)
+	}
+}
+
 func TestUntiedAgentCannotSpawnStages(t *testing.T) {
 	w := newWorld(t)
 	w.startLead()

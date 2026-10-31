@@ -176,3 +176,90 @@ func TestBackgroundProbe(t *testing.T) {
 		t.Error("a foreground request is not an ask")
 	}
 }
+
+func startEv(source string) map[string]any {
+	e := map[string]any{"hook_event_name": "SessionStart"}
+	if source != "" {
+		e["source"] = source
+	}
+	return e
+}
+
+func TestSourcesReported(t *testing.T) {
+	ev := func(s string) []map[string]any { return []map[string]any{startEv(s)} }
+	if !sourcesReported(ev("startup"), ev("resume")) {
+		t.Errorf("startup then resume should pass")
+	}
+	for name, c := range map[string][2][]map[string]any{
+		"no source":       {ev(""), ev("")},
+		"not resumed":     {ev("startup"), ev("startup")},
+		"wrong first":     {ev("resume"), ev("resume")},
+		"no SessionStart": {nil, nil},
+	} {
+		if sourcesReported(c[0], c[1]) {
+			t.Errorf("%s should fail", name)
+		}
+	}
+}
+
+func TestRestartTied(t *testing.T) {
+	old := `{"type":"user","sessionId":"s1"}`
+	cur := `{"type":"user","sessionId":"s2"}`
+	if !restartTied("s1", "s1", nil) {
+		t.Errorf("an unchanged id should pass")
+	}
+	if !restartTied("s1", "s2", []string{old, cur, "not json"}) {
+		t.Errorf("earlier records should tie a changed id")
+	}
+	for name, ok := range map[string]bool{
+		"changed id, no earlier records": restartTied("s1", "s2", []string{cur}),
+		"changed id, no transcript":      restartTied("s1", "s2", nil),
+		"no first id":                    restartTied("", "", []string{old}),
+		"no resumed id":                  restartTied("s1", "", []string{old}),
+	} {
+		if ok {
+			t.Errorf("%s should fail", name)
+		}
+	}
+}
+
+func bashEv(id string) map[string]any {
+	return map[string]any{"hook_event_name": "PostToolUse", "tool_name": "Bash", "agent_id": id}
+}
+
+func TestAgentRanAgain(t *testing.T) {
+	first := []map[string]any{stopEv("probe-restart", "a1", nil)}
+	if !agentRanAgain(first, []map[string]any{bashEv("a1")}) {
+		t.Errorf("the same agent id should pass")
+	}
+	for name, c := range map[string][2][]map[string]any{
+		"different id":        {first, {bashEv("a2")}},
+		"never ran":           {first, {startEv("resume")}},
+		"no call, only stop":  {first, {stopEv("probe-restart", "a1", nil)}},
+		"first never stopped": {nil, {bashEv("a1")}},
+	} {
+		if agentRanAgain(c[0], c[1]) {
+			t.Errorf("%s should fail", name)
+		}
+	}
+}
+
+func TestAgentPathKept(t *testing.T) {
+	at := func(id, path string) []map[string]any {
+		return []map[string]any{stopEv("probe-restart", id, map[string]any{"agent_transcript_path": path})}
+	}
+	if !agentPathKept(at("a1", "/p/a1.jsonl"), at("a1", "/p/a1.jsonl")) {
+		t.Errorf("the same path should pass")
+	}
+	for name, c := range map[string][2][]map[string]any{
+		"different path":  {at("a1", "/p/a1.jsonl"), at("a1", "/q/a1.jsonl")},
+		"no resumed stop": {at("a1", "/p/a1.jsonl"), nil},
+		"other agent":     {at("a1", "/p/a1.jsonl"), at("a2", "/p/a1.jsonl")},
+		"no first path":   {at("a1", ""), at("a1", "")},
+		"no first agent":  {nil, at("a1", "/p/a1.jsonl")},
+	} {
+		if agentPathKept(c[0], c[1]) {
+			t.Errorf("%s should fail", name)
+		}
+	}
+}

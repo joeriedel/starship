@@ -137,14 +137,14 @@ func seenLine(bridge, session string) string {
 	if r.State.terminal() || r.State.Status == "pending" {
 		return ""
 	}
-	var lead, any time.Time
+	var lead, latest time.Time
 	for _, d := range r.State.Dispatches {
 		t, err := time.Parse(time.RFC3339, d.LastSeen)
 		if err != nil {
 			continue
 		}
-		if t.After(any) {
-			any = t
+		if t.After(latest) {
+			latest = t
 		}
 		if d.Stage == r.Snap.Pipeline.Stages[0].ID && t.After(lead) {
 			lead = t
@@ -157,9 +157,9 @@ func seenLine(bridge, session string) string {
 		return time.Since(t).Round(time.Second).String() + " ago"
 	}
 	if !r.Snap.Pipeline.Stages[0].isLead() {
-		return fmt.Sprintf("Last activity: %s.", ago(any))
+		return fmt.Sprintf("Last activity: %s.", ago(latest))
 	}
-	return fmt.Sprintf("Lead last seen: %s. Last activity: %s.", ago(lead), ago(any))
+	return fmt.Sprintf("Lead last seen: %s. Last activity: %s.", ago(lead), ago(latest))
 }
 
 func budgetWord(b string) string {

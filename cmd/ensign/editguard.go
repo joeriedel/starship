@@ -26,10 +26,7 @@ func editGuard(bridge string, in *HookInput) (string, error) {
 		who = "the session"
 		folders = sessionEditFolders(bridge)
 	} else {
-		r, err := openSessionRun(bridge, in.SessionID)
-		if err == nil && r == nil {
-			r, err = openAgentRun(bridge, in)
-		}
+		r, err := openHookRun(bridge, in)
 		if err != nil {
 			return "", err
 		}

@@ -224,12 +224,9 @@ func openSessionRun(bridge, session string) (*RunFiles, error) {
 	return r, err
 }
 
-// openAgentRun finds the live run an agent belongs to when its session has no run: the run
-// its transcript's dispatch tag names, then any live run with a dispatch bound to its agent
-// id. It rebinds the session to that run. It returns nil, nil when there is none. Each
-// candidate is opened and closed in turn, so no two run locks are held.
-func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
-	if in.AgentID == "" || in.SessionID == "" {
+// findAgentRun finds the live run an agent belongs to: the run its transcript's dispatch tag names, then any live run with a dispatch bound to its agent id. It returns nil, nil when there is none. Each candidate is opened and closed in turn, so no two run locks are held.
+func findAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
+	if in.AgentID == "" {
 		return nil, nil
 	}
 	try := func(id string, match func(*State) bool) (*RunFiles, error) {
@@ -248,11 +245,7 @@ func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 	}
 	var r *RunFiles
 	var err error
-	tp := in.AgentTranscriptPath
-	if tp == "" {
-		tp = agentTranscript(in.TranscriptPath, in.AgentID)
-	}
-	if run, d := readTag(tp); run != "" {
+	if run, d := agentTag(in); run != "" {
 		r, err = try(run, func(st *State) bool { return st.dispatch(d) != nil })
 	}
 	if r == nil && err == nil {
@@ -265,6 +258,24 @@ func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 			}
 		}
 	}
+	return r, err
+}
+
+// agentTag reads the dispatch tag from the calling agent's transcript.
+func agentTag(in *HookInput) (run, dispatch string) {
+	tp := in.AgentTranscriptPath
+	if tp == "" {
+		tp = agentTranscript(in.TranscriptPath, in.AgentID)
+	}
+	return readTag(tp)
+}
+
+// openAgentRun finds the live run an agent belongs to and rebinds the session to it. It returns nil, nil when there is none.
+func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
+	if in.AgentID == "" || in.SessionID == "" {
+		return nil, nil
+	}
+	r, err := findAgentRun(bridge, in)
 	if r == nil || err != nil {
 		return nil, err
 	}
@@ -279,6 +290,26 @@ func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 	r.State.log("rebound", "", "", fmt.Sprintf("session %s -> %s, found through agent %s", r.State.Session, in.SessionID, in.AgentID))
 	r.State.Session = in.SessionID
 	return r, nil
+}
+
+// openHookRun opens the run a hook call is checked against. An agent's own live run comes first, even when its session is bound to another run, and that binding is left alone; the session is rebound only when it has no run. Otherwise it is the session's run. The session's run is closed before another is opened, so no two run locks are held.
+func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
+	r, err := openSessionRun(bridge, in.SessionID)
+	if err != nil || in.AgentID == "" {
+		return r, err
+	}
+	if r == nil {
+		return openAgentRun(bridge, in)
+	}
+	if run, d := agentTag(in); (run == r.State.Run && r.State.dispatch(d) != nil) || r.State.byAgent(in.AgentID) != nil {
+		return r, nil
+	}
+	r.close()
+	ar, err := findAgentRun(bridge, in)
+	if ar != nil || err != nil {
+		return ar, err
+	}
+	return openSessionRun(bridge, in.SessionID)
 }
 
 // markRetired marks an open run as error and releases it. The lock is released before any
