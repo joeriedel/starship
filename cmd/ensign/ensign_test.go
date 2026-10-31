@@ -995,7 +995,11 @@ func TestLeadHandbackWaitsForTheFinishedRun(t *testing.T) {
 // stopsLeft is an agent's remaining stop budget.
 func (w *world) stopsLeft(agent string) int {
 	w.t.Helper()
-	return *w.state().byAgent(agent).StopsLeft
+	d := w.state().byAgent(agent)
+	if d == nil {
+		w.t.Fatalf("no dispatch bound to %s", agent)
+	}
+	return *d.StopsLeft
 }
 
 func (w *world) wantFailed(code string) {
@@ -1110,7 +1114,8 @@ func TestLegacyStopBlocksMigrate(t *testing.T) {
 	}
 	for _, d := range r.State.Dispatches {
 		d.StopsLeft = nil
-		if d.AgentID == coder {
+		if d.Role == "coder" {
+			d.AgentID = coder
 			d.StopBlocks = 1
 		} else {
 			d.StopBlocks = 7
