@@ -89,7 +89,8 @@ func TestHelpCommand(t *testing.T) {
 
 func TestManualTopicsExistAndPrint(t *testing.T) {
 	w := linkedWorld(t)
-	data, err := os.ReadFile(filepath.Join(repoRoot(t), "manual", "session.md"))
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "manual", "session.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +102,7 @@ func TestManualTopicsExistAndPrint(t *testing.T) {
 	defer os.Chdir(wd)
 	os.Chdir(w.bridge)
 	for _, m := range named {
-		if _, err := os.Stat(filepath.Join(repoRoot(t), "manual", "topics", m[1]+".md")); err != nil {
+		if _, err := os.Stat(filepath.Join(root, "manual", "topics", m[1]+".md")); err != nil {
 			t.Errorf("manual names topic %s: %v", m[1], err)
 		}
 		var out bytes.Buffer
