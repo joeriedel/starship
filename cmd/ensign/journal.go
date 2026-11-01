@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -135,6 +138,9 @@ func cmdJournal(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "no journal changes to commit")
 		return pushBridge(bridge, out)
 	}
+	if err := checkJournalSources(bridge, files); err != nil {
+		return err
+	}
 	if err := git(bridge, append([]string{"add", "--"}, files...)...); err != nil {
 		return err
 	}
@@ -143,6 +149,89 @@ func cmdJournal(args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "committed %d file(s)\n", len(files))
 	return pushBridge(bridge, out)
+}
+
+// runCitation matches a path into one run's folder (a concrete run id) or a dispatch log.
+var runCitation = regexp.MustCompile(`\.starship[/\\]runs[/\\]\d{8}-\d{6}-[A-Za-z0-9]|\bd\d+\.log\b`)
+
+// checkJournalSources refuses task journals (task.md, history.md) that cite a specific
+// run's files: run folders are local to one machine and get cleaned up. It expands args
+// to the files git would commit and scans only the lines this commit adds.
+func checkJournalSources(bridge string, args []string) error {
+	hasHead := git(bridge, "rev-parse", "-q", "--verify", "HEAD") == nil
+	var files []string
+	tracked := map[string]bool{}
+	if hasHead {
+		out, _ := gitOut(bridge, append([]string{"diff", "--name-only", "--relative", "HEAD", "--"}, args...)...)
+		for _, f := range strings.Split(out, "\n") {
+			if f != "" {
+				files = append(files, f)
+				tracked[f] = true
+			}
+		}
+	} else {
+		out, _ := gitOut(bridge, append([]string{"ls-files", "--"}, args...)...)
+		files = append(files, strings.Split(out, "\n")...)
+	}
+	out, _ := gitOut(bridge, append([]string{"ls-files", "-o", "--exclude-standard", "--"}, args...)...)
+	files = append(files, strings.Split(out, "\n")...)
+
+	var found []string
+	for _, rel := range files {
+		if ok, _ := path.Match("projects/*/tasks/*/*.md", rel); !ok || (path.Base(rel) != "task.md" && path.Base(rel) != "history.md") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(bridge, filepath.FromSlash(rel)))
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		var added []int
+		if tracked[rel] {
+			diff, _ := gitOut(bridge, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD", "--", rel)
+			added = addedLines(diff)
+		} else {
+			for i := range lines {
+				added = append(added, i+1)
+			}
+		}
+		for _, n := range added {
+			if n <= len(lines) && runCitation.MatchString(strings.TrimSuffix(lines[n-1], "\r")) {
+				found = append(found, fmt.Sprintf("%s:%d", rel, n))
+			}
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return fmt.Errorf("task journals must not cite a specific run's files (%s). Put what the source showed into the account instead of citing it: run folders are local to one machine and get cleaned up", strings.Join(found, ", "))
+}
+
+// addedLines returns the new-file line numbers of the lines a zero-context diff adds.
+func addedLines(diff string) []int {
+	var added []int
+	n := 0
+	inHunk := false
+	for _, l := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(l, "@@"):
+			inHunk = true
+			i := strings.Index(l, " +")
+			if i < 0 {
+				continue
+			}
+			rest := l[i+2:]
+			if j := strings.IndexAny(rest, ", "); j >= 0 {
+				rest = rest[:j]
+			}
+			n, _ = strconv.Atoi(rest)
+		case !inHunk:
+		case strings.HasPrefix(l, "+"):
+			added = append(added, n)
+			n++
+		}
+	}
+	return added
 }
 
 // pushBridge rebases onto the remote and pushes. A conflict is left for the session to

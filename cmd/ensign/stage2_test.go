@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -339,6 +340,93 @@ func TestJournals(t *testing.T) {
 	w.project("journal: { commit: off, reason: kept elsewhere }\n")
 	if r := stop(false); strings.Contains(r, "task.md") {
 		t.Fatalf("journal commits are off for this project: %q", r)
+	}
+}
+
+func TestJournalRefusesRunCitations(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	runGit(t, w.bridge, "init", "-q", "-b", "main")
+	runGit(t, w.bridge, "config", "user.email", "t@example.com")
+	runGit(t, w.bridge, "config", "user.name", "t")
+	runGit(t, w.bridge, "config", "diff.external", "true")
+	write(t, filepath.Join(w.bridge, ".gitignore"), ".starship/\n")
+	runGit(t, w.bridge, "add", "-A")
+	runGit(t, w.bridge, "commit", "-q", "-m", "bridge")
+	head := runGit(t, w.bridge, "rev-parse", "HEAD")
+	dir := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor")
+	task := filepath.Join(dir, "task.md")
+	history := filepath.Join(dir, "history.md")
+	other := filepath.Join(w.bridge, "projects/supernova/notes.md")
+	base, _ := os.ReadFile(task)
+
+	for _, cite := range []string{
+		"saw it in .starship/runs/20261030-115944-supernova-fix/reports/d3.log",
+		"see `reports/d12.log`",
+		"(checked, d6.log)",
+		"see .starship\\runs\\20261030-115944-supernova-fix\\scratch",
+	} {
+		write(t, task, string(base)+"\n- fine\r\n- "+cite+"\r\n")
+		write(t, other, "d9.log\n")
+		var out bytes.Buffer
+		err := cmdJournal([]string{"commit", "-m", "Cite"}, &out)
+		if err == nil || !strings.Contains(err.Error(), "projects/supernova/tasks/auth-refactor/task.md:") {
+			t.Fatalf("%q should be refused with file and line: %v", cite, err)
+		}
+		if strings.Contains(err.Error(), "notes.md") {
+			t.Fatalf("a non-journal file was scanned: %v", err)
+		}
+		if got := runGit(t, w.bridge, "rev-parse", "HEAD"); got != head {
+			t.Fatalf("a refused journal was committed")
+		}
+	}
+
+	// A citation committed earlier is not re-flagged; only newly added lines count.
+	old := string(base) + "\n- old see d12.log\n"
+	write(t, task, old)
+	runGit(t, w.bridge, "add", "-A")
+	runGit(t, w.bridge, "commit", "-q", "-m", "old citation")
+	write(t, task, old+"- unrelated\n")
+	var out0 bytes.Buffer
+	if err := cmdJournal([]string{"commit", "-m", "Unrelated"}, &out0); err != nil {
+		t.Fatalf("an old citation should not block an unrelated line: %v", err)
+	}
+	head = runGit(t, w.bridge, "rev-parse", "HEAD")
+	line := strings.Count(old+"- unrelated\n\n", "\n") + 1
+	write(t, task, old+"- unrelated\n\n- new d3.log\n")
+	err := cmdJournal([]string{"commit", "-m", "New"}, &out0)
+	if want := fmt.Sprintf("task.md:%d)", line); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("the appended citation should be refused at %s: %v", want, err)
+	}
+
+	// A directory argument is expanded to the files git would commit.
+	err = cmdJournal([]string{"commit", "-m", "Dir", "projects/supernova/tasks/auth-refactor"}, &out0)
+	if err == nil || !strings.Contains(err.Error(), "task.md:") {
+		t.Fatalf("a directory argument should be scanned: %v", err)
+	}
+	if got := runGit(t, w.bridge, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("a refused directory commit was committed")
+	}
+
+	// An added line that looks like a "+++" header is still content.
+	committed := old + "- unrelated\n"
+	first := strings.Count(committed, "\n") + 1
+	write(t, task, committed+"++ d12.log\nb d3.log\n")
+	err = cmdJournal([]string{"commit", "-m", "Plus"}, &out0)
+	for _, want := range []string{fmt.Sprintf("task.md:%d,", first), fmt.Sprintf("task.md:%d)", first+1)} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected %s in the refusal: %v", want, err)
+		}
+	}
+
+	write(t, task, string(base)+"\n- under .starship/runs/<id> and .starship/runs/, bad12.log; run 20261030-224308-supernova-fix\n")
+	write(t, history, "# auth-refactor: history\n\n- **2026-10-30, run 20261030-224308-supernova-fix (default): success.**\n")
+	var out bytes.Buffer
+	if err := cmdJournal([]string{"commit", "-m", "Generic"}, &out); err != nil {
+		t.Fatalf("generic text should commit: %v", err)
+	}
+	if got := runGit(t, w.bridge, "rev-parse", "HEAD"); got == head {
+		t.Fatalf("nothing was committed")
 	}
 }
 

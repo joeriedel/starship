@@ -125,6 +125,7 @@ Dense, not long. Your report is what the session and the user see.
 - **Every item raised, with your ruling** — the main body
 - **Deferred** — real items left out of scope, each with a location
 - **Facts established** — anything verified that the next run would otherwise re-derive
+- **Citations** — a run-folder path (report, log) is fine for the session to read right away, but state what the log showed; never cite the path as the evidence
 
 ## Where you may edit
 

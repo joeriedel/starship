@@ -73,6 +73,8 @@ Two files, committed and pushed with the bridge. Update after a run, a decision,
 - anything surprising, with `path:line`
 - what was deferred (also in Outstanding)
 
+Cite only lasting sources: code (`path:line` at a commit), commits, CI runs on GitHub, other tasks. Never cite a run's folder (reports, logs, scratch): it is local to one machine and gets cleaned up. Put what a report or log showed into the account itself. `ensign journal commit` refuses a journal that cites one.
+
 Commit with `ensign journal commit -m "<message>"`; a hook blocks ending a turn with uncommitted journal changes.
 
 ## Facts with no skill
