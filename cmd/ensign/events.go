@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -107,6 +108,9 @@ func shell(dir, command string, env []string) (string, error) {
 	return shellFor(dir, command, env, handlerTimeout)
 }
 
+// killWaitDelay bounds how long a timed-out command's leftover pipe holders can keep shellFor waiting.
+const killWaitDelay = 5 * time.Second
+
 // shellFor runs a command line through the platform's shell with a time limit; a limit of zero or less means none.
 func shellFor(dir, command string, env []string, limit time.Duration) (string, error) {
 	var ctx context.Context
@@ -129,11 +133,23 @@ func shellFor(dir, command string, env []string, limit time.Duration) (string, e
 		}
 	}
 	c.Dir, c.Env = dir, env
+	finish := func() error { return nil }
+	if limit > 0 {
+		finish = killTreeOnCancel(c, cancel)
+		c.WaitDelay = killWaitDelay
+	}
 	var out bytes.Buffer
 	c.Stdout, c.Stderr = &out, &out
 	err := c.Run()
-	if ctx.Err() != nil {
+	sigErr := finish()
+	switch {
+	case sigErr != nil:
+		err = sigErr
+	case ctx.Err() != nil:
 		err = fmt.Errorf("timed out after %s", limit.Round(time.Second))
+	case errors.Is(err, exec.ErrWaitDelay):
+		// The shell itself exited 0; a leftover background child only held the output pipe open.
+		err = nil
 	}
 	return out.String(), err
 }
