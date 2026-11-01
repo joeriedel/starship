@@ -71,6 +71,8 @@ func main() {
 		err = cmdSkill(os.Args[2:], os.Stdout)
 	case "setup":
 		err = cmdSetup(os.Args[2:], os.Stdout)
+	case "gc":
+		err = cmdGC(os.Args[2:], os.Stdout)
 	case "update":
 		err = cmdUpdate(os.Args[2:], os.Stdout)
 	case "version", "--version":
@@ -122,6 +124,7 @@ func usage() {
   ensign setup
   ensign workspace <project>[/<task>] [<path>]
   ensign update [<tag>]
+  ensign gc [<keep>]
   ensign link [--force] [--migrate]
   ensign selftest
   ensign help [topic]
@@ -383,6 +386,14 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	show := "Starship ready · bridge " + filepath.Base(bridge)
 	if version != "" && version != "dev" {
 		show += " · " + version
+	}
+	if keep, err := bf.keepRuns(); err != nil {
+		fmt.Fprintln(stderr, "starship:", err)
+	} else if res := gcRuns(bridge, keep, sessionStartGCCap); res.Removed > 0 {
+		show += fmt.Sprintf(" · cleaned up %d old runs", res.Removed)
+		if res.More {
+			show += " (more will be cleaned at the next session start)"
+		}
 	}
 	return reply(show, ctx.String())
 }

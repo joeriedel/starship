@@ -97,6 +97,10 @@ The bridge's copy of starship is pinned, never edited. Improve starship as a tas
 
 Starship is public: nothing from this bridge's other projects goes into it. Describe changes in general terms; use the fictional project `supernova` in examples.
 
+## Old runs
+
+`bridge.yaml` `keep-runs` (default 500) is how many finished runs the bridge keeps in all. SessionStart deletes older finished runs beyond it, 50 at most per start; `ensign gc [<keep>]` does it now. Finished runs lose their `scratch/` contents. Pending, running and ask-user runs are never deleted.
+
 ## Where edits are allowed
 
 A hook refuses Edit, Write, NotebookEdit outside the caller's folders; keep shell writes inside. Session: bridge, temp, `~/.claude`, `session-edit` folders in `bridge.yaml` (user-added; never code). Run coder, style reviewer: code folders, scratch, temp. Others: temp, scratch.

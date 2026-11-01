@@ -512,6 +512,8 @@ New pipelines are files in a `pipelines/` directory — the control plane's, or 
 
 `append` adds to a list field; `set` on a list field replaces it explicitly.
 
+`bridge.yaml` alone also takes `keep-runs`, how many finished runs (status `success` or `error`) the bridge keeps in all; the default is 500, and 0 keeps none. Runs are stored per bridge, so there is no project or task setting. Runs that are pending, running or waiting for the user are never deleted. SessionStart deletes the oldest finished runs beyond the limit, at most 50 per start, drops session links to deleted runs, and says how many runs it cleaned up; `ensign gc [<keep>]` does the same on request, with no cap. A run empties its `scratch/` folder when it finishes (success or error), and the cleanup empties the scratch folders of older finished runs.
+
 ### 5.4 Parallel stages
 
 Review is the one stage that fans out. A stage with `parallel` dispatches one agent per
@@ -1383,6 +1385,7 @@ runs against Claude Code, except where listed below.
 | `ensign setup` | fetch the pinned control plane, register the bridge, link (including the bridge's own `ensign`) |
 | `ensign workspace <p>[/<t>] [<path>]` | record (or show) where a project's or task's code is on this machine |
 | `ensign update [<tag>]` | move the bridge to a newer release |
+| `ensign gc [<keep>]` | delete finished runs beyond the limit (default: the bridge's `keep-runs`) and empty the scratch folders of the rest |
 | `ensign link [--force]` | regenerate the bridge's role, skill and manual files |
 | `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path>]` / `ensign task open <p>/<t>` | scaffold and open; where the code is goes into this machine's `machine.yaml`, and a new task uses its project's unless given a different location |
 | `ensign run <p>/<t> [--start <stage>] [--sync] [--dry-run]` | create a run for a task |

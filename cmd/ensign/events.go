@@ -201,6 +201,9 @@ func finishRun(r *RunFiles) {
 	if err := logRunInJournal(r); err != nil {
 		st.log("journal", "", "", "the run could not be added to the task's history: "+err.Error())
 	}
+	if finishedRun(st) {
+		emptyDir(filepath.Join(r.Dir, "scratch"))
+	}
 }
 
 // journalPath is a changed file as the journal lists it: relative to the workspace when it lies inside it, with forward slashes, so a reported path and git's name for the same file are one entry.

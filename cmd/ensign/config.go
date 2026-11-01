@@ -321,6 +321,8 @@ type BridgeFile struct {
 	} `yaml:"roles"`
 	// SessionEdit lists further folders the session agent may edit; relative entries are taken from the bridge folder. Code folders don't belong here.
 	SessionEdit []string `yaml:"session-edit"`
+	// KeepRuns is how many finished runs the bridge keeps in all; unset means defaultKeepRuns.
+	KeepRuns *int `yaml:"keep-runs"`
 }
 
 func loadBridgeFile(bridge string) (*BridgeFile, error) {

@@ -57,6 +57,7 @@ var fixedHelp = []struct {
 	}},
 	{"Housekeeping", []HelpEntry{
 		{`"update the bridge"`, "move to the latest starship release", "ensign update"},
+		{"clean up old runs", "delete finished runs beyond the bridge's limit and empty their scratch folders", "ensign gc"},
 		{`"improve starship"`, "work on starship as a project; the change ends as a pull request", ""},
 	}},
 }
