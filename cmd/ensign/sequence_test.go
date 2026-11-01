@@ -106,7 +106,7 @@ func TestSequenceRunPublishRunInOrder(t *testing.T) {
 		t.Fatalf("lead refused: %s", why)
 	}
 	w.codeChange(lead, ws)
-	if _, why := w.spawn(lead, "orchestrator", "tester"); !strings.Contains(why, "Outcome: pass") {
+	if why, _ := w.runStage(); !strings.Contains(why, "Outcome: pass") {
 		t.Fatalf("the run should pass: %s", why)
 	}
 	w.wantStatus("done", "done", "active")
@@ -133,7 +133,7 @@ func TestSequencePublishThatIsNotAFastForwardFails(t *testing.T) {
 	runGit(t, other, "add", "news.txt")
 	runGit(t, other, "commit", "-q", "-m", "meanwhile")
 	runGit(t, other, "push", "-q", "origin", "main")
-	w.spawn(lead, "orchestrator", "tester")
+	w.runStage()
 	_ = gh
 	w.wantStatus("done", "failed", "cancelled")
 	if r := w.step(2).Reason; !strings.Contains(r, "has moved since this task branched") {

@@ -179,16 +179,11 @@ Carried over from the reference design:
   `ensign project new` copies it into the bridge's project.yaml when the project is
   created; from then on the bridge's copy is the one used, and the user can change it.
 - **`plain: true`** says a command needs no judgement to run: it passes or it fails by
-  its exit code. On `@test` it means ensign runs the test stage itself. When the lead
-  dispatches the tester, ensign runs `@build` (if bound) and `@test` inside the
-  PreToolUse hook, records the result as that stage's report and transition, keeps the
-  full output in the run's `reports/`, and refuses the dispatch with the outcome, the end
-  of any failing output, and the next step. No agent reads the log. Exit 125 (a script saying
+  its exit code. On `@test` it means ensign runs the test stage itself, with no tester agent. At that stage `next` gives the lead an `ensign run-stage` command to run as a background shell command, and the lead ends its turn to wait. The command runs `@build` (if bound) and `@test`, records the result as that stage's report and transition, keeps the full output in the run's `reports/`, and prints the outcome, the end of any failing output, and the next step. The hook refuses a spawn of the tester (a tester stage with `parallel:` is the exception: its testers are spawned as usual), and `next` runs nothing. No agent reads the log. Exit 125 (a script saying
   it could not run), 126 or 127, a timeout, or a command that can't start is `error`; any other non-zero exit is `fail`.
   A suite that needs services started, or a judgement about whether it really ran, keeps
   the tester. The hook has a one-hour timeout in the generated settings, and ensign
-  stops a plain stage a minute before whatever timeout the bridge actually has, because
-  a PreToolUse hook that times out lets the call through unchecked.
+  stops a plain stage a minute before whatever timeout the bridge actually has.
 
 Conventional names, reused before new ones are invented:
 

@@ -38,7 +38,9 @@ func main() {
 	case "sequence":
 		err = cmdSequence(os.Args[2:], os.Stdout)
 	case "next":
-		err = cmdNext(os.Args[2:])
+		err = cmdNext(os.Args[2:], os.Stdout)
+	case "run-stage":
+		err = cmdRunStage(os.Args[2:], os.Stdout)
 	case "init":
 		err = cmdInit(os.Args[2:], os.Stdout)
 	case "link":
@@ -137,6 +139,7 @@ func usage() {
   ensign git-catalog squash <project>/<task> -m <message>
   ensign github-pr pull-request|merge|update <project>/<task>
   ensign next [--bridge <dir>] [--run <id>]
+  ensign run-stage [--bridge <dir>] [--run <id>]
   ensign hook <SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|SubagentStop|Stop>`)
 }
 
@@ -255,16 +258,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			d.LastSeen = time.Now().Format(time.RFC3339)
 		}
 	}
-	if r != nil && !wasTerminal && r.State.terminal() {
-		finishRun(r)
-		if r.State.Sequence {
-			// Saved first: the next step reads this run's final state from disk.
-			if err := r.save(); err != nil {
-				return failHook(&in, nil, err, stderr)
-			}
-			if _, err := advanceSequence(bridge, r.State.Session); err != nil {
-				fmt.Fprintln(stderr, "starship: could not advance the sequence:", err)
-			}
+	if r != nil {
+		if err := finishIfTerminal(r, wasTerminal, stderr); err != nil {
+			return failHook(&in, nil, err, stderr)
 		}
 	}
 	if r != nil {
@@ -599,4 +595,22 @@ func dropSessionImport(bridge string) {
 	if os.WriteFile(f, []byte(strings.Join(keep, "\n")), 0o644) == nil && tracked {
 		git(bridge, "commit", "-q", "-m", "Load the session manual from the SessionStart hook", "--", "CLAUDE.md")
 	}
+}
+
+// finishIfTerminal closes out a run that this call made terminal: it finishes the run, and for a sequence saves and advances to the next step. A failed advance is only reported.
+func finishIfTerminal(r *RunFiles, wasTerminal bool, stderr io.Writer) error {
+	if wasTerminal || !r.State.terminal() {
+		return nil
+	}
+	finishRun(r)
+	if r.State.Sequence {
+		// Saved first: the next step reads this run's final state from disk.
+		if err := r.save(); err != nil {
+			return err
+		}
+		if _, err := advanceSequence(r.Snap.Bridge, r.State.Session); err != nil {
+			fmt.Fprintln(stderr, "ensign: could not advance the sequence:", err)
+		}
+	}
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,16 +16,14 @@ import (
 )
 
 // A project whose @test binding is plain needs no judgement to run its tests: the command
-// either passes or it doesn't. Ensign then runs the test stage itself when the tester is
-// dispatched, and the dispatch is refused with the result, so no agent reads the log.
+// either passes or it doesn't. Ensign then runs the test stage itself, as `ensign run-stage` (which `next` names, and the lead runs as a background shell command), so no agent reads the log. The tester is never spawned: the hook refuses a spawn of it.
 
 // plainStage reports whether ensign runs this stage itself.
-func plainStage(r *RunFiles, s *Stage) bool {
-	return s.Role == "tester" && r.Snap.Bindings["test"].Plain
+func plainStage(snap *Snapshot, s *Stage) bool {
+	return !s.isLead() && s.Role == "tester" && snap.Bindings["test"].Plain && s.Parallel == nil
 }
 
-// hookTimeout is the PreToolUse hook's timeout in this bridge's settings. A plain stage
-// runs inside that hook, and a hook that times out lets the tool call through unchecked.
+// hookTimeout is the PreToolUse hook's timeout in this bridge's settings. A plain stage's time limit is kept a minute inside it, from when the stage ran inside that hook.
 const hookTimeout = 3600
 
 func preToolUseTimeout(bridge string) time.Duration {
@@ -66,6 +65,54 @@ func runBinding(r *RunFiles, d *Dispatch, command string, deadline time.Time) (s
 // opposed to finding failures: 126 and 127 from the shell, and 125 for a script to say so
 // itself (as git bisect uses it).
 func couldNotRun(code int) bool { return code >= 125 && code <= 127 }
+
+// cmdRunStage implements `ensign run-stage [--bridge <dir>] [--run <id>]`: it runs the plain stage that is due now, and prints its outcome. A failing stage is an outcome, not an error.
+func cmdRunStage(args []string, out io.Writer) error {
+	r, err := openRunByFlags(args, "ensign run-stage [--bridge <dir>] [--run <id>]")
+	if err != nil {
+		return err
+	}
+	if r == nil {
+		return fmt.Errorf("there is no active run")
+	}
+	defer r.close()
+	m := &machine{snap: r.Snap, st: r.State}
+	scope := leadScope(r)
+	if r.State.terminal() {
+		return fmt.Errorf("nothing to run: %s", m.expect(scope))
+	}
+	sc := r.State.Scopes[scope]
+	if sc == nil || sc.Stage == "" {
+		return fmt.Errorf("nothing to run: %s", m.expect(scope))
+	}
+	s := m.stage(sc.Stage)
+	if !plainStage(r.Snap, s) {
+		return fmt.Errorf("stage %q is not a plain stage, so there is nothing for run-stage to run. %s", s.ID, m.expect(scope))
+	}
+	if m.running(scope, s.ID) > 0 {
+		return fmt.Errorf("stage %q is already running. %s", s.ID, m.expect(scope))
+	}
+	d := newDispatch(r, scope, s, s.Role)
+	if len(sc.Branches) == 0 {
+		if err := fire(r, "stage.before:"+s.ID, d); err != nil {
+			m.fail("handler", err.Error())
+			finishIfTerminal(r, false, os.Stderr)
+			r.save()
+			return fmt.Errorf("stage %s could not start: %s", s.ID, r.State.Reason)
+		}
+	}
+	r.State.Dispatches = append(r.State.Dispatches, d)
+	r.State.log("dispatch", s.ID, d.ID, s.Role+" "+d.Dim)
+	msg, err := runPlainStage(r, m, d, s, scope)
+	if err != nil {
+		return err
+	}
+	if err := r.save(); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, msg)
+	return nil
+}
 
 // runPlainStage runs @build (when bound) and @test in the workspace, completes the
 // dispatch with the result, and returns what the dispatching agent is told. The commands
@@ -153,8 +200,9 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	default:
 		wasTerminal := st.terminal()
 		completeDispatch(r, m, cur, s, outcome, summary, nil, report)
-		if !wasTerminal && st.terminal() {
-			finishRun(r) // now, so what it adds (a pull request, say) is in the reply
+		// Now, so what finishing adds (a pull request, say) is in the reply.
+		if err := finishIfTerminal(r, wasTerminal, os.Stderr); err != nil {
+			return "", err
 		}
 	}
 

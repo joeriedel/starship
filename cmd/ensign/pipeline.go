@@ -204,6 +204,10 @@ func (m *machine) expect(scope string) string {
 	if running > 0 {
 		return fmt.Sprintf("Wait: stage %q (%s) is still running.", s.ID, s.Role)
 	}
+	if plainStage(m.snap, s) {
+		return fmt.Sprintf("Stage %q is run by ensign itself; start no agent for it. Run `ensign run-stage --bridge %s --run %s` as a background shell command (Bash with run_in_background), then end your turn to wait for it. When it completes, rule on its output as you would a tester's report and run `ensign next`.",
+			s.ID, shellQuote(m.snap.Bridge), m.st.Run)
+	}
 	return fmt.Sprintf("Dispatch stage %q: one %s agent.", s.ID, s.Role)
 }
 

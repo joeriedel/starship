@@ -122,7 +122,7 @@ func (w *world) passingRun(ws string, gh *fakeGH) {
 	w.t.Helper()
 	lead := w.startLead()
 	w.codeChange(lead, ws)
-	_, why := w.spawn(lead, "orchestrator", "tester")
+	why, _ := w.runStage()
 	if !strings.Contains(why, "Outcome: pass") || !strings.Contains(why, "committed on task/auth-refactor") {
 		w.t.Fatalf("a passing run should end with its work waiting on the task branch: %s", why)
 	}
@@ -144,7 +144,7 @@ func TestGithubPRWithCIAsTheTests(t *testing.T) {
 	if !dirty(ws) {
 		t.Fatal("nothing should be committed until the test stage is about to start")
 	}
-	_, why := w.spawn(lead, "orchestrator", "tester")
+	why, _ := w.runStage()
 	if !strings.Contains(why, "Outcome: pass") || gh.index("api ") < 0 {
 		t.Fatalf("CI should be the tests: %s %v", why, gh.calls)
 	}
@@ -187,7 +187,7 @@ func TestGithubPRFailingChecksGoBackToCode(t *testing.T) {
 	w, ws, _, gh := githubWorld(t, "failure", ciTest)
 	lead := w.startLead()
 	w.codeChange(lead, ws)
-	_, why := w.spawn(lead, "orchestrator", "tester")
+	why, _ := w.runStage()
 	if !strings.Contains(why, "Outcome: fail") || !strings.Contains(why, "--- FAIL: TestLogin\n") || !strings.Contains(why, `stage "code"`) {
 		t.Fatalf("failing checks should quote the log and send the run back to code: %s", why)
 	}

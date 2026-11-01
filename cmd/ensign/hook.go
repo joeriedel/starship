@@ -139,6 +139,13 @@ func callerDispatch(r *RunFiles, in *HookInput) *Dispatch {
 	return match
 }
 
+// newDispatch makes the next dispatch of a stage; the caller records it.
+func newDispatch(r *RunFiles, scope string, s *Stage, role string) *Dispatch {
+	stops := stopBudget
+	return &Dispatch{ID: fmt.Sprintf("d%d", len(r.State.Dispatches)+1), Stage: s.ID, Scope: scope, Role: role,
+		Fields: map[string][]string{}, StopsLeft: &stops}
+}
+
 func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	if in.ToolName == "SubagentHandback" {
 		return hookHandback(in, r), nil
@@ -189,9 +196,11 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 		return deny(r, s.ID, "the run is not approved yet; the user must type go"), nil
 	}
 
-	stops := stopBudget
-	d := &Dispatch{ID: fmt.Sprintf("d%d", len(r.State.Dispatches)+1), Stage: s.ID, Scope: scope, Role: role,
-		Fields: map[string][]string{}, StopsLeft: &stops}
+	if plainStage(r.Snap, s) {
+		return deny(r, s.ID, "ensign runs this stage itself; do not spawn an agent for it. "+m.expect(scope)), nil
+	}
+
+	d := newDispatch(r, scope, s, role)
 	if caller != nil {
 		d.CallerAgent = caller.AgentID
 	}
@@ -237,13 +246,6 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	}
 	r.State.Dispatches = append(r.State.Dispatches, d)
 	r.State.log("dispatch", s.ID, d.ID, role+" "+d.Dim)
-	if !s.isLead() && plainStage(r, s) {
-		msg, err := runPlainStage(r, m, d, s, scope)
-		if err != nil {
-			return nil, err
-		}
-		return deny(r, s.ID, msg), nil
-	}
 
 	original, _ := in.ToolInput["prompt"].(string)
 	var prompt string
@@ -682,8 +684,8 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 	return b.String()
 }
 
-// cmdNext prints what the run's lead should dispatch next.
-func cmdNext(args []string) error {
+// openRunByFlags opens the run named by --run, or the session's, from pairwise --bridge/--run flags. It returns nil when there is no such run.
+func openRunByFlags(args []string, usage string) (*RunFiles, error) {
 	dir, run := "", ""
 	for i := 0; i+1 < len(args); i += 2 {
 		switch args[i] {
@@ -692,7 +694,7 @@ func cmdNext(args []string) error {
 		case "--run":
 			run = args[i+1]
 		default:
-			return fmt.Errorf("usage: ensign next [--bridge <dir>] [--run <id>]")
+			return nil, fmt.Errorf("usage: %s", usage)
 		}
 	}
 	if dir == "" {
@@ -700,33 +702,52 @@ func cmdNext(args []string) error {
 	}
 	bridge, err := findBridge(dir)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var r *RunFiles
 	if run != "" {
-		r, err = openRun(bridge, run)
+		r, err := openRun(bridge, run)
 		if errors.Is(err, fs.ErrNotExist) {
-			err = nil
+			return nil, nil
 		}
-	} else {
-		r, err = openSessionRun(bridge, os.Getenv("STARSHIP_SESSION"))
+		return r, err
 	}
+	return openSessionRun(bridge, os.Getenv("STARSHIP_SESSION"))
+}
+
+// leadScope is the scope whose stages the session or lead dispatches.
+func leadScope(r *RunFiles) string {
+	if lead := r.Snap.Pipeline.Stages[0]; lead.isLead() {
+		return lead.ID
+	}
+	return ""
+}
+
+// cmdNext prints what the run's lead should dispatch next.
+func cmdNext(args []string, out io.Writer) error {
+	r, err := openRunByFlags(args, "ensign next [--bridge <dir>] [--run <id>]")
 	if err != nil {
 		return err
 	}
 	if r == nil {
-		fmt.Println("There is no active run.")
+		fmt.Fprintln(out, "There is no active run.")
 		return nil
 	}
 	defer r.close()
 	m := &machine{snap: r.Snap, st: r.State}
-	scope := ""
-	if lead := r.Snap.Pipeline.Stages[0]; lead.isLead() {
-		scope = lead.ID
+	scope := leadScope(r)
+	for i := len(r.State.Dispatches) - 1; i >= 0; i-- {
+		d := r.State.Dispatches[i]
+		if !d.Done {
+			continue
+		}
+		if s := m.stage(d.Stage); s != nil && plainStage(r.Snap, s) {
+			fmt.Fprintf(out, "Stage %q (run by ensign) finished: %s. Its report: %s\n", d.Stage, d.Outcome, filepath.Join(r.Dir, "reports", d.ID+".md"))
+		}
+		break
 	}
-	fmt.Println(m.expect(scope))
+	fmt.Fprintln(out, m.expect(scope))
 	if !r.State.terminal() {
-		fmt.Println("Budgets used: " + m.budgetLine())
+		fmt.Fprintln(out, "Budgets used: "+m.budgetLine())
 	}
 	return nil
 }

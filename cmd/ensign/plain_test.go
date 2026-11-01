@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -36,13 +38,31 @@ func (w *world) toTest(lead string) {
 	w.leaf(lead, "style-reviewer", "done")
 }
 
+// runStage runs `ensign run-stage` for the world's run, as the lead's background command would.
+func (w *world) runStage() (string, error) {
+	w.t.Helper()
+	var out bytes.Buffer
+	err := cmdRunStage([]string{"--bridge", w.bridge, "--run", w.state().Run}, &out)
+	return out.String(), err
+}
+
+// next runs `ensign next` for the world's run.
+func (w *world) next() string {
+	w.t.Helper()
+	var out bytes.Buffer
+	if err := cmdNext([]string{"--bridge", w.bridge, "--run", w.state().Run}, &out); err != nil {
+		w.t.Fatal(err)
+	}
+	return out.String()
+}
+
 func TestPlainTestRunsWithoutAnAgent(t *testing.T) {
 	w := plainWorld(t, "echo 3 passed")
 	lead := w.startLead()
 	w.toTest(lead)
-	id, why := w.spawn(lead, "orchestrator", "tester")
-	if id != "" {
-		t.Fatal("a tester agent was started for a plain @test")
+	why, err := w.runStage()
+	if err != nil {
+		t.Fatal(err)
 	}
 	if !strings.Contains(why, "Outcome: pass") || !strings.Contains(why, "run is finished") {
 		t.Fatalf("the refusal should carry the result and the next step: %s", why)
@@ -65,7 +85,10 @@ func TestPlainTestFailureGoesBackToCode(t *testing.T) {
 	w := plainWorld(t, "echo 'FAIL: TestLogin'; echo 'login_test.go:9: rejected'; exit 1")
 	lead := w.startLead()
 	w.toTest(lead)
-	_, why := w.spawn(lead, "orchestrator", "tester")
+	why, err := w.runStage()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(why, "Outcome: fail") || !strings.Contains(why, "FAIL: TestLogin\nlogin_test.go:9: rejected") || !strings.Contains(why, `stage "code"`) {
 		t.Fatalf("a failure should quote the output and send the run back to code: %s", why)
 	}
@@ -79,8 +102,8 @@ func TestPlainTestThatCannotRunIsAnError(t *testing.T) {
 	w := plainWorld(t, "./no-such-runner")
 	lead := w.startLead()
 	w.toTest(lead)
-	_, why := w.spawn(lead, "orchestrator", "tester")
-	if !strings.Contains(why, "Outcome: error") {
+	why, err := w.runStage()
+	if err != nil || !strings.Contains(why, "Outcome: error") {
 		t.Fatalf("a missing runner is an error, not a failure: %s", why)
 	}
 	if st := w.state(); st.Status != "error" {
@@ -92,7 +115,7 @@ func TestPlainExit125IsAnError(t *testing.T) {
 	w := plainWorld(t, "exit 125")
 	lead := w.startLead()
 	w.toTest(lead)
-	if _, why := w.spawn(lead, "orchestrator", "tester"); !strings.Contains(why, "Outcome: error") {
+	if why, err := w.runStage(); err != nil || !strings.Contains(why, "Outcome: error") {
 		t.Fatalf("exit 125 means the command could not run: %s", why)
 	}
 }
@@ -131,8 +154,8 @@ func TestHookSettingsUpgrade(t *testing.T) {
 }
 
 // gatedPlainRun starts a plain test stage whose command blocks until the returned release
-// is called, and waits until it is running. wait returns the hook's decision.
-func gatedPlainRun(t *testing.T) (w *world, run string, release func(), wait func() map[string]any) {
+// is called, and waits until it is running. wait returns the command's output.
+func gatedPlainRun(t *testing.T) (w *world, run string, release func(), wait func() string) {
 	t.Helper()
 	dir := t.TempDir()
 	started, gate := filepath.Join(dir, "started"), filepath.Join(dir, "gate")
@@ -140,14 +163,13 @@ func gatedPlainRun(t *testing.T) (w *world, run string, release func(), wait fun
 	lead := w.startLead()
 	w.toTest(lead)
 	run = w.state().Run
-	done := make(chan map[string]any, 1)
+	done := make(chan string, 1)
 	go func() {
-		res, _ := w.hook("PreToolUse", map[string]any{
-			"tool_name":  "Agent",
-			"tool_input": map[string]any{"subagent_type": "tester", "prompt": "x", "description": "x"},
-			"agent_id":   lead, "agent_type": "orchestrator",
-		})
-		done <- res
+		out, err := w.runStage()
+		if err != nil {
+			t.Error(err)
+		}
+		done <- out
 	}()
 	for i := 0; ; i++ {
 		if _, err := os.Stat(started); err == nil {
@@ -159,19 +181,19 @@ func gatedPlainRun(t *testing.T) (w *world, run string, release func(), wait fun
 		time.Sleep(50 * time.Millisecond)
 	}
 	release = func() { os.WriteFile(gate, nil, 0o644) }
-	wait = func() map[string]any {
+	wait = func() string {
 		select {
 		case res := <-done:
 			return res
 		case <-time.After(20 * time.Second):
-			t.Fatal("the hook did not finish")
-			return nil
+			t.Fatal("run-stage did not finish")
+			return ""
 		}
 	}
 	return
 }
 
-// lockRun opens the run from outside the hook, failing if its lock is still held.
+// lockRun opens the run from outside run-stage, failing if its lock is still held.
 func lockRun(t *testing.T, w *world, run string) *RunFiles {
 	t.Helper()
 	got := make(chan *RunFiles, 1)
@@ -204,7 +226,7 @@ func TestPlainStageDoesNotHoldTheLockWhileRunning(t *testing.T) {
 
 	release()
 	res := wait()
-	if !strings.Contains(dig(res, "hookSpecificOutput", "permissionDecisionReason"), "Outcome: pass") {
+	if !strings.Contains(res, "Outcome: pass") {
 		t.Fatalf("unexpected decision: %v", res)
 	}
 	st := w.state()
@@ -237,5 +259,135 @@ func TestPlainStageResultDoesNotChangeARunThatEndedMeanwhile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(w.bridge, ".starship", "runs", run, "reports", d.ID+".log")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNextAtAPlainStageNamesRunStageAndRunsNothing(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	w := plainWorld(t, "touch "+marker)
+	lead := w.startLead()
+	w.toTest(lead)
+	got := w.next()
+	run := w.state().Run
+	want := "ensign run-stage --bridge " + shellQuote(w.bridge) + " --run " + run
+	if !strings.Contains(got, want) || !strings.Contains(got, "run_in_background") {
+		t.Fatalf("next should give the run-stage command: %s", got)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("next ran the test command")
+	}
+}
+
+func TestRunStageRefusesWhenTheDueStageIsNotPlain(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	w := plainWorld(t, "touch "+marker)
+	w.startLead()
+	before := w.state()
+	out, err := w.runStage()
+	if err == nil || !strings.Contains(err.Error(), `"code"`) || out != "" {
+		t.Fatalf("run-stage at code should be refused, naming it: %q, %v", out, err)
+	}
+	if after := w.state(); len(after.Dispatches) != len(before.Dispatches) || len(after.History) != len(before.History) {
+		t.Fatal("a refused run-stage changed the run")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the test command ran")
+	}
+}
+
+func TestSpawningAPlainTesterIsDenied(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	w := plainWorld(t, "touch "+marker)
+	lead := w.startLead()
+	w.toTest(lead)
+	before := len(w.state().Dispatches)
+	id, why := w.spawn(lead, "orchestrator", "tester")
+	if id != "" || !strings.Contains(why, "ensign run-stage --bridge") {
+		t.Fatalf("the spawn should be denied with the command: %q %s", id, why)
+	}
+	st := w.state()
+	if len(st.Dispatches) != before || st.Spent["test"] != 0 {
+		t.Fatalf("a denied spawn recorded a dispatch or spent budget: %d dispatches, spent %v", len(st.Dispatches), st.Spent)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the test command ran")
+	}
+}
+
+func TestLeadWaitsOnItsRunStageCommand(t *testing.T) {
+	w, _, release, wait := gatedPlainRun(t)
+	lead := ""
+	for _, d := range w.state().Dispatches {
+		if d.Role == "orchestrator" {
+			lead = d.AgentID
+		}
+	}
+	w.launched(lead, "orchestrator", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	shell := []map[string]any{{"id": "bash1", "type": "shell", "status": "running"}}
+	if r := w.stopWith(lead, "orchestrator", "Waiting for the tests.", false, shell); r != "" {
+		t.Fatalf("a lead waiting on its run-stage command should be let stop: %s", r)
+	}
+	if left := w.stopsLeft(lead); left != stopBudget {
+		t.Fatalf("a wait must not spend the stop budget, got %d left", left)
+	}
+	release()
+	wait()
+}
+
+func TestNextAfterRunStageReportsTheOutcome(t *testing.T) {
+	w := plainWorld(t, "echo 'FAIL: TestLogin'; exit 1")
+	lead := w.startLead()
+	w.toTest(lead)
+	if _, err := w.runStage(); err != nil {
+		t.Fatal(err)
+	}
+	got := w.next()
+	if !strings.Contains(got, `Stage "test" (run by ensign) finished: fail.`) || !strings.Contains(got, ".md") || !strings.Contains(got, `"code"`) {
+		t.Fatalf("next should report the outcome, its report and what is due: %s", got)
+	}
+}
+
+func TestRunStageFailingBeforeHandlerFinishesTheRun(t *testing.T) {
+	w := plainWorld(t, "echo 3 passed")
+	w.project(`events:
+  stage.before:test: [{ require: "exit 1" }]
+  run.finish:error: [{ observe: "echo finished > finished.txt" }]
+`)
+	lead := w.startLead()
+	w.toTest(lead)
+	if _, err := w.runStage(); err == nil {
+		t.Fatal("run-stage should report that the stage could not start")
+	}
+	st := w.state()
+	if st.Status != "error" || !st.Finished {
+		t.Fatalf("the run should be error and finished: %s finished=%v", st.Status, st.Finished)
+	}
+	ws := filepath.Join(filepath.Dir(w.bridge), "workspace")
+	if _, err := os.Stat(filepath.Join(ws, "finished.txt")); err != nil {
+		t.Error("run.finish:error did not run")
+	}
+}
+
+func TestSpawningTestersForAParallelStageIsNotDenied(t *testing.T) {
+	w := plainWorld(t, "echo 3 passed")
+	lead := w.startLead()
+	w.toTest(lead)
+	r, err := openSessionRun(w.bridge, w.sid)
+	if err != nil || r == nil {
+		t.Fatalf("no active run: %v", err)
+	}
+	path := filepath.Join(r.Dir, "pipeline.json")
+	r.close()
+	var snap Snapshot
+	if err := readJSON(path, &snap); err != nil {
+		t.Fatal(err)
+	}
+	s, _, _ := snap.Pipeline.find("test")
+	s.Parallel = &Parallel{Over: "dimensions", Join: "all"}
+	s.Dimensions = []string{"unit", "integration"}
+	data, _ := json.Marshal(&snap)
+	write(t, path, string(data))
+	if id, why := w.spawn(lead, "orchestrator", "tester"); id == "" {
+		t.Fatalf("a parallel tester spawn should not be denied: %s", why)
 	}
 }
