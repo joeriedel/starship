@@ -24,6 +24,7 @@ A plan names task, pipeline (usually `coding`), work item, what done looks like,
 
 - **Write the work item as a fragment, not a spec**: outcome and constraints; the lead works out files and mechanics. Verify any claim about code and say so, or pose it as a question.
 - **Bring Goal and Scope up to date before `ensign run`.** Fold every decision, ruling and pertinent note from the task file into them; only Goal and Scope reach the lead. No user approval needed.
+- **Make the brief self-contained.** Goal and Scope state every fact they rely on; never point an agent at bridge files (no `see <other task>`, task-file or project-settings paths, `(task <name>)` labels). Say "a separate change" for what's out of scope. Agents follow pointers, burn run time reading the bridge, and can carry its details into project code.
 - **Size a work item for one cycle**: split unrelated behaviours into separate runs; settle open design decisions first, or the loop invents one.
 
 ## You don't implement
