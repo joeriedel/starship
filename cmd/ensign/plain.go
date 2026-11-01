@@ -4,7 +4,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 // A project whose @test binding is plain needs no judgement to run its tests: the command
@@ -23,29 +24,42 @@ func plainStage(snap *Snapshot, s *Stage) bool {
 	return !s.isLead() && s.Role == "tester" && snap.Bindings["test"].Plain && s.Parallel == nil
 }
 
-// hookTimeout is the PreToolUse hook's timeout in this bridge's settings. A plain stage's time limit is kept a minute inside it, from when the stage ran inside that hook.
+// hookTimeout is the PreToolUse hook's timeout in this bridge's settings.
 const hookTimeout = 3600
 
-func preToolUseTimeout(bridge string) time.Duration {
-	var settings struct {
-		Hooks map[string][]struct {
-			Hooks []struct {
-				Command string `json:"command"`
-				Timeout int    `json:"timeout"`
-			} `json:"hooks"`
-		} `json:"hooks"`
-	}
-	data, err := os.ReadFile(filepath.Join(bridge, ".claude", "settings.json"))
-	if err == nil && json.Unmarshal(data, &settings) == nil {
-		for _, m := range settings.Hooks["PreToolUse"] {
-			for _, h := range m.Hooks {
-				if strings.Contains(h.Command, "hook PreToolUse") && h.Timeout > 0 {
-					return time.Duration(h.Timeout) * time.Second
-				}
-			}
+// defaultBindingTimeout limits a plain binding's command that sets no timeout of its own.
+const defaultBindingTimeout = 60 * time.Minute
+
+// dispatchLock is the lock a running plain dispatch's owner holds, in the run folder. It is never deleted: it goes with the run.
+func dispatchLock(r *RunFiles, id string) *flock.Flock {
+	return flock.New(filepath.Join(r.Dir, "dispatch-"+id+".lock"))
+}
+
+// deadPlainOwner returns a running plain dispatch in scope whose `ensign run-stage` is gone, or nil. The caller holds the run lock, and run-stage holds the dispatch lock until after its completed state is saved, so a free lock means the owner died.
+func deadPlainOwner(r *RunFiles, m *machine, scope string) *Dispatch {
+	for _, d := range r.State.Dispatches {
+		if d.Scope != scope || d.Done || !d.Locked {
+			continue
+		}
+		if s := m.stage(d.Stage); s == nil || !plainStage(r.Snap, s) {
+			continue
+		}
+		l := dispatchLock(r, d.ID)
+		if ok, err := l.TryLock(); err == nil && ok {
+			l.Close()
+			return d
 		}
 	}
-	return 600 * time.Second // Claude Code's default for a command hook
+	return nil
+}
+
+// completeDeadOwner records a plain dispatch whose owner died as an error. Nothing is run again.
+func completeDeadOwner(r *RunFiles, m *machine, d *Dispatch) error {
+	s := m.stage(d.Stage)
+	summary := fmt.Sprintf("stage %q's command died before it finished (killed, or the session or machine stopped); its effect on the run is unknown", s.ID)
+	wasTerminal := r.State.terminal()
+	completeDispatch(r, m, d, s, "error", summary, nil, "Run by ensign: "+summary+".\n")
+	return finishIfTerminal(r, wasTerminal, os.Stderr)
 }
 
 // runBinding runs a plain binding's command: an ensign built-in, or a command line. A
@@ -90,17 +104,34 @@ func cmdRunStage(args []string, out io.Writer) error {
 		return fmt.Errorf("stage %q is not a plain stage, so there is nothing for run-stage to run. %s", s.ID, m.expect(scope))
 	}
 	if m.running(scope, s.ID) > 0 {
+		if d := deadPlainOwner(r, m, scope); d != nil {
+			if err := completeDeadOwner(r, m, d); err != nil {
+				return err
+			}
+			if err := r.save(); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "Stage %q was left running by an `ensign run-stage` that died; ensign recorded it as an error and ran nothing. Outcome: error.\n\nNext: %s\n", s.ID, m.expect(scope))
+			return nil
+		}
 		return fmt.Errorf("stage %q is already running. %s", s.ID, m.expect(scope))
 	}
 	d := newDispatch(r, scope, s, s.Role)
 	if len(sc.Branches) == 0 {
 		if err := fire(r, "stage.before:"+s.ID, d); err != nil {
 			m.fail("handler", err.Error())
-			finishIfTerminal(r, false, os.Stderr)
-			r.save()
-			return fmt.Errorf("stage %s could not start: %s", s.ID, r.State.Reason)
+			err1 := finishIfTerminal(r, false, os.Stderr)
+			err2 := r.save()
+			return errors.Join(fmt.Errorf("stage %s could not start: %s", s.ID, r.State.Reason), err1, err2)
 		}
 	}
+	// Held until the completed state is saved, so a free lock while the dispatch is running means the owner died.
+	dl := dispatchLock(r, d.ID)
+	if ok, err := dl.TryLock(); err != nil || !ok {
+		return fmt.Errorf("could not lock the dispatch of stage %q: %v", s.ID, err)
+	}
+	defer dl.Close()
+	d.Locked = true
 	r.State.Dispatches = append(r.State.Dispatches, d)
 	r.State.log("dispatch", s.ID, d.ID, s.Role+" "+d.Dim)
 	msg, err := runPlainStage(r, m, d, s, scope)
@@ -124,11 +155,6 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	}
 	r.lock.Unlock()
 	nHistory, nNotes := len(r.State.History), len(r.State.Notes)
-	limit := preToolUseTimeout(r.Snap.Bridge) - time.Minute
-	if limit < 30*time.Second {
-		limit = 30 * time.Second
-	}
-	deadline := time.Now().Add(limit)
 	outcome := "pass"
 	var steps, log []string
 	failed, last := "", ""
@@ -137,8 +163,12 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 		if !ok || b.NotApplicable != "" || b.Command == "" {
 			continue
 		}
+		limit := b.Timeout
+		if limit == 0 {
+			limit = defaultBindingTimeout
+		}
 		start := time.Now()
-		out, err := runBinding(r, d, b.Command, deadline)
+		out, err := runBinding(r, d, b.Command, start.Add(limit))
 		took := time.Since(start).Round(time.Second)
 		log = append(log, fmt.Sprintf("$ %s\n%s", b.Command, out))
 		var exit *exec.ExitError

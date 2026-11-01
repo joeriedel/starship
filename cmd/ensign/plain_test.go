@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -134,12 +135,9 @@ func TestHookSettingsUpgrade(t *testing.T) {
 	b := t.TempDir()
 	f := filepath.Join(b, ".claude", "settings.json")
 	write(t, f, hookSettingsWith(0))
-	if got := preToolUseTimeout(b); got.Seconds() != 600 {
-		t.Fatalf("without a timeout the hook gets Claude Code's default, got %s", got)
-	}
 	upgradeHookSettings(b)
-	if got := preToolUseTimeout(b); got.Seconds() != hookTimeout {
-		t.Fatalf("the upgrade should set the timeout, got %s", got)
+	if data, _ := os.ReadFile(f); string(data) != hookSettings() {
+		t.Fatal("the upgrade should set the timeout")
 	}
 	write(t, f, beforeHandback(hookSettings()))
 	upgradeHookSettings(b)
@@ -389,5 +387,161 @@ func TestSpawningTestersForAParallelStageIsNotDenied(t *testing.T) {
 	write(t, path, string(data))
 	if id, why := w.spawn(lead, "orchestrator", "tester"); id == "" {
 		t.Fatalf("a parallel tester spawn should not be denied: %s", why)
+	}
+}
+
+// diedRun takes a run to its plain test stage, whose `ensign run-stage` is a separate process that kills itself, leaving the dispatch running with its lock free.
+func diedRun(t *testing.T) (w *world, lead string) {
+	t.Helper()
+	w = plainWorld(t, "kill -9 $PPID")
+	lead = w.startLead()
+	w.toTest(lead)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "run-stage", "--bridge", w.bridge, "--run", w.state().Run)
+	cmd.Env = append(os.Environ(), "STARSHIP_TEST_ENSIGN=1")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("the run-stage process should have been killed")
+	}
+	st := w.state()
+	if d := st.Dispatches[len(st.Dispatches)-1]; d.Stage != "test" || d.Done {
+		t.Fatalf("the test dispatch should be left running: %+v", d)
+	}
+	return w, lead
+}
+
+func TestDeadRunStageIsReportedAndRecordedAsError(t *testing.T) {
+	w, _ := diedRun(t)
+	stateFile := filepath.Join(w.bridge, ".starship", "runs", w.state().Run, "state.json")
+	before, _ := os.ReadFile(stateFile)
+	if got := w.next(); !strings.Contains(got, "died before it finished") || !strings.Contains(got, "ensign run-stage") || strings.Contains(got, "still running") {
+		t.Fatalf("next should report the dead stage: %q", got)
+	}
+	if after, _ := os.ReadFile(stateFile); string(after) != string(before) {
+		t.Fatal("next changed the state")
+	}
+	out, err := w.runStage()
+	if err != nil || !strings.Contains(out, "Outcome: error") || !strings.Contains(out, "ran nothing") {
+		t.Fatalf("run-stage should record the death: %q %v", out, err)
+	}
+	st := w.state()
+	d := st.Dispatches[len(st.Dispatches)-1]
+	if !d.Done || d.Outcome != "error" || !strings.Contains(d.Summary, "died before it finished") {
+		t.Fatalf("dispatch %+v", d)
+	}
+	if st.Status != "error" || !st.Finished {
+		t.Fatalf("the run should end with error: %s finished=%v", st.Status, st.Finished)
+	}
+}
+
+func TestSubagentStopCompletesADeadPlainStage(t *testing.T) {
+	w, lead := diedRun(t)
+	if r := w.stop(lead, "orchestrator", "waiting", false); r != "" {
+		t.Fatalf("unexpected block: %s", r)
+	}
+	st := w.state()
+	d := st.Dispatches[len(st.Dispatches)-1]
+	if !d.Done || d.Outcome != "error" || st.Status != "error" {
+		t.Fatalf("dispatch %+v, status %s", d, st.Status)
+	}
+}
+
+func TestLivePlainStageIsNeverTakenOver(t *testing.T) {
+	w, _, release, wait := gatedPlainRun(t)
+	if got := w.next(); !strings.Contains(got, "still running") {
+		t.Fatalf("next should say it is running: %q", got)
+	}
+	if _, err := w.runStage(); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("run-stage should refuse: %v", err)
+	}
+	st := w.state()
+	leadAgent := ""
+	for _, d := range st.Dispatches {
+		if d.Role == "orchestrator" {
+			leadAgent = d.AgentID
+		}
+	}
+	if r := w.stop(leadAgent, "orchestrator", "waiting", false); r != "" {
+		t.Fatalf("the lead may wait: %s", r)
+	}
+	if d := w.state().Dispatches[len(st.Dispatches)-1]; d.Done {
+		t.Fatalf("the live dispatch was taken over: %+v", d)
+	}
+	release()
+	if res := wait(); !strings.Contains(res, "Outcome: pass") {
+		t.Fatalf("unexpected: %v", res)
+	}
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s", st.Status)
+	}
+}
+
+func TestBindingTimeout(t *testing.T) {
+	if defaultBindingTimeout != 60*time.Minute {
+		t.Fatalf("default limit %s", defaultBindingTimeout)
+	}
+	w := plainWorld(t, "sleep 5")
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	write(t, p, strings.Replace(string(data), `command: "sleep 5", plain: true`, `command: "sleep 5", plain: true, timeout: 1s`, 1))
+	cfg, err := loadConfig(w.bridge, "supernova/auth-refactor")
+	if err != nil || cfg.Bindings["test"].Timeout != time.Second {
+		t.Fatalf("timeout not read: %v", err)
+	}
+	w.toTest(w.startLead())
+	start := time.Now()
+	out, err := w.runStage()
+	if err != nil || !strings.Contains(out, "Outcome: error") || !strings.Contains(out, "timed out") {
+		t.Fatalf("a command over its timeout should be an error: %q %v", out, err)
+	}
+	if time.Since(start) > 4*time.Second {
+		t.Fatal("the timeout was not applied")
+	}
+	for _, bad := range []string{"soon", "0s", "-5m"} {
+		write(t, p, strings.Replace(string(data), `command: "sleep 5", plain: true`, `command: "sleep 5", plain: true, timeout: `+bad, 1))
+		if _, err := loadConfig(w.bridge, "supernova/auth-refactor"); err == nil || !strings.Contains(err.Error(), "timeout must be") {
+			t.Fatalf("timeout %q should be refused: %v", bad, err)
+		}
+	}
+}
+
+// editLastDispatch rewrites the run's newest dispatch and state from outside any ensign command.
+func editLastDispatch(t *testing.T, w *world, edit func(*State, *Dispatch)) {
+	t.Helper()
+	r := lockRun(t, w, w.state().Run)
+	edit(r.State, r.State.Dispatches[len(r.State.Dispatches)-1])
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+}
+
+func TestUnlockedRunningPlainStageIsTreatedAsLive(t *testing.T) {
+	w, lead := diedRun(t)
+	editLastDispatch(t, w, func(_ *State, d *Dispatch) { d.Locked = false })
+	if got := w.next(); strings.Contains(got, "died before it finished") || !strings.Contains(got, "still running") {
+		t.Fatalf("next should treat it as running: %q", got)
+	}
+	if _, err := w.runStage(); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("run-stage should refuse: %v", err)
+	}
+	if r := w.stop(lead, "orchestrator", "waiting", false); r != "" {
+		t.Fatalf("the lead may wait: %s", r)
+	}
+	st := w.state()
+	if d := st.Dispatches[len(st.Dispatches)-1]; d.Done || st.Finished {
+		t.Fatalf("the dispatch was taken over: %+v", d)
+	}
+}
+
+func TestNextOnATerminalRunDoesNotReportADeadOwner(t *testing.T) {
+	w, _ := diedRun(t)
+	editLastDispatch(t, w, func(st *State, _ *Dispatch) {
+		st.Status, st.Reason, st.Finished = "error", "stopped by the user", true
+	})
+	if got := w.next(); strings.Contains(got, "died before it finished") || strings.Contains(got, "run-stage") {
+		t.Fatalf("next on a terminal run: %q", got)
 	}
 }

@@ -377,6 +377,11 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 	s := m.stage(d.Stage)
 
 	if s.isLead() {
+		if d := deadPlainOwner(r, m, s.ID); d != nil && !r.State.terminal() {
+			if err := completeDeadOwner(r, m, d); err != nil {
+				return nil, err
+			}
+		}
 		if r.State.terminal() {
 			d.Done = true
 			return nil, nil
@@ -745,7 +750,11 @@ func cmdNext(args []string, out io.Writer) error {
 		}
 		break
 	}
-	fmt.Fprintln(out, m.expect(scope))
+	if d := deadPlainOwner(r, m, scope); d != nil && !r.State.terminal() {
+		fmt.Fprintf(out, "Stage %q (run by ensign) died before it finished: its `ensign run-stage` is gone (killed, or the session or machine stopped), and its effect on the run is unknown. Run `ensign run-stage --bridge %s --run %s` to record it as an error; nothing is run again. Then rule on it as an error and run `ensign next`.\n", d.Stage, shellQuote(r.Snap.Bridge), r.State.Run)
+	} else {
+		fmt.Fprintln(out, m.expect(scope))
+	}
 	if !r.State.terminal() {
 		fmt.Fprintln(out, "Budgets used: "+m.budgetLine())
 	}

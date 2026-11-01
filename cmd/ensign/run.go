@@ -51,6 +51,7 @@ type Dispatch struct {
 	AgentID     string `json:"agent_id,omitempty"`
 	LastSeen    string `json:"last_seen,omitempty"` // RFC3339: the agent's latest hook call
 	Done        bool   `json:"done"`
+	Locked      bool   `json:"locked,omitempty"` // run-stage holds the dispatch lock while it runs; unset for a dispatch from an ensign that took none
 	Outcome     string `json:"outcome,omitempty"`
 	Summary     string `json:"summary,omitempty"`
 	// Fields holds the report's other lines (files, rules, facts …).

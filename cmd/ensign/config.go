@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -220,8 +221,10 @@ type Binding struct {
 	NotApplicable string `json:"not_applicable,omitempty"`
 	// Plain says the command needs no judgement to run: ensign runs it and reads the exit
 	// code. On @test it means ensign runs the test stage itself, with no tester agent.
-	Plain  bool   `json:"plain,omitempty"`
-	Source string `json:"source"`
+	Plain bool `json:"plain,omitempty"`
+	// Timeout limits a plain binding's command; zero means the default.
+	Timeout time.Duration `json:"timeout,omitempty"`
+	Source  string        `json:"source"`
 }
 
 // parseBinding resolves platform variants for this machine.
@@ -249,6 +252,12 @@ func parseBinding(n *yaml.Node, source string) (Binding, error) {
 			if err := v.Decode(&b.Plain); err != nil {
 				return b, fmt.Errorf("%s: plain must be true or false", source)
 			}
+		case "timeout":
+			d, err := time.ParseDuration(v.Value)
+			if err != nil || d <= 0 {
+				return b, fmt.Errorf("%s: timeout must be a positive duration such as 90m", source)
+			}
+			b.Timeout = d
 		case "linux", "windows", "darwin":
 			return b, fmt.Errorf("%s: has platform variants but none for %s", source, runtime.GOOS)
 		default:

@@ -182,8 +182,7 @@ Carried over from the reference design:
   its exit code. On `@test` it means ensign runs the test stage itself, with no tester agent. At that stage `next` gives the lead an `ensign run-stage` command to run as a background shell command, and the lead ends its turn to wait. The command runs `@build` (if bound) and `@test`, records the result as that stage's report and transition, keeps the full output in the run's `reports/`, and prints the outcome, the end of any failing output, and the next step. The hook refuses a spawn of the tester (a tester stage with `parallel:` is the exception: its testers are spawned as usual), and `next` runs nothing. No agent reads the log. Exit 125 (a script saying
   it could not run), 126 or 127, a timeout, or a command that can't start is `error`; any other non-zero exit is `fail`.
   A suite that needs services started, or a judgement about whether it really ran, keeps
-  the tester. The hook has a one-hour timeout in the generated settings, and ensign
-  stops a plain stage a minute before whatever timeout the bridge actually has.
+  the tester. Each command (`@build`, then `@test`) is limited to 60 minutes unless its binding sets `timeout:` (a duration such as `90m`, also allowed inside a platform key); a command over its limit is `error`. While `run-stage` runs a plain stage it holds a lock file in the run folder; a plain stage still running with that lock free means its `run-stage` died. `next` says so, and `ensign run-stage` (or the lead's SubagentStop) records the stage as `error`. It is never restarted.
 
 Conventional names, reused before new ones are invented:
 
