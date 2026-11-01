@@ -1474,3 +1474,139 @@ func TestLastSeenAndStatus(t *testing.T) {
 		t.Errorf("status after agent calls:\n%s", s)
 	}
 }
+
+func TestGitattributesMigration(t *testing.T) {
+	ga := func(w *world) string { return filepath.Join(w.bridge, ".gitattributes") }
+	g := func(w *world, args ...string) string {
+		out, _ := gitOut(w.bridge, args...)
+		return out
+	}
+	setup := func(t *testing.T, autocrlf, content string) *world {
+		w := newWorld(t)
+		t.Setenv("GIT_AUTHOR_NAME", "t")
+		t.Setenv("GIT_AUTHOR_EMAIL", "t@example.com")
+		t.Setenv("GIT_COMMITTER_NAME", "t")
+		t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
+		git(w.bridge, "init", "-q")
+		git(w.bridge, "config", "core.autocrlf", autocrlf)
+		write(t, filepath.Join(w.bridge, "CLAUDE.md"), content)
+		write(t, filepath.Join(w.bridge, "with space.md"), content)
+		git(w.bridge, "add", "-A")
+		git(w.bridge, "commit", "-q", "-m", "old bridge")
+		return w
+	}
+	commits := func(w *world) string { return g(w, "rev-list", "--count", "HEAD") }
+
+	t.Run("LF bridge", func(t *testing.T) {
+		w := setup(t, "false", "a\nb\n")
+		addGitattributes(w.bridge)
+		if data, _ := os.ReadFile(ga(w)); string(data) != bridgeGitattributes {
+			t.Errorf(".gitattributes = %q", data)
+		}
+		if got := g(w, "show", "--name-only", "--format=", "HEAD"); got != ".gitattributes" {
+			t.Errorf("commit changes %q", got)
+		}
+		if st := g(w, "status", "--porcelain"); st != "" {
+			t.Errorf("status: %q", st)
+		}
+	})
+	t.Run("autocrlf working copies", func(t *testing.T) {
+		w := setup(t, "true", "a\nb\n")
+		os.Remove(filepath.Join(w.bridge, "CLAUDE.md"))
+		os.Remove(filepath.Join(w.bridge, "with space.md"))
+		git(w.bridge, "checkout", "--", ".")
+		if data, _ := os.ReadFile(filepath.Join(w.bridge, "CLAUDE.md")); string(data) != "a\r\nb\r\n" {
+			t.Fatalf("setup: working copy is %q", data)
+		}
+		if st := g(w, "status", "--porcelain"); st != "" {
+			t.Fatalf("setup not clean: %q", st)
+		}
+		addGitattributes(w.bridge)
+		for _, f := range []string{"CLAUDE.md", "with space.md"} {
+			if data, _ := os.ReadFile(filepath.Join(w.bridge, f)); string(data) != "a\nb\n" {
+				t.Errorf("%s = %q, want LF", f, data)
+			}
+		}
+		if st := g(w, "status", "--porcelain"); st != "" {
+			t.Errorf("status: %q", st)
+		}
+		if got := g(w, "show", "--name-only", "--format=", "HEAD"); got != ".gitattributes" {
+			t.Errorf("commit changes %q", got)
+		}
+	})
+	t.Run("CRLF in the blob", func(t *testing.T) {
+		w := setup(t, "false", "a\r\nb\r\n")
+		addGitattributes(w.bridge)
+		if commits(w) != "2" {
+			t.Errorf("want one new commit, have %s total", commits(w))
+		}
+		if got := g(w, "show", "--name-only", "--format=", "HEAD"); got != ".gitattributes" {
+			t.Errorf("commit changes %q", got)
+		}
+		if got := g(w, "show", "HEAD:CLAUDE.md"); got != "a\r\nb" {
+			t.Errorf("blob in HEAD = %q", got)
+		}
+		if data, _ := os.ReadFile(filepath.Join(w.bridge, "CLAUDE.md")); string(data) != "a\r\nb\r\n" {
+			t.Errorf("CLAUDE.md = %q", data)
+		}
+		if st := g(w, "status", "--porcelain"); st != "" {
+			t.Errorf("status: %q", st)
+		}
+	})
+	t.Run("existing file", func(t *testing.T) {
+		w := setup(t, "false", "a\n")
+		write(t, ga(w), "*.md text\n")
+		addGitattributes(w.bridge)
+		if data, _ := os.ReadFile(ga(w)); string(data) != "*.md text\n" {
+			t.Errorf(".gitattributes = %q", data)
+		}
+		if commits(w) != "1" {
+			t.Errorf("no commit expected")
+		}
+	})
+	t.Run("modified tracked file waits", func(t *testing.T) {
+		w := setup(t, "false", "a\n")
+		write(t, filepath.Join(w.bridge, "CLAUDE.md"), "changed\n")
+		addGitattributes(w.bridge)
+		if _, err := os.Stat(ga(w)); err == nil {
+			t.Errorf(".gitattributes written over uncommitted changes")
+		}
+		if commits(w) != "1" {
+			t.Errorf("no commit expected")
+		}
+		git(w.bridge, "commit", "-q", "-am", "edit")
+		addGitattributes(w.bridge)
+		if _, err := os.Stat(ga(w)); err != nil {
+			t.Errorf("migration should run once clean")
+		}
+	})
+}
+
+func TestInitGitattributes(t *testing.T) {
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
+		t.Setenv(k, "t")
+	}
+	for _, k := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		t.Setenv(k, "t@example.com")
+	}
+	b := newBridge(t)
+	if data, _ := os.ReadFile(filepath.Join(b, ".gitattributes")); string(data) != "* text=auto eol=lf\n" {
+		t.Errorf(".gitattributes = %q", data)
+	}
+	if out, _ := gitOut(b, "show", "HEAD:.gitattributes"); out != "* text=auto eol=lf" {
+		t.Errorf("not in HEAD: %q", out)
+	}
+
+	dir := filepath.Join(t.TempDir(), "mine")
+	write(t, filepath.Join(dir, ".gitattributes"), "*.md text\r\n")
+	var out bytes.Buffer
+	if err := cmdInit([]string{dir, "--control-plane", repoRoot(t)}, &out); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, ".gitattributes")); string(data) != "*.md text\r\n" {
+		t.Errorf("existing .gitattributes changed: %q", data)
+	}
+	if st, _ := gitOut(dir, "status", "--porcelain"); st != "?? .gitattributes" {
+		t.Errorf("existing .gitattributes should stay uncommitted: %q", st)
+	}
+}

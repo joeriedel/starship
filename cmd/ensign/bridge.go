@@ -75,6 +75,9 @@ except help fix it**: no runs, no agent spawns, no workspace changes, no commits
 // which also put it in every subagent's context. SessionStart now removes it.
 const sessionImport = "@.starship/session.md"
 
+// bridgeGitattributes keeps a bridge's text files at LF on every machine.
+const bridgeGitattributes = "* text=auto eol=lf\n"
+
 const bridgeGitignore = `# Generated per machine by ensign; never committed.
 .starship/
 machine.yaml
@@ -158,6 +161,10 @@ func cmdInit(args []string, out io.Writer) error {
 		".gitignore":            bridgeGitignore,
 		".claude/settings.json": hookSettings(),
 		"projects/.gitkeep":     "",
+	}
+	// A .gitattributes the folder already has is the user's: leave it, and don't commit it.
+	if _, err := os.Stat(filepath.Join(dir, ".gitattributes")); err != nil {
+		files[".gitattributes"] = bridgeGitattributes
 	}
 	paths := sortedKeys(files)
 	// The folder may already hold the user's own files. Never overwrite one.

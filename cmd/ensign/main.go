@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -329,6 +330,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 				fmt.Sprintf("starship: this bridge is not ready: %v", err))
 		}
 	}
+	addGitattributes(bridge)
 	dropSessionImport(bridge)
 	updateHeartbeat(bridge)
 	if note := splitHistory(bridge); note != "" {
@@ -376,6 +378,56 @@ func upgradeHookSettings(bridge string) {
 	}
 	if os.WriteFile(f, []byte(hookSettings()), 0o644) == nil && isGit(bridge) {
 		git(bridge, "commit", "-q", "-m", "Update the starship hook settings", "--", ".claude/settings.json")
+	}
+}
+
+// addGitattributes gives an existing bridge the .gitattributes that init writes, so its text files are LF on every machine, and commits just that file; committed blobs are not rewritten. Tracked files with uncommitted changes defer it to the next session. On a failure it removes and unstages the file unless HEAD has it, so the next session retries.
+func addGitattributes(bridge string) {
+	f := filepath.Join(bridge, ".gitattributes")
+	if !isGit(bridge) {
+		return
+	}
+	if dirty, _ := gitOut(bridge, "status", "--porcelain", "--untracked-files=no"); dirty != "" {
+		return
+	}
+	// Exclusive create: only the session that makes the file may commit or undo it.
+	file, err := os.OpenFile(f, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return
+	}
+	_, werr := file.WriteString(bridgeGitattributes)
+	if cerr := file.Close(); werr != nil || cerr != nil {
+		os.Remove(f)
+		return
+	}
+	if git(bridge, "add", "--", ".gitattributes") != nil ||
+		git(bridge, "commit", "-q", "-m", "Keep the bridge's text files at LF line endings", "--", ".gitattributes") != nil {
+		// A concurrent session may have committed it already; then it is theirs to keep.
+		if git(bridge, "cat-file", "-e", "HEAD:.gitattributes") != nil {
+			os.Remove(f)
+			git(bridge, "reset", "-q", "--", ".gitattributes")
+		}
+		return
+	}
+	// checkout-index skips files git thinks are unchanged, even with -f, so write the index's LF content over each CRLF working copy. Writing in place never leaves a file missing.
+	eol, _ := gitOut(bridge, "ls-files", "-z", "--eol")
+	var rewritten []string
+	for _, rec := range strings.Split(eol, "\x00") {
+		info, path, ok := strings.Cut(rec, "\t")
+		if !ok || !strings.Contains(info, "w/crlf") || strings.Contains(info, "i/crlf") || strings.Contains(info, "i/mixed") {
+			continue
+		}
+		if data, err := exec.Command("git", "-C", bridge, "cat-file", "--filters", ":"+path).Output(); err == nil {
+			if os.WriteFile(filepath.Join(bridge, filepath.FromSlash(path)), data, 0o644) == nil {
+				rewritten = append(rewritten, path)
+			}
+		}
+	}
+	// The index still records the CRLF size, which status reads as a change; re-hashing the same content as the index blob refreshes that without staging anything.
+	if len(rewritten) > 0 {
+		cmd := exec.Command("git", "-C", bridge, "update-index", "-z", "--stdin")
+		cmd.Stdin = strings.NewReader(strings.Join(rewritten, "\x00") + "\x00")
+		cmd.Run()
 	}
 }
 

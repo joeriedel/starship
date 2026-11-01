@@ -1218,7 +1218,7 @@ of the `ensign` that ran `link`. Outside a bridge, hook events are no-ops.
 ### 11.4 Portability rules
 
 - `.gitattributes` with `* text=auto eol=lf`, so config and scripts are never converted to
-  CRLF.
+  CRLF. A bridge gets the same file from `ensign init`, or from a SessionStart migration for an existing bridge.
 - Forward slashes in every path. Where each project's code is lives in the gitignored
   `machine.yaml` (§12.6), never in the bridge's committed files.
 - Hook commands in `settings.json` use no shell syntax — no `$VAR`, no quoting tricks —
@@ -1422,7 +1422,7 @@ runs against Claude Code, except where listed below.
   the model in testing; a user's own session isn't affected. `ensign` starts its own
   `claude` (the selftest) without the variables a session sets
   about itself, and live tests should do the same.
-- **`ensign init` commits the new bridge.** Before, the first session in a new bridge
+- **`ensign init` commits the new bridge** (with a `.gitattributes` for LF line endings). Before, the first session in a new bridge
   was asked to commit the empty-folder placeholders as journal changes.
 - **Stages run in the foreground.** PreToolUse rewrites `run_in_background` to `false`
   on every stage dispatch, and `ensign selftest` checks the rewrite works. Inside a
