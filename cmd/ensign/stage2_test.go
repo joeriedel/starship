@@ -461,6 +461,34 @@ func TestRunIsLoggedInTheJournal(t *testing.T) {
 	}
 }
 
+func TestRunEntryListsEachChangedFileOnce(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	ws := w.gitWorkspace()
+	w.project("events:\n  run.start: [{ require: \"echo pre > pre.txt && git add pre.txt && git commit -q -m pre\" }]\n")
+	lead := w.startLead()
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	write(t, filepath.Join(ws, "lib.txt"), "two\n")
+	if r := w.stop(coder, "coder", coderReport("compiled", filepath.Join(ws, "lib.txt")), false); r != "" {
+		t.Fatalf("blocked: %s", r)
+	}
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+	w.leaf(lead, "tester", "pass")
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	data, _ := os.ReadFile(filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/history.md"))
+	entry := string(data)
+	if !strings.Contains(entry, "Changed: lib.txt. ") {
+		t.Fatalf("the run's own file should be listed once, relative, and nothing else:\n%s", entry)
+	}
+	if strings.Contains(entry, "pre.txt") {
+		t.Fatalf("a file committed by run.start is not the run's change:\n%s", entry)
+	}
+}
+
 func TestAppendHistory(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "tasks", "t", "history.md")
 	if err := appendHistory(f, "t", "- new."); err != nil {

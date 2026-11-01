@@ -203,6 +203,16 @@ func finishRun(r *RunFiles) {
 	}
 }
 
+// journalPath is a changed file as the journal lists it: relative to the workspace when it lies inside it, with forward slashes, so a reported path and git's name for the same file are one entry.
+func journalPath(ws, f string) string {
+	if filepath.IsAbs(f) {
+		if rel, err := filepath.Rel(ws, f); err == nil && !strings.HasPrefix(rel, "..") {
+			f = rel
+		}
+	}
+	return filepath.ToSlash(filepath.Clean(f))
+}
+
 // runEntry is the line a finished run adds to its task's history: what happened, in
 // facts only. The session writes the account under it.
 func runEntry(r *RunFiles) string {
@@ -215,27 +225,27 @@ func runEntry(r *RunFiles) string {
 		outcome += " (" + st.Reason + ")"
 	}
 	passes := 0
+	ws := r.Snap.Workspace
 	files := map[string]bool{}
 	for _, d := range st.Dispatches {
 		if d.Role == "coder" && d.Done {
 			passes++
 		}
 		for _, f := range d.Fields["files"] {
-			files[f] = true
+			files[journalPath(ws, f)] = true
 		}
 	}
-	ws := r.Snap.Workspace
 	head := ""
 	if st.StartHead != "" {
 		head, _ = gitOut(ws, "rev-parse", "HEAD")
 		if changed, err := gitOut(ws, "diff", "--name-only", st.StartHead); err == nil {
 			for _, f := range strings.Fields(changed) {
-				files[f] = true
+				files[journalPath(ws, f)] = true
 			}
 		}
 		if untracked, err := gitOut(ws, "ls-files", "--others", "--exclude-standard"); err == nil {
 			for _, f := range strings.Fields(untracked) {
-				files[f] = true
+				files[journalPath(ws, f)] = true
 			}
 		}
 	}
