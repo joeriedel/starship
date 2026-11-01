@@ -653,18 +653,30 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 			fmt.Fprintln(out, "vcs        "+vcsState(ws, tf.Vcs))
 		}
 	}
-	notes, err := os.ReadFile(filepath.Join(bridge, "projects", project, "project.md"))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	notes, err := projectNotes(bridge, project)
+	if err != nil {
 		return err
 	}
-	if n := strings.TrimSpace(string(notes)); n != "" {
-		fmt.Fprintf(out, "\nnotes      projects/%s/project.md\n\n%s\n", project, n)
-	}
+	fmt.Fprint(out, notes)
 	fmt.Fprintf(out, "\n%s\n", strings.TrimSpace(string(body)))
 	if sid := os.Getenv("STARSHIP_SESSION"); sid != "" {
 		writeFile(sessionFile(bridge, sid)+".task", task+"\n")
 	}
 	return nil
+}
+
+// projectNotes is the block task open prints for a project's project.md, empty when the
+// file is missing or blank.
+func projectNotes(bridge, project string) (string, error) {
+	notes, err := os.ReadFile(filepath.Join(bridge, "projects", project, "project.md"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	n := strings.TrimSpace(string(notes))
+	if n == "" {
+		return "", nil
+	}
+	return fmt.Sprintf("\nnotes      projects/%s/project.md\n\n%s\n", project, n), nil
 }
 
 func vcsState(ws string, v TaskVcs) string {

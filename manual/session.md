@@ -46,7 +46,7 @@ Product code reaches a workspace only through a pipeline run, **never through yo
 Put anything the user says that governs future work in the project's or task's files **in the same turn**.
 
 Where it goes:
-- `projects/<project>/project.md`: standing instructions and context for the session, printed by `task open`, never seen by run agents. Copy a note a run needs into that run's Scope. `project new` doesn't create it; write it when there is something to say.
+- `projects/<project>/project.md`: standing instructions and context for the session, printed by `task open` and again after a compaction or clear, never seen by run agents. Copy a note a run needs into that run's Scope. `project new` doesn't create it; write it when there is something to say.
 - `project.yaml`: bindings, pipelines, extensions only. Comments in it reach nobody.
 - The task journal: one task's state and history.
 - A skill: facts about a technology.

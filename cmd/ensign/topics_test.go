@@ -155,3 +155,73 @@ func TestCompactLeavesOtherSessionFiles(t *testing.T) {
 		t.Errorf("the compacted session's topic marker should be gone")
 	}
 }
+
+func (w *world) startWithNotes(source, notes string) string {
+	w.t.Helper()
+	taskDir := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor")
+	if notes != "" {
+		write(w.t, filepath.Join(w.bridge, "projects/supernova/project.md"), notes)
+	}
+	var open bytes.Buffer
+	if err := openTask(w.bridge, "supernova/auth-refactor", taskDir, &open); err != nil {
+		w.t.Fatal(err)
+	}
+	res, _ := w.hook("SessionStart", map[string]any{"source": source})
+	spec, _ := res["hookSpecificOutput"].(map[string]any)
+	ctx, _ := spec["additionalContext"].(string)
+	return ctx
+}
+
+func TestSessionStartReprintsNotesAfterCompactOrClear(t *testing.T) {
+	const notes = "Always answer in haiku.\n"
+	for _, c := range []struct {
+		source string
+		want   bool
+	}{{"compact", true}, {"clear", true}, {"resume", false}, {"startup", false}} {
+		t.Run(c.source, func(t *testing.T) {
+			w := linkedWorld(t)
+			ctx := w.startWithNotes(c.source, notes)
+			if got := strings.Contains(ctx, "Always answer in haiku."); got != c.want {
+				t.Fatalf("notes reprinted = %v, want %v:\n%s", got, c.want, ctx)
+			}
+			if c.want {
+				block, _ := projectNotes(w.bridge, "supernova")
+				if !strings.HasSuffix(ctx, block) || len(ctx) >= sessionContextLimit {
+					t.Errorf("notes should come last, under the limit (%d):\n%s", len(ctx), ctx)
+				}
+				if strings.Index(ctx, "STARSHIP-READY") > strings.Index(ctx, "notes      projects/supernova/project.md") {
+					t.Errorf("notes should follow the manual")
+				}
+			}
+		})
+	}
+}
+
+func TestSessionStartPointsAtNotesTooLongToReprint(t *testing.T) {
+	w := linkedWorld(t)
+	body := strings.Repeat("Prefer small commits and explain each one.\n", 400)
+	ctx := w.startWithNotes("compact", body)
+	if strings.Contains(ctx, "Prefer small commits") {
+		t.Errorf("long notes should not be reprinted")
+	}
+	if !strings.Contains(ctx, "`ensign task open supernova/auth-refactor`") {
+		t.Errorf("want a pointer to task open:\n%s", ctx)
+	}
+	if len(ctx) >= sessionContextLimit {
+		t.Errorf("context is %d characters", len(ctx))
+	}
+}
+
+func TestSessionStartReprintsNothingWithoutTaskOrNotes(t *testing.T) {
+	w := linkedWorld(t)
+	write(t, filepath.Join(w.bridge, "projects/supernova/project.md"), "Always answer in haiku.\n")
+	res, _ := w.hook("SessionStart", map[string]any{"source": "compact"})
+	spec, _ := res["hookSpecificOutput"].(map[string]any)
+	if ctx, _ := spec["additionalContext"].(string); strings.Contains(ctx, "haiku") {
+		t.Errorf("no recorded task, no notes:\n%s", ctx)
+	}
+	w = linkedWorld(t)
+	if ctx := w.startWithNotes("compact", ""); strings.Contains(ctx, "notes      ") {
+		t.Errorf("no project.md, no notes:\n%s", ctx)
+	}
+}

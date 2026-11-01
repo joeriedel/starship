@@ -350,12 +350,28 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if cmds := requestCommands(bridge); cmds != "" {
 		fmt.Fprintf(&ctx, "\n%s", cmds)
 	}
+	// A compaction or clear replaces the context, so the task's project notes, which
+	// task open printed into it, are printed again.
+	if task := sessionTask(bridge, in.SessionID); in.SessionID != "" && task != "" && (in.Source == "compact" || in.Source == "clear") {
+		project, _, _ := strings.Cut(task, "/")
+		if block, err := projectNotes(bridge, project); err == nil && block != "" {
+			if ctx.Len()+len(block) < sessionContextLimit {
+				ctx.WriteString(block)
+			} else {
+				fmt.Fprintf(&ctx, "\nnotes      projects/%s/project.md is too long to reprint here; run `ensign task open %s` to see it again\n", project, task)
+			}
+		}
+	}
 	show := "Starship ready · bridge " + filepath.Base(bridge)
 	if version != "" && version != "dev" {
 		show += " · " + version
 	}
 	return reply(show, ctx.String())
 }
+
+// sessionContextLimit is the length of additionalContext past which Claude Code cuts it
+// to a preview.
+const sessionContextLimit = 10000
 
 // beforeHandback is settings as ensign wrote them before it registered PostToolUse and
 // matched SubagentHandback.

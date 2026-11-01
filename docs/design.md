@@ -799,6 +799,8 @@ agents outside the run are ignored, and the hook prints nothing. `SubagentStop`'
 
 Records the session's id for its commands (§5.5) and prints the heartbeat (§12.5).
 
+After a compaction or clear, which replace the context, it also reprints the session's recorded task's `project.md`, or one line pointing at `ensign task open` when that would push the context over the limit; startup has nothing to lose and resume keeps the transcript.
+
 **UserPromptSubmit**
 
 If the user's message is exactly `go` and a run is pending, set `approved` and tell the
