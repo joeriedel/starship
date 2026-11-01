@@ -457,7 +457,7 @@ func TestRunSidesDefaultAndNarrowed(t *testing.T) {
 	var out bytes.Buffer
 	models := locTask(t, w, "m", "models")
 	client := locTask(t, w, "c", "client")
-	snap, err := createRun(w.bridge, runOpts{task: models}, true, &out)
+	snap, err := createRun(w.bridge, runOpts{task: models}, false, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestRunSidesDefaultAndNarrowed(t *testing.T) {
 	}
 
 	out.Reset()
-	snap, err = createRun(w.bridge, runOpts{task: models, sides: []string{"server", "models"}}, true, &out)
+	snap, err = createRun(w.bridge, runOpts{task: models, sides: []string{"server", "models"}}, false, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,11 +566,13 @@ func TestTesterPromptListsSides(t *testing.T) {
 			t.Errorf("tester prompt lacks %q:\n%s", want, prompt)
 		}
 	}
-	if single, _ := createRun(w.bridge, runOpts{task: locTask(t, w, "c", "client")}, true, &out); single != nil {
-		r.Snap = single
-		if p := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil); strings.Contains(p, "## Sides") {
-			t.Errorf("a single side needs no sides section")
-		}
+	single, err := createRun(w.bridge, runOpts{task: locTask(t, w, "c", "client")}, true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Snap = single
+	if p := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil); strings.Contains(p, "## Sides") {
+		t.Errorf("a single side needs no sides section")
 	}
 }
 

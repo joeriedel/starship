@@ -576,6 +576,14 @@ cross-location:
 	return w
 }
 
+// toTestOneReview is toTest for a fixture whose project does not append review dimensions: the review stage takes one reviewer.
+func (w *world) toTestOneReview(lead string) {
+	w.t.Helper()
+	w.leaf(lead, "coder", "compiled")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+}
+
 func (w *world) sideFolder(loc string) string {
 	return filepath.FromSlash(loadMachine(w.bridge).Locations["supernova"][loc])
 }
@@ -593,7 +601,7 @@ func TestPlainStageRunsEverySideAndTheCrossTest(t *testing.T) {
 	if lead == "" {
 		t.Fatalf("lead refused: %s", why)
 	}
-	w.toTest(lead)
+	w.toTestOneReview(lead)
 	if _, err := w.runStage(); err != nil {
 		t.Fatal(err)
 	}
@@ -615,7 +623,7 @@ func TestPlainStageStopsAtTheFirstFailingSide(t *testing.T) {
 	w.run(locTask(t, w, "m", "models"))
 	w.approve()
 	lead, _ := w.spawn("", "", "orchestrator")
-	w.toTest(lead)
+	w.toTestOneReview(lead)
 	out, err := w.runStage()
 	if err != nil || !strings.Contains(out, "Outcome: fail") || !strings.Contains(out, "side client: @test") {
 		t.Fatalf("the failing side should be named: %v\n%s", err, out)
@@ -630,7 +638,7 @@ func TestPlainStageOfASingleSideRunsAsBefore(t *testing.T) {
 	w.run(locTask(t, w, "c", "client"))
 	w.approve()
 	lead, _ := w.spawn("", "", "orchestrator")
-	w.toTest(lead)
+	w.toTestOneReview(lead)
 	if _, err := w.runStage(); err != nil {
 		t.Fatal(err)
 	}
