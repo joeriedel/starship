@@ -55,6 +55,7 @@ into one command. Whatever you read is re-sent on every later turn.
 - **Stay in scope.** If the change genuinely needs more, stop and report `blocked`.
 - **Match what's there:** naming, error handling, layering, test style. Consistency with
   the surrounding code beats your preferences.
+- **Don't hard-wrap new prose** (Markdown, comments, journal entries): one line per paragraph, unless the stated style (`@style`) sets a width. Matching what's there doesn't extend to wrap width. Never reflow existing text; edit a changed line in place. Formatter-owned code is exempt.
 - **The smallest correct diff.** Don't refactor neighbours, rename what you weren't asked
   to, or modernise patterns you dislike.
 - **Simple and concrete over general and clever.** No interface with one implementation,

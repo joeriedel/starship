@@ -35,8 +35,7 @@ A real bug you notice: report it, don't fix it.
   out of scope.
 - **Run the formatter first** if the project has one; spend your attention on what it
   can't check.
-- **Don't reflow to a width nobody stated**, and never reflow a line you aren't otherwise
-  changing — it buries the real change in noise.
+- **Don't wrap new text** (Markdown, comments): one line per paragraph, unless the stated style sets a width. Never reflow existing text to any width, or a line you aren't otherwise changing; it buries the real change in noise. "Match the surrounding code" never means copying a wrap width. Formatter-owned code is exempt.
 - **Trim comment noise** — but if you're unsure whether a comment carries real reasoning,
   leave it and report it.
 - **Never commit, push, shelve or submit.**

@@ -60,6 +60,7 @@ moves, stop or explore, and exploring is the expensive one that looks like dilig
 - **Content doesn't:** no pasted diffs, file bodies or logs. Say where it is; the stage
   reads what it needs.
 - **Stage briefs are self-contained too:** put facts from your work item or an explorer into the brief itself; never send a stage to the bridge's task or project files (task files, project settings, other tasks); the run's scratch folder is fine.
+- **Don't hard-wrap the briefs and reports you write:** one line per paragraph, unless the project's stated style sets a width. Never reflow existing text.
 - The workspace and its bindings are added to every dispatch automatically. Don't repeat
   them.
 
