@@ -313,6 +313,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	var ctx strings.Builder
 	if in.SessionID != "" {
 		writeFile(sessionFile(bridge, in.SessionID)+".pin", pinnedCommit(bridge)+"\n")
+		if in.Source == "compact" || in.Source == "clear" {
+			clearTopicMarkers(bridge, in.SessionID)
+		}
 	}
 	if note := syncBridge(bridge); note != "" {
 		fmt.Fprintln(&ctx, note)

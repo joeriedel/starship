@@ -52,10 +52,27 @@ func cmdHelp(args []string, out io.Writer) error {
 	return err
 }
 
+// topicMarkerPrefix is the start of the name of each file recording a topic delivered to a session.
+func topicMarkerPrefix(bridge, session string) string {
+	return sessionFile(bridge, session) + ".topic-"
+}
+
+// clearTopicMarkers forgets which topics a session has been given, so its next commands print them again. Best effort.
+func clearTopicMarkers(bridge, session string) {
+	prefix := topicMarkerPrefix(bridge, session)
+	dir := filepath.Dir(prefix)
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), filepath.Base(prefix)) {
+			os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
 // deliverTopic prints a help topic to out the first time a session runs a command it belongs to.
 func deliverTopic(bridge, name string, out io.Writer) {
 	session := os.Getenv("STARSHIP_SESSION")
-	marker := sessionFile(bridge, session) + ".topic-" + name
+	marker := topicMarkerPrefix(bridge, session) + name
 	if session != "" {
 		if _, err := os.Stat(marker); err == nil {
 			return

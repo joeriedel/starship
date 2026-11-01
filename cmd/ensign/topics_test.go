@@ -111,3 +111,47 @@ func TestManualTopicsExistAndPrint(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionStartClearsTopicsOnlyAfterCompactOrClear(t *testing.T) {
+	const marker = "# Sequences"
+	for _, c := range []struct {
+		source string
+		again  bool
+	}{{"compact", true}, {"clear", true}, {"resume", false}, {"startup", false}} {
+		t.Run(c.source, func(t *testing.T) {
+			w := linkedWorld(t)
+			if out, _ := w.seq(); !strings.Contains(out, marker) {
+				t.Fatalf("first use should print the topic:\n%s", out)
+			}
+			w.hook("SessionStart", map[string]any{"source": c.source})
+			if out, _ := w.seq(); strings.Contains(out, marker) != c.again {
+				t.Errorf("after %s, topic printed again = %v, want %v:\n%s", c.source, !c.again, c.again, out)
+			}
+		})
+	}
+}
+
+func TestCompactLeavesOtherSessionFiles(t *testing.T) {
+	w := linkedWorld(t)
+	w.seq()
+	t.Setenv("STARSHIP_SESSION", "s2")
+	w.seq()
+	for _, suffix := range []string{"", ".task", ".sequence"} {
+		writeFile(sessionFile(w.bridge, w.sid)+suffix, "x")
+	}
+	w.hook("SessionStart", map[string]any{"source": "compact"})
+	for _, f := range []string{
+		sessionFile(w.bridge, "s2") + ".topic-sequence",
+		sessionFile(w.bridge, w.sid),
+		sessionFile(w.bridge, w.sid) + ".pin",
+		sessionFile(w.bridge, w.sid) + ".task",
+		sessionFile(w.bridge, w.sid) + ".sequence",
+	} {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s should survive a compaction: %v", filepath.Base(f), err)
+		}
+	}
+	if _, err := os.Stat(sessionFile(w.bridge, w.sid) + ".topic-sequence"); err == nil {
+		t.Errorf("the compacted session's topic marker should be gone")
+	}
+}
