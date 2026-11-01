@@ -21,8 +21,9 @@ import (
 
 // Machine is this machine's settings for a bridge.
 type Machine struct {
-	Workspaces map[string]string     `yaml:"workspaces"`    // "<project>" or "<project>/<task>" -> folder
-	Env        map[string]ProjectEnv `yaml:"env,omitempty"` // "<project>" -> its toolchain setup on this machine
+	Workspaces map[string]string            `yaml:"workspaces"`          // "<project>" or "<project>/<task>" -> folder
+	Env        map[string]ProjectEnv        `yaml:"env,omitempty"`       // "<project>" -> its toolchain setup on this machine
+	Locations  map[string]map[string]string `yaml:"locations,omitempty"` // "<project>" -> location -> folder
 }
 
 const machineHeader = `# Where this machine keeps each project's code. Every machine has its own copy of this
@@ -38,6 +39,9 @@ func loadMachine(bridge string) Machine {
 	if m.Workspaces == nil {
 		m.Workspaces = map[string]string{}
 	}
+	if m.Locations == nil {
+		m.Locations = map[string]map[string]string{}
+	}
 	return m
 }
 
@@ -52,6 +56,7 @@ func saveMachine(bridge string, m Machine) error {
 	for _, k := range keys {
 		fmt.Fprintf(&b, "  %s: %s\n", k, yamlScalar(m.Workspaces[k]))
 	}
+	b.WriteString(locationsYAML(m.Locations))
 	b.WriteString(envYAML(m.Env))
 	return writeFile(machineFile(bridge), b.String())
 }
@@ -105,8 +110,20 @@ func expandHome(p string) string {
 // cmdWorkspace implements `ensign workspace <project>[/<task>] [<path>]`: record where the
 // code is on this machine, or show it.
 func cmdWorkspace(args []string, out io.Writer) error {
+	usage := fmt.Errorf("usage: ensign workspace <project>[/<task>] [<path>] | ensign workspace <project> --location <name> [<path>]")
+	var location string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--location" {
+			if i+1 >= len(args) {
+				return fmt.Errorf("--location needs a name")
+			}
+			location = args[i+1]
+			args = append(args[:i:i], args[i+2:]...)
+			break
+		}
+	}
 	if len(args) < 1 || len(args) > 2 {
-		return fmt.Errorf("usage: ensign workspace <project>[/<task>] [<path>]")
+		return usage
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
@@ -118,6 +135,32 @@ func cmdWorkspace(args []string, out io.Writer) error {
 	}
 	if _, err := os.Stat(filepath.Join(bridge, "projects", project, "project.yaml")); err != nil {
 		return fmt.Errorf("no project %s", project)
+	}
+	if location != "" {
+		if task != "" {
+			return fmt.Errorf("--location belongs to a project; use ensign workspace %s --location %s", project, location)
+		}
+		locs, err := loadLocations(bridge, project)
+		if err != nil {
+			return err
+		}
+		if !locs.Has(location) {
+			return fmt.Errorf("project %s declares no location %q (it declares %s)", project, location, strings.Join(locs.Names(), ", "))
+		}
+		if len(args) == 1 {
+			p, err := locationPathFor(bridge, project, location)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(out, filepath.ToSlash(p))
+			return nil
+		}
+		abs, err := setLocationPath(bridge, project, location, args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s location %s is at %s on this machine\n", project, location, filepath.ToSlash(abs))
+		return nil
 	}
 	if len(args) == 1 {
 		ws, err := workspaceFor(bridge, project, task)

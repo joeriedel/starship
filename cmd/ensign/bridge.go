@@ -629,7 +629,7 @@ New.
 `
 
 func cmdTask(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign task new <project>/<task> [--workspace <path>] [--branch <branch>] | ensign task open <project>/<task>")
+	usage := fmt.Errorf("usage: ensign task new <project>/<task> [--workspace <path> | --locations <a,b>] [--branch <branch>] | ensign task open <project>/<task>")
 	if len(args) < 2 {
 		return usage
 	}
@@ -644,11 +644,13 @@ func cmdTask(args []string, out io.Writer) error {
 	taskDir := filepath.Join(bridge, "projects", parts[0], "tasks", parts[1])
 	switch args[0] {
 	case "new":
-		var ws, branch string
+		var ws, branch, locations string
 		for i := 2; i+1 < len(args); i += 2 {
 			switch args[i] {
 			case "--workspace":
 				ws = args[i+1]
+			case "--locations":
+				locations = args[i+1]
 			case "--branch":
 				branch = args[i+1]
 			default:
@@ -662,16 +664,50 @@ func cmdTask(args []string, out io.Writer) error {
 		if _, err := os.Stat(filepath.Join(taskDir, "task.md")); err == nil {
 			return fmt.Errorf("task %s already exists", args[1])
 		}
-		if ws != "" {
-			if _, err := setWorkspace(bridge, args[1], ws); err != nil {
-				return err
-			}
-		} else if _, err := workspaceFor(bridge, parts[0], ""); err != nil {
+		locs, err := loadLocations(bridge, parts[0])
+		if err != nil {
 			return err
 		}
+		var named []string
+		for _, n := range strings.Split(locations, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				named = append(named, n)
+			}
+		}
+		switch {
+		case len(locs.Names()) == 0 && locations != "":
+			return fmt.Errorf("project %s declares no locations, so --locations has no meaning", parts[0])
+		case len(locs.Names()) == 0:
+		case ws != "":
+			return fmt.Errorf("project %s declares locations (%s); name the ones the task uses with --locations, not --workspace", parts[0], strings.Join(locs.Names(), ", "))
+		default:
+			if len(named) == 0 {
+				return fmt.Errorf("project %s declares locations (%s); name the ones the task uses with --locations <a,b>", parts[0], strings.Join(locs.Names(), ", "))
+			}
+			for _, n := range named {
+				if !locs.Has(n) {
+					return fmt.Errorf("project %s declares no location %q (it declares %s)", parts[0], n, strings.Join(locs.Names(), ", "))
+				}
+				if _, err := locationPathFor(bridge, parts[0], n); err != nil {
+					return err
+				}
+			}
+		}
+		if len(locs.Names()) == 0 {
+			if ws != "" {
+				if _, err := setWorkspace(bridge, args[1], ws); err != nil {
+					return err
+				}
+			} else if _, err := workspaceFor(bridge, parts[0], ""); err != nil {
+				return err
+			}
+		}
 		vcs := ""
+		if len(named) > 0 {
+			vcs = "locations: [" + strings.Join(named, ", ") + "]\n"
+		}
 		if branch != "" {
-			vcs = fmt.Sprintf("vcs: { kind: git, branch: %s }\n", branch)
+			vcs += fmt.Sprintf("vcs: { kind: git, branch: %s }\n", branch)
 		}
 		content := fmt.Sprintf(taskTemplate, vcs, parts[1])
 		if err := writeFile(filepath.Join(taskDir, "task.md"), content); err != nil {
@@ -702,8 +738,21 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "task       %s\n", task)
 	project, name, _ := strings.Cut(task, "/")
+	if len(tf.Locations) > 0 {
+		for _, loc := range tf.Locations {
+			p, err := locationPathFor(bridge, project, loc)
+			switch {
+			case err != nil:
+				fmt.Fprintf(out, "location   %s: STOP: %v\n", loc, err)
+			default:
+				fmt.Fprintf(out, "location   %s: %s\n", loc, p)
+				fmt.Fprintln(out, "vcs        "+vcsState(p, tf.Vcs))
+			}
+		}
+	}
 	ws, err := workspaceFor(bridge, project, name)
 	switch {
+	case len(tf.Locations) > 0:
 	case err != nil:
 		fmt.Fprintf(out, "workspace  STOP: %v\n", err)
 	default:

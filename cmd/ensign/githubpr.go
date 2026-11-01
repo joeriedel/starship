@@ -91,7 +91,7 @@ func dirty(ws string) bool {
 // the default branch the first time. Work on another branch is never carried along, and
 // whatever passed before has to pass again before it can land.
 func githubBranch(r *RunFiles) error {
-	os.Remove(testedFile(r.Snap.Bridge, r.Snap.Task)) // a new run has to pass again
+	os.Remove(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)) // a new run has to pass again
 	ws, want := r.Snap.Workspace, taskBranch(r.Snap.Task)
 	cur := currentBranch(ws)
 	_, verr := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want)
@@ -153,14 +153,14 @@ func checkNotBehind(ws, branch string) error {
 
 // githubUpdate rebases a task's branch onto the remote's default branch. A conflict leaves
 // the branch exactly as it was.
-func githubUpdate(bridge, task string) (base, sha string, upToDate bool, err error) {
+func githubUpdate(bridge, task, location string) (base, sha string, upToDate bool, err error) {
 	for _, ri := range liveRuns(bridge) {
 		// A queued sequence run has not started, so it does not hold the task.
 		if ri.snap.Task == task && !ri.state.queued() {
 			return "", "", false, fmt.Errorf("a run of %s is still going; wait for it to finish", task)
 		}
 	}
-	c, err := loadConfig(bridge, task)
+	c, err := loadConfigAt(bridge, task, location)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -257,8 +257,8 @@ func githubCI(r *RunFiles, deadline time.Time) (string, error) {
 
 // testedFile records the commit of a task's last passing run, on this machine, so what
 // the user later lands is exactly what was tested.
-func testedFile(bridge, task string) string {
-	return filepath.Join(bridge, ".starship", "tasks", strings.ReplaceAll(task, "/", "--")+".tested")
+func testedFile(bridge, task, location string) string {
+	return taskStateFile(bridge, task, location, ".tested")
 }
 
 // githubReady runs when the run succeeds: it records the tested commit and tells the user
@@ -273,7 +273,7 @@ func githubReady(r *RunFiles) error {
 	if err != nil {
 		return err
 	}
-	f := testedFile(r.Snap.Bridge, r.Snap.Task)
+	f := testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)
 	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
 		return err
 	}
@@ -294,42 +294,44 @@ func orDefault(b string) string {
 }
 
 // tested finds a task's tested commit, and checks the task branch still holds exactly it.
-func tested(bridge, task string) (ws, branch, sha string, err error) {
+func tested(bridge, task, location string) (c *Config, branch, sha string, err error) {
 	for _, ri := range liveRuns(bridge) {
 		// A queued sequence run has not started, so it does not hold the task.
 		if ri.snap.Task == task && !ri.state.queued() {
-			return "", "", "", fmt.Errorf("a run of %s is still going; wait for it to finish", task)
+			return nil, "", "", fmt.Errorf("a run of %s is still going; wait for it to finish", task)
 		}
 	}
-	c, err := loadConfig(bridge, task)
+	c, err = loadConfigAt(bridge, task, location)
 	if err != nil {
-		return "", "", "", err
+		return nil, "", "", err
 	}
-	data, err := os.ReadFile(testedFile(bridge, task))
+	data, err := os.ReadFile(testedFile(bridge, task, c.Location))
 	if err != nil {
-		return "", "", "", fmt.Errorf("%s has no passing run on this machine yet; run it first", task)
+		return nil, "", "", fmt.Errorf("%s has no passing run on this machine yet; run it first", task)
 	}
-	ws, branch, sha = c.Workspace, taskBranch(task), strings.TrimSpace(string(data))
+	ws := c.Workspace
+	branch, sha = taskBranch(task), strings.TrimSpace(string(data))
 	head, err := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+branch)
 	if err != nil {
-		return "", "", "", fmt.Errorf("the task branch %s is gone", branch)
+		return nil, "", "", fmt.Errorf("the task branch %s is gone", branch)
 	}
 	if head != sha {
-		return "", "", "", fmt.Errorf("%s has changed since its tests passed (tested %s, now %s); run the task again", branch, short(sha), short(head))
+		return nil, "", "", fmt.Errorf("%s has changed since its tests passed (tested %s, now %s); run the task again", branch, short(sha), short(head))
 	}
 	if currentBranch(ws) == branch && dirty(ws) {
-		return "", "", "", fmt.Errorf("%s has uncommitted changes that were never tested; commit or discard them first", branch)
+		return nil, "", "", fmt.Errorf("%s has uncommitted changes that were never tested; commit or discard them first", branch)
 	}
-	return ws, branch, sha, nil
+	return c, branch, sha, nil
 }
 
 // githubOpenPR pushes a tested task branch and opens its pull request, or finds the one
 // already open. It returns the pull request's URL.
-func githubOpenPR(bridge, task string) (string, error) {
-	ws, branch, _, err := tested(bridge, task)
+func githubOpenPR(bridge, task, location string) (string, error) {
+	c, branch, _, err := tested(bridge, task, location)
 	if err != nil {
 		return "", err
 	}
+	ws := c.Workspace
 	if err := git(ws, "push", "-q", "--force-with-lease", "-u", "origin", branch); err != nil {
 		return "", err
 	}
@@ -359,11 +361,12 @@ func githubOpenPR(bridge, task string) (string, error) {
 
 // githubMerge moves the default branch to a task's tested commit, if that is a
 // fast-forward, and removes the task branch. It returns the default branch's name.
-func githubMerge(bridge, task string) (string, string, error) {
-	ws, branch, sha, err := tested(bridge, task)
+func githubMerge(bridge, task, location string) (string, string, error) {
+	c, branch, sha, err := tested(bridge, task, location)
 	if err != nil {
 		return "", "", err
 	}
+	ws := c.Workspace
 	base, err := defaultBranch(ws)
 	if err != nil {
 		return "", "", err
@@ -386,7 +389,7 @@ func githubMerge(bridge, task string) (string, string, error) {
 	if currentBranch(ws) != branch {
 		git(ws, "branch", "-q", "-D", branch)
 	}
-	os.Remove(testedFile(bridge, task))
+	os.Remove(testedFile(bridge, task, c.Location))
 	return base, sha, nil
 }
 
@@ -473,15 +476,21 @@ func githubCommand(r *RunFiles, args []string, deadline time.Time) (string, erro
 // cmdGithubPR implements the steps the user asks for once a task's run has passed:
 // `ensign github-pr pull-request|merge|update <project>/<task>`.
 func cmdGithubPR(args []string, out io.Writer) error {
+	usage := fmt.Errorf("usage: ensign github-pr pull-request|merge|update <project>/<task> [--location <name>]")
+	location := ""
+	if len(args) == 4 && args[2] == "--location" {
+		location = args[3]
+		args = args[:2]
+	}
 	if len(args) != 2 || (args[0] != "pull-request" && args[0] != "merge" && args[0] != "update") {
-		return fmt.Errorf("usage: ensign github-pr pull-request|merge|update <project>/<task>")
+		return usage
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
 		return err
 	}
 	if args[0] == "update" {
-		base, sha, upToDate, err := githubUpdate(bridge, args[1])
+		base, sha, upToDate, err := githubUpdate(bridge, args[1], location)
 		if err != nil {
 			return err
 		}
@@ -493,14 +502,14 @@ func cmdGithubPR(args []string, out io.Writer) error {
 		return nil
 	}
 	if args[0] == "pull-request" {
-		url, err := githubOpenPR(bridge, args[1])
+		url, err := githubOpenPR(bridge, args[1], location)
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "Pull request: %s\n", url)
 		return nil
 	}
-	base, sha, err := githubMerge(bridge, args[1])
+	base, sha, err := githubMerge(bridge, args[1], location)
 	if err != nil {
 		return err
 	}

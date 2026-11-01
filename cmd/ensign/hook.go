@@ -602,8 +602,12 @@ func reportInstructions(s *Stage) string {
 
 func workspaceSection(r *RunFiles) string {
 	var b strings.Builder
+	ws := r.Snap.Workspace
+	if r.Snap.Location != "" {
+		ws += " (the project's " + r.Snap.Location + " location)"
+	}
 	fmt.Fprintf(&b, "## Workspace\n\n%s\n\nScratch folder for logs and notes (never the workspace): %s\n\nThe project's bindings, as the exact commands to run:\n\n",
-		r.Snap.Workspace, filepath.Join(r.Dir, "scratch"))
+		ws, filepath.Join(r.Dir, "scratch"))
 	for _, k := range sortedKeys(r.Snap.Bindings) {
 		bd := r.Snap.Bindings[k]
 		switch {

@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // machine applies pipeline transitions to a run's state.
@@ -73,6 +74,7 @@ func (m *machine) finish(t Transition, why string) {
 	switch {
 	case t.Finish != "":
 		m.st.Status, m.st.Reason = "success", why
+		m.st.FinishedAt = time.Now().UnixNano()
 	case t.Error != "":
 		m.st.Status, m.st.Reason = "error", t.Error+": "+why
 	case t.AskUser != "":

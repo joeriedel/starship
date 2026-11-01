@@ -27,6 +27,7 @@ type Snapshot struct {
 	Bridge       string               `json:"bridge"`
 	ControlPlane string               `json:"control_plane"`
 	Workspace    string               `json:"workspace"`
+	Location     string               `json:"location,omitempty"`
 	WorkItem     string               `json:"work_item"`
 	Start        string               `json:"start,omitempty"`
 	Pipeline     *Pipeline            `json:"pipeline"`
@@ -110,6 +111,7 @@ type State struct {
 	Transcript string         `json:"transcript,omitempty"`   // the session's transcript; agents' sit beside it
 	Notes      []string       `json:"notes,omitempty"`        // what handlers left for the report, e.g. a pull request
 	Finished   bool           `json:"finished,omitempty"`     // the end-of-run steps have run
+	FinishedAt int64          `json:"finished_at,omitempty"`  // unix nanoseconds when the run succeeded
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 
@@ -424,6 +426,7 @@ func writeJSON(path string, v any) error {
 // runOpts is what `ensign run` and `ensign sequence run` accept.
 type runOpts struct {
 	task, start, pipeline, project string
+	location                       string
 	dry, sync, rebuild, staleOK    bool
 	// A retry inside a sequence: the failed run's id and base, and the work item to freeze instead of the task's.
 	retryOf, retryBase, workItem string
@@ -432,7 +435,7 @@ type runOpts struct {
 // parseRunArgs reads the flags shared by `ensign run` and `ensign sequence run`; cmd names the command in the usage line.
 func parseRunArgs(cmd string, args []string) (runOpts, error) {
 	var o runOpts
-	usage := fmt.Errorf("usage: %s (<project>/<task> | --pipeline <name> [--project <p>]) [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]", cmd)
+	usage := fmt.Errorf("usage: %s (<project>/<task> | --pipeline <name> [--project <p>]) [--location <name>] [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]", cmd)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dry-run":
@@ -443,14 +446,17 @@ func parseRunArgs(cmd string, args []string) (runOpts, error) {
 			o.rebuild = true
 		case "--stale-branch":
 			o.staleOK = true
-		case "--pipeline", "--project":
+		case "--pipeline", "--project", "--location":
 			if i+1 >= len(args) {
 				return o, fmt.Errorf("%s needs a value", args[i])
 			}
-			if args[i] == "--pipeline" {
+			switch args[i] {
+			case "--pipeline":
 				o.pipeline = args[i+1]
-			} else {
+			case "--project":
 				o.project = args[i+1]
+			default:
+				o.location = args[i+1]
 			}
 			i++
 		case "--start":
@@ -490,7 +496,7 @@ func cmdRun(args []string, out io.Writer) error {
 func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot, error) {
 	task, start, pipeline, project := o.task, o.start, o.pipeline, o.project
 	dry, sync, rebuild, staleOK := o.dry, o.sync, o.rebuild, o.staleOK
-	c, err := loadTarget(bridge, Target{Task: task, Project: project, Pipeline: pipeline})
+	c, err := loadTarget(bridge, Target{Task: task, Project: project, Pipeline: pipeline, Location: o.location})
 	if err != nil {
 		return nil, err
 	}
@@ -576,6 +582,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		Bridge:       bridge,
 		ControlPlane: c.ControlPlane,
 		Workspace:    c.Workspace,
+		Location:     c.Location,
 		WorkItem:     c.WorkItem,
 		Start:        start,
 		Pipeline:     c.Pipeline,
@@ -741,7 +748,11 @@ func freezeBriefs(c *Config, snap *Snapshot) error {
 
 func printSummary(out io.Writer, c *Config, start string) {
 	p := c.Pipeline
-	fmt.Fprintf(out, "task       %s\nworkspace  %s\npipeline   %s — %s\n", c.Task, c.Workspace, p.Name, p.Summary)
+	fmt.Fprintf(out, "task       %s\nworkspace  %s\n", c.Task, c.Workspace)
+	if c.Location != "" {
+		fmt.Fprintf(out, "location   %s\n", c.Location)
+	}
+	fmt.Fprintf(out, "pipeline   %s — %s\n", p.Name, p.Summary)
 	if start != "" {
 		fmt.Fprintf(out, "start at   %s\n", start)
 	}

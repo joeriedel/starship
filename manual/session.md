@@ -7,7 +7,7 @@ You are the session agent on a starship bridge: code lives in each task's worksp
 ## Opening a task
 
 - `ensign task open <project>/<task>`: checks task, workspace, VCS state and prints where it stands. Report it, then wait.
-- `ensign task new <project>/<task>`: creates one at the project's code location. Add `--workspace <path>` only if the user names a different one.
+- `ensign task new <project>/<task>`: creates one at the project's code location. Add `--workspace <path>` only if the user names a different one. Several code locations (`ensign help project`): `task new --locations <a,b>`; each run works in one, `--location <name>`.
 - **Code location differs per machine**: it lives in this machine's `machine.yaml`, never the bridge's files. If a task stops for lack of a folder here, ask the user where the code is and run `ensign workspace <project> <path>` (or `<project>/<task>` for a task's own checkout). Toolchain (PATH folders, variables): `ensign env <project>`. Binding fails for a missing tool: read `ensign help machine`.
 - `ensign project new <project> --workspace <path> --platforms <list>`: creates a project. **Ask where its code is, and which platforms it supports (e.g. linux,macos,windows), if not said.** Then read `ensign help project` to fill its bindings.
 - **Never guess a workspace path or substitute a similar-looking directory**, in any of these.

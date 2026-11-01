@@ -383,7 +383,7 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 				parts = append(parts, fmt.Sprintf("step %d: %s", st.N, text))
 				return finish(), nil
 			case "publish":
-				out, err := runPublish(bridge, st)
+				out, err := runPublish(bridge, seq, st)
 				if err != nil {
 					st.Status, st.Reason = "failed", err.Error()
 					sf.failed(bridge, seq, st)
@@ -451,7 +451,12 @@ func startRunStep(bridge, session string, st *seqStep) (string, error) {
 
 // publishCommand finds the one publish operation a task's extensions declare.
 func publishCommand(bridge, task string) (string, error) {
-	c, err := loadConfig(bridge, task)
+	// The step is added before the runs it follows have finished, so a planned run's location will do to find the extensions.
+	loc := latestRunLocation(bridge, task, true)
+	if loc == "" {
+		loc = latestRunLocation(bridge, task, false)
+	}
+	c, err := loadConfigAt(bridge, task, loc)
 	if err != nil {
 		return "", err
 	}
@@ -472,10 +477,11 @@ func publishCommand(bridge, task string) (string, error) {
 }
 
 // runPublish carries out a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell.
-func runPublish(bridge string, st *seqStep) (string, error) {
+func runPublish(bridge string, seq *sequence, st *seqStep) (string, error) {
+	loc := precedingRunLocation(bridge, seq, st.N, st.Task)
 	if args, ok := strings.CutPrefix(st.Command, "ensign "); ok {
 		if strings.TrimSpace(args) == "github-pr merge" {
-			base, sha, err := githubMerge(bridge, st.Task)
+			base, sha, err := githubMerge(bridge, st.Task, loc)
 			if err != nil {
 				return "", err
 			}
@@ -483,7 +489,7 @@ func runPublish(bridge string, st *seqStep) (string, error) {
 		}
 		return "", fmt.Errorf("unknown built-in publish operation: %s", st.Command)
 	}
-	c, err := loadConfig(bridge, st.Task)
+	c, err := loadConfigAt(bridge, st.Task, loc)
 	if err != nil {
 		return "", err
 	}
@@ -913,7 +919,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("the failed run can't be read: %v", err)
 			}
-			o := runOpts{start: old.Snap.Start, staleOK: old.State.StaleOK, retryOf: st.Run, retryBase: old.State.Base, rebuild: old.State.Rebuild,
+			o := runOpts{start: old.Snap.Start, staleOK: old.State.StaleOK, retryOf: st.Run, retryBase: old.State.Base, location: old.Snap.Location, rebuild: old.State.Rebuild,
 				workItem: old.Snap.WorkItem + "\n\n## Current state\n\nThis is a retry. The workspace holds the previous attempt's work, uncommitted changes included; build on it.\n\nWhy the previous attempt failed: " + diagnosis + "\n\nWhat is left: " + left + "\n"}
 			if old.Snap.Task != "" {
 				o.task = old.Snap.Task

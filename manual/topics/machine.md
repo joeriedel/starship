@@ -7,6 +7,7 @@ A binding is a plain command (`go build ./...`); where its tools are differs per
 - `ensign env <project> NAME=value`: set a variable. `NAME=` removes it. `PATH` is not set this way.
 - `ensign env <project> --path <folder>`: put an existing folder first on `PATH`. Repeat for more; earlier ones win.
 - `ensign env <project> --drop-path <folder>`: remove one.
+- Code locations of a project that declares them are recorded here too: `ensign workspace <project> --location <name> <path>`.
 - Ensign applies it to every command it runs for the project, as soon as it is recorded.
 - Agents' shells get it from the next run on.
 - Installing or downloading a toolchain is not part of this; ask the user to install it.

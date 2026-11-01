@@ -14,8 +14,8 @@ import (
 // The git-catalog extension: one local commit per coder pass, so the lead can read how the
 // work moved between passes, and a squash placed wherever the project chooses.
 
-func taskBaseFile(bridge, task string) string {
-	return filepath.Join(bridge, ".starship", "tasks", strings.ReplaceAll(task, "/", "--")+".base")
+func taskBaseFile(bridge, task, location string) string {
+	return taskStateFile(bridge, task, location, ".base")
 }
 
 // catalogRecordBase runs at run.start: the workspace must be a clean git tree, and its
@@ -51,7 +51,7 @@ func catalogRecordBase(r *RunFiles) error {
 			r.State.Carried = append(r.State.Carried, d.path)
 		}
 	}
-	tb := taskBaseFile(r.Snap.Bridge, r.Snap.Task)
+	tb := taskBaseFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)
 	if _, err := os.Stat(tb); err != nil {
 		if err := writeFile(tb, head+"\n"); err != nil {
 			return err
@@ -224,7 +224,12 @@ func catalogSquashRun(r *RunFiles) error {
 // cmdCatalog implements `ensign git-catalog squash <project>/<task> -m <message>`: it
 // collapses everything since the task's base into one commit, ready for the user to push.
 func cmdCatalog(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign git-catalog squash <project>/<task> -m <message>")
+	usage := fmt.Errorf("usage: ensign git-catalog squash <project>/<task> [--location <name>] -m <message>")
+	location := ""
+	if len(args) == 6 && args[2] == "--location" {
+		location = args[3]
+		args = append(args[:2:2], args[4:]...)
+	}
 	if len(args) != 4 || args[0] != "squash" || args[2] != "-m" {
 		return usage
 	}
@@ -239,11 +244,11 @@ func cmdCatalog(args []string, out io.Writer) error {
 			return fmt.Errorf("run %s on this task is still active", ri.id)
 		}
 	}
-	c, err := loadConfig(bridge, task)
+	c, err := loadConfigAt(bridge, task, location)
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(taskBaseFile(bridge, task))
+	data, err := os.ReadFile(taskBaseFile(bridge, task, c.Location))
 	if err != nil {
 		return fmt.Errorf("no catalog base recorded for %s on this machine", task)
 	}
@@ -251,7 +256,7 @@ func cmdCatalog(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	os.Remove(taskBaseFile(bridge, task))
+	os.Remove(taskBaseFile(bridge, task, c.Location))
 	fmt.Fprintf(out, "squashed into %s; it has not been pushed\n", sha)
 	return nil
 }

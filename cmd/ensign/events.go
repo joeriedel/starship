@@ -97,6 +97,9 @@ func handlerEnv(r *RunFiles, d *Dispatch) []string {
 		"STARSHIP_WORKSPACE="+r.Snap.Workspace,
 		"STARSHIP_TASK="+r.Snap.Task,
 	)
+	if r.Snap.Location != "" {
+		env = append(env, "STARSHIP_LOCATION="+r.Snap.Location)
+	}
 	if d != nil {
 		env = append(env, "STARSHIP_STAGE="+d.Stage, "STARSHIP_DISPATCH="+d.ID, "STARSHIP_OUTCOME="+d.Outcome)
 	}

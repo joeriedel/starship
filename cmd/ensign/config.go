@@ -370,6 +370,8 @@ type TaskFile struct {
 	Layer    `yaml:",inline"`
 	Pipeline string  `yaml:"pipeline"`
 	Vcs      TaskVcs `yaml:"vcs"`
+	// Locations are the project's code locations the task uses; each run works in one.
+	Locations []string `yaml:"locations"`
 }
 
 // Config is everything a run is built from, after merging the layers.
@@ -380,7 +382,9 @@ type Config struct {
 	Task         string // "<project>/<task>"
 	TaskDir      string
 	Workspace    string
-	WorkItem     string // task.md body
+	Location     string     // the project location this run works in, when the project declares locations
+	Locations    *Locations // the project's declared locations
+	WorkItem     string     // task.md body
 	Pipeline     *Pipeline
 	Bindings     map[string]Binding
 	Events       map[string][]Handler
@@ -462,6 +466,7 @@ type Target struct {
 	Task     string // <project>/<task>
 	Project  string
 	Pipeline string
+	Location string // the project location a run works in
 }
 
 type layerEntry struct {
@@ -472,7 +477,12 @@ type layerEntry struct {
 
 // loadConfig merges control plane → bridge → project → task for one task.
 func loadConfig(bridge, task string) (*Config, error) {
-	return loadTarget(bridge, Target{Task: task})
+	return loadConfigAt(bridge, task, "")
+}
+
+// loadConfigAt is loadConfig for the commands that land a task's work, with the location they were asked to act in.
+func loadConfigAt(bridge, task, location string) (*Config, error) {
+	return loadTarget(bridge, Target{Task: task, Location: runLocation(bridge, task, location)})
 }
 
 // loadTarget merges the layers that apply to a target.
@@ -498,6 +508,9 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 			return fmt.Errorf("project %q: %v", c.Project, err)
 		}
 		layers = append(layers, layerEntry{"project:" + relTo(bridge, projectFile), projectFile, pf})
+		if c.Locations, err = loadLocations(bridge, c.Project); err != nil {
+			return err
+		}
 		c.Platforms = pf.Platforms
 		if pf.Journal.Commit == "off" {
 			c.JournalOff = pf.Journal.Reason
@@ -524,7 +537,15 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 		if err := yaml.Unmarshal(front, &tf); err != nil {
 			return nil, fmt.Errorf("%s: %v", taskFile, err)
 		}
-		if c.Workspace, err = workspaceFor(bridge, c.Project, parts[1]); err != nil {
+		if c.Location, err = taskLocation(c.Locations, c.Project, t.Task, tf.Locations, t.Location); err != nil {
+			return nil, err
+		}
+		if c.Location != "" {
+			if c.Workspace, err = locationPathFor(bridge, c.Project, c.Location); err != nil {
+				return nil, err
+			}
+			layers = append(layers, c.locationLayer(bridge))
+		} else if c.Workspace, err = workspaceFor(bridge, c.Project, parts[1]); err != nil {
 			return nil, err
 		}
 		c.WorkItem = workItem(string(body))
@@ -543,7 +564,19 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 			if err := loadProject(); err != nil {
 				return nil, err
 			}
-			if ws, err := workspaceFor(bridge, c.Project, ""); err == nil {
+			if t.Location != "" {
+				switch {
+				case len(c.Locations.Names()) == 0:
+					return nil, fmt.Errorf("project %s declares no locations, so --location %s has no meaning", c.Project, t.Location)
+				case !c.Locations.Has(t.Location):
+					return nil, fmt.Errorf("project %s declares no location %q (it declares %s)", c.Project, t.Location, strings.Join(c.Locations.Names(), ", "))
+				}
+				c.Location = t.Location
+				if c.Workspace, err = locationPathFor(bridge, c.Project, c.Location); err != nil {
+					return nil, err
+				}
+				layers = append(layers, c.locationLayer(bridge))
+			} else if ws, err := workspaceFor(bridge, c.Project, ""); err == nil {
 				c.Workspace = ws
 			}
 		}
@@ -626,6 +659,12 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// locationLayer is the layer a location's bindings make, between the project's and the task's.
+func (c *Config) locationLayer(bridge string) layerEntry {
+	file := filepath.Join(bridge, "projects", c.Project, "project.yaml")
+	return layerEntry{"location:" + relTo(bridge, file) + "#" + c.Location, file, Layer{Bindings: c.Locations.bindings[c.Location]}}
 }
 
 // findPipeline locates a pipeline file: the control plane's, then any extension's.

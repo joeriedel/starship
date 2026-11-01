@@ -178,6 +178,7 @@ Carried over from the reference design:
   pipeline ops, events, extensions, in the project.yaml format but without a workspace.
   `ensign project new` copies it into the bridge's project.yaml when the project is
   created; from then on the bridge's copy is the one used, and the user can change it.
+- **A project can keep its code in several repos.** `project.yaml` declares `locations:` (name → `depends-on: [...]`, `bindings: {...}`) and a `cross-location:` section of bindings. Location names follow the project name rule; dependencies must name declared locations, with no self-dependency and no cycle. A task names the locations it uses (`locations: [client, models]` in its frontmatter) and each run works in exactly one, chosen with `ensign run --location`, or the task's only location. The run's workspace is that location's folder on this machine, and its bindings layer bridge → project → location → task. Cross-location bindings are kept but no run uses them yet. A project that declares no locations works as before.
 - **`plain: true`** says a command needs no judgement to run: it passes or it fails by
   its exit code. On `@test` it means ensign runs the test stage itself, with no tester agent. At that stage `next` gives the lead an `ensign run-stage` command to run as a background shell command, and the lead ends its turn to wait. The command runs `@build` (if bound) and `@test`, records the result as that stage's report and transition, keeps the full output in the run's `reports/`, and prints the outcome, the end of any failing output, and the next step. The hook refuses a spawn of the tester (a tester stage with `parallel:` is the exception: its testers are spawned as usual), and `next` runs nothing. No agent reads the log. Exit 125 (a script saying
   it could not run), 126 or 127, a timeout, or a command that can't start is `error`; any other non-zero exit is `fail`.
@@ -1343,6 +1344,15 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
     supernova/auth-refactor: /home/me/src/supernova-auth
   ```
 
+  A project that declares code locations has a folder per location, in a `locations` section keyed by project and location, recorded with `ensign workspace <project> --location <name> <path>`:
+
+  ```yaml
+  locations:
+    supernova:
+      client: /home/me/src/supernova-client
+      models: /home/me/src/supernova-models
+  ```
+
   A project's toolchain setup is kept there too, in an `env` section keyed by project name: `set` holds variables to set, `path` folders to put first on `PATH`, in order. There is no machine-wide section.
 
   ```yaml
@@ -1396,13 +1406,14 @@ runs against Claude Code, except where listed below.
 | `ensign init <dir> (--control-plane <path> \| --remote <url> --tag <tag>)` | create a bridge |
 | `ensign setup` | fetch the pinned control plane, register the bridge, link (including the bridge's own `ensign`) |
 | `ensign workspace <p>[/<t>] [<path>]` | record (or show) where a project's or task's code is on this machine |
+| `ensign workspace <p> --location <name> [<path>]` | record (or show) where one of a project's code locations is on this machine |
 | `ensign env <p> [NAME=<value> \| --path <folder> \| --drop-path <folder>]` | record (or show) a project's toolchain setup on this machine: variables, and folders put first on `PATH` |
 | `ensign update [<tag>]` | move the bridge to a newer release |
 | `ensign gc [<keep>]` | delete finished runs beyond the limit (default: the bridge's `keep-runs`) and empty the scratch folders of the rest |
 | `ensign link [--force]` | regenerate the bridge's role, skill and manual files |
-| `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path>]` / `ensign task open <p>/<t>` | scaffold and open; where the code is goes into this machine's `machine.yaml`, and a new task uses its project's unless given a different location |
-| `ensign run <p>/<t> [--start <stage>] [--sync] [--dry-run]` | create a run for a task |
-| `ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]` | create a project- or bridge-wide run |
+| `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path> \| --locations <a,b>]` / `ensign task open <p>/<t>` | scaffold and open; where the code is goes into this machine's `machine.yaml`, and a new task uses its project's unless given a different location |
+| `ensign run <p>/<t> [--location <name>] [--start <stage>] [--sync] [--dry-run]` | create a run for a task; `--location` names the code location it works in, when the project has several |
+| `ensign run --pipeline <name> [--project <p>] [--location <name>] [--rebuild] [--dry-run]` | create a project- or bridge-wide run |
 | `ensign sequence` | list the session's sequences and their steps |
 | `ensign sequence run <p>/<t> [run flags]` / `publish <p>/<t>` / `do <instruction>` | add a queued run, a publish, or a session-carried step to the open sequence |
 | `ensign sequence retry <n> --diagnosis <why> --state <what is left>` / `accept <n>` | after a run step fails: run it once more on the same branch, or accept the failure |
