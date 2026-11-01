@@ -262,6 +262,9 @@ func cmdSkill(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if args[0] == "new" || args[0] == "discard" {
+		deliverTopic(bridge, "skill", out)
+	}
 	name, held := args[1], proposedSkillDir(bridge, args[1])
 	switch {
 	case args[0] == "discard" && len(args) == 2:

@@ -276,6 +276,14 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 		return nil, err
 	}
 	files[".starship/session.md"] = manual
+	topics, _ := filepath.Glob(filepath.Join(cp, "manual", "topics", "*.md"))
+	for _, f := range topics {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
+		files[".starship/topics/"+filepath.Base(f)] = data
+	}
 
 	roles := map[string][]byte{}
 	cpRoles, _ := filepath.Glob(filepath.Join(cp, "roles", "*.md"))
@@ -451,6 +459,7 @@ func cmdProject(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	deliverTopic(bridge, "project", out)
 	name := args[1]
 	if !validName(name) {
 		return fmt.Errorf("project names are lower-case letters, digits and dashes")

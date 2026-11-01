@@ -32,6 +32,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		err = cmdRun(os.Args[2:], os.Stdout)
+	case "help":
+		err = cmdHelp(os.Args[2:], os.Stdout)
 	case "sequence":
 		err = cmdSequence(os.Args[2:], os.Stdout)
 	case "next":
@@ -97,6 +99,7 @@ func usage() {
   ensign update [<tag>]
   ensign link [--force]
   ensign selftest
+  ensign help [topic]
   ensign project new <name>
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
   ensign task open <project>/<task>

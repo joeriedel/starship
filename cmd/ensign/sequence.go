@@ -519,7 +519,7 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 		if adv == "" {
 			adv = "It starts when the step in progress finishes.\n\n" + sf.listing()
 		}
-		text += adv
+		text += adv + "\n\nSequence rules: `ensign help sequence`."
 		return err
 	})
 	return
@@ -559,7 +559,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 					continue
 				}
 				st.Blocks++
-				out = block(fmt.Sprintf("sequence step %d is waiting for you.\n\n%s\n\n%s", st.N, todo, sf.listing()))
+				out = block(fmt.Sprintf("sequence step %d is waiting for you.\n\n%s\n\n%s\n\nSequence rules: `ensign help sequence`.", st.N, todo, sf.listing()))
 				return nil
 			}
 		}
@@ -710,6 +710,7 @@ func cmdSequence(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	deliverTopic(bridge, "sequence", out)
 	if len(args) == 0 {
 		return withSeq(bridge, session, func(sf *seqFile) error {
 			sf.reconcile(bridge)

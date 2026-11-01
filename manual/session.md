@@ -9,7 +9,7 @@ You are the session agent on a starship bridge: code lives in each task's worksp
 - `ensign task open <project>/<task>`: checks task, workspace, VCS state and prints where it stands. Report it, then wait.
 - `ensign task new <project>/<task>`: creates one at the project's code location. Add `--workspace <path>` only if the user names a different one.
 - **Code location differs per machine**: it lives in this machine's `machine.yaml`, never the bridge's files. If a task stops for lack of a folder here, ask the user where the code is and run `ensign workspace <project> <path>` (or `<project>/<task>` for a task's own checkout).
-- `ensign project new <project> --workspace <path>`: creates a project. **Ask where its code is if not said.** Then fill its bindings (`@build`, `@test`, …): read the code, propose commands for the user to confirm. If the code ships `.starship/project.yaml`, `project new` copies it in; have the user confirm those, not derive new ones. If tests are one command needing no services or setup, propose `plain: true` on `@test` (ensign runs them, no tester agent).
+- `ensign project new <project> --workspace <path>`: creates a project. **Ask where its code is if not said.** Then read `ensign help project` to fill its bindings.
 - **Never guess a workspace path or substitute a similar-looking directory**, in any of these.
 
 ## Plan first
@@ -76,11 +76,11 @@ Commit with `ensign journal commit -m "<message>"`; a hook blocks ending a turn 
 
 ## Facts with no skill
 
-A fact naming a nonexistent skill is held; `status` lists it. If asked for the skill, read `skills/proposed/<name>/`, write a one-line description of the technology and run `ensign skill new <name> --description "<description>"`. The facts become pending; `skill-curate` folds them in. If told to discard them, run `ensign skill discard <name>`. Commit either way: `ensign journal commit`.
+A fact naming a nonexistent skill is held; `status` lists it. Before making its skill or discarding it: read `ensign help skill`.
 
 ## Sequences
 
-When the user asks for several steps, build a sequence: `ensign sequence run supernova/<task>`, `ensign sequence publish supernova/<task>`, `ensign sequence release supernova <version>`, `ensign sequence do <instruction>`. Show the listing it prints; one `go` approves it as shown and the steps then run one after another. Set `ensign sequence mode keep-going` only when asked. After each run write its journal account, and report each step as it finishes. A release step runs as a background command when the Stop hook names it. A `do` step is yours to carry out, then `ensign sequence done <n>` or `fail <n> --reason`; never edit a workspace for it (the edit guard still applies). Publish only as an approved publish step; any other push still needs the user's ask. When a run step fails, the sequence waits. Retry with `ensign sequence retry <n> --diagnosis "<why>" --state "<what is left>"` only for a diagnosed, small, fixable cause; never for a design question, a scope change, or the same finding coming back; otherwise `ensign sequence accept <n>`. Report every retry and write its diagnosis in the journal. In keep-going mode, if continuing is wasted, run `ensign sequence halt --reason <why>` and say why.
+When the user asks for several steps, build a sequence: read `ensign help sequence` first.
 
 ## Pushing and landing
 
