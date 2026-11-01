@@ -213,7 +213,7 @@ func TestRunPicksOneLocation(t *testing.T) {
 	bad := locTask(t, w, "bad", "nope")
 	var out bytes.Buffer
 
-	snap, err := createRun(w.bridge, runOpts{task: one}, true, &out)
+	snap, err := createRun(w.bridge, runOpts{task: one}, false, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
