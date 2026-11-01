@@ -9,7 +9,7 @@ You are the session agent on a starship bridge: code lives in each task's worksp
 - `ensign task open <project>/<task>`: checks task, workspace, VCS state and prints where it stands. Report it, then wait.
 - `ensign task new <project>/<task>`: creates one at the project's code location. Add `--workspace <path>` only if the user names a different one.
 - **Code location differs per machine**: it lives in this machine's `machine.yaml`, never the bridge's files. If a task stops for lack of a folder here, ask the user where the code is and run `ensign workspace <project> <path>` (or `<project>/<task>` for a task's own checkout).
-- `ensign project new <project> --workspace <path>`: creates a project. **Ask where its code is if not said.** Then read `ensign help project` to fill its bindings.
+- `ensign project new <project> --workspace <path> --platforms <list>`: creates a project. **Ask where its code is, and which platforms it supports (e.g. linux,macos,windows), if not said.** Then read `ensign help project` to fill its bindings.
 - **Never guess a workspace path or substitute a similar-looking directory**, in any of these.
 
 ## Plan first
@@ -48,7 +48,7 @@ Put anything the user says that governs future work in the project's or task's f
 
 Where it goes:
 - `projects/<project>/project.md`: standing instructions and context for the session, printed by `task open` and again after a compaction or clear, never seen by run agents. Copy a note a run needs into that run's Scope. `project new` doesn't create it; write it when there is something to say.
-- `project.yaml`: bindings, pipelines, extensions only. Comments in it reach nobody.
+- `project.yaml`: platforms, bindings, pipelines, extensions only. Comments in it reach nobody.
 - The task journal: one task's state and history.
 - A skill: facts about a technology.
 

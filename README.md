@@ -137,6 +137,8 @@ level, and each level can add to or override the one above it.
 # projects/supernova/project.yaml
 use: [git-catalog]                       # commit every coder pass
 
+platforms: [linux, macos]                # required: what the project supports
+
 bindings:
   build: { command: "./build.sh --fast" }
   test:  { command: "./test.sh" }

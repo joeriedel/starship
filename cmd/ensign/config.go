@@ -275,6 +275,7 @@ type Layer struct {
 		Commit string `yaml:"commit"`
 		Reason string `yaml:"reason"`
 	} `yaml:"journal"`
+	Platforms []string `yaml:"platforms"` // a project setting: read from project.yaml only
 }
 
 // HandlerSpec is one handler as written: exactly one of require, observe or augment.
@@ -373,7 +374,8 @@ type Config struct {
 	Bindings     map[string]Binding
 	Events       map[string][]Handler
 	Extensions   []string
-	JournalOff   string // reason, when the project turned journal commits off
+	Platforms    []string // the platforms the project declares, from project.yaml
+	JournalOff   string   // reason, when the project turned journal commits off
 	Skills       []SkillDelivery
 	needs        map[string]string // binding -> what requires it, from extensions
 	problems     []string
@@ -485,6 +487,7 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 			return fmt.Errorf("project %q: %v", c.Project, err)
 		}
 		layers = append(layers, layerEntry{"project:" + relTo(bridge, projectFile), projectFile, pf})
+		c.Platforms = pf.Platforms
 		if pf.Journal.Commit == "off" {
 			c.JournalOff = pf.Journal.Reason
 		}
@@ -859,6 +862,22 @@ func setPipelineField(p *Pipeline, key string, val *yaml.Node, kind string) erro
 	return fmt.Errorf("unknown pipeline field")
 }
 
+// platformProblems names the empty and duplicate entries in a project's platform list.
+func platformProblems(platforms []string) []string {
+	var errs []string
+	seen := map[string]bool{}
+	for _, pl := range platforms {
+		switch {
+		case strings.TrimSpace(pl) == "":
+			errs = append(errs, "a platform name is empty")
+		case seen[pl]:
+			errs = append(errs, fmt.Sprintf("platform %q is declared twice", pl))
+		}
+		seen[pl] = true
+	}
+	return errs
+}
+
 // validate checks everything a run depends on before it starts.
 func validate(c *Config) []string {
 	var errs []string
@@ -870,6 +889,14 @@ func validate(c *Config) []string {
 	} else if c.Workspace != "" {
 		if fi, err := os.Stat(c.Workspace); err != nil || !fi.IsDir() {
 			add("workspace %s does not exist", c.Workspace)
+		}
+	}
+	if c.Project != "" {
+		if len(c.Platforms) == 0 {
+			add("project %q declares no platforms: add them to projects/%s/project.yaml, e.g.\n  platforms: [linux, macos, windows]", c.Project, c.Project)
+		}
+		for _, e := range platformProblems(c.Platforms) {
+			add("project %q: %s", c.Project, e)
 		}
 	}
 	for _, name := range p.RequiresBindings {

@@ -36,6 +36,7 @@ type Snapshot struct {
 	Skills       []SkillDelivery      `json:"skills,omitempty"`
 	KnownSkills  []string             `json:"known_skills,omitempty"` // every skill name a fact may be filed under
 	Project      string               `json:"project,omitempty"`
+	Platforms    []string             `json:"platforms,omitempty"`
 	Extensions   []string             `json:"extensions,omitempty"`
 	Created      string               `json:"created"`
 }
@@ -577,6 +578,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		Skills:       c.Skills,
 		KnownSkills:  knownSkills(bridge, c.ControlPlane, c.Project),
 		Project:      c.Project,
+		Platforms:    c.Platforms,
 		Created:      time.Now().Format(time.RFC3339),
 	}
 	if o.workItem != "" {

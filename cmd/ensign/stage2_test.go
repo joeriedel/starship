@@ -565,3 +565,68 @@ func TestCatalogRetryCommitsTheLeftoversItKept(t *testing.T) {
 		t.Errorf("the leftovers should be committed: %q", status)
 	}
 }
+
+func TestRunRefusesAProjectWithoutPlatforms(t *testing.T) {
+	w := newWorld(t)
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	write(t, p, strings.Replace(string(data), "platforms: [linux]\n", "", 1))
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	err := cmdRun([]string{"supernova/auth-refactor"}, &out)
+	if err == nil || !strings.Contains(err.Error(), `project "supernova" declares no platforms`) || !strings.Contains(err.Error(), "platforms: [linux, macos, windows]") {
+		t.Fatalf("a project without platforms should be refused with the line to add: %v", err)
+	}
+}
+
+func TestConfigRejectsBadPlatforms(t *testing.T) {
+	w := newWorld(t)
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	for platforms, want := range map[string]string{"[linux, \"\"]": "empty", "[linux, linux]": "twice"} {
+		write(t, p, strings.Replace(string(data), "platforms: [linux]", "platforms: "+platforms, 1))
+		c, err := loadConfig(w.bridge, "supernova/auth-refactor")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if errs := strings.Join(validate(c), "\n"); !strings.Contains(errs, want) {
+			t.Errorf("platforms %s should be rejected as %q: %s", platforms, want, errs)
+		}
+	}
+}
+
+func TestDeclaredPlatformsReachLeadAndReviewerOnly(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead("--start", "review")
+	prompt := func(agent string) string {
+		data, err := os.ReadFile(agentTranscript(w.session, agent))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	const line = "Declared platforms: linux"
+	if !strings.Contains(prompt(lead), line) {
+		t.Errorf("the lead prompt should carry the declared platforms")
+	}
+	reviewer, why := w.spawn(lead, "orchestrator", "reviewer")
+	if reviewer == "" {
+		t.Fatalf("reviewer refused: %s", why)
+	}
+	if !strings.Contains(prompt(reviewer), line) {
+		t.Errorf("a reviewer prompt should carry the declared platforms")
+	}
+
+	w2 := newWorld(t)
+	lead2 := w2.startLead("--start", "code")
+	coder, why := w2.spawn(lead2, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatalf("coder refused: %s", why)
+	}
+	data, _ := os.ReadFile(agentTranscript(w2.session, coder))
+	if strings.Contains(string(data), "Declared platforms") {
+		t.Errorf("a coder prompt should not carry the platforms")
+	}
+}

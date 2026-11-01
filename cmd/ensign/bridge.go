@@ -443,6 +443,9 @@ const projectHeader = `# Project: %s
 `
 
 const projectTemplate = projectHeader + `
+# The platforms the project supports; reviewers treat a failure on one of them as real.
+platforms: [%s]
+
 # Bindings say what each @name means here. Declare every binding the pipelines need,
 # or declare it not applicable with a reason; a missing one stops a run.
 bindings:
@@ -458,9 +461,32 @@ bindings:
 `
 
 func cmdProject(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path>")
-	if len(args) != 4 || args[0] != "new" || args[2] != "--workspace" {
+	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path> [--platforms <list>]")
+	if len(args) < 4 || args[0] != "new" {
 		return usage
+	}
+	var workspace, platformList string
+	for i := 2; i < len(args); i += 2 {
+		if i+1 >= len(args) {
+			return usage
+		}
+		switch args[i] {
+		case "--workspace":
+			workspace = args[i+1]
+		case "--platforms":
+			platformList = args[i+1]
+		default:
+			return usage
+		}
+	}
+	if workspace == "" {
+		return usage
+	}
+	var platforms []string
+	if platformList != "" {
+		for _, pl := range strings.Split(platformList, ",") {
+			platforms = append(platforms, strings.TrimSpace(pl))
+		}
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
@@ -475,20 +501,35 @@ func cmdProject(args []string, out io.Writer) error {
 	if _, err := os.Stat(p); err == nil {
 		return fmt.Errorf("project %s already exists", name)
 	}
-	dir, err := filepath.Abs(expandHome(args[3]))
+	dir, err := filepath.Abs(expandHome(workspace))
 	if err != nil {
 		return err
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("%s is not a folder on this machine; ask the user where the code is, never guess", dir)
 	}
-	content := fmt.Sprintf(projectTemplate, name)
-	shipped, err := shippedProject(dir)
+	shipped, shippedPlatforms, err := shippedProject(dir)
 	if err != nil {
 		return err
 	}
+	switch {
+	case len(platforms) > 0 && len(shippedPlatforms) > 0 && !sameSet(platforms, shippedPlatforms):
+		return fmt.Errorf("--platforms %s differs from the platforms in the code's own %s (%s); ask the user which is right", platformList, shippedProjectFile, strings.Join(shippedPlatforms, ","))
+	case len(platforms) == 0 && len(shippedPlatforms) == 0:
+		return fmt.Errorf("a project declares the platforms it supports: pass --platforms <list>, e.g. --platforms linux,macos,windows; ask the user, never guess")
+	}
+	if errs := platformProblems(platforms); len(errs) > 0 {
+		return fmt.Errorf("--platforms %q: %s", platformList, strings.Join(errs, "; "))
+	}
+	content := fmt.Sprintf(projectTemplate, name, strings.Join(platforms, ", "))
 	if shipped != "" {
 		content = fmt.Sprintf(projectHeader, name) + "\n# From the code's own " + shippedProjectFile + ":\n\n" + shipped
+		if len(shippedPlatforms) == 0 {
+			if !strings.HasSuffix(content, "\n") {
+				content += "\n"
+			}
+			content += fmt.Sprintf("platforms: [%s]\n", strings.Join(platforms, ", "))
+		}
 	}
 	if err := writeFile(p, content); err != nil {
 		return err
@@ -504,25 +545,45 @@ func cmdProject(args []string, out io.Writer) error {
 	return nil
 }
 
+func sameSet(a, b []string) bool {
+	in := map[string]bool{}
+	for _, s := range a {
+		in[s] = true
+	}
+	for _, s := range b {
+		if !in[s] {
+			return false
+		}
+		delete(in, s)
+	}
+	return len(in) == 0
+}
+
 // A repository can ship the project settings a bridge needs to work on it, so adding it
 // as a project needs nothing filled in. It is read once, when the project is created.
 const shippedProjectFile = ".starship/project.yaml"
 
-func shippedProject(dir string) (string, error) {
+func shippedProject(dir string) (string, []string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(shippedProjectFile)))
 	if err != nil {
-		return "", nil
+		return "", nil, nil
 	}
 	var l struct {
-		Workspace string `yaml:"workspace"`
+		Workspace string   `yaml:"workspace"`
+		Platforms []string `yaml:"platforms"`
 	}
 	if err := yamlUnmarshal(data, &l); err != nil {
-		return "", fmt.Errorf("%s in %s is not valid YAML: %v", shippedProjectFile, dir, err)
+		return "", nil, fmt.Errorf("%s in %s is not valid YAML: %v", shippedProjectFile, dir, err)
 	}
 	if l.Workspace != "" {
-		return "", fmt.Errorf("%s in %s sets a workspace; that is the bridge's to decide", shippedProjectFile, dir)
+		return "", nil, fmt.Errorf("%s in %s sets a workspace; that is the bridge's to decide", shippedProjectFile, dir)
 	}
-	return string(data), nil
+	var keys map[string]any
+	yamlUnmarshal(data, &keys)
+	if _, has := keys["platforms"]; has && len(l.Platforms) == 0 {
+		return "", nil, fmt.Errorf("%s in %s declares an empty platforms:; fill it in there, e.g. platforms: [linux, macos, windows]", shippedProjectFile, dir)
+	}
+	return string(data), l.Platforms, nil
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -596,7 +657,7 @@ func cmdTask(args []string, out io.Writer) error {
 		}
 		pf := filepath.Join(bridge, "projects", parts[0], "project.yaml")
 		if _, err := os.Stat(pf); err != nil {
-			return fmt.Errorf("no project %s (ensign project new %s --workspace <path>)", parts[0], parts[0])
+			return fmt.Errorf("no project %s (ensign project new %s --workspace <path> --platforms <list>)", parts[0], parts[0])
 		}
 		if _, err := os.Stat(filepath.Join(taskDir, "task.md")); err == nil {
 			return fmt.Errorf("task %s already exists", args[1])

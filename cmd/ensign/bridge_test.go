@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func repoRoot(t *testing.T) string {
@@ -119,10 +121,10 @@ func TestProjectAndTask(t *testing.T) {
 	if err := cmdProject([]string{"new", "nova"}, &out); err == nil {
 		t.Fatalf("a project without its code's location should be refused")
 	}
-	if err := cmdProject([]string{"new", "nova", "--workspace", filepath.Join(ws, "missing")}, &out); err == nil || !strings.Contains(err.Error(), "never guess") {
+	if err := cmdProject([]string{"new", "nova", "--workspace", filepath.Join(ws, "missing"), "--platforms", "linux"}, &out); err == nil || !strings.Contains(err.Error(), "never guess") {
 		t.Fatalf("a project whose folder doesn't exist should be refused: %v", err)
 	}
-	if err := cmdProject([]string{"new", "nova", "--workspace", ws}, &out); err != nil {
+	if err := cmdProject([]string{"new", "nova", "--workspace", ws, "--platforms", "linux"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmdTask([]string{"new", "nova/first", "--branch", "feature"}, &out); err != nil {
@@ -253,7 +255,91 @@ func TestShippedProjectSettings(t *testing.T) {
 	// A shipped file may not choose the workspace.
 	ws := t.TempDir()
 	write(t, filepath.Join(ws, ".starship", "project.yaml"), "workspace: /elsewhere\n")
-	if err := cmdProject([]string{"new", "other", "--workspace", ws}, &out); err == nil {
+	if err := cmdProject([]string{"new", "other", "--workspace", ws, "--platforms", "linux"}, &out); err == nil {
 		t.Fatal("a shipped workspace should be refused")
+	}
+}
+
+func TestProjectNewNeedsPlatforms(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	b := newBridge(t)
+	ws := t.TempDir()
+	var out bytes.Buffer
+	err := cmdProject([]string{"new", "nova", "--workspace", ws}, &out)
+	if err == nil || !strings.Contains(err.Error(), "--platforms") {
+		t.Fatalf("a project without platforms should be refused, saying what to pass: %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(b, "projects/nova/project.yaml")); serr == nil {
+		t.Fatalf("a refused project should not be written")
+	}
+	if err := cmdProject([]string{"new", "nova", "--workspace", ws, "--platforms", "linux, windows"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(b, "projects/nova/project.yaml"))
+	if !strings.Contains(string(data), "platforms: [linux, windows]\n") {
+		t.Errorf("the platforms should be written to project.yaml:\n%s", data)
+	}
+
+	// A code folder that ships platforms needs no flag, and a different flag is refused.
+	shipped := t.TempDir()
+	write(t, filepath.Join(shipped, ".starship", "project.yaml"), "platforms: [linux]\n")
+	if err := cmdProject([]string{"new", "other", "--workspace", shipped, "--platforms", "macos"}, &out); err == nil {
+		t.Fatal("platforms that differ from the shipped ones should be refused")
+	}
+	if err := cmdProject([]string{"new", "other", "--workspace", shipped}, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same set in another order agrees with the shipped file.
+	two := t.TempDir()
+	write(t, filepath.Join(two, ".starship", "project.yaml"), "platforms: [linux, macos]\n")
+	if err := cmdProject([]string{"new", "ordered", "--workspace", two, "--platforms", "macos,linux"}, &out); err != nil {
+		t.Fatalf("the same platforms in another order should be accepted: %v", err)
+	}
+
+	// A duplicate in the flag is refused.
+	if err := cmdProject([]string{"new", "dup", "--workspace", ws, "--platforms", "linux,linux"}, &out); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Fatalf("a duplicate platform should be refused: %v", err)
+	}
+
+	// A shipped file with an empty platforms: is refused, whatever the flag says.
+	empty := t.TempDir()
+	write(t, filepath.Join(empty, ".starship", "project.yaml"), "platforms: []\n")
+	if err := cmdProject([]string{"new", "void", "--workspace", empty, "--platforms", "linux"}, &out); err == nil || !strings.Contains(err.Error(), "empty platforms") {
+		t.Fatalf("an empty shipped platforms: should be refused: %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(b, "projects/void/project.yaml")); serr == nil {
+		t.Fatalf("a refused project should not be written")
+	}
+
+	// A shipped file without platforms keeps its content and gains the flag's platforms.
+	bare := t.TempDir()
+	write(t, filepath.Join(bare, ".starship", "project.yaml"), "bindings:\n  build: make\n")
+	if err := cmdProject([]string{"new", "supernova", "--workspace", bare, "--platforms", "linux,macos"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(filepath.Join(b, "projects/supernova/project.yaml"))
+	if !strings.Contains(string(data), "bindings:\n  build: make\n") || !strings.Contains(string(data), "platforms: [linux, macos]\n") {
+		t.Errorf("shipped content and the flag's platforms should both be written:\n%s", data)
+	}
+	var l Layer
+	if err := yaml.Unmarshal(data, &l); err != nil || len(l.Platforms) != 2 {
+		t.Errorf("the generated project.yaml should load with its platforms: %v %v", err, l.Platforms)
+	}
+}
+
+func TestShippedProjectDeclaresPlatforms(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".starship", "project.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var l Layer
+	if err := yaml.Unmarshal(data, &l); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(l.Platforms, ","); got != "linux,macos,windows" {
+		t.Errorf("the shipped project should declare linux, macos and windows, got %q", got)
 	}
 }

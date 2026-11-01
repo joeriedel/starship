@@ -611,6 +611,13 @@ func workspaceSection(r *RunFiles) string {
 	return b.String()
 }
 
+func platformsLine(r *RunFiles) string {
+	if len(r.Snap.Platforms) == 0 {
+		return ""
+	}
+	return "\nDeclared platforms: " + strings.Join(r.Snap.Platforms, ", ") + "\n"
+}
+
 func leadPrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []string) string {
 	var b strings.Builder
 	b.WriteString(tagLine(r.State.Run, d) + "\n\n")
@@ -639,6 +646,7 @@ func leadPrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []str
 		b.WriteString("\n" + sk + "\n\n")
 	}
 	b.WriteString(workspaceSection(r))
+	b.WriteString(platformsLine(r))
 	b.WriteString("\n## Work item\n\n" + original + "\n")
 	return b.String()
 }
@@ -661,6 +669,9 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 		b.WriteString(sk + "\n\n")
 	}
 	b.WriteString(workspaceSection(r))
+	if s.Role == "reviewer" {
+		b.WriteString(platformsLine(r))
+	}
 	b.WriteString("\n## Your brief\n\n" + original + "\n\n## Report\n\n" + reportInstructions(s) + "\n")
 	if len(r.Snap.KnownSkills) > 0 {
 		b.WriteString("\nIf you had to establish a fact about a technology itself — true on any project using it, not just this one — " +

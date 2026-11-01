@@ -490,6 +490,7 @@ task. Pipeline operations go under `pipelines.<name>.ops`, next to the layer's b
 
 ```yaml
 # projects/supernova/project.yaml (a task.md frontmatter block looks the same)
+platforms: [linux, macos, windows]   # project.yaml only; required
 pipelines:
   coding:
     ops:

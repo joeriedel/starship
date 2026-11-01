@@ -202,7 +202,7 @@ func TestPinnedBridge(t *testing.T) {
 
 	// The project and task exist so that the only reason to refuse is the update.
 	ws := t.TempDir()
-	if err := cmdProject([]string{"new", "app", "--workspace", ws}, &out); err != nil {
+	if err := cmdProject([]string{"new", "app", "--workspace", ws, "--platforms", "linux"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmdTask([]string{"new", "app/one", "--workspace", ws}, &out); err != nil {

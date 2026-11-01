@@ -10,6 +10,8 @@
 
 use: [github-pr]
 
+platforms: [linux, macos, windows]
+
 bindings:
   build: { not-applicable: "no Go toolchain is installed locally; CI builds every push" }
   test:  { command: "ensign github-pr ci", plain: true }

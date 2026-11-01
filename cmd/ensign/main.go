@@ -123,7 +123,7 @@ func usage() {
   ensign link [--force] [--migrate]
   ensign selftest
   ensign help [topic]
-  ensign project new <name>
+  ensign project new <name> --workspace <path> [--platforms <list>]
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
   ensign task open <project>/<task>
   ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]
