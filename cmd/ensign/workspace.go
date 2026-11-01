@@ -21,7 +21,8 @@ import (
 
 // Machine is this machine's settings for a bridge.
 type Machine struct {
-	Workspaces map[string]string `yaml:"workspaces"` // "<project>" or "<project>/<task>" -> folder
+	Workspaces map[string]string     `yaml:"workspaces"`    // "<project>" or "<project>/<task>" -> folder
+	Env        map[string]ProjectEnv `yaml:"env,omitempty"` // "<project>" -> its toolchain setup on this machine
 }
 
 const machineHeader = `# Where this machine keeps each project's code. Every machine has its own copy of this
@@ -51,6 +52,7 @@ func saveMachine(bridge string, m Machine) error {
 	for _, k := range keys {
 		fmt.Fprintf(&b, "  %s: %s\n", k, yamlScalar(m.Workspaces[k]))
 	}
+	b.WriteString(envYAML(m.Env))
 	return writeFile(machineFile(bridge), b.String())
 }
 

@@ -53,6 +53,8 @@ func main() {
 		err = cmdJournal(os.Args[2:], os.Stdout)
 	case "workspace":
 		err = cmdWorkspace(os.Args[2:], os.Stdout)
+	case "env":
+		err = cmdEnv(os.Args[2:], os.Stdout)
 	case "github-pr":
 		err = cmdGithubPR(os.Args[2:], os.Stdout)
 	case "git-catalog":
@@ -123,6 +125,7 @@ func usage() {
   ensign init <dir> (--control-plane <path> | --remote <url> --tag <tag>)
   ensign setup
   ensign workspace <project>[/<task>] [<path>]
+  ensign env <project> [NAME=<value> | --path <folder> | --drop-path <folder>]
   ensign update [<tag>]
   ensign gc [<keep>]
   ensign link [--force] [--migrate]
@@ -302,12 +305,20 @@ func failHook(in *HookInput, r *RunFiles, err error, stderr io.Writer) int {
 // to this session, and prints the heartbeat the bridge's CLAUDE.md checks for.
 func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) int {
 	carryOverSession(bridge, in)
+	var envNote string
 	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
 		env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err == nil {
-			// The session's own commands run the bridge's ensign, found on PATH.
-			_, err = fmt.Fprintf(env, "export STARSHIP_SESSION=%s\nexport PATH=%s:\"$PATH\"\n",
-				in.SessionID, shellQuote(filepath.ToSlash(filepath.Join(bridge, ".starship", "bin"))))
+			// The session's own commands run the bridge's ensign, found on PATH. Bash sources the setup file a run writes later; PowerShell, which takes only assignments, gets the environment now.
+			var content string
+			if plainEnvFile() {
+				content, envNote = plainSessionEnv(bridge, in.SessionID)
+			} else {
+				content = fmt.Sprintf("export STARSHIP_SESSION=%s\nexport PATH=%s:\"$PATH\"\n",
+					in.SessionID, shellQuote(posixPath(filepath.Join(bridge, ".starship", "bin"), hostOS == "windows"))) +
+					sourceSetupLine(bridge, in.SessionID)
+			}
+			_, err = io.WriteString(env, content)
 			env.Close()
 		}
 		if err != nil {
@@ -359,6 +370,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	upgradeHookSettings(bridge)
 	fmt.Fprintf(&ctx, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
+	if envNote != "" {
+		fmt.Fprintln(&ctx, envNote)
+	}
 	// The manual goes to the session through this hook, not CLAUDE.md, because Claude
 	// Code gives CLAUDE.md to every subagent too. SessionStart also fires after a
 	// compaction, so the manual comes back when the context is summarised.

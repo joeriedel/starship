@@ -20,7 +20,7 @@ import (
 
 const selftestOrch = `---
 name: probe-orch
-description: Selftest probe that spawns five agents.
+description: Selftest probe that spawns six agents.
 tools: Agent
 model: haiku
 ---
@@ -31,7 +31,8 @@ You are a harness selftest. Do exactly these steps, then stop:
 3. Use the Agent tool with subagent_type "probe-handback" and prompt "Hand back."
 4. Use the Agent tool with subagent_type "probe-redo" and prompt "Hand back."
 5. Use the Agent tool with subagent_type "probe-bg" and prompt "Start the background command."
-6. Reply with one line saying what happened to each.
+6. Use the Agent tool with subagent_type "probe-env" and prompt "Run the command."
+7. Reply with one line saying what happened to each.
 `
 
 const selftestHandback = `---
@@ -58,6 +59,19 @@ const (
 	redoFirst  = "SELFTEST-REDO-FIRST"
 	redoSecond = "SELFTEST-REDO-SECOND"
 )
+
+// The env probe's setup file is written after SessionStart, by the hook for the Agent call that spawns it.
+const envToken = "SELFTEST-ENV-TOKEN"
+
+const selftestEnv = `---
+name: probe-env
+description: Selftest probe whose shell should load a setup file written after the session started.
+tools: Bash
+model: haiku
+---
+You are a harness selftest. Use the Bash tool once, with command "echo env:$STARSHIP_PROBE_ENV".
+When the tool returns, end your turn at once with the word done.
+`
 
 const selftestBg = `---
 name: probe-bg
@@ -137,6 +151,7 @@ func cmdSelftest(out io.Writer) error {
 		".claude/agents/probe-handback.md": selftestHandback,
 		".claude/agents/probe-redo.md":     selftestRedo,
 		".claude/agents/probe-bg.md":       selftestBg,
+		".claude/agents/probe-env.md":      selftestEnv,
 	})
 	if err != nil {
 		return err
@@ -238,6 +253,7 @@ func cmdSelftest(out io.Writer) error {
 		{"SessionStart output stays out of subagents", len(leafStops) > 0 && !manualLeaked},
 		{"PreToolUse sees a subagent's SubagentHandback call, with its message", len(handbacks) > 0},
 		{"SubagentStop background_tasks lists a background command, with the id PostToolUse saw", backgroundListed(events)},
+		{"an agent's Bash loads a setup file written after SessionStart", envLoaded(events)},
 	}
 	checks = append(checks, restartChecks(restart, out)...)
 	if askedBackground {
@@ -333,6 +349,16 @@ func runProbeSession(dir, prompt string, claudeArgs ...string) ([]map[string]any
 	}
 	json.Unmarshal(raw, &session)
 	return readProbeLog(dir)[before:], session.Result, session.SessionID, nil
+}
+
+// envLoaded reports whether a probe-env Bash call saw the variable that the setup file, written after SessionStart, exports.
+func envLoaded(events []map[string]any) bool {
+	for _, e := range events {
+		if e["hook_event_name"] == "PostToolUse" && e["agent_type"] == "probe-env" && strings.Contains(fmt.Sprint(e["tool_response"]), "env:"+envToken) {
+			return true
+		}
+	}
+	return false
 }
 
 // backgroundListed reports whether a probe-bg SubagentStop input lists a background task
@@ -504,6 +530,13 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 	if event == "SessionStart" {
 		in["env_file"] = os.Getenv("CLAUDE_ENV_FILE") != ""
 		token, _ := os.ReadFile(filepath.Join(dir, "selftest-token"))
+		if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" {
+			if env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+				p := singleQuote(filepath.ToSlash(filepath.Join(dir, "probe-setup.sh")))
+				fmt.Fprintf(env, "if [ -f %s ]; then . %s; fi\n", p, p)
+				env.Close()
+			}
+		}
 		// Delivered the way ensign delivers the manual: as additionalContext.
 		defer json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
 			"hookEventName": "SessionStart", "additionalContext": probeManual(string(token))}})
@@ -531,6 +564,8 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 			}
 			return reply(map[string]any{"hookSpecificOutput": map[string]any{
 				"hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": ti}})
+		case "probe-env":
+			os.WriteFile(filepath.Join(dir, "probe-setup.sh"), []byte("export STARSHIP_PROBE_ENV="+envToken+"\n"), 0o644)
 		case "probe-denied":
 			return reply(map[string]any{"hookSpecificOutput": map[string]any{
 				"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "selftest deny"}})

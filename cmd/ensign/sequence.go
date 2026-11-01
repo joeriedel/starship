@@ -487,7 +487,7 @@ func runPublish(bridge string, st *seqStep) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := shell(c.Workspace, st.Command+" "+shellQuote(st.Task), os.Environ())
+	out, err := shell(c.Workspace, st.Command+" "+shellQuote(st.Task), projectEnv(bridge, c.Project, os.Environ()))
 	if err != nil {
 		return "", fmt.Errorf("%v: %s", err, lastLines(out, 5))
 	}
@@ -635,7 +635,7 @@ func releaseRun(bridge, session string, n int, out io.Writer) error {
 	cmd, ws, err := releaseCommand(bridge, project)
 	if err == nil {
 		var output string
-		output, err = shellFor(ws, cmd, append(os.Environ(), "VERSION="+version), 0)
+		output, err = shellFor(ws, cmd, projectEnv(bridge, project, append(os.Environ(), "VERSION="+version)), 0)
 		if err != nil {
 			err = fmt.Errorf("%v: %s", err, lastLines(output, 5))
 		}

@@ -99,7 +99,7 @@ func handlerEnv(r *RunFiles, d *Dispatch) []string {
 	if d != nil {
 		env = append(env, "STARSHIP_STAGE="+d.Stage, "STARSHIP_DISPATCH="+d.ID, "STARSHIP_OUTCOME="+d.Outcome)
 	}
-	return env
+	return projectEnv(r.Snap.Bridge, r.Snap.Project, env)
 }
 
 // shell runs a command line through the platform's shell.

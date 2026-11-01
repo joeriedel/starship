@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -734,6 +735,8 @@ func TestGoClaimsARunCreatedOutsideASession(t *testing.T) {
 
 func TestSessionStartRecordsTheSession(t *testing.T) {
 	w := newWorld(t)
+	gitBashFound = func() bool { return true }
+	t.Cleanup(func() { gitBashFound = detectGitBash })
 	env := filepath.Join(t.TempDir(), "env.sh")
 	t.Setenv("CLAUDE_ENV_FILE", env)
 	in, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "abc"})
@@ -742,7 +745,8 @@ func TestSessionStartRecordsTheSession(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	data, _ := os.ReadFile(env)
-	wantEnv := "export STARSHIP_SESSION=abc\nexport PATH=" + shellQuote(filepath.ToSlash(filepath.Join(w.bridge, ".starship", "bin"))) + ":\"$PATH\"\n"
+	wantEnv := "export STARSHIP_SESSION=abc\nexport PATH=" + shellQuote(posixPath(filepath.Join(w.bridge, ".starship", "bin"), runtime.GOOS == "windows")) + ":\"$PATH\"\n" +
+		"if [ -f " + singleQuote(posixPath(filepath.Join(w.bridge, ".starship", "sessions", "abc.env"), runtime.GOOS == "windows")) + " ]; then . " + singleQuote(posixPath(filepath.Join(w.bridge, ".starship", "sessions", "abc.env"), runtime.GOOS == "windows")) + "; fi\n"
 	show, ctx := sessionStartReply(t, out.Bytes())
 	if string(data) != wantEnv || !strings.HasPrefix(ctx, "STARSHIP-READY") || !strings.HasPrefix(show, "Starship ready · bridge ") {
 		t.Fatalf("env file %q, shown %q, context %q", data, show, ctx)

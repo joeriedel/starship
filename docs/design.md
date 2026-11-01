@@ -1344,6 +1344,19 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
     supernova/auth-refactor: /home/me/src/supernova-auth
   ```
 
+  A project's toolchain setup is kept there too, in an `env` section keyed by project name: `set` holds variables to set, `path` folders to put first on `PATH`, in order. There is no machine-wide section.
+
+  ```yaml
+  env:
+    supernova:
+      set:
+        GOROOT: /home/me/sdk/go
+      path:
+        - /home/me/sdk/go/bin
+  ```
+
+  Ensign applies it to every command it runs for the project (handlers, plain bindings, `@done`, `@release`, publish steps), reading `machine.yaml` at that moment, so a binding can be a plain command on every platform. Agents' shells get it from a setup file next to the session's files, which the session's env file sources; each run writes it, so the project's setup reaches agents' commands from the next run. On Windows without Git Bash, where Claude Code accepts only `NAME=value` lines in the env file, session start writes every project's folders and variables there instead (a variable two projects set differently is left out, and the session is told). It is recorded with `ensign env <project> [NAME=<value> | --path <folder> | --drop-path <folder>]`.
+
   A machine with no entry for a project asks the user once, the first time a task needs
   it, and records the answer (`ensign workspace <project>[/<task>] <path>`). It sits
   outside `.starship/` because, unlike everything there, it holds answers that can't be
@@ -1384,6 +1397,7 @@ runs against Claude Code, except where listed below.
 | `ensign init <dir> (--control-plane <path> \| --remote <url> --tag <tag>)` | create a bridge |
 | `ensign setup` | fetch the pinned control plane, register the bridge, link (including the bridge's own `ensign`) |
 | `ensign workspace <p>[/<t>] [<path>]` | record (or show) where a project's or task's code is on this machine |
+| `ensign env <p> [NAME=<value> \| --path <folder> \| --drop-path <folder>]` | record (or show) a project's toolchain setup on this machine: variables, and folders put first on `PATH` |
 | `ensign update [<tag>]` | move the bridge to a newer release |
 | `ensign gc [<keep>]` | delete finished runs beyond the limit (default: the bridge's `keep-runs`) and empty the scratch folders of the rest |
 | `ensign link [--force]` | regenerate the bridge's role, skill and manual files |

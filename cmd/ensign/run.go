@@ -352,13 +352,20 @@ func copySessionTask(bridge, from, to string) {
 	}
 }
 
-// bindSession records that a run belongs to a session.
+// bindSession records that a run belongs to a session, and writes the setup file with the run's project environment for the session's agents.
 func bindSession(bridge, session, run string) error {
 	f := sessionFile(bridge, session)
 	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(f, []byte(run+"\n"), 0o644)
+	if err := os.WriteFile(f, []byte(run+"\n"), 0o644); err != nil {
+		return err
+	}
+	var snap Snapshot
+	if readJSON(filepath.Join(runsDir(bridge), run, "pipeline.json"), &snap) == nil {
+		writeSetupFile(bridge, session, snap.Project)
+	}
+	return nil
 }
 
 type runInfo struct {
