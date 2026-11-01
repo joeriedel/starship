@@ -38,11 +38,12 @@ type gcResult struct {
 // finishedRun reports whether a run's state says success or error. Pending, running and ask-user runs are never finished.
 func finishedRun(st *State) bool { return st.Status == "success" || st.Status == "error" }
 
-// gcRuns deletes finished runs beyond keep, oldest first, at most max of them (max <= 0 means no cap). It then empties the scratch folders of the finished runs that remain and drops session links to runs that no longer exist.
+// gcRuns deletes finished runs beyond keep, oldest first, at most max of them (max <= 0 means no cap). It then empties the scratch folders of the finished runs it keeps (runs an open sequence step still needs are left alone) and drops session links to runs that no longer exist.
 func gcRuns(bridge string, keep, max int) gcResult {
 	var res gcResult
 	held, ok := heldRuns(bridge)
 	if !ok {
+		res.Links = dropDeadLinks(bridge)
 		return res
 	}
 	entries, _ := os.ReadDir(runsDir(bridge))
@@ -86,9 +87,7 @@ func gcRuns(bridge string, keep, max int) gcResult {
 			res.Scratch++
 		}
 	}
-	if res.Removed > 0 {
-		res.Links = dropDeadLinks(bridge)
-	}
+	res.Links = dropDeadLinks(bridge)
 	return res
 }
 

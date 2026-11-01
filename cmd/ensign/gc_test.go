@@ -92,6 +92,9 @@ func TestGCKeepsRunsHeldBySequenceSteps(t *testing.T) {
 		{N: 2, Kind: "run", Run: "20240101-000002-supernova", Status: "active"},
 		{N: 3, Kind: "run", Run: "20240101-000003-supernova", Status: "done"},
 	}}}}
+	if err := os.MkdirAll(filepath.Join(w.bridge, ".starship", "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeJSON(seqPath(w.bridge, "s1"), sf); err != nil {
 		t.Fatal(err)
 	}
@@ -108,8 +111,13 @@ func TestGCDeletesNothingWhenSequenceFileUnreadable(t *testing.T) {
 	w := newWorld(t)
 	a := fabricate(t, w, "20240101-000001-supernova", "success", true)
 	write(t, seqPath(w.bridge, "bad"), "{not json")
+	dead := filepath.Join(w.bridge, ".starship", "sessions", "dead")
+	write(t, dead, "20240101-000009-supernova\n")
 	if res := gcRuns(w.bridge, 0, 0); res.Removed != 0 || !exists(a) {
 		t.Fatalf("gc must be conservative: %+v", res)
+	}
+	if exists(dead) {
+		t.Error("a dead link goes even when no run may be deleted")
 	}
 }
 
@@ -141,6 +149,16 @@ func TestDropDeadLinksKeepsLiveAndClearsLeftovers(t *testing.T) {
 	}
 	if info, err := os.Stat(filepath.Join(sess, "live")); err != nil || !os.SameFile(info, liveInfo) {
 		t.Error("live link must never be renamed or replaced")
+	}
+}
+
+func TestGCDropsDeadLinksWhenNoRunIsRemoved(t *testing.T) {
+	w := newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "success", true)
+	sess := filepath.Join(w.bridge, ".starship", "sessions")
+	write(t, filepath.Join(sess, "dead"), "20240101-000009-supernova\n")
+	if res := gcRuns(w.bridge, 5, 0); res.Removed != 0 || res.Links != 1 || exists(filepath.Join(sess, "dead")) {
+		t.Fatalf("a dead link goes even when no run does: %+v", res)
 	}
 }
 
@@ -212,7 +230,7 @@ func TestSessionStartCleansWithCap(t *testing.T) {
 		t.Errorf("first start: %q", show)
 	}
 	show = start()
-	if !strings.Contains(show, "cleaned up 10 old runs") || strings.Contains(show, "next session start") {
+	if !strings.Contains(show, "cleaned up 9 old runs") || strings.Contains(show, "next session start") {
 		t.Errorf("second start: %q", show)
 	}
 }
