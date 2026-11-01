@@ -139,6 +139,9 @@ func TestCompactLeavesOtherSessionFiles(t *testing.T) {
 	for _, suffix := range []string{"", ".task", ".sequence"} {
 		writeFile(sessionFile(w.bridge, w.sid)+suffix, "x")
 	}
+	if err := os.MkdirAll(filepath.Join(runsDir(w.bridge), "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	w.hook("SessionStart", map[string]any{"source": "compact"})
 	for _, f := range []string{
 		sessionFile(w.bridge, "s2") + ".topic-sequence",
