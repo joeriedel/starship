@@ -537,12 +537,12 @@ func approvalText(r *RunFiles) string {
 var reportRe = regexp.MustCompile("(?s)```starship-report\\s*\\n(.*?)```")
 
 // parseReport extracts the outcome, summary and other fields from the last report block
-// in an agent's final message. Each line is "key: value", split at the first colon, so a
+// in an agent's report. Each line is "key: value", split at the first colon, so a
 // summary may contain colons. A key may repeat; files is a comma-separated list.
 func parseReport(msg string, s *Stage) (outcome, summary string, fields map[string][]string, problem string) {
 	all := reportRe.FindAllStringSubmatch(msg, -1)
 	if len(all) == 0 {
-		return "", "", nil, "Your final message has no starship-report block."
+		return "", "", nil, "Your report has no starship-report block."
 	}
 	fields = map[string][]string{}
 	for _, line := range strings.Split(all[len(all)-1][1], "\n") {
@@ -589,7 +589,7 @@ func reportInstructions(s *Stage) string {
 			extra += f + ": <" + f + ">\n"
 		}
 	}
-	return fmt.Sprintf("End your final message with a report block:\n\n```starship-report\noutcome: <one of: %s>\nsummary: <one line>\n%s```",
+	return fmt.Sprintf("End your report with a report block:\n\n```starship-report\noutcome: <one of: %s>\nsummary: <one line>\n%s```",
 		strings.Join(s.Outcomes.names(), ", "), extra)
 }
 
