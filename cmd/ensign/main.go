@@ -42,10 +42,7 @@ func main() {
 	case "init":
 		err = cmdInit(os.Args[2:], os.Stdout)
 	case "link":
-		var bridge string
-		if bridge, err = cwdBridge(); err == nil {
-			err = link(bridge, len(os.Args) > 2 && os.Args[2] == "--force", os.Stdout)
-		}
+		err = cmdLink(os.Args[2:], os.Stdout)
 	case "project":
 		err = cmdProject(os.Args[2:], os.Stdout)
 	case "task":
@@ -92,13 +89,38 @@ func main() {
 	}
 }
 
+// cmdLink implements `ensign link`. --migrate also moves the workspaces to the current layout first; update and setup pass it to the ensign they just fetched.
+func cmdLink(args []string, out io.Writer) error {
+	force, migrate := false, false
+	for _, a := range args {
+		switch a {
+		case "--force":
+			force = true
+		case "--migrate":
+			migrate = true
+		default:
+			return fmt.Errorf("usage: ensign link [--force] [--migrate]")
+		}
+	}
+	bridge, err := cwdBridge()
+	if err != nil {
+		return err
+	}
+	if migrate {
+		if note := migrateWorkspaces(bridge); note != "" {
+			fmt.Fprintln(out, note)
+		}
+	}
+	return link(bridge, force, out)
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   ensign init <dir> (--control-plane <path> | --remote <url> --tag <tag>)
   ensign setup
   ensign workspace <project>[/<task>] [<path>]
   ensign update [<tag>]
-  ensign link [--force]
+  ensign link [--force] [--migrate]
   ensign selftest
   ensign help [topic]
   ensign project new <name>

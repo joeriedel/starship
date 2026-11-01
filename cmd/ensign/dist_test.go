@@ -32,16 +32,111 @@ func fakeRelease(t *testing.T) string {
 	runGit(t, repo, "commit", "-q", "-am", "work in progress")
 
 	releases := t.TempDir()
-	for _, tag := range []string{"v0.1.0", "v0.2.0"} {
-		bin := releasedBinary(tag)
-		write(t, filepath.Join(releases, tag, ensignAsset()), bin)
-		write(t, filepath.Join(releases, tag, "SHA256SUMS"), sha([]byte(bin))+"  "+ensignAsset()+"\n")
-	}
 	t.Setenv("STARSHIP_RELEASES", releases)
+	for _, tag := range []string{"v0.1.0", "v0.2.0"} {
+		publishEnsign(t, tag)
+	}
+	t.Setenv("STARSHIP_TEST_ENSIGN", "1")
 	return repo
 }
 
-func releasedBinary(tag string) string { return "#!/bin/sh\necho released ensign " + tag + "\n" }
+// publishEnsign adds a release's attachments to STARSHIP_RELEASES.
+func publishEnsign(t *testing.T, tag string) {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("STARSHIP_RELEASES"), tag)
+	bin := releasedBinary(t)
+	os.MkdirAll(dir, 0o755)
+	if err := os.WriteFile(filepath.Join(dir, ensignAsset()), bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "SHA256SUMS"), sha(bin)+"  "+ensignAsset()+"\n")
+}
+
+// releasedBinary is a real executable on every OS: this test binary, which TestMain turns into ensign when STARSHIP_TEST_ENSIGN is set. A bridge's copy records which release it is in its .tag file.
+func releasedBinary(t *testing.T) []byte {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func ensignTag(bridge string) string {
+	tag, _ := os.ReadFile(ensignTagFile(bridge))
+	return strings.TrimSpace(string(tag))
+}
+
+// pinnedBridge is a git bridge pinned to v0.1.0 of the fake release, with its changes committed.
+func pinnedBridge(t *testing.T, repo string) string {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	t.Setenv("HOME", t.TempDir())
+	bridge := filepath.Join(t.TempDir(), "work")
+	var out bytes.Buffer
+	if err := cmdInit([]string{bridge, "--remote", repo, "--tag", "v0.1.0"}, &out); err != nil {
+		t.Fatalf("init: %v\n%s", err, out.String())
+	}
+	t.Setenv("CLAUDE_PROJECT_DIR", bridge)
+	runGit(t, bridge, "config", "user.email", "t@example.com")
+	runGit(t, bridge, "config", "user.name", "t")
+	runGit(t, bridge, "add", "-A")
+	if staged, _ := gitOut(bridge, "diff", "--cached", "--name-only"); staged != "" {
+		runGit(t, bridge, "commit", "-q", "-m", "bridge")
+	}
+	return bridge
+}
+
+// An update links with the ensign it fetched, so what that release generates exists at once.
+func TestUpdateLinksWithTheNewEnsign(t *testing.T) {
+	repo := fakeRelease(t)
+	bridge := pinnedBridge(t, repo)
+	write(t, filepath.Join(repo, "roles", "supernova.md"), "---\nname: supernova\nmodel: sonnet\n---\nnew in v0.3.0\n")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "release 0.3.0")
+	runGit(t, repo, "tag", "v0.3.0")
+	publishEnsign(t, "v0.3.0")
+
+	log := filepath.Join(t.TempDir(), "calls")
+	t.Setenv("STARSHIP_TEST_ENSIGN_LOG", log)
+	var out bytes.Buffer
+	if err := cmdUpdate([]string{"v0.3.0"}, &out); err != nil {
+		t.Fatalf("update: %v\n%s", err, out.String())
+	}
+	if calls, _ := os.ReadFile(log); string(calls) != "link --migrate\n" {
+		t.Errorf("the fetched ensign should have been run as `link --migrate`; calls: %q", calls)
+	}
+	if _, err := os.Stat(filepath.Join(bridge, ".claude/agents/supernova.md")); err != nil {
+		t.Errorf("the update did not generate the new release's role: %v", err)
+	}
+	if ensignTag(bridge) != "v0.3.0" {
+		t.Errorf("ensign is %q, want v0.3.0", ensignTag(bridge))
+	}
+}
+
+func TestUpdateWhenTheNewEnsignFailsToLink(t *testing.T) {
+	repo := fakeRelease(t)
+	bridge := pinnedBridge(t, repo)
+	t.Setenv("STARSHIP_TEST_ENSIGN_FAIL", "1")
+	var out bytes.Buffer
+	err := cmdUpdate([]string{"v0.2.0"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "linking failed") || !strings.Contains(err.Error(), "v0.2.0") {
+		t.Fatalf("a failed link should be reported: %v", err)
+	}
+	if strings.Contains(out.String(), "updated") {
+		t.Errorf("a failed update should not say it updated:\n%s", out.String())
+	}
+	if subj := runGit(t, bridge, "log", "--format=%s", "-1"); subj == "Update starship to v0.2.0" {
+		t.Errorf("a failed update must not commit bridge.yaml")
+	}
+	if status := runGit(t, bridge, "status", "--porcelain", "--", "bridge.yaml"); status == "" {
+		t.Errorf("bridge.yaml should be left changed for the user to commit")
+	}
+}
 
 func ownEnsign(t *testing.T, bridge string) string {
 	t.Helper()
@@ -64,7 +159,7 @@ func TestPinnedBridge(t *testing.T) {
 	if data, _ := os.ReadFile(coder); strings.Contains(string(data), "version two") {
 		t.Fatalf("v0.1.0 should not have version two's coder")
 	}
-	if ownEnsign(t, bridge) != releasedBinary("v0.1.0") {
+	if ensignTag(bridge) != "v0.1.0" {
 		t.Fatalf("init should download v0.1.0's ensign into the bridge")
 	}
 
@@ -95,7 +190,7 @@ func TestPinnedBridge(t *testing.T) {
 	if data, _ := os.ReadFile(coder); !strings.Contains(string(data), "version two") {
 		t.Errorf("update did not relink the new release's roles")
 	}
-	if ownEnsign(t, bridge) != releasedBinary("v0.2.0") {
+	if ensignTag(bridge) != "v0.2.0" {
 		t.Errorf("update should download v0.2.0's ensign")
 	}
 	if data, _ := os.ReadFile(filepath.Join(bridge, "bridge.yaml")); !strings.Contains(string(data), "tag: v0.2.0") {
@@ -142,7 +237,9 @@ func TestInitFromARelease(t *testing.T) {
 
 	bridge := filepath.Join(t.TempDir(), "home")
 	write(t, filepath.Join(bridge, "notes.txt"), "the user's own file\n")
-	write(t, filepath.Join(bridge, filepath.FromSlash(ensignFile())), releasedBinary("v0.1.0"))
+	if err := replaceFile(filepath.Join(bridge, filepath.FromSlash(ensignFile())), releasedBinary(t), true); err != nil {
+		t.Fatal(err)
+	}
 
 	var out bytes.Buffer
 	if err := cmdInit([]string{bridge}, &out); err != nil {
@@ -155,7 +252,7 @@ func TestInitFromARelease(t *testing.T) {
 	if bf.ControlPlane.Remote != "file://"+repo || bf.ControlPlane.Tag != "v0.1.0" {
 		t.Errorf("pinned %q at %q, want the release this ensign is", bf.ControlPlane.Remote, bf.ControlPlane.Tag)
 	}
-	if ownEnsign(t, bridge) != releasedBinary("v0.1.0") {
+	if !bytes.Equal([]byte(ownEnsign(t, bridge)), releasedBinary(t)) {
 		t.Errorf("the downloaded ensign should be kept")
 	}
 	if tag, _ := os.ReadFile(ensignTagFile(bridge)); string(tag) != "v0.1.0\n" {

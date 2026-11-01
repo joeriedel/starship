@@ -193,13 +193,38 @@ func setupBridge(bridge string, out io.Writer) error {
 		fmt.Fprintf(out, "control plane %s at %s\n", bf.ControlPlane.Remote, pinRef(bf))
 	}
 
-	if note := migrateWorkspaces(bridge); note != "" {
-		fmt.Fprintln(out, note)
-	}
-	if err := link(bridge, false, out); err != nil {
-		return err
+	if bf.ControlPlane.Path == "" {
+		if err := linkWithFetchedEnsign(bridge, out); err != nil {
+			return err
+		}
+	} else {
+		if note := migrateWorkspaces(bridge); note != "" {
+			fmt.Fprintln(out, note)
+		}
+		if err := link(bridge, false, out); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintln(out, "bridge ready — restart claude")
+	return nil
+}
+
+// linkWithFetchedEnsign migrates and links the bridge with the ensign in .starship/bin, which is the release the bridge pins and may be newer than the running one, so the files that release generates exist as soon as this returns.
+func linkWithFetchedEnsign(bridge string, out io.Writer) error {
+	bin := filepath.Join(bridge, filepath.FromSlash(ensignFile()))
+	cmd := exec.Command(bin, "link", "--migrate")
+	cmd.Dir = bridge
+	env := []string{"CLAUDE_PROJECT_DIR=" + bridge}
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, "CLAUDE_PROJECT_DIR") {
+			env = append(env, kv)
+		}
+	}
+	cmd.Env = env
+	cmd.Stdout, cmd.Stderr = out, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s link: %v", bin, err)
+	}
 	return nil
 }
 
@@ -291,11 +316,8 @@ func cmdUpdate(args []string, out io.Writer) error {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return err
 	}
-	if note := migrateWorkspaces(bridge); note != "" {
-		fmt.Fprintln(out, note)
-	}
-	if err := link(bridge, false, out); err != nil {
-		return err
+	if err := linkWithFetchedEnsign(bridge, out); err != nil {
+		return fmt.Errorf("bridge.yaml now pins %s and that release's control plane and ensign are on disk, but linking failed (%v); fix that, run ensign link, then commit bridge.yaml", tag, err)
 	}
 	fmt.Fprintf(out, "updated %s → %s; restart claude to use it\n", old, tag)
 	if isGit(bridge) {
