@@ -610,14 +610,41 @@ func workspaceSection(r *RunFiles) string {
 		ws, filepath.Join(r.Dir, "scratch"))
 	for _, k := range sortedKeys(r.Snap.Bindings) {
 		bd := r.Snap.Bindings[k]
-		switch {
-		case bd.Command != "":
-			fmt.Fprintf(&b, "- @%s: `cd %s && %s`\n", k, shellQuote(r.Snap.Workspace), bd.Command)
-		case bd.Guidance != "":
-			fmt.Fprintf(&b, "- @%s: %s\n", k, bd.Guidance)
-		default:
-			fmt.Fprintf(&b, "- @%s: not applicable (%s)\n", k, bd.NotApplicable)
+		b.WriteString(bindingLine(k, bd, r.Snap.Workspace))
+	}
+	return b.String()
+}
+
+// bindingLine renders a binding as a command to run in dir, as guidance, or as not applicable.
+func bindingLine(k string, bd Binding, dir string) string {
+	switch {
+	case bd.Command != "":
+		return fmt.Sprintf("- @%s: `cd %s && %s`\n", k, shellQuote(dir), bd.Command)
+	case bd.Guidance != "":
+		return fmt.Sprintf("- @%s: %s\n", k, bd.Guidance)
+	default:
+		return fmt.Sprintf("- @%s: not applicable (%s)\n", k, bd.NotApplicable)
+	}
+}
+
+// sidesSection tells a tester to test every side of a run that has several, each with its own commands in its own folder.
+func sidesSection(r *RunFiles) string {
+	sides := r.Snap.sides()
+	if len(sides) < 2 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## Sides\n\nThis change affects several locations. Build and test each side with its own commands in its own folder, not the workspace's bindings above:\n")
+	for _, sd := range sides {
+		fmt.Fprintf(&b, "\nside %s: %s\n\n", sd.Location, sd.Workspace)
+		for _, k := range []string{"build", "test"} {
+			if bd, ok := sd.Bindings[k]; ok {
+				b.WriteString(bindingLine(k, bd, sd.Workspace))
+			}
 		}
+	}
+	if bd := r.Snap.crossTest(); bd.Command != "" || bd.Guidance != "" || bd.NotApplicable != "" {
+		b.WriteString("\nThen the cross-location test:\n\n" + bindingLine("test", bd, r.Snap.Workspace))
 	}
 	return b.String()
 }
@@ -680,6 +707,9 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 		b.WriteString(sk + "\n\n")
 	}
 	b.WriteString(workspaceSection(r))
+	if s.Role == "tester" {
+		b.WriteString(sidesSection(r))
+	}
 	if s.Role == "reviewer" {
 		b.WriteString(platformsLine(r))
 	}

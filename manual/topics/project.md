@@ -20,9 +20,11 @@ cross-location:
 ```
 
 - Names: lower-case letters, digits, dashes. `depends-on` names declared locations only: no self-dependency, no cycle.
-- Location bindings override the project's; the task's override both. `cross-location` bindings are kept; no run uses them yet.
+- Location bindings override the project's; the task's override both. `cross-location` `test` runs once after the sides' own tests when a run has several sides.
 - A task names the locations it uses: `locations: [client, models]` in its frontmatter, or `ensign task new <p>/<t> --locations client,models`. Required once the project declares any.
 - Each run works in one location: `ensign run <p>/<t> --location <name>`. Optional when the task names one; required when it names several. Sequence runs need a task with one location.
 - Landing commands (`ensign github-pr pull-request|merge|update`, `ensign git-catalog squash`) take `--location <name>`; without it they use the location of the task's most recently finished successful run, else its sole location. Base and tested-commit records are kept per location.
+- A run tests its sides: the edited location plus every location that depends on it, transitively (`models` edited: `models`, `client`, `server`). Each side builds and tests with its own bindings in its own folder; other sides build from their checkout as it stands. A task's own binding overrides apply to the edited location only; the other sides use the bridge's, the project's and their own location's.
+- Narrow only when you know the change affects fewer: `ensign run <p>/<t> --location models --sides models,server`. The set must include the edited location and only affected ones. The run summary shows the sides.
 - Record each location's folder on this machine: `ensign workspace <project> --location <name> <path>`. Ask the user; never guess.
 - A project that declares no locations works as before.

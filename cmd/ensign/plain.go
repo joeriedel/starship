@@ -21,8 +21,36 @@ import (
 
 // plainStage reports whether ensign runs this stage itself.
 func plainStage(snap *Snapshot, s *Stage) bool {
-	return !s.isLead() && s.Role == "tester" && snap.Bindings["test"].Plain && s.Parallel == nil
+	if s.isLead() || s.Role != "tester" || s.Parallel != nil {
+		return false
+	}
+	for _, sd := range snap.sides() {
+		if !sd.Bindings["test"].Plain {
+			return false
+		}
+	}
+	x := snap.crossTest()
+	return x.NotApplicable != "" || (x.Command == "" && x.Guidance == "") || x.Plain
 }
+
+// sides is the locations the test stage covers. A run record from before sides, or a locationless run, has one: the run's own workspace and bindings.
+func (snap *Snapshot) sides() []Side {
+	if len(snap.Sides) > 0 {
+		return snap.Sides
+	}
+	return []Side{{Location: snap.Location, Workspace: snap.Workspace, Bindings: snap.Bindings}}
+}
+
+// crossTest is the cross-location @test in any form, when several sides make it apply; the zero Binding otherwise.
+func (snap *Snapshot) crossTest() Binding {
+	if len(snap.Sides) < 2 {
+		return Binding{}
+	}
+	return snap.Cross["test"]
+}
+
+// Valid says the binding has a command to run.
+func (b Binding) Valid() bool { return b.Command != "" }
 
 // hookTimeout is the PreToolUse hook's timeout in this bridge's settings.
 const hookTimeout = 3600
@@ -64,7 +92,7 @@ func completeDeadOwner(r *RunFiles, m *machine, d *Dispatch) error {
 
 // runBinding runs a plain binding's command: an ensign built-in, or a command line. A
 // built-in reports failed tests as errTestsFailed; any other error means no verdict.
-func runBinding(r *RunFiles, d *Dispatch, command string, deadline time.Time) (string, error) {
+func runBinding(r *RunFiles, d *Dispatch, dir, command string, deadline time.Time) (string, error) {
 	if args, ok := strings.CutPrefix(strings.TrimSpace(command), "ensign "); ok {
 		f := strings.Fields(args)
 		if len(f) > 0 && f[0] == "github-pr" {
@@ -72,7 +100,7 @@ func runBinding(r *RunFiles, d *Dispatch, command string, deadline time.Time) (s
 		}
 		return "", internalHandler(r, f, d)
 	}
-	return shellFor(r.Snap.Workspace, command, handlerEnv(r, d), time.Until(deadline))
+	return shellFor(dir, command, handlerEnv(r, d), time.Until(deadline))
 }
 
 // couldNotRun is an exit code that means the command could not do its job at all, as
@@ -158,17 +186,34 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	outcome := "pass"
 	var steps, log []string
 	failed, last := "", ""
-	for _, name := range []string{"build", "test"} {
-		b, ok := r.Snap.Bindings[name]
-		if !ok || b.NotApplicable != "" || b.Command == "" {
-			continue
+	type planned struct {
+		label, name, dir string
+		b                Binding
+	}
+	var plan []planned
+	multi := len(r.Snap.sides()) > 1
+	for _, sd := range r.Snap.sides() {
+		for _, name := range []string{"build", "test"} {
+			if b, ok := sd.Bindings[name]; ok && b.NotApplicable == "" && b.Command != "" {
+				label := ""
+				if multi {
+					label = "side " + sd.Location + ": "
+				}
+				plan = append(plan, planned{label, name, sd.Workspace, b})
+			}
 		}
+	}
+	if b := r.Snap.crossTest(); b.Valid() {
+		plan = append(plan, planned{"cross-location: ", "test", r.Snap.Workspace, b})
+	}
+	for _, p := range plan {
+		name, b := p.name, p.b
 		limit := b.Timeout
 		if limit == 0 {
 			limit = defaultBindingTimeout
 		}
 		start := time.Now()
-		out, err := runBinding(r, d, b.Command, start.Add(limit))
+		out, err := runBinding(r, d, p.dir, b.Command, start.Add(limit))
 		took := time.Since(start).Round(time.Second)
 		log = append(log, fmt.Sprintf("$ %s\n%s", b.Command, out))
 		var exit *exec.ExitError
@@ -178,18 +223,18 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 			if strings.HasPrefix(strings.TrimSpace(b.Command), "ensign ") {
 				result = "passed"
 			}
-			steps = append(steps, fmt.Sprintf("@%s `%s`: %s (%s)", name, b.Command, result, took))
+			steps = append(steps, fmt.Sprintf("%s@%s `%s`: %s (%s)", p.label, name, b.Command, result, took))
 			last = out
 			continue
 		case errors.Is(err, errTestsFailed):
 			outcome = "fail"
-			steps = append(steps, fmt.Sprintf("@%s `%s`: failed (%s)", name, b.Command, took))
+			steps = append(steps, fmt.Sprintf("%s@%s `%s`: failed (%s)", p.label, name, b.Command, took))
 		case errors.As(err, &exit) && !couldNotRun(exit.ExitCode()):
 			outcome = "fail"
-			steps = append(steps, fmt.Sprintf("@%s `%s`: exit %d (%s)", name, b.Command, exit.ExitCode(), took))
+			steps = append(steps, fmt.Sprintf("%s@%s `%s`: exit %d (%s)", p.label, name, b.Command, exit.ExitCode(), took))
 		default:
 			outcome = "error"
-			steps = append(steps, fmt.Sprintf("@%s `%s`: could not run: %v (%s)", name, b.Command, err, took))
+			steps = append(steps, fmt.Sprintf("%s@%s `%s`: could not run: %v (%s)", p.label, name, b.Command, err, took))
 		}
 		failed = out
 		break

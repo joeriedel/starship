@@ -10,13 +10,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// A project can keep its code in several repos. project.yaml declares them as locations, each with its own bindings and the locations it depends on; a task names the ones it uses, and each run works in exactly one.
+// A project can keep its code in several repos. project.yaml declares them as locations, each with its own bindings and the locations it depends on; a task names the ones it uses, and each run edits exactly one but tests it and every location that depends on it (its sides).
 
 // Locations is a project's declared code locations.
 type Locations struct {
 	deps     map[string][]string
 	bindings map[string]yaml.Node
-	// Cross holds the cross-location bindings. No run uses them yet.
+	// Cross holds the cross-location bindings; a run with several sides runs their @test once after the sides' own.
 	Cross map[string]Binding
 }
 

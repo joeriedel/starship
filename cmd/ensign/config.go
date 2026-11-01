@@ -394,6 +394,17 @@ type Config struct {
 	Skills       []SkillDelivery
 	needs        map[string]string // binding -> what requires it, from extensions
 	problems     []string
+	// Sides are the locations a run tests, the edited one first; Narrowed says they are fewer than the default. Cross holds the cross-location bindings when there are several sides.
+	Sides    []Side
+	Narrowed bool
+	Cross    map[string]Binding
+}
+
+// Side is one location a run tests, with what its test stage needs frozen: its folder on this machine and its merged bindings.
+type Side struct {
+	Location  string             `json:"location"`
+	Workspace string             `json:"workspace"`
+	Bindings  map[string]Binding `json:"bindings"`
 }
 
 func readYAML(path string, out any) error {
@@ -467,6 +478,9 @@ type Target struct {
 	Project  string
 	Pipeline string
 	Location string // the project location a run works in
+	// Sides asks for the run's affected sides (see loadSides); WithSides must be set for them to be worked out.
+	Sides     []string
+	WithSides bool
 }
 
 type layerEntry struct {
@@ -658,13 +672,103 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 	if err := c.selectSkills(layers); err != nil {
 		return nil, err
 	}
+	if t.WithSides {
+		if err := c.loadSides(bridge, layers, extensions, t.Sides); err != nil {
+			return nil, err
+		}
+	}
 	return c, nil
+}
+
+// loadSides works out the run's affected sides: the edited location and every location that depends on it, or the narrower set asked for in want. Each side's bindings merge the layers the way the edited location's do, with that location's layer in place of the edited one's.
+func (c *Config) loadSides(bridge string, layers []layerEntry, extensions map[string]*Extension, want []string) error {
+	if c.Location == "" {
+		if len(want) > 0 {
+			return fmt.Errorf("--sides has no meaning for a run without a location: the project declares none, or the run names none")
+		}
+		return nil
+	}
+	def := append([]string{c.Location}, c.Locations.Dependents(c.Location)...)
+	sides := def
+	if len(want) > 0 {
+		for _, n := range want {
+			if !c.Locations.Has(n) {
+				return fmt.Errorf("--sides: project %s declares no location %q (it declares %s)", c.Project, n, strings.Join(c.Locations.Names(), ", "))
+			}
+		}
+		if !contains(want, c.Location) {
+			return fmt.Errorf("--sides must include %s, the location this run edits", c.Location)
+		}
+		for _, n := range want {
+			if !contains(def, n) {
+				return fmt.Errorf("--sides: %s is not affected by a change to %s (affected: %s), so a run does not test it", n, c.Location, strings.Join(def, ", "))
+			}
+		}
+		sides = []string{c.Location}
+		for _, n := range def[1:] {
+			if contains(want, n) {
+				sides = append(sides, n)
+			}
+		}
+	}
+	c.Narrowed = len(sides) < len(def)
+	for _, n := range sides {
+		side := Side{Location: n, Workspace: c.Workspace, Bindings: c.Bindings}
+		if n != c.Location {
+			ws, err := locationPathFor(bridge, c.Project, n)
+			if err != nil {
+				return err
+			}
+			side.Workspace = ws
+			if side.Bindings, err = c.sideBindings(bridge, layers, extensions, n); err != nil {
+				return err
+			}
+		}
+		c.Sides = append(c.Sides, side)
+	}
+	if len(c.Sides) > 1 {
+		c.Cross = c.Locations.Cross
+	}
+	return nil
+}
+
+// sideBindings merges the bindings of the layers, extensions' defaults included, as loadTarget does, using location's layer where the edited location's sits. The task's layer is left out: its overrides are for the edited location, so another side goes bridge, project, then its location.
+func (c *Config) sideBindings(bridge string, layers []layerEntry, extensions map[string]*Extension, location string) (map[string]Binding, error) {
+	side := &Config{Bindings: map[string]Binding{}}
+	used := map[string]bool{}
+	for _, l := range layers {
+		if strings.HasPrefix(l.label, "task:") {
+			continue
+		}
+		if strings.HasPrefix(l.label, "location:") {
+			l = c.locationLayerFor(bridge, location)
+		}
+		for _, use := range l.layer.Use {
+			if used[use] {
+				continue
+			}
+			used[use] = true
+			if b, ok := extensions[use]; ok {
+				if err := side.addBindings(&b.Bindings, "extension:"+use); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if err := side.addBindings(&l.layer.Bindings, l.label); err != nil {
+			return nil, err
+		}
+	}
+	return side.Bindings, nil
 }
 
 // locationLayer is the layer a location's bindings make, between the project's and the task's.
 func (c *Config) locationLayer(bridge string) layerEntry {
+	return c.locationLayerFor(bridge, c.Location)
+}
+
+func (c *Config) locationLayerFor(bridge, location string) layerEntry {
 	file := filepath.Join(bridge, "projects", c.Project, "project.yaml")
-	return layerEntry{"location:" + relTo(bridge, file) + "#" + c.Location, file, Layer{Bindings: c.Locations.bindings[c.Location]}}
+	return layerEntry{"location:" + relTo(bridge, file) + "#" + location, file, Layer{Bindings: c.Locations.bindings[location]}}
 }
 
 // findPipeline locates a pipeline file: the control plane's, then any extension's.

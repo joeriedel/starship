@@ -921,6 +921,9 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			o := runOpts{start: old.Snap.Start, staleOK: old.State.StaleOK, retryOf: st.Run, retryBase: old.State.Base, location: old.Snap.Location, rebuild: old.State.Rebuild,
 				workItem: old.Snap.WorkItem + "\n\n## Current state\n\nThis is a retry. The workspace holds the previous attempt's work, uncommitted changes included; build on it.\n\nWhy the previous attempt failed: " + diagnosis + "\n\nWhat is left: " + left + "\n"}
+			if old.Snap.Narrowed {
+				o.sides = sideNames(old.Snap.Sides)
+			}
 			if old.Snap.Task != "" {
 				o.task = old.Snap.Task
 			} else {

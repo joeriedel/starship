@@ -449,3 +449,164 @@ func TestPublishStepUsesThePrecedingRunsLocation(t *testing.T) {
 		t.Errorf("no preceding run step should give no location, got %q", got)
 	}
 }
+
+func sideNamesOf(s *Snapshot) []string { return sideNames(s.Sides) }
+
+func TestRunSidesDefaultAndNarrowed(t *testing.T) {
+	w := locationsWorld(t)
+	var out bytes.Buffer
+	models := locTask(t, w, "m", "models")
+	client := locTask(t, w, "c", "client")
+	snap, err := createRun(w.bridge, runOpts{task: models}, true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sideNamesOf(snap); !reflect.DeepEqual(got, []string{"models", "client", "server"}) || snap.Narrowed {
+		t.Errorf("default sides = %v, narrowed %v", got, snap.Narrowed)
+	}
+	if snap.Cross["test"].Command != "./cross-test.sh" {
+		t.Errorf("cross = %v", snap.Cross)
+	}
+	if got := snap.Sides[1].Bindings["test"].Command; got != "./client-test.sh" {
+		t.Errorf("client side test = %q", got)
+	}
+	if got := snap.Sides[2].Bindings["test"].Command; got != "./test.sh" {
+		t.Errorf("server side test = %q", got)
+	}
+	if want := loadMachine(w.bridge).Locations["supernova"]["client"]; filepath.ToSlash(snap.Sides[1].Workspace) != want {
+		t.Errorf("client side folder = %q, want %q", snap.Sides[1].Workspace, want)
+	}
+	if !strings.Contains(out.String(), "sides      models, client, server (default: models and its dependents)") {
+		t.Errorf("summary:\n%s", out.String())
+	}
+
+	out.Reset()
+	snap, err = createRun(w.bridge, runOpts{task: models, sides: []string{"server", "models"}}, true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sideNamesOf(snap); !reflect.DeepEqual(got, []string{"models", "server"}) || !snap.Narrowed {
+		t.Errorf("narrowed sides = %v, narrowed %v", got, snap.Narrowed)
+	}
+	if !strings.Contains(out.String(), "sides      models, server (narrowed)") {
+		t.Errorf("summary:\n%s", out.String())
+	}
+
+	snap, err = createRun(w.bridge, runOpts{task: client}, true, &out)
+	if err != nil || !reflect.DeepEqual(sideNamesOf(snap), []string{"client"}) || snap.Narrowed || snap.Cross != nil {
+		t.Errorf("client run: %v, %+v", err, snap)
+	}
+}
+
+func TestRunSidesRefused(t *testing.T) {
+	w := locationsWorld(t)
+	var out bytes.Buffer
+	models := locTask(t, w, "m", "models")
+	for name, c := range map[string]struct {
+		sides []string
+		want  string
+	}{
+		"missing edited": {[]string{"client", "server"}, "must include models"},
+		"undeclared":     {[]string{"models", "nope"}, "declares no location"},
+	} {
+		if _, err := createRun(w.bridge, runOpts{task: models, sides: c.sides}, true, &out); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	client := locTask(t, w, "c", "client")
+	if _, err := createRun(w.bridge, runOpts{task: client, sides: []string{"client", "server"}}, true, &out); err == nil || !strings.Contains(err.Error(), "not affected") {
+		t.Errorf("unaffected side: %v", err)
+	}
+	m := loadMachine(w.bridge)
+	delete(m.Locations["supernova"], "server")
+	saveMachine(w.bridge, m)
+	if _, err := createRun(w.bridge, runOpts{task: models}, true, &out); err == nil || !strings.Contains(err.Error(), "ensign workspace supernova --location server") {
+		t.Errorf("unrecorded side folder: %v", err)
+	}
+	if _, err := createRun(w.bridge, runOpts{task: models, sides: []string{"models", "client"}}, true, &out); err != nil {
+		t.Errorf("narrowing away the unrecorded side: %v", err)
+	}
+
+	w = newWorld(t)
+	if _, err := createRun(w.bridge, runOpts{task: "supernova/auth-refactor", sides: []string{"client"}}, true, &out); err == nil || !strings.Contains(err.Error(), "--sides") {
+		t.Errorf("--sides on a locationless project: %v", err)
+	}
+	if snap, err := createRun(w.bridge, runOpts{task: "supernova/auth-refactor"}, true, &out); err != nil || len(snap.Sides) != 0 || strings.Contains(out.String(), "sides ") {
+		t.Errorf("locationless run: %v, %+v", err, snap)
+	}
+}
+
+func TestParseRunArgsSides(t *testing.T) {
+	o, err := parseRunArgs("ensign run", []string{"supernova/x", "--sides", "models, server"})
+	if err != nil || !reflect.DeepEqual(o.sides, []string{"models", "server"}) {
+		t.Errorf("%+v, %v", o, err)
+	}
+	if _, err := parseRunArgs("ensign run", []string{"supernova/x", "--sides"}); err == nil {
+		t.Error("--sides without a value should fail")
+	}
+}
+
+func TestTesterPromptListsSides(t *testing.T) {
+	w := locationsWorld(t)
+	var out bytes.Buffer
+	snap, err := createRun(w.bridge, runOpts{task: locTask(t, w, "m", "models")}, true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &RunFiles{Dir: filepath.Join(w.bridge, "run"), Snap: snap, State: &State{Run: snap.Run}}
+	tester, _, _ := snap.Pipeline.find("test")
+	if tester == nil {
+		t.Fatal("no test stage")
+	}
+	prompt := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil)
+	client := loadMachine(w.bridge).Locations["supernova"]["client"]
+	for _, want := range []string{"side models: ", "side client: " + filepath.FromSlash(client), "side server: ",
+		"- @test: `cd " + shellQuote(filepath.FromSlash(client)) + " && ./client-test.sh`", "cross-location test", "./cross-test.sh"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("tester prompt lacks %q:\n%s", want, prompt)
+		}
+	}
+	if single, _ := createRun(w.bridge, runOpts{task: locTask(t, w, "c", "client")}, true, &out); single != nil {
+		r.Snap = single
+		if p := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil); strings.Contains(p, "## Sides") {
+			t.Errorf("a single side needs no sides section")
+		}
+	}
+}
+
+func TestSideBindingsLeaveOutTheTaskLayer(t *testing.T) {
+	w := locationsWorld(t)
+	write(t, filepath.Join(w.bridge, "projects", "supernova", "tasks", "m", "task.md"),
+		"---\npipeline: coding\nlocations: [models]\nbindings:\n  test: { command: \"go test ./schema/...\" }\n---\n\n# m\n\n## Goal\n\nDo it.\n")
+	var out bytes.Buffer
+	snap, err := createRun(w.bridge, runOpts{task: "supernova/m"}, true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.Sides[0].Bindings["test"].Command; got != "go test ./schema/..." {
+		t.Errorf("models side test = %q", got)
+	}
+	if got := snap.Sides[1].Bindings["test"].Command; got != "./client-test.sh" {
+		t.Errorf("client side test = %q", got)
+	}
+	if got := snap.Sides[2].Bindings["test"].Command; got != "./test.sh" {
+		t.Errorf("server side test = %q", got)
+	}
+}
+
+func TestTesterPromptShowsGuidanceSideBindings(t *testing.T) {
+	w := locationsWorld(t)
+	write(t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"),
+		strings.Replace(locationsProject, `test: { command: "./client-test.sh" }`, `test: { guidance: "run the client suite by hand" }`, 1))
+	var out bytes.Buffer
+	snap, err := createRun(w.bridge, runOpts{task: locTask(t, w, "m", "models")}, true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &RunFiles{Dir: filepath.Join(w.bridge, "run"), Snap: snap, State: &State{Run: snap.Run}}
+	tester, _, _ := snap.Pipeline.find("test")
+	prompt := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil)
+	if !strings.Contains(prompt, "- @test: run the client suite by hand") {
+		t.Errorf("tester prompt lacks the guidance binding:\n%s", prompt)
+	}
+}

@@ -545,3 +545,96 @@ func TestNextOnATerminalRunDoesNotReportADeadOwner(t *testing.T) {
 		t.Fatalf("next on a terminal run: %q", got)
 	}
 }
+
+// sidesPlainWorld is a locations world whose bindings are all plain and leave a marker file in the folder they ran in.
+func sidesPlainWorld(t *testing.T, clientTest string) *world {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the commands here are POSIX shell")
+	}
+	w := locationsWorld(t)
+	write(t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"), `platforms: [linux]
+
+bindings:
+  build: { command: "touch built", plain: true }
+  test:  { command: "touch tested", plain: true }
+  lint:  { not-applicable: "no linter" }
+
+locations:
+  models: {}
+  client:
+    depends-on: [models]
+    bindings:
+      test: { command: "`+clientTest+`", plain: true }
+  server:
+    depends-on: [models]
+
+cross-location:
+  bindings:
+    test: { command: "touch cross", plain: true }
+`)
+	return w
+}
+
+func (w *world) sideFolder(loc string) string {
+	return filepath.FromSlash(loadMachine(w.bridge).Locations["supernova"][loc])
+}
+
+func markerExists(parts ...string) bool {
+	_, err := os.Stat(filepath.Join(parts...))
+	return err == nil
+}
+
+func TestPlainStageRunsEverySideAndTheCrossTest(t *testing.T) {
+	w := sidesPlainWorld(t, "touch tested")
+	w.run(locTask(t, w, "m", "models"))
+	w.approve()
+	lead, why := w.spawn("", "", "orchestrator")
+	if lead == "" {
+		t.Fatalf("lead refused: %s", why)
+	}
+	w.toTest(lead)
+	if _, err := w.runStage(); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	for _, l := range []string{"models", "client", "server"} {
+		if !markerExists(w.sideFolder(l), "built") || !markerExists(w.sideFolder(l), "tested") {
+			t.Errorf("side %s should have been built and tested in its own folder", l)
+		}
+	}
+	if !markerExists(w.sideFolder("models"), "cross") || markerExists(w.sideFolder("client"), "cross") {
+		t.Error("the cross test should run once, in the edited location's folder")
+	}
+}
+
+func TestPlainStageStopsAtTheFirstFailingSide(t *testing.T) {
+	w := sidesPlainWorld(t, "exit 1")
+	w.run(locTask(t, w, "m", "models"))
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.toTest(lead)
+	out, err := w.runStage()
+	if err != nil || !strings.Contains(out, "Outcome: fail") || !strings.Contains(out, "side client: @test") {
+		t.Fatalf("the failing side should be named: %v\n%s", err, out)
+	}
+	if markerExists(w.sideFolder("server"), "built") || markerExists(w.sideFolder("models"), "cross") {
+		t.Error("nothing should run after the failure")
+	}
+}
+
+func TestPlainStageOfASingleSideRunsAsBefore(t *testing.T) {
+	w := sidesPlainWorld(t, "touch tested")
+	w.run(locTask(t, w, "c", "client"))
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.toTest(lead)
+	if _, err := w.runStage(); err != nil {
+		t.Fatal(err)
+	}
+	if !markerExists(w.sideFolder("client"), "tested") || markerExists(w.sideFolder("models"), "tested") || markerExists(w.sideFolder("client"), "cross") {
+		t.Error("a run of client alone tests client alone")
+	}
+}

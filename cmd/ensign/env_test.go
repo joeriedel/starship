@@ -131,7 +131,7 @@ func TestBindingRunSeesProjectEnv(t *testing.T) {
 	w := newWorld(t)
 	runEnv(t, "supernova", "SUPERNOVA_TOOL=hello")
 	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Project: "supernova", Workspace: t.TempDir()}, State: &State{Run: "r1"}}
-	out, err := runBinding(r, nil, `echo "tool:$SUPERNOVA_TOOL"`, time.Now().Add(time.Minute))
+	out, err := runBinding(r, nil, r.Snap.Workspace, `echo "tool:$SUPERNOVA_TOOL"`, time.Now().Add(time.Minute))
 	if err != nil || strings.TrimSpace(out) != "tool:hello" {
 		t.Fatalf("out %q err %v", out, err)
 	}
