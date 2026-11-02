@@ -438,6 +438,50 @@ func listIgnored(ws string) ([]string, error) {
 	return toks, nil
 }
 
+// gitIgnoresCase reports whether git treats file names case-insensitively in ws: git probes the filesystem at init and clone and records it in core.ignorecase.
+func gitIgnoresCase(ws string) bool {
+	v, err := gitOut(ws, "config", "--bool", "core.ignorecase")
+	return err == nil && v == "true"
+}
+
+// gitSpelling is the spelling git knows f by when it differs from the reported one only in case: an exact match wins, then the record, the paths dirty before the apply, the ignored files, and the tracked files, in that order (each sorted). A path git does not know keeps its reported spelling.
+func gitSpelling(ws, f string, rec []appliedEntry, before map[string]string, ignored []string) string {
+	var cands []string
+	for _, e := range rec {
+		cands = append(cands, e.Path)
+	}
+	dirty := make([]string, 0, len(before))
+	for p := range before {
+		dirty = append(dirty, p)
+	}
+	slices.Sort(dirty)
+	cands = append(cands, dirty...)
+	cands = append(cands, ignored...)
+	if slices.Contains(cands, f) {
+		return f
+	}
+	for _, c := range cands {
+		if strings.EqualFold(c, f) {
+			return c
+		}
+	}
+	tracked, err := gitZ(ws, "ls-files", "-z")
+	if err != nil {
+		return f
+	}
+	// git's icase pathspec folds ASCII only, so the tracked files are listed whole and folded here like the other sources.
+	slices.Sort(tracked)
+	if slices.Contains(tracked, f) {
+		return f
+	}
+	for _, c := range tracked {
+		if strings.EqualFold(c, f) {
+			return c
+		}
+	}
+	return f
+}
+
 // applyDependency runs @apply-dependency for one dependency in the side's workspace and records the files it touched. ignoredBefore is listIgnored from before the side's first apply.
 func applyDependency(r *RunFiles, d *Dispatch, sd Side, dep Dependency, ignoredBefore []string) (string, error) {
 	b := sd.Bindings[applyDependencyBinding]
@@ -492,7 +536,11 @@ func applyDependency(r *RunFiles, d *Dispatch, sd Side, dep Dependency, ignoredB
 	out, runErr := shellFor(sd.Workspace, b.Command, env, limit)
 	data, _ := os.ReadFile(listFile)
 	files, perr := parseAppliedList(string(data))
+	foldCase := gitIgnoresCase(sd.Workspace)
 	for _, f := range files {
+		if foldCase {
+			f = gitSpelling(sd.Workspace, f, rec.Files, before, ignoredBefore)
+		}
 		post := fileHash(sd.Workspace, f)
 		known := false
 		for i := range rec.Files {
