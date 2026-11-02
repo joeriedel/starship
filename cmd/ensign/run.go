@@ -31,6 +31,7 @@ type Snapshot struct {
 	Sides        []Side               `json:"sides,omitempty"`    // the locations the test stage covers, the edited one first
 	Narrowed     bool                 `json:"narrowed,omitempty"` // Sides is fewer than the edited location and its dependents
 	Cross        map[string]Binding   `json:"cross,omitempty"`    // the cross-location bindings, when there are several sides
+	Dependencies []Dependency         `json:"dependencies,omitempty"`
 	WorkItem     string               `json:"work_item"`
 	Start        string               `json:"start,omitempty"`
 	Pipeline     *Pipeline            `json:"pipeline"`
@@ -430,7 +431,7 @@ func writeJSON(path string, v any) error {
 type runOpts struct {
 	task, start, pipeline, project string
 	location                       string
-	sides                          []string
+	sides, dependencies            []string
 	dry, sync, rebuild, staleOK    bool
 	// A retry inside a sequence: the failed run's id and base, and the work item to freeze instead of the task's.
 	retryOf, retryBase, workItem string
@@ -439,7 +440,7 @@ type runOpts struct {
 // parseRunArgs reads the flags shared by `ensign run` and `ensign sequence run`; cmd names the command in the usage line.
 func parseRunArgs(cmd string, args []string) (runOpts, error) {
 	var o runOpts
-	usage := fmt.Errorf("usage: %s (<project>/<task> | --pipeline <name> [--project <p>]) [--location <name>] [--sides <a,b,...>] [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]", cmd)
+	usage := fmt.Errorf("usage: %s (<project>/<task> | --pipeline <name> [--project <p>]) [--location <name>] [--sides <a,b,...>] [--dependency <location>=<branch>] [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]", cmd)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dry-run":
@@ -450,7 +451,7 @@ func parseRunArgs(cmd string, args []string) (runOpts, error) {
 			o.rebuild = true
 		case "--stale-branch":
 			o.staleOK = true
-		case "--pipeline", "--project", "--location", "--sides":
+		case "--pipeline", "--project", "--location", "--sides", "--dependency":
 			if i+1 >= len(args) {
 				return o, fmt.Errorf("%s needs a value", args[i])
 			}
@@ -459,6 +460,11 @@ func parseRunArgs(cmd string, args []string) (runOpts, error) {
 				o.pipeline = args[i+1]
 			case "--project":
 				o.project = args[i+1]
+			case "--dependency":
+				if _, _, err := parseDependencyFlag(args[i+1]); err != nil {
+					return o, err
+				}
+				o.dependencies = append(o.dependencies, args[i+1])
 			case "--sides":
 				o.sides = nil
 				for _, n := range strings.Split(args[i+1], ",") {
@@ -523,6 +529,9 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		if section(string(body), "Goal") == "" && section(string(body), "Scope") == "" {
 			return nil, fmt.Errorf("task %s has no work item: its task file %s has neither a \"## Goal\" nor a \"## Scope\" section with text in it; add one and run again", c.Task, taskFile)
 		}
+	}
+	if err := c.resolveDependencies(bridge, o.dependencies); err != nil {
+		return nil, err
 	}
 	errs := validate(c)
 	var resolve func(list []*Stage)
@@ -600,6 +609,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		Sides:        c.Sides,
 		Narrowed:     c.Narrowed,
 		Cross:        c.Cross,
+		Dependencies: c.Dependencies,
 		WorkItem:     c.WorkItem,
 		Start:        start,
 		Pipeline:     c.Pipeline,
@@ -775,6 +785,9 @@ func printSummary(out io.Writer, c *Config, start string) {
 				note = "narrowed"
 			}
 			fmt.Fprintf(out, "sides      %s (%s)\n", strings.Join(names, ", "), note)
+		}
+		for _, l := range dependencyLines(c.Sides, c.Dependencies) {
+			fmt.Fprintf(out, "%s\n", l)
 		}
 	}
 	fmt.Fprintf(out, "pipeline   %s — %s\n", p.Name, p.Summary)

@@ -559,6 +559,7 @@ bindings:
   build: { command: "touch built", plain: true }
   test:  { command: "touch tested", plain: true }
   lint:  { not-applicable: "no linter" }
+  apply-dependency: { not-applicable: "these sides build from the sibling checkout" }
 
 locations:
   models: {}

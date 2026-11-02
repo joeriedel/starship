@@ -92,6 +92,9 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 		return fmt.Errorf("commit-pass runs only after a stage")
 	}
 	ws := r.Snap.Workspace
+	if err := checkNoDependencyWiring(r); err != nil {
+		return err
+	}
 	var files []string
 	for _, f := range d.Fields["files"] {
 		if filepath.IsAbs(f) {

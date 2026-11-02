@@ -226,6 +226,9 @@ func githubCommit(r *RunFiles) error {
 	if _, err := onTaskBranch(r); err != nil {
 		return err
 	}
+	if err := checkNoDependencyWiring(r); err != nil {
+		return err
+	}
 	if !dirty(ws) {
 		return nil
 	}

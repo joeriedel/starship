@@ -395,9 +395,10 @@ type Config struct {
 	needs        map[string]string // binding -> what requires it, from extensions
 	problems     []string
 	// Sides are the locations a run tests, the edited one first; Narrowed says they are fewer than the default. Cross holds the cross-location bindings when there are several sides.
-	Sides    []Side
-	Narrowed bool
-	Cross    map[string]Binding
+	Sides        []Side
+	Narrowed     bool
+	Cross        map[string]Binding
+	Dependencies []Dependency // other locations' unlanded branches the run applies, see resolveDependencies
 }
 
 // Side is one location a run tests, with what its test stage needs frozen: its folder on this machine and its merged bindings.

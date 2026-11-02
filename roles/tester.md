@@ -40,7 +40,7 @@ outside your stage and report the result.
 **Run each binding exactly as given — no redirection, no extra commands chained on.**
 Permission rules match the command as written, so anything added can get it refused.
 Long output is shortened for you; quote failures, never passes. Create nothing inside the
-workspace.
+workspace. If your prompt has a Dependencies section, run its `ensign dependency apply` and `ensign dependency restore` commands exactly as given, before and after the side's bindings; a restore that fails is an `error`. A restore that names a file changed since the apply is not yours to settle: report it.
 
 ## Finish the run
 

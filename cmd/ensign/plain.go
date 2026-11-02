@@ -189,25 +189,61 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	type planned struct {
 		label, name, dir string
 		b                Binding
+		side             *Side // the side whose wiring the command needs; the edited side for the cross-location test
+		deps             []Dependency
 	}
 	var plan []planned
 	multi := len(r.Snap.sides()) > 1
-	for _, sd := range r.Snap.sides() {
+	for i, sd := range r.Snap.sides() {
+		sp := planSide(sd, r.Snap.Dependencies)
+		if sp.na != "" {
+			steps = append(steps, fmt.Sprintf("side %s: @%s is not applicable (%s); tested as it is", sd.Location, applyDependencyBinding, sp.na))
+		}
 		for _, name := range []string{"build", "test"} {
 			if b, ok := sd.Bindings[name]; ok && b.NotApplicable == "" && b.Command != "" {
 				label := ""
 				if multi {
 					label = "side " + sd.Location + ": "
 				}
-				plan = append(plan, planned{label, name, sd.Workspace, b})
+				plan = append(plan, planned{label, name, sd.Workspace, b, &r.Snap.sides()[i], sp.apply})
 			}
 		}
 	}
 	if b := r.Snap.crossTest(); b.Valid() {
-		plan = append(plan, planned{"cross-location: ", "test", r.Snap.Workspace, b})
+		edited := &r.Snap.sides()[0]
+		plan = append(plan, planned{"cross-location: ", "test", r.Snap.Workspace, b, edited, planSide(*edited, r.Snap.Dependencies).apply})
+	}
+	var applied *Side
+	restore := func() {
+		if applied == nil {
+			return
+		}
+		notice, err := restoreDependencies(applied.Workspace, settleCommand(r, applied.Location))
+		if notice != "" {
+			steps = append(steps, fmt.Sprintf("side %s: %s", applied.Location, notice))
+		}
+		if err != nil {
+			outcome = "error"
+			steps = append(steps, fmt.Sprintf("side %s: could not restore the dependency wiring: %v", applied.Location, err))
+		}
+		applied = nil
 	}
 	for _, p := range plan {
 		name, b := p.name, p.b
+		if p.side != applied {
+			restore()
+			if p.side != nil && len(p.deps) > 0 {
+				aout, err := applyDependencies(r, d, *p.side, p.deps)
+				log = append(log, aout)
+				applied = p.side
+				if err != nil {
+					outcome = "error"
+					steps = append(steps, fmt.Sprintf("side %s: could not apply the dependency: %v", p.side.Location, err))
+					failed = aout
+					break
+				}
+			}
+		}
 		limit := b.Timeout
 		if limit == 0 {
 			limit = defaultBindingTimeout
@@ -239,6 +275,7 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 		failed = out
 		break
 	}
+	restore()
 	logFile := filepath.Join(r.Dir, "reports", d.ID+".log")
 	os.WriteFile(logFile, []byte(strings.Join(log, "\n")), 0o644)
 

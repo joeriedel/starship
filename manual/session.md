@@ -18,7 +18,7 @@ Nothing starts without agreement. **Reading needs no approval**; read only what 
 
 A plan names task, pipeline (usually `coding`), work item, what done looks like, what is out of scope. Then:
 
-1. Run `ensign run <project>/<task>` (add `--start <stage>` or `--sync` when asked). Show the user the relevant summary parts.
+1. Run `ensign run <project>/<task>` (add `--start <stage>` or `--sync` when asked; for an unlanded branch of a location the change depends on, `--dependency <location>=<branch>`, see `ensign help project`). Show the user the relevant summary parts.
 2. Ask the user to type `go`. **Only the literal `go` approves a run**; not "yes", agreement, or an answered question.
 3. On `go`, the hook tells you to dispatch the lead; do that, then wait.
 

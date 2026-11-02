@@ -649,6 +649,34 @@ func sidesSection(r *RunFiles) string {
 	return b.String()
 }
 
+// dependenciesSection tells an agent that builds or tests to apply the other locations' unlanded branches before @build and @test, and to restore before it finishes. A coder works in the edited location only.
+func dependenciesSection(r *RunFiles, coder bool) string {
+	if len(r.Snap.Dependencies) == 0 {
+		return ""
+	}
+	where := fmt.Sprintf("--bridge %s --run %s", shellQuote(r.Snap.Bridge), r.State.Run)
+	var b strings.Builder
+	for _, sd := range r.Snap.sides() {
+		if coder && sd.Location != r.Snap.Location {
+			continue
+		}
+		p := planSide(sd, r.Snap.Dependencies)
+		if len(p.apply) == 0 {
+			continue
+		}
+		var names []string
+		for _, dep := range p.apply {
+			names = append(names, dep.Location+" @ "+dep.label())
+		}
+		fmt.Fprintf(&b, "- side %s (applies %s): `ensign dependency apply %s --side %s`, then @build and @test there, then `ensign dependency restore %s --side %s`\n",
+			sd.Location, strings.Join(names, ", "), where, sd.Location, where, sd.Location)
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "\n## Dependencies\n\nThis run builds and tests against another location's unlanded branch. In each side below, run the apply command before @build or @test there, and the restore command before you finish, so the wiring is never committed:\n\n" + b.String()
+}
+
 func platformsLine(r *RunFiles) string {
 	if len(r.Snap.Platforms) == 0 {
 		return ""
@@ -709,6 +737,9 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 	b.WriteString(workspaceSection(r))
 	if s.Role == "tester" {
 		b.WriteString(sidesSection(r))
+	}
+	if s.Role == "tester" || s.Role == "coder" {
+		b.WriteString(dependenciesSection(r, s.Role == "coder"))
 	}
 	if s.Role == "reviewer" {
 		b.WriteString(platformsLine(r))

@@ -39,6 +39,8 @@ func main() {
 		err = cmdSequence(os.Args[2:], os.Stdout)
 	case "next":
 		err = cmdNext(os.Args[2:], os.Stdout)
+	case "dependency":
+		err = cmdDependency(os.Args[2:], os.Stdout)
 	case "run-stage":
 		err = cmdRunStage(os.Args[2:], os.Stdout)
 	case "init":
@@ -134,7 +136,7 @@ func usage() {
   ensign project new <name> --workspace <path> [--platforms <list>]
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
   ensign task open <project>/<task>
-  ensign run <project>/<task> [--start <stage>] [--sync] [--dry-run]
+  ensign run <project>/<task> [--start <stage>] [--sync] [--dependency <location>=<branch>] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
   ensign sequence [run <project>/<task> [run flags] | publish <project>/<task> | release <project> <version> | do <instruction> | mode stop|keep-going | halt [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> [--note <text>] | fail <n> --reason <text>]
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>]
@@ -146,6 +148,7 @@ func usage() {
   ensign github-pr pull-request|merge|update <project>/<task>
   ensign next [--bridge <dir>] [--run <id>]
   ensign run-stage [--bridge <dir>] [--run <id>]
+  ensign dependency apply --side <location> | restore [--side <location>] [--bridge <dir>] [--run <id>]
   ensign hook <SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|SubagentStop|Stop>`)
 }
 

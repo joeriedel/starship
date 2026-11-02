@@ -924,6 +924,11 @@ func cmdSequence(args []string, out io.Writer) error {
 			if old.Snap.Narrowed {
 				o.sides = sideNames(old.Snap.Sides)
 			}
+			for _, dep := range old.Snap.Dependencies {
+				if dep.Branch != "" {
+					o.dependencies = append(o.dependencies, dep.Location+"="+dep.Branch)
+				}
+			}
 			if old.Snap.Task != "" {
 				o.task = old.Snap.Task
 			} else {
