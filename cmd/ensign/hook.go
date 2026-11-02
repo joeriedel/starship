@@ -524,8 +524,19 @@ func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 	if r.State.Status != "pending" {
 		return ctx(fmt.Sprintf("run %s is %s, not waiting for approval.", r.State.Run, r.State.Status)), nil
 	}
+	l, err := lockFolders(r.Snap.Bridge)
+	if err != nil {
+		return nil, err
+	}
+	defer l.Unlock()
+	if err := folderHolder(r.Snap.Bridge, r.Snap.Workspace, r.State.Run); err != nil {
+		return ctx(fmt.Sprintf("run %s was not started: %v.", r.State.Run, err)), nil
+	}
 	r.State.Approved, r.State.Status = true, "running"
 	r.State.log("approved", "", "", "")
+	if err := r.save(); err != nil {
+		return nil, err
+	}
 	return ctx(approvalText(r)), nil
 }
 
@@ -876,6 +887,14 @@ func cmdResume(args []string, out io.Writer) error {
 			return fmt.Errorf("no budget %q", b)
 		}
 	}
+	l, err := lockFolders(bridge)
+	if err != nil {
+		return err
+	}
+	defer l.Unlock()
+	if err := folderHolder(bridge, r.Snap.Workspace, r.State.Run); err != nil {
+		return err
+	}
 	m := &machine{snap: r.Snap, st: r.State}
 	if err := m.resume(answer, extra); err != nil {
 		return err
@@ -883,6 +902,7 @@ func cmdResume(args []string, out io.Writer) error {
 	if err := r.save(); err != nil {
 		return err
 	}
+	l.Unlock()
 	if r.State.Sequence {
 		if _, err := advanceSequence(bridge, r.State.Session); err != nil {
 			return err
@@ -945,26 +965,28 @@ func carryOverSession(bridge string, in *HookInput) {
 	}
 	for _, old := range priorSessions(in.TranscriptPath, in.SessionID) {
 		carrySequence(bridge, old, in.SessionID)
-		r, err := openSessionRun(bridge, old)
-		if err != nil || r == nil {
-			continue
-		}
-		if r.State.terminal() {
+		carried := false
+		for _, id := range sessionRuns(bridge, old) {
+			r, err := openRun(bridge, id)
+			if err != nil {
+				continue
+			}
+			switch {
+			case r.State.terminal():
+			case r.State.Session == in.SessionID:
+				carried = true
+			case bindSession(bridge, in.SessionID, id) == nil:
+				carried = true
+				copySessionTask(bridge, old, in.SessionID)
+				r.State.Session = in.SessionID
+				r.State.log("rebound", "", "", fmt.Sprintf("session %s -> %s (%s)", old, in.SessionID, in.Source))
+				r.save()
+			}
 			r.close()
-			continue
 		}
-		if r.State.Session == in.SessionID {
-			r.close()
+		if carried {
 			return
 		}
-		if bindSession(bridge, in.SessionID, r.State.Run) == nil {
-			copySessionTask(bridge, old, in.SessionID)
-			r.State.Session = in.SessionID
-			r.State.log("rebound", "", "", fmt.Sprintf("session %s -> %s (%s)", old, in.SessionID, in.Source))
-			r.save()
-		}
-		r.close()
-		return
 	}
 }
 

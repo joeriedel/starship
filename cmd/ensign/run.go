@@ -13,6 +13,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -213,19 +215,109 @@ func openRun(bridge, id string) (*RunFiles, error) {
 	return r, nil
 }
 
-// openSessionRun opens the run bound to a session. It returns nil, nil when there is none.
-func openSessionRun(bridge, session string) (*RunFiles, error) {
+// sessionRuns lists the ids of a session's runs, oldest first. An older session file holds one id.
+func sessionRuns(bridge, session string) []string {
 	if session == "" {
-		return nil, nil
+		return nil
 	}
 	data, err := os.ReadFile(sessionFile(bridge, session))
-	if os.IsNotExist(err) {
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, l := range strings.Split(string(data), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			ids = append(ids, l)
+		}
+	}
+	return ids
+}
+
+// liveSessionRuns lists the ids of a session's runs that have not finished.
+func liveSessionRuns(bridge, session string) []string {
+	var live []string
+	for _, id := range sessionRuns(bridge, session) {
+		var st State
+		if readJSON(filepath.Join(runsDir(bridge), id, "state.json"), &st) == nil && !st.terminal() {
+			live = append(live, id)
+		}
+	}
+	return live
+}
+
+// writeSessionRuns replaces a session's run ids; an empty list removes the file.
+func writeSessionRuns(bridge, session string, ids []string) error {
+	f := sessionFile(bridge, session)
+	if len(ids) == 0 {
+		err := os.Remove(f)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	tmp := f + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(ids, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, f)
+}
+
+// editSessionRuns changes a session's run ids under the session file's lock.
+func editSessionRuns(bridge, session string, edit func(ids []string) []string) error {
+	f := sessionFile(bridge, session)
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		return err
+	}
+	l := flock.New(f + ".lock")
+	if err := l.Lock(); err != nil {
+		return err
+	}
+	defer l.Unlock()
+	return writeSessionRuns(bridge, session, edit(sessionRuns(bridge, session)))
+}
+
+// unbindSession removes a run from a session's run set.
+func unbindSession(bridge, session, run string) error {
+	return editSessionRuns(bridge, session, func(ids []string) []string {
+		return slices.DeleteFunc(ids, func(id string) bool { return id == run })
+	})
+}
+
+// sessionRunID names the run a call from the session means: its one live run, else its latest. When several are live, it returns them in several.
+func sessionRunID(bridge, session string) (id string, several []string) {
+	live := liveSessionRuns(bridge, session)
+	if len(live) > 1 {
+		return "", live
+	}
+	if len(live) == 1 {
+		return live[0], nil
+	}
+	if ids := sessionRuns(bridge, session); len(ids) > 0 {
+		return ids[len(ids)-1], nil
+	}
+	return "", nil
+}
+
+// openSessionRun opens the run a command from the session means when it names none with --run. It returns nil, nil when the session has none, and an error when several are live.
+func openSessionRun(bridge, session string) (*RunFiles, error) {
+	id, several := sessionRunID(bridge, session)
+	if len(several) > 0 {
+		return nil, fmt.Errorf("this session has several live runs (%s); pass --run <id> to name one", strings.Join(several, ", "))
+	}
+	return openRunIfExists(bridge, id)
+}
+
+// openSoleSessionRun is openSessionRun for hooks: with several live runs the session has no one run, so it returns nil, nil.
+func openSoleSessionRun(bridge, session string) (*RunFiles, error) {
+	id, _ := sessionRunID(bridge, session)
+	return openRunIfExists(bridge, id)
+}
+
+func openRunIfExists(bridge, id string) (*RunFiles, error) {
+	if id == "" {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	r, err := openRun(bridge, strings.TrimSpace(string(data)))
+	r, err := openRun(bridge, id)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -287,7 +379,7 @@ func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 	if r == nil || err != nil {
 		return nil, err
 	}
-	if r.State.Session == in.SessionID {
+	if r.State.Session == in.SessionID || len(liveSessionRuns(bridge, in.SessionID)) > 0 {
 		return r, nil
 	}
 	if err := bindSession(bridge, in.SessionID, r.State.Run); err != nil {
@@ -300,9 +392,12 @@ func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 	return r, nil
 }
 
-// openHookRun opens the run a hook call is checked against. An agent's own live run comes first, even when its session is bound to another run, and that binding is left alone; the session is rebound only when it has no run. Otherwise it is the session's run. The session's run is closed before another is opened, so no two run locks are held.
+// openHookRun opens the run a hook call is checked against. An agent's own live run comes first, even when its session is bound to another run, and that binding is left alone; the session is rebound only when it has no live run. Otherwise it is the session's run, when it has just one live run. The session's run is closed before another is opened, so no two run locks are held.
 func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
-	r, err := openSessionRun(bridge, in.SessionID)
+	if len(liveSessionRuns(bridge, in.SessionID)) > 1 {
+		return findAgentRun(bridge, in)
+	}
+	r, err := openSoleSessionRun(bridge, in.SessionID)
 	if err != nil || in.AgentID == "" {
 		return r, err
 	}
@@ -317,7 +412,7 @@ func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
 	if ar != nil || err != nil {
 		return ar, err
 	}
-	return openSessionRun(bridge, in.SessionID)
+	return openSoleSessionRun(bridge, in.SessionID)
 }
 
 // markRetired marks an open run as error and releases it. The lock is released before any
@@ -359,18 +454,65 @@ func copySessionTask(bridge, from, to string) {
 	}
 }
 
-// bindSession records that a run belongs to a session, and writes the setup file with the run's project environment for the session's agents.
+// bindSession records that a run belongs to a session, and writes the setup file with the run's project environment for the session's agents. Runs of the session that have finished are dropped from its set.
 func bindSession(bridge, session, run string) error {
-	f := sessionFile(bridge, session)
-	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(f, []byte(run+"\n"), 0o644); err != nil {
+	err := editSessionRuns(bridge, session, func(ids []string) []string {
+		keep := []string{}
+		for _, id := range ids {
+			var st State
+			if id != run && readJSON(filepath.Join(runsDir(bridge), id, "state.json"), &st) == nil && !st.terminal() {
+				keep = append(keep, id)
+			}
+		}
+		return append(keep, run)
+	})
+	if err != nil {
 		return err
 	}
 	var snap Snapshot
 	if readJSON(filepath.Join(runsDir(bridge), run, "pipeline.json"), &snap) == nil {
 		writeSetupFile(bridge, session, snap.Project)
+	}
+	return nil
+}
+
+// folderBusyError is a run that can't start because another live run holds its code folder.
+type folderBusyError struct{ run, status, folder string }
+
+func (e *folderBusyError) Error() string {
+	return fmt.Sprintf("run %s (%s) already holds the code folder %s; one run at a time works in a folder, so start this once that run has finished", e.run, e.status, e.folder)
+}
+
+// lockFolders serializes the check that a folder is free with the approval that takes it. Take a run's lock before this one, never the reverse.
+func lockFolders(bridge string) (*flock.Flock, error) {
+	dir := filepath.Join(bridge, ".starship")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	l := flock.New(filepath.Join(dir, "folders.lock"))
+	if err := l.Lock(); err != nil {
+		return nil, err
+	}
+	return l, nil
+}
+
+// sameFolder reports whether two code folders are one, as the edit guard compares paths.
+func sameFolder(a, b, goos string) bool {
+	return foldPath(resolveEditFolder(a, goos), goos) == foldPath(resolveEditFolder(b, goos), goos)
+}
+
+// folderHolder finds the run, other than those in skip, that holds the code folder: an approved run that has not finished. It returns nil when the folder is free.
+func folderHolder(bridge, folder string, skip ...string) error {
+	if folder == "" {
+		return nil
+	}
+	for _, ri := range liveRuns(bridge) {
+		if !ri.state.Approved || slices.Contains(skip, ri.id) || ri.snap.Workspace == "" {
+			continue
+		}
+		if sameFolder(folder, ri.snap.Workspace, runtime.GOOS) {
+			return &folderBusyError{run: ri.id, status: ri.state.Status, folder: ri.snap.Workspace}
+		}
 	}
 	return nil
 }
@@ -589,6 +731,12 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 			return nil, fmt.Errorf("this session already has an active run, %s", ri.id)
 		}
 		replace = append(replace, ri.id)
+	}
+
+	if !queued {
+		if err := folderHolder(bridge, c.Workspace, replace...); err != nil {
+			return nil, err
+		}
 	}
 
 	label := strings.ReplaceAll(c.Task, "/", "-")

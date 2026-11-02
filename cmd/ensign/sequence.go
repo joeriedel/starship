@@ -373,13 +373,19 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 			switch st.Kind {
 			case "run":
 				text, err := startRunStep(bridge, session, st)
+				var busy *folderBusyError
+				if errors.As(err, &busy) {
+					st.Reason = "waiting: " + err.Error()
+					parts = append(parts, fmt.Sprintf("step %d can't start yet: %v", st.N, err))
+					return finish(), nil
+				}
 				if err != nil {
 					retireIf(bridge, st.Run, "failed: "+err.Error(), "pending")
 					st.Status, st.Reason = "failed", err.Error()
 					sf.failed(bridge, seq, st)
 					continue
 				}
-				st.Status = "active"
+				st.Status, st.Reason = "active", ""
 				parts = append(parts, fmt.Sprintf("step %d: %s", st.N, text))
 				return finish(), nil
 			case "publish":
@@ -435,11 +441,20 @@ func startRunStep(bridge, session string, st *seqStep) (string, error) {
 	if r.State.Status != "pending" {
 		return "", fmt.Errorf("its run %s is %s, not waiting", st.Run, r.State.Status)
 	}
+	l, err := lockFolders(bridge)
+	if err != nil {
+		return "", err
+	}
+	defer l.Unlock()
+	if err := folderHolder(bridge, r.Snap.Workspace, st.Run); err != nil {
+		return "", err
+	}
 	r.State.Session, r.State.Approved, r.State.Status = session, true, "running"
 	r.State.log("approved", "", "", "sequence")
 	if err := r.save(); err != nil {
 		return "", err
 	}
+	l.Unlock()
 	if err := bindSession(bridge, session, st.Run); err != nil {
 		return "", err
 	}
@@ -582,11 +597,11 @@ func carrySequence(bridge, old, session string) {
 	if os.Rename(seqPath(bridge, old), seqPath(bridge, session)) != nil {
 		return
 	}
-	bound, _ := os.ReadFile(sessionFile(bridge, old))
+	bound := sessionRuns(bridge, old)
 	withSeq(bridge, session, func(sf *seqFile) error {
 		for _, seq := range sf.Sequences {
 			for _, st := range seq.Steps {
-				if st.Kind != "run" || !st.open() || st.Run == strings.TrimSpace(string(bound)) {
+				if st.Kind != "run" || !st.open() || slices.Contains(bound, st.Run) {
 					continue
 				}
 				if r, err := openRun(bridge, st.Run); err == nil {
@@ -1013,13 +1028,11 @@ func flagValue(args []string, flag, usage string) (string, error) {
 
 // checkAddable refuses to add steps while the session has a plain run under way.
 func checkAddable(bridge, session string) error {
-	r, err := openSessionRun(bridge, session)
-	if err != nil || r == nil {
-		return err
-	}
-	defer r.close()
-	if !r.State.terminal() && !r.State.Sequence && r.State.Approved {
-		return fmt.Errorf("this session already has an active run, %s; add steps once it has finished", r.State.Run)
+	for _, id := range liveSessionRuns(bridge, session) {
+		r, err := readRun(bridge, id)
+		if err == nil && !r.State.Sequence && r.State.Approved {
+			return fmt.Errorf("this session already has an active run, %s; add steps once it has finished", id)
+		}
 	}
 	return nil
 }
@@ -1027,16 +1040,21 @@ func checkAddable(bridge, session string) error {
 // seqAdd appends a step to the session's open sequence and prints the sequence. A plain run waiting for go becomes the sequence's first step.
 func seqAdd(bridge, session string, out io.Writer, st *seqStep) error {
 	return withSeq(bridge, session, func(sf *seqFile) error {
-		if r, err := openSessionRun(bridge, session); err != nil {
-			return err
-		} else if r != nil {
-			if !r.State.terminal() && !r.State.Sequence && !r.State.Approved {
+		for _, id := range liveSessionRuns(bridge, session) {
+			r, err := openRun(bridge, id)
+			if err != nil {
+				return err
+			}
+			if !r.State.Sequence && !r.State.Approved {
 				r.State.Sequence = true
 				if err := r.save(); err != nil {
 					r.close()
 					return err
 				}
-				os.Remove(sessionFile(bridge, session))
+				if err := unbindSession(bridge, session, id); err != nil {
+					r.close()
+					return err
+				}
 				sf.add(&seqStep{Kind: "run", Task: r.Snap.Task, Run: r.State.Run, Headline: headline(r.Snap.WorkItem)})
 				fmt.Fprintf(out, "run %s was waiting for go; it is now step %d of the sequence\n", r.State.Run, sf.NextStep)
 			}

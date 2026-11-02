@@ -187,3 +187,18 @@ func TestEditGuardFolderNotYetCreatedBehindSymlink(t *testing.T) {
 	w.expectEdit("", "", filepath.Join(real, "projects", "notes", "a.md"), false)
 	w.expectEdit("", "", filepath.Join(real, "projects", "other", "a.md"), true)
 }
+
+func TestEditGuardSeveralLiveRuns(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	client, server := filepath.Join(t.TempDir(), "client"), filepath.Join(t.TempDir(), "server")
+	os.MkdirAll(client, 0o755)
+	os.MkdirAll(server, 0o755)
+	w.liveStepRun(client, "agentA")
+	w.liveStepRun(server, "agentB")
+	w.expectEdit("agentA", "coder", filepath.Join(client, "main.go"), false)
+	w.expectEdit("agentA", "coder", filepath.Join(server, "main.go"), true)
+	w.expectEdit("agentB", "coder", filepath.Join(server, "main.go"), false)
+	w.expectEdit("agentB", "coder", filepath.Join(client, "main.go"), true)
+	w.expectEdit("ghost", "coder", filepath.Join(client, "main.go"), true)
+	w.expectEdit("ghost", "coder", filepath.Join(server, "main.go"), true)
+}

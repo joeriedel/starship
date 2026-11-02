@@ -856,3 +856,34 @@ func TestSequenceReleaseResultFollowsCarriedSequence(t *testing.T) {
 		t.Errorf("the new owner should have advanced: %+v", sf)
 	}
 }
+
+func TestEachLiveRunFinishesOnItsOwn(t *testing.T) {
+	w := newWorld(t)
+	a := w.liveStepRun(t.TempDir(), "agentA")
+	b := w.liveStepRun(t.TempDir(), "agentB")
+	r, err := openRun(w.bridge, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	(&machine{snap: r.Snap, st: r.State}).fail("handler", "boom")
+	if err := finishIfTerminal(r, false, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	r.save()
+	r.close()
+	history, _ := os.ReadFile(filepath.Join(w.bridge, "projects", "supernova", "tasks", "auth-refactor", "history.md"))
+	if !strings.Contains(string(history), "boom") {
+		t.Fatalf("the finished run was not journaled:\n%s", history)
+	}
+	if st := w.runState(b); st.terminal() || st.Finished {
+		t.Fatalf("the other run is %s", st.Status)
+	}
+	if got := strings.Join(liveSessionRuns(w.bridge, w.sid), ","); got != b {
+		t.Fatalf("live runs %q, want %q", got, b)
+	}
+	hr, err := openHookRun(w.bridge, &HookInput{SessionID: w.sid, AgentID: "agentB"})
+	if err != nil || hr == nil || hr.State.Run != b {
+		t.Fatalf("the live run's agent lost its run: %v", err)
+	}
+	hr.close()
+}

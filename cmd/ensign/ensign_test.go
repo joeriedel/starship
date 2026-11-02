@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -198,6 +199,36 @@ func (w *world) leaf(lead, role, outcome string) {
 	if r := w.stop(id, role, report(outcome), false); r != "" {
 		w.t.Fatalf("%s stop was blocked: %s", role, r)
 	}
+}
+
+// liveStepRun starts a sequence step's run in the folder, the way startRunStep does, with a coder dispatch for agent when given.
+func (w *world) liveStepRun(folder, agent string) string {
+	w.t.Helper()
+	var out bytes.Buffer
+	snap, err := createRun(w.bridge, runOpts{task: "supernova/auth-refactor"}, true, &out)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	snap.Workspace = folder
+	if err := writeJSON(filepath.Join(runsDir(w.bridge), snap.Run, "pipeline.json"), snap); err != nil {
+		w.t.Fatal(err)
+	}
+	if _, err := startRunStep(w.bridge, w.sid, &seqStep{Run: snap.Run, Task: snap.Task}); err != nil {
+		w.t.Fatal(err)
+	}
+	if agent != "" {
+		r, err := openRun(w.bridge, snap.Run)
+		if err != nil {
+			w.t.Fatal(err)
+		}
+		left := stopBudget
+		r.State.Dispatches = append(r.State.Dispatches, &Dispatch{ID: "d1", Stage: "code", Role: "coder", AgentID: agent, StopsLeft: &left})
+		if err := r.save(); err != nil {
+			w.t.Fatal(err)
+		}
+		r.close()
+	}
+	return snap.Run
 }
 
 func (w *world) state() *State {
@@ -698,25 +729,141 @@ func TestSessionWithAnApprovedRunIsRefused(t *testing.T) {
 	}
 }
 
-func TestOtherSessionsRunsOnTheSameWorkspaceAreUntouched(t *testing.T) {
+func TestOtherSessionsRunsOnTheSameFolderRefuseANewRun(t *testing.T) {
 	w := newWorld(t)
 	w.run("supernova/auth-refactor")
+	w.approve()
 	pending := w.state().Run
 
 	b := *w
 	b.sid = "s2"
 	t.Setenv("STARSHIP_SESSION", "s2")
-	b.run("supernova/auth-refactor")
-	b.approve()
-	running := b.state().Run
-
-	t.Setenv("STARSHIP_SESSION", "s3")
-	w.run("supernova/auth-refactor")
-	if st := w.runState(pending); st.Status != "pending" {
-		t.Fatalf("pending run of another session is now %s", st.Status)
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	_, err := createRun(w.bridge, runOpts{task: "supernova/auth-refactor"}, false, &out)
+	if err == nil || !strings.Contains(err.Error(), pending) || !strings.Contains(err.Error(), w.workspace()) {
+		t.Fatalf("a run on a folder another session's run holds: %v", err)
 	}
-	if st := w.runState(running); st.Status != "running" {
+	if st := w.runState(pending); st.Status != "running" {
 		t.Fatalf("running run of another session is now %s", st.Status)
+	}
+	if r, _ := openSessionRun(w.bridge, "s2"); r != nil {
+		t.Fatal("the refused run was bound to the session")
+	}
+}
+
+func TestSameFolderComparisonFollowsThePlatform(t *testing.T) {
+	if !sameFolder(`C:\Work\Client`, `c:/work/client`, "windows") || !sameFolder("/Work/Client", "/work/client", "darwin") {
+		t.Error("case and separators should not tell folders apart on windows and macOS")
+	}
+	if sameFolder("/Work/Client", "/work/client", "linux") || sameFolder("/work/client", "/work/server", "darwin") {
+		t.Error("different folders compared equal")
+	}
+}
+
+func TestSessionFileHoldsASetOfRuns(t *testing.T) {
+	w := newWorld(t)
+	write(t, sessionFile(w.bridge, "s9"), "a\r\nb\n\n")
+	if got := strings.Join(sessionRuns(w.bridge, "s9"), ","); got != "a,b" {
+		t.Fatalf("parsed %q", got)
+	}
+	write(t, sessionFile(w.bridge, "s8"), "only\n")
+	if got := strings.Join(sessionRuns(w.bridge, "s8"), ","); got != "only" {
+		t.Fatalf("old single-id file parsed %q", got)
+	}
+}
+
+func TestSeveralLiveRunsOfOneSession(t *testing.T) {
+	w := newWorld(t)
+	client, server := t.TempDir(), t.TempDir()
+	a := w.liveStepRun(client, "agentA")
+	b := w.liveStepRun(server, "agentB")
+	if got := strings.Join(liveSessionRuns(w.bridge, w.sid), ","); got != a+","+b {
+		t.Fatalf("live runs %q", got)
+	}
+	if _, err := openSessionRun(w.bridge, w.sid); err == nil || !strings.Contains(err.Error(), "--run") || !strings.Contains(err.Error(), a) || !strings.Contains(err.Error(), b) {
+		t.Fatalf("several live runs without --run: %v", err)
+	}
+	if line := runLine(w.bridge, w.sid); !strings.Contains(line, a+": ") || !strings.Contains(line, b+": ") {
+		t.Fatalf("status shows %q", line)
+	}
+	for agent, want := range map[string]string{"agentA": a, "agentB": b, "ghost": ""} {
+		r, err := openHookRun(w.bridge, &HookInput{SessionID: w.sid, AgentID: agent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ""; r != nil {
+			got = r.State.Run
+			r.close()
+			if got != want {
+				t.Errorf("%s got run %q, want %q", agent, got, want)
+			}
+		} else if want != "" {
+			t.Errorf("%s got no run, want %q", agent, want)
+		}
+	}
+	if r, err := openHookRun(w.bridge, &HookInput{SessionID: w.sid}); err != nil || r != nil {
+		t.Errorf("the session itself should have no one run: %v %v", r, err)
+	}
+	if id, why := w.spawn("ghost", "orchestrator", "coder"); id != "" || why == "" {
+		t.Errorf("an untied agent's spawn: %q %q", id, why)
+	}
+	if err := bindSession(w.bridge, w.sid, a); err != nil || len(liveSessionRuns(w.bridge, w.sid)) != 2 {
+		t.Fatalf("binding a bound run again changed the set: %v", err)
+	}
+}
+
+func TestAStepWaitsForABusyFolder(t *testing.T) {
+	w := newWorld(t)
+	folder := t.TempDir()
+	a := w.liveStepRun(folder, "")
+	var out bytes.Buffer
+	snap, err := createRun(w.bridge, runOpts{task: "supernova/auth-refactor"}, true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.Workspace = folder
+	writeJSON(filepath.Join(runsDir(w.bridge), snap.Run, "pipeline.json"), snap)
+	_, err = startRunStep(w.bridge, w.sid, &seqStep{Run: snap.Run, Task: snap.Task})
+	var busy *folderBusyError
+	if !errors.As(err, &busy) || busy.run != a {
+		t.Fatalf("starting a step in a held folder: %v", err)
+	}
+	if st := w.runState(snap.Run); st.Status != "pending" || st.Approved {
+		t.Fatalf("the refused step is %s", st.Status)
+	}
+	r, err := openRun(w.bridge, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status = "success"
+	r.save()
+	r.close()
+	if _, err := startRunStep(w.bridge, w.sid, &seqStep{Run: snap.Run, Task: snap.Task}); err != nil {
+		t.Fatalf("after the holder finished, the refusal left the folder lock held or the folder busy: %v", err)
+	}
+}
+
+func TestAPendingRunFromAnotherSessionDoesNotHoldItsFolder(t *testing.T) {
+	w := newWorld(t)
+	var out bytes.Buffer
+	t.Setenv("STARSHIP_SESSION", "gone")
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	first, err := createRun(w.bridge, runOpts{task: "supernova/auth-refactor"}, false, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STARSHIP_SESSION", w.sid)
+	if _, err := createRun(w.bridge, runOpts{task: "supernova/auth-refactor"}, false, &out); err != nil {
+		t.Fatalf("a pending run that was never approved blocked create: %v", err)
+	}
+	w.approve()
+	if st := w.state(); st.Status != "running" || st.Run == first.Run {
+		t.Fatalf("go: run %s is %s", st.Run, st.Status)
 	}
 }
 
@@ -1612,5 +1759,45 @@ func TestInitGitattributes(t *testing.T) {
 	}
 	if st, _ := gitOut(dir, "status", "--porcelain"); st != "?? .gitattributes" {
 		t.Errorf("existing .gitattributes should stay uncommitted: %q", st)
+	}
+}
+
+func TestResumeWaitsForABusyFolder(t *testing.T) {
+	w := newWorld(t)
+	folder := t.TempDir()
+	a := w.liveStepRun(folder, "")
+	r, err := openRun(w.bridge, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status, r.State.Reason = "ask-user", "which way?"
+	r.State.Resume = &ResumePoint{Scope: "run", Stage: "code"}
+	r.save()
+	r.close()
+	b := w.liveStepRun(folder, "")
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	err = cmdResume([]string{"--answer", "left", "--run", a}, &out)
+	var busy *folderBusyError
+	if !errors.As(err, &busy) || busy.run != b {
+		t.Fatalf("resume into a held folder: %v", err)
+	}
+	if st := w.runState(a); st.Status != "ask-user" {
+		t.Fatalf("the refused resume left the run %s", st.Status)
+	}
+	hr, err := openRun(w.bridge, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hr.State.Status = "success"
+	hr.save()
+	hr.close()
+	if err := cmdResume([]string{"--answer", "left", "--run", a}, &out); err != nil {
+		t.Fatalf("after the holder finished: %v", err)
+	}
+	if st := w.runState(a); st.Status != "running" {
+		t.Fatalf("resumed run is %s", st.Status)
 	}
 }
