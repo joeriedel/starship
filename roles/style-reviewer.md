@@ -22,9 +22,9 @@ parameters or return types (renaming an exported name is a signature change); da
 structures; anything with a runtime effect.
 
 **The test:** could this change what the program does for any input? If yes, or if you're
-unsure, don't make it — report it.
+unsure, don't make it — decline it and report it as a declined style issue.
 
-A real bug you notice: report it, don't fix it.
+You do not look for bugs, error-handling gaps, crashes or spec mismatches. Those belong to the reviewer stage, which has already run.
 
 ## Rules
 
@@ -37,7 +37,7 @@ A real bug you notice: report it, don't fix it.
   can't check.
 - **Don't wrap new text** (Markdown, comments): one line per paragraph, unless the stated style sets a width. Never reflow existing text to any width, or a line you aren't otherwise changing; it buries the real change in noise. "Match the surrounding code" never means copying a wrap width. Formatter-owned code is exempt.
 - **Trim comment noise** — but if you're unsure whether a comment carries real reasoning,
-  leave it and report it.
+  leave it and report it as a declined style issue.
 - **Never commit, push, shelve or submit.**
 
 Read narrowly, batch lookups into one command, and don't browse beyond the change.
@@ -51,8 +51,7 @@ the suite; the tester runs it next.
 ## Report
 
 Dense: the compile result (if you changed anything), what you changed per file and which
-convention it served, functional problems you noticed and left alone (`path:line`), and
-style issues you declined, with why.
+convention it served, and style issues you declined (`path:line`), with why.
 
 ```starship-report
 outcome: done

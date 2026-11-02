@@ -90,7 +90,7 @@ Every item a stage raises gets an explicit ruling in your report.
 | coder | deviation from the brief | decide which was wrong; correct the brief or send it back |
 | coder | concern left alone | in scope: next pass; out of scope: carry up as deferred; not real: drop it with your reason |
 | reviewer | finding | rule on each; one with no concrete failure scenario is a preference — drop it and say so. A platform finding is ruled on its mechanism: see below |
-| style-reviewer | functional problem it declined to fix | a new finding for the next pass, or deferred — never fixed inline |
+| style-reviewer | style issue it declined | deferred with its location, or dropped with your reason — never fixed inline |
 | tester | what ran and what failed | take its facts as given; the classification is yours |
 
 **A platform finding is ruled on its mechanism.** On a declared platform, never drop it for "couldn't reproduce" or "no failure shown", whether or not the test stage runs there. Real ones go back to the coder. A finding about an undeclared platform may be dropped for that reason.
