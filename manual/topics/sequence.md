@@ -14,3 +14,5 @@ When a run step names a task with subtasks:
 - The Stop hook names every lead still waiting to be dispatched.
 - A failed run does not stop the others of its group. When all are over the step waits; `retry` reruns only the failed ones, `accept` ends the step and later groups do not run.
 - Details: `ensign help subtasks`.
+
+Drop pending steps with `ensign sequence drop <n>... --reason <why>` only when the user asks; it keeps the rest running, and dropping a run step drops its task's publish step.

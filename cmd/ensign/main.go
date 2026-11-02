@@ -139,7 +139,7 @@ func usage() {
   ensign task subtask <done|drop> <project>/<task> <name>
   ensign run <project>/<task> [--subtask <name>] [--start <stage>] [--sync] [--dependency <location>=<branch>] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
-  ensign sequence [run <project>/<task> [run flags] | publish <project>/<task> | release <project> <version> | do <instruction> | mode stop|keep-going | halt [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> [--note <text>] | fail <n> --reason <text>]
+  ensign sequence [run <project>/<task> [run flags] | publish <project>/<task> | release <project> <version> | do <instruction> | mode stop|keep-going | halt [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> [--note <text>] | fail <n> --reason <text>]
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>]
   ensign style report <project>
   ensign skill new <name> --description <text> | ensign skill discard <name>

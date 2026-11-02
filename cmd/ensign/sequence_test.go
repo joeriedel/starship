@@ -225,12 +225,12 @@ func TestSequenceHaltCancelsWhatHasNotStarted(t *testing.T) {
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.mustSeq("run", "supernova/other")
 	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
 	w.mustSeq("halt", "--reason", "not needed")
 	w.wantStatus("active", "cancelled")
 	if r := w.step(2).Reason; r != "not needed" {
 		t.Errorf("reason %q", r)
 	}
-	lead, _ := w.spawn("", "", "orchestrator")
 	w.passRun(lead)
 	w.wantStatus("done", "cancelled")
 	if w.runState(w.step(2).Run).Status != "error" {
@@ -886,4 +886,104 @@ func TestEachLiveRunFinishesOnItsOwn(t *testing.T) {
 		t.Fatalf("the live run's agent lost its run: %v", err)
 	}
 	hr.close()
+}
+
+func TestSequenceDropCancelsAMiddleStepAndKeepsTheRest(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.addTask("third")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("run", "supernova/third")
+	w.approve()
+	out := w.mustSeq("drop", "2", "--reason", "not now")
+	w.wantStatus("active", "cancelled", "pending")
+	if !strings.Contains(out, "[cancelled] not now") {
+		t.Errorf("the listing should show the reason:\n%s", out)
+	}
+	if sf := readSeq(w.bridge, w.sid); sf.Sequences[0].Halted {
+		t.Error("drop must not halt the sequence")
+	}
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.passRun(lead)
+	w.wantStatus("done", "cancelled", "active")
+}
+
+func TestSequenceDropOfARunStepDropsItsPublishStep(t *testing.T) {
+	w, _, _, _ := githubWorld(t, "success", localTest)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("publish", "supernova/other")
+	w.approve()
+	w.mustSeq("drop", "2")
+	w.wantStatus("active", "cancelled", "cancelled")
+	if r := w.step(2).Reason; r != "dropped by the user" {
+		t.Errorf("reason %q", r)
+	}
+}
+
+func TestSequenceDropOfAPublishStepLeavesItsRunStep(t *testing.T) {
+	w, _, _, _ := githubWorld(t, "success", localTest)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("publish", "supernova/other")
+	w.approve()
+	w.mustSeq("drop", "3")
+	w.wantStatus("active", "pending", "cancelled")
+}
+
+func TestSequenceDropSeveralSteps(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.addTask("third")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("do", "tell the user")
+	w.mustSeq("run", "supernova/third")
+	w.approve()
+	w.mustSeq("drop", "2", "4", "--reason", "scope")
+	w.wantStatus("active", "cancelled", "pending", "cancelled")
+}
+
+func TestSequenceDropRefusesWhatIsNotPending(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.approve()
+	for _, args := range [][]string{{"drop", "1"}, {"drop", "2", "1"}, {"drop", "9"}, {"drop"}} {
+		if _, err := w.seq(args...); err == nil {
+			t.Errorf("ensign sequence %v should be refused", args)
+		}
+	}
+	w.wantStatus("active", "pending")
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.passRun(lead)
+	w.wantStatus("done", "active")
+	if _, err := w.seq("drop", "1"); err == nil || !strings.Contains(err.Error(), "done") {
+		t.Errorf("a done step can't be dropped: %v", err)
+	}
+	w.wantStatus("done", "active")
+}
+
+func TestSequenceHaltRetiresAnApprovedRunWhoseLeadWasNeverDispatched(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	id := w.step(1).Run
+	if st := w.runState(id); st.Status != "running" || !st.Approved || len(st.Dispatches) != 0 {
+		t.Fatalf("setup: %s approved=%v", st.Status, st.Approved)
+	}
+	w.mustSeq("halt", "--reason", "changed my mind")
+	w.wantStatus("cancelled")
+	if st := w.runState(id); st.Status != "error" {
+		t.Errorf("the run should be retired: %s", st.Status)
+	}
+	for i := 0; i <= seqStopBudget; i++ {
+		if res := w.stopHook(); res["decision"] == "block" {
+			t.Fatalf("a halted sequence should not demand a dispatch: %s", dig(res, "reason"))
+		}
+	}
 }

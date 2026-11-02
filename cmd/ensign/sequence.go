@@ -578,8 +578,21 @@ func cancelStep(bridge string, st *seqStep, status, reason string) {
 		return
 	}
 	for _, ru := range st.runs() {
-		retireIf(bridge, ru.Run, status+": "+reason, "pending")
+		retireUnstarted(bridge, ru.Run, status+": "+reason)
 	}
+}
+
+// retireUnstarted retires a run that is queued, or approved with its lead never dispatched. It reports whether it did.
+func retireUnstarted(bridge, id, reason string) bool {
+	r, err := openRun(bridge, id)
+	if err != nil {
+		return false
+	}
+	if st := r.State; st.Status != "pending" && !(st.Status == "running" && st.Approved && !st.Started && len(st.Dispatches) == 0) {
+		r.close()
+		return false
+	}
+	return markRetired(r, reason) == nil
 }
 
 // retireIf makes a run terminal, but only if it is still in one of the given states when its lock is held. It reports whether it did.
@@ -860,6 +873,9 @@ func sequenceStop(bridge string, in *HookInput) any {
 				case st.deciding():
 					todo = decideText(st)
 				case st.Kind == "run" && st.holds():
+					if seq.Halted {
+						continue
+					}
 					var leads []string
 					for _, ru := range st.runs() {
 						if r, err := readRun(bridge, ru.Run); err == nil && r.State.Approved && r.State.Status == "running" &&
@@ -1029,7 +1045,7 @@ func releaseRun(bridge, session string, n int, out io.Writer) error {
 	return fmt.Errorf("step %d is no longer in any session's sequence; its release outcome was not recorded", n)
 }
 
-// cmdSequence implements `ensign sequence [run|publish|do|mode|halt|done|fail …]`.
+// cmdSequence implements `ensign sequence [run|publish|do|mode|halt|drop|done|fail …]`.
 func cmdSequence(args []string, out io.Writer) error {
 	session := os.Getenv("STARSHIP_SESSION")
 	if session == "" {
@@ -1176,9 +1192,15 @@ func cmdSequence(args []string, out io.Writer) error {
 					}
 					paused = append(paused, p)
 				case st.Kind == "run" && st.Status == "active":
-					// A run still queued for a busy folder never starts now.
+					// A run still queued for a busy folder, or approved with no lead yet, never starts now.
+					all := true
 					for _, ru := range st.runs() {
-						retireIf(bridge, ru.Run, "cancelled: "+reason, "pending")
+						if !retireUnstarted(bridge, ru.Run, "cancelled: "+reason) {
+							all = false
+						}
+					}
+					if all {
+						st.Status, st.Reason = "cancelled", reason
 					}
 				case st.Status == "pending" || st.deciding() || (st.Status == "active" && (st.Kind == "do" || (st.Kind == "release" && !st.Started))):
 					cancelStep(bridge, st, "cancelled", reason)
@@ -1217,6 +1239,64 @@ func cmdSequence(args []string, out io.Writer) error {
 			} else {
 				fmt.Fprint(out, sf.listing(bridge))
 			}
+			return err
+		})
+	case "drop":
+		const dropUsage = "usage: ensign sequence drop <n>... [--reason <text>]"
+		var ns []int
+		reason := "dropped by the user"
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--reason" {
+				if i+2 != len(rest) {
+					return errors.New(dropUsage)
+				}
+				reason = rest[i+1]
+				break
+			}
+			n, err := stepArg(rest[i:i+1], dropUsage)
+			if err != nil {
+				return err
+			}
+			ns = append(ns, n)
+		}
+		if len(ns) == 0 {
+			return errors.New(dropUsage)
+		}
+		return withSeq(bridge, session, func(sf *seqFile) error {
+			sf.reconcile(bridge)
+			drop := map[*seqStep]bool{}
+			for _, n := range ns {
+				seq, st := sf.step(n)
+				switch {
+				case st == nil:
+					return fmt.Errorf("there is no step %d", n)
+				case !seq.Approved || seq.Closed:
+					return fmt.Errorf("step %d is not in an approved, open sequence", n)
+				case st.Status != "pending":
+					return fmt.Errorf("step %d is %s; only pending steps can be dropped", n, st.Status)
+				}
+				drop[st] = true
+				if st.Kind != "run" {
+					continue
+				}
+				for _, other := range seq.Steps {
+					if other.Kind == "publish" && other.Task == st.Task && other.Status == "pending" {
+						drop[other] = true
+					}
+				}
+			}
+			for _, seq := range sf.Sequences {
+				for _, st := range seq.Steps {
+					if drop[st] {
+						cancelStep(bridge, st, "cancelled", reason)
+					}
+				}
+			}
+			text, err := sf.advance(bridge, session)
+			if text == "" {
+				text = sf.listing(bridge)
+			}
+			fmt.Fprint(out, text)
 			return err
 		})
 	case "accept":
@@ -1351,7 +1431,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		})
 	}
-	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <n> | do <instruction> | mode stop|keep-going | halt | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> | fail <n> --reason <text>]")
+	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <n> | do <instruction> | mode stop|keep-going | halt | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> | fail <n> --reason <text>]")
 }
 
 // retryRun queues a new run for a failed one, with the diagnosis in its work item.

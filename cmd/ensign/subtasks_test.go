@@ -318,8 +318,8 @@ func TestSequenceHaltStopsTheSubtaskChain(t *testing.T) {
 	w.mustSeq("run", "supernova/t")
 	w.approve()
 	first := w.step(1).Run
-	w.mustSeq("halt", "--reason", "enough")
 	lead, _ := w.spawn("", "", "orchestrator")
+	w.mustSeq("halt", "--reason", "enough")
 	w.passRun(lead)
 	st := w.step(1)
 	if st.Status != "done" || st.Run != first || !strings.Contains(st.Reason, "02-b") {
