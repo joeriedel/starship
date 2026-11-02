@@ -1309,7 +1309,7 @@ So there are two defences:
 - **A heartbeat at session start.** SessionStart replies with JSON. Its
   `additionalContext` holds `STARSHIP-READY ensign <version> bridge <tag>`, followed by
   the session manual, which appear in the session's context (§7.1). Claude Code cuts
-  `additionalContext` over 10,000 characters to a preview, so a test keeps it under that.
+  `additionalContext` over 10,000 characters to a preview, so a test keeps the whole text, with a 200-character bridge path, under 8 KB.
   Its `systemMessage` shows the user one line at startup, "Starship ready · bridge
   <name> · <release>", without calling the model. The bridge's `CLAUDE.md`: **if that line is absent, or starship hooks report
   errors, say so plainly and do nothing except help fix it** — no pipeline, no agent
@@ -1446,7 +1446,7 @@ runs against Claude Code, except where listed below.
   session, and again after a compaction. It removes the old import from an existing
   bridge's `CLAUDE.md` and commits that, unless the file has uncommitted edits.
   `ensign selftest` checks the hook's output reaches the model whole and stays out of
-  subagents, and a unit test keeps the manual under the size it checks (9 KB).
+  subagents, and a unit test keeps the manual under the size it checks (8 KB, which covers the whole text).
 - **A `claude` started from inside another Claude Code session is a child session.**
   Its prompt reaches UserPromptSubmit with a `Claude` line in front, so `help` doesn't
   match, and it inherits the parent's project directory. This is why `help` once went to
@@ -1468,8 +1468,7 @@ runs against Claude Code, except where listed below.
   makes its facts pending; `ensign skill discard <name>` drops them.
 - **Help entries name their command for the session.** A pipeline's or extension's help
   entry may carry `run:`, the command that carries the request out. `help` never shows
-  it; the SessionStart hook lists every one after the manual, so the session doesn't
-  have to guess how to "squash this task's commits".
+  it; `ensign help requests` lists every one, generated at call time, and the SessionStart hook points at it after the manual, so the session doesn't have to guess how to "squash this task's commits".
 - **The `@done` check** runs before a run may end as `success`; a failure ends it as
   `error: done-check`.
 - **Events on stages a pipeline doesn't have are inactive for it**, so an extension or layer

@@ -7,8 +7,8 @@ You are the session agent on a starship bridge: code lives in each task's worksp
 ## Opening a task
 
 - `ensign task open <project>/<task>`: checks task, workspace, VCS state and prints where it stands. Report it, then wait.
-- `ensign task new <project>/<task>`: creates one at the project's code location. Add `--workspace <path>` only if the user names a different one. Several code locations (`ensign help project`): `task new --locations <a,b>`; each run edits one, `--location <name>`, and tests it plus its dependents; `--sides <a,b>` narrows only when you know fewer are affected (include the edited one).
-- **Code location differs per machine**: it lives in this machine's `machine.yaml`, never the bridge's files. If a task stops for lack of a folder here, ask the user where the code is and run `ensign workspace <project> <path>` (or `<project>/<task>` for a task's own checkout). Toolchain (PATH folders, variables): `ensign env <project>`. Binding fails for a missing tool: read `ensign help machine`.
+- `ensign task new <project>/<task>`: creates one at the project's code location. Add `--workspace <path>` only if the user names a different one.
+- Several code locations, a task stopping for lack of a code folder here, or a binding failing for a missing tool: read `ensign help opening`.
 - `ensign project new <project> --workspace <path> --platforms <list>`: creates a project. **Ask where its code is, and which platforms it supports (e.g. linux,macos,windows), if not said.** Then read `ensign help project` to fill its bindings.
 - **Never guess a workspace path or substitute a similar-looking directory**, in any of these.
 
@@ -18,7 +18,7 @@ Nothing starts without agreement. **Reading needs no approval**; read only what 
 
 A plan names task, pipeline (usually `coding`), work item, what done looks like, what is out of scope. Then:
 
-1. Run `ensign run <project>/<task>` (add `--start <stage>` or `--sync` when asked; for an unlanded branch of a location the change depends on, `--dependency <location>=<branch>`, see `ensign help project`). Show the user the relevant summary parts.
+1. Run `ensign run <project>/<task>` (add `--start <stage>` or `--sync` when asked). Show the user the relevant summary parts.
 2. Ask the user to type `go`. **Only the literal `go` approves a run**; not "yes", agreement, or an answered question.
 3. On `go`, the hook tells you to dispatch the lead; do that, then wait.
 
@@ -31,7 +31,7 @@ A plan names task, pipeline (usually `coding`), work item, what done looks like,
 
 Product code reaches a workspace only through a pipeline run, **never through you, any size**. Never edit workspace files or run builds/tests. If a change seems too small for a run, say so; the user decides. You run only inspection (`git status`, `git log`, diffs) and `ensign`.
 
-After a stray-file refusal, delete the named files yourself only with the user's explicit permission for that deletion; otherwise retry the run with the diagnosis (the coder deletes them, or reports the file as intended).
+After a stray-file refusal: read `ensign help stray-files`.
 
 ## While a run is going
 
@@ -75,7 +75,7 @@ Two files, committed and pushed with the bridge. Update after a run, a decision,
 - anything surprising, with `path:line`
 - what was deferred (also in Outstanding)
 
-Cite only lasting sources: code (`path:line` at a commit), commits, CI runs on GitHub, other tasks. Never cite a run's folder (reports, logs, scratch): it is local to one machine and gets cleaned up. Put what a report or log showed into the account itself. `ensign journal commit` refuses a journal that cites one.
+Before citing a source in an account: read `ensign help journal`.
 
 Write task files and accounts one line per paragraph, no hard wrap; never reflow existing text.
 
@@ -95,13 +95,11 @@ Workspace commits, pushes and submits need the user's explicit approval **every 
 
 ## Improving starship
 
-The bridge's copy of starship is pinned, never edited. Improve starship as a task in a project whose workspace is a starship checkout. If the bridge has none, offer to add one, with a checkout of its own (runs switch its branch); `ensign project new` needs nothing filled in. Each task has its own branch; its test stage waits for CI on it. When the run passes, tell the user and wait for them to ask for the pull request, or for the task to go straight to master.
-
-Starship is public: nothing from this bridge's other projects goes into it. Describe changes in general terms; use the fictional project `supernova` in examples.
+To improve starship itself: read `ensign help starship`.
 
 ## Old runs
 
-`bridge.yaml` `keep-runs` (default 500) is how many finished runs the bridge keeps in all. SessionStart deletes older finished runs beyond it, 50 at most per start; `ensign gc [<keep>]` does it now. Finished runs lose their `scratch/` contents. Pending, running and ask-user runs are never deleted.
+Before cleaning up or asking about old runs: read `ensign help runs`.
 
 ## Where edits are allowed
 

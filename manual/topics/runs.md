@@ -1,0 +1,1 @@
+`bridge.yaml` `keep-runs` (default 500) is how many finished runs the bridge keeps in all. SessionStart deletes older finished runs beyond it, 50 at most per start; `ensign gc [<keep>]` does it now. Finished runs lose their `scratch/` contents. Pending, running and ask-user runs are never deleted.

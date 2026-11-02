@@ -20,6 +20,7 @@ func topicNames(bridge string) ([]string, error) {
 	for _, f := range found {
 		names = append(names, strings.TrimSuffix(filepath.Base(f), ".md"))
 	}
+	names = append(names, "requests")
 	sort.Strings(names)
 	return names, nil
 }
@@ -43,6 +44,14 @@ func cmdHelp(args []string, out io.Writer) error {
 	}
 	if !contains(names, args[0]) {
 		return fmt.Errorf("unknown help topic %q; topics: %s", args[0], strings.Join(names, ", "))
+	}
+	if args[0] == "requests" {
+		cmds := requestCommands(bridge)
+		if cmds == "" {
+			cmds = "This bridge answers no extra requests.\n"
+		}
+		_, err = io.WriteString(out, cmds)
+		return err
 	}
 	data, err := os.ReadFile(filepath.Join(bridge, ".starship", "topics", args[0]+".md"))
 	if err != nil {

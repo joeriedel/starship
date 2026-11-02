@@ -100,7 +100,7 @@ Reply with exactly what your prompt asks.
 const (
 	manualStart = "SELFTEST-MANUAL-START"
 	manualEnd   = "SELFTEST-MANUAL-END"
-	manualLimit = 9000
+	manualLimit = 8000
 )
 
 // probeManual spreads ten marker lines evenly through the block, each carrying a token

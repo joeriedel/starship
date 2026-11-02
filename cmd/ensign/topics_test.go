@@ -76,7 +76,7 @@ func TestHelpCommand(t *testing.T) {
 	os.Chdir(w.bridge)
 	var out bytes.Buffer
 	err := cmdHelp([]string{"nope"}, &out)
-	if err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), "project, sequence, skill") {
+	if err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), "project, requests, runs, sequence, skill") {
 		t.Errorf("unknown topic should list topics: %v", err)
 	}
 	if err := cmdHelp([]string{"../session"}, &out); err == nil {
@@ -226,5 +226,44 @@ func TestSessionStartReprintsNothingWithoutTaskOrNotes(t *testing.T) {
 	w = linkedWorld(t)
 	if ctx := w.startWithNotes("compact", ""); strings.Contains(ctx, "notes      ") {
 		t.Errorf("no project.md, no notes:\n%s", ctx)
+	}
+}
+
+func TestSessionStartPointsAtRequestsTopic(t *testing.T) {
+	w := linkedWorld(t)
+	ctx := w.startWithNotes("startup", "")
+	if !strings.Contains(ctx, "`ensign help requests`") || strings.Contains(ctx, "ensign git-catalog squash") {
+		t.Errorf("want a pointer to the requests topic and not the list:\n%s", ctx)
+	}
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	if err := cmdHelp([]string{"requests"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != requestCommands(w.bridge) || !strings.Contains(out.String(), "ensign git-catalog squash") {
+		t.Errorf("requests topic should print the entries:\n%s", out.String())
+	}
+}
+
+// Claude Code cuts additionalContext at 10,000 characters; the bridge path is repeated in the text, so the budget is checked as if the path were 200 characters long.
+func TestSessionStartFitsBudgetWithLongBridgePath(t *testing.T) {
+	for _, c := range []struct{ name, source, notes string }{
+		{"startup", "startup", ""},
+		{"notes too long to reprint", "compact", strings.Repeat("Prefer small commits and explain each one.\n", 400)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := linkedWorld(t)
+			ctx := w.startWithNotes(c.source, c.notes)
+			size := len(ctx)
+			if len(w.bridge) < 200 {
+				size += (200 - len(w.bridge)) * strings.Count(ctx, w.bridge)
+			}
+			t.Logf("padded size %d, limit %d", size, manualLimit)
+			if size >= manualLimit {
+				t.Errorf("session start text is %d characters with a 200-character bridge path; the budget is %d", size, manualLimit)
+			}
+		})
 	}
 }

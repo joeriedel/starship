@@ -386,8 +386,8 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		return reply("Starship is not ready in this bridge. Ask Claude to set it up.", ctx.String())
 	}
 	fmt.Fprintf(&ctx, "\n%s", manual)
-	if cmds := requestCommands(bridge); cmds != "" {
-		fmt.Fprintf(&ctx, "\n%s", cmds)
+	if requestCommands(bridge) != "" {
+		fmt.Fprint(&ctx, "\nTo carry out a request like squashing commits or curating skills: read `ensign help requests` for the requests this bridge answers and the command for each.\n")
 	}
 	// A compaction or clear replaces the context, so the task's project notes, which
 	// task open printed into it, are printed again.
