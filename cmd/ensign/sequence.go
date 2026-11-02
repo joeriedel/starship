@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,21 +29,59 @@ const (
 )
 
 type seqStep struct {
-	N           int    `json:"n"`
-	Kind        string `json:"kind"` // run, publish, do, release
-	Task        string `json:"task,omitempty"`
-	Run         string `json:"run,omitempty"`
-	Command     string `json:"command,omitempty"` // publish: the extension's operation
-	Instruction string `json:"instruction,omitempty"`
-	Version     string `json:"version,omitempty"` // release: the version to release, fixed when the step is added
-	Started     bool   `json:"started,omitempty"` // release: release-run has begun the project's @release command
-	Token       string `json:"token,omitempty"`   // release: identifies this start, so the result finds the step if the sequence moved to another session
-	Headline    string `json:"headline,omitempty"`
-	Status      string `json:"status"` // pending, active, paused, decide, done, failed, skipped, cancelled
-	Reason      string `json:"reason,omitempty"`
-	Blocks      int    `json:"blocks,omitempty"`    // stops held open for this step
-	Prev        string `json:"prev_run,omitempty"`  // the run this step's run retries
-	Diagnosis   string `json:"diagnosis,omitempty"` // why the previous run failed, as the session wrote it
+	N           int       `json:"n"`
+	Kind        string    `json:"kind"` // run, publish, do, release
+	Task        string    `json:"task,omitempty"`
+	Run         string    `json:"run,omitempty"`     // the first of Runs, kept so a sequence file written before groups still loads
+	Runs        []*seqRun `json:"runs,omitempty"`    // a run step's live group: the runs of subtasks that work side by side
+	Group       int       `json:"group,omitempty"`   // the number of that group
+	Command     string    `json:"command,omitempty"` // publish: the extension's operation
+	Instruction string    `json:"instruction,omitempty"`
+	Version     string    `json:"version,omitempty"` // release: the version to release, fixed when the step is added
+	Started     bool      `json:"started,omitempty"` // release: release-run has begun the project's @release command
+	Token       string    `json:"token,omitempty"`   // release: identifies this start, so the result finds the step if the sequence moved to another session
+	Headline    string    `json:"headline,omitempty"`
+	Status      string    `json:"status"` // pending, active, paused, decide, done, failed, skipped, cancelled
+	Reason      string    `json:"reason,omitempty"`
+	Blocks      int       `json:"blocks,omitempty"`    // stops held open for this step
+	Prev        string    `json:"prev_run,omitempty"`  // the first run this step's retry replaces; a step gets one retry for each group
+	Diagnosis   string    `json:"diagnosis,omitempty"` // why the previous run failed, as the session wrote it
+}
+
+// seqRun is one run of a run step's group.
+type seqRun struct {
+	Run      string `json:"run"`
+	Subtask  string `json:"subtask,omitempty"`
+	Location string `json:"location,omitempty"`
+	Prev     string `json:"prev_run,omitempty"` // the failed run this one retries
+	Status   string `json:"status,omitempty"`   // the run's own status as last seen: pending, running, ask-user, success, error
+	Reason   string `json:"reason,omitempty"`
+}
+
+// runs lists the runs of a run step. A step saved before groups has only Run, which is taken as its one run.
+func (s *seqStep) runs() []*seqRun {
+	if len(s.Runs) == 0 && s.Run != "" {
+		s.Runs = []*seqRun{{Run: s.Run, Prev: s.Prev}}
+	}
+	return s.Runs
+}
+
+func (s *seqStep) setRuns(rs []*seqRun) {
+	s.Runs, s.Run = rs, ""
+	if len(rs) > 0 {
+		s.Run = rs[0].Run
+	}
+}
+
+// newRunStep is a run step for the queued runs of one group.
+func newRunStep(task string, group int, snaps []*Snapshot) *seqStep {
+	st := &seqStep{Kind: "run", Task: task, Group: group, Headline: groupHeadline(snaps)}
+	var rs []*seqRun
+	for _, snap := range snaps {
+		rs = append(rs, &seqRun{Run: snap.Run, Subtask: snap.Subtask, Location: snap.Location, Status: "pending"})
+	}
+	st.setRuns(rs)
+	return st
 }
 
 type sequence struct {
@@ -114,7 +153,7 @@ func sequenceUnfinished(bridge, session string) bool {
 }
 
 func sequenceListing(bridge, session string) string {
-	return readSeq(bridge, session).listing()
+	return readSeq(bridge, session).listing(bridge)
 }
 
 func (s *seqStep) open() bool {
@@ -186,7 +225,7 @@ func (sf *seqFile) add(st *seqStep) {
 	seq.Steps = append(seq.Steps, st)
 }
 
-func (sf *seqFile) listing() string {
+func (sf *seqFile) listing(bridge string) string {
 	var b strings.Builder
 	for _, seq := range sf.Sequences {
 		if len(seq.Steps) == 0 {
@@ -226,12 +265,58 @@ func (sf *seqFile) listing() string {
 				line += ")"
 			}
 			b.WriteString(line + "\n")
+			if st.Kind == "run" && st.open() {
+				for _, g := range st.groupLines(bridge) {
+					b.WriteString("       " + g + "\n")
+				}
+			}
 		}
 		if !seq.Approved && !seq.Halted {
 			b.WriteString("type go to approve the sequence\n")
 		}
 	}
 	return b.String()
+}
+
+// groupLines shows a subtask step's groups: its current runs, then the later groups the task's pending subtasks fall into.
+func (s *seqStep) groupLines(bridge string) []string {
+	var lines, names []string
+	for _, ru := range s.runs() {
+		if ru.Subtask == "" {
+			return nil
+		}
+		names = append(names, ru.Subtask)
+		item := ru.Subtask
+		if ru.Location != "" {
+			item += " (" + ru.Location + ")"
+		}
+		if ru.Status != "" && ru.Status != "pending" {
+			item += " [" + ru.Status + "]"
+		}
+		if ru.Status == "pending" && ru.Reason != "" {
+			item += " [" + firstLine(ru.Reason) + "]"
+		}
+		lines = append(lines, item)
+	}
+	n := max(s.Group, 1)
+	out := []string{fmt.Sprintf("group %d: %s", n, strings.Join(lines, ", "))}
+	pending, _, err := pendingSubtasks(bridge, s.Task)
+	if err != nil {
+		return out
+	}
+	pending = slices.DeleteFunc(pending, func(p subtask) bool { return slices.Contains(names, p.Name) })
+	for i, g := range subtaskGroups(bridge, s.Task, pending) {
+		var items []string
+		for _, sub := range g {
+			item := sub.Name
+			if sub.Location != "" {
+				item += " (" + sub.Location + ")"
+			}
+			items = append(items, item)
+		}
+		out = append(out, fmt.Sprintf("group %d: %s", n+1+i, strings.Join(items, ", ")))
+	}
+	return out
 }
 
 // headline is a work item's first line that is text, not a Markdown heading.
@@ -262,90 +347,205 @@ func readRun(bridge, id string) (*RunFiles, error) {
 	return r, nil
 }
 
-// reconcile brings the steps of runs under way in line with their runs' saved states.
+// reconcile brings the steps of runs under way in line with their runs' saved states. A step with several runs waits until all of them are over before it succeeds or fails.
 func (sf *seqFile) reconcile(bridge string) {
 	for _, seq := range sf.Sequences {
 		for _, st := range seq.Steps {
 			if st.Kind != "run" || !st.holds() {
 				continue
 			}
-			r, err := readRun(bridge, st.Run)
-			if err != nil {
-				st.Status, st.Reason = "failed", "its run can't be read: "+err.Error()
-				sf.failed(bridge, seq, st)
-				continue
-			}
-			switch r.State.Status {
-			case "success":
-				st.Status, st.Reason = "done", ""
-				if r.Snap.Subtask != "" {
-					sf.nextSubtaskRun(bridge, seq, st, r)
+			runs := st.runs()
+			var snaps []*RunFiles
+			over, failed, lost := 0, 0, false
+			var reason, asked string
+			for _, ru := range runs {
+				r, err := readRun(bridge, ru.Run)
+				if err != nil {
+					ru.Status, ru.Reason, lost = "error", "its run can't be read: "+err.Error(), true
+				} else {
+					ru.Status = r.State.Status
+					if ru.Status != "pending" {
+						ru.Reason = ""
+					}
+					ru.Subtask, ru.Location = r.Snap.Subtask, r.Snap.Location
+					if r.State.Status == "error" || r.State.Status == "ask-user" {
+						ru.Reason = r.State.Reason
+					}
+					snaps = append(snaps, r)
 				}
-			case "error":
-				st.Reason = r.State.Reason
-				if st.Prev == "" && !seq.Halted {
+				switch ru.Status {
+				case "success":
+					over++
+				case "error":
+					over++
+					failed++
+					if reason == "" {
+						reason = ru.Reason
+					}
+				case "ask-user":
+					if asked == "" {
+						asked = ru.Reason
+					}
+				}
+			}
+			switch {
+			case over < len(runs) && asked != "":
+				st.Status, st.Reason = "paused", asked
+			case over < len(runs):
+				st.Status, st.Reason = "active", ""
+			case failed > 0:
+				st.Reason = reason
+				if !lost && st.Prev == "" && !seq.Halted {
 					st.Status = "decide"
 					continue
 				}
 				st.Status = "failed"
 				sf.failed(bridge, seq, st)
-			case "ask-user":
-				st.Status, st.Reason = "paused", r.State.Reason
 			default:
-				st.Status, st.Reason = "active", ""
+				st.Status, st.Reason = "done", ""
+				if snaps[0].Snap.Subtask != "" {
+					sf.nextSubtaskGroup(bridge, seq, st, snaps)
+				}
 			}
 		}
 	}
 }
 
-// stepHeadline is the line a run step shows: its work item's headline, and the subtask it works on.
-func stepHeadline(snap *Snapshot) string {
-	h := headline(snap.WorkItem)
-	if snap.Subtask != "" {
-		h += " (subtask " + snap.Subtask + ")"
+// groupHeadline is the line a run step shows: its work item's headline, and the subtasks it works on.
+func groupHeadline(snaps []*Snapshot) string {
+	h := headline(snaps[0].WorkItem)
+	var names []string
+	for _, snap := range snaps {
+		if snap.Subtask != "" {
+			names = append(names, snap.Subtask)
+		}
+	}
+	switch len(names) {
+	case 0:
+	case 1:
+		h += " (subtask " + names[0] + ")"
+	default:
+		h += " (subtasks " + strings.Join(names, ", ") + ")"
 	}
 	return h
 }
 
-// nextSubtaskRun is called when a step's run for a subtask has succeeded. While the task has pending subtasks the step is not done: it moves to a new queued run for the next one, which advance then starts. A step gets one retry for each subtask.
-func (sf *seqFile) nextSubtaskRun(bridge string, seq *sequence, st *seqStep, done *RunFiles) {
+// subtaskGroups splits subtasks, in order, into groups of consecutive ones that can run side by side: their locations are unrelated (neither depends on the other, directly or through others) and their code folders differ. A subtask without a location works in the run's default workspace, so it is a group of its own.
+func subtaskGroups(bridge, task string, subs []subtask) [][]subtask {
+	project, _, _ := strings.Cut(task, "/")
+	locs, err := loadLocations(bridge, project)
+	conflict := func(a, b subtask) bool {
+		if err != nil || a.Location == "" || b.Location == "" || locs.Related(a.Location, b.Location) {
+			return true
+		}
+		pa, errA := locationPathFor(bridge, project, a.Location)
+		pb, errB := locationPathFor(bridge, project, b.Location)
+		return errA != nil || errB != nil || sameFolder(pa, pb, runtime.GOOS)
+	}
+	var groups [][]subtask
+	for _, s := range subs {
+		if n := len(groups); n > 0 && !slices.ContainsFunc(groups[n-1], func(m subtask) bool { return conflict(m, s) }) {
+			groups[n-1] = append(groups[n-1], s)
+			continue
+		}
+		groups = append(groups, []subtask{s})
+	}
+	return groups
+}
+
+// carriedOpts is the options for the queued run of a subtask that follows runs already made: it keeps their stale-branch choice, takes the sides of the one in its location, and the dependencies named with --dependency that its location can take.
+func carriedOpts(bridge, task string, sub subtask, staleOK bool, carry []*Snapshot) runOpts {
+	o := runOpts{task: task, subtask: sub.Name, location: sub.Location, staleOK: staleOK}
+	project, _, _ := strings.Cut(task, "/")
+	locs, _ := loadLocations(bridge, project)
+	for i, p := range carry {
+		if sub.Location == "" && i == 0 {
+			o.location = p.Location
+		}
+		if p.Location == o.location && p.Narrowed && o.sides == nil {
+			o.sides = sideNames(p.Sides)
+		}
+	}
+	if o.location == "" || locs == nil {
+		return o
+	}
+	for _, p := range carry {
+		for _, dep := range p.Dependencies {
+			if dep.Branch == "" || dep.Auto || dep.Location == o.location || !contains(locs.Dependents(dep.Location), o.location) {
+				continue
+			}
+			if v := dep.Location + "=" + dep.Branch; !slices.Contains(o.dependencies, v) {
+				o.dependencies = append(o.dependencies, v)
+			}
+		}
+	}
+	return o
+}
+
+// createGroupRuns creates the queued runs of a group of subtasks. The first run takes first when it is given. A run that can't be created withdraws the ones made before it.
+func createGroupRuns(bridge, task string, group []subtask, carry []*Snapshot, staleOK bool, first *runOpts, out io.Writer) ([]*Snapshot, error) {
+	var made []*Snapshot
+	for i, sub := range group {
+		var o runOpts
+		if i == 0 && first != nil {
+			o = *first
+			o.subtask = sub.Name
+		} else {
+			o = carriedOpts(bridge, task, sub, staleOK, append(slices.Clone(carry), made...))
+		}
+		snap, err := createRun(bridge, o, true, out)
+		if err == nil && snap == nil {
+			return nil, nil
+		}
+		if err != nil {
+			for _, m := range made {
+				retireIf(bridge, m.Run, "withdrawn: "+err.Error(), "pending")
+			}
+			return nil, err
+		}
+		made = append(made, snap)
+	}
+	return made, nil
+}
+
+// nextSubtaskGroup is called when every run of a step's group has succeeded. While the task has pending subtasks the step is not done: it moves to queued runs for the next group, which advance then starts.
+func (sf *seqFile) nextSubtaskGroup(bridge string, seq *sequence, st *seqStep, done []*RunFiles) {
 	fail := func(err error) {
 		st.Status, st.Reason = "failed", err.Error()
 		sf.failed(bridge, seq, st)
 	}
-	pending, _, err := pendingSubtasks(bridge, done.Snap.Task)
+	task := done[0].Snap.Task
+	pending, _, err := pendingSubtasks(bridge, task)
 	if err != nil {
 		fail(err)
 		return
 	}
-	// The run's own subtask is marked done when it finishes; skip it in case that mark is not yet written.
-	pending = slices.DeleteFunc(pending, func(s subtask) bool { return s.Name == done.Snap.Subtask })
+	// The group's own subtasks are marked done when their runs finish; skip them in case a mark is not yet written.
+	pending = slices.DeleteFunc(pending, func(s subtask) bool {
+		return slices.ContainsFunc(done, func(r *RunFiles) bool { return r.Snap.Subtask == s.Name })
+	})
 	if len(pending) == 0 {
 		return
 	}
-	next := pending[0]
+	next := subtaskGroups(bridge, task, pending)[0]
 	if seq.Halted {
-		st.Reason = "sequence halted; subtask " + next.Name + " and later were not run"
+		st.Reason = "sequence halted; subtask " + next[0].Name + " and later were not run"
 		return
 	}
-	o := runOpts{task: done.Snap.Task, subtask: next.Name, location: next.Location, staleOK: done.State.StaleOK}
-	if next.Location == "" || next.Location == done.Snap.Location {
-		o.location = done.Snap.Location
-		if done.Snap.Narrowed {
-			o.sides = sideNames(done.Snap.Sides)
-		}
-		for _, dep := range done.Snap.Dependencies {
-			if dep.Branch != "" {
-				o.dependencies = append(o.dependencies, dep.Location+"="+dep.Branch)
-			}
-		}
+	staleOK := false
+	var carry []*Snapshot
+	for _, r := range done {
+		staleOK = staleOK || r.State.StaleOK
+		carry = append(carry, r.Snap)
 	}
-	snap, err := createRun(bridge, o, true, io.Discard)
+	snaps, err := createGroupRuns(bridge, task, next, carry, staleOK, nil, io.Discard)
 	if err != nil {
 		fail(err)
 		return
 	}
-	st.Run, st.Prev, st.Diagnosis, st.Headline = snap.Run, "", "", stepHeadline(snap)
+	fresh := newRunStep(task, max(st.Group, 1)+1, snaps)
+	st.setRuns(fresh.Runs)
+	st.Group, st.Prev, st.Diagnosis, st.Headline = fresh.Group, "", "", fresh.Headline
 	st.Status, st.Reason, st.Blocks = "pending", "", 0
 }
 
@@ -371,13 +571,15 @@ func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
 	}
 }
 
-// cancelStep ends a step that never started. Its run is made terminal, as a retired run is, so it is nobody's waiting run; no run.finish handler fires for it.
+// cancelStep ends a step that never started. Its runs are made terminal, as a retired run is, so they are nobody's waiting run; no run.finish handler fires for them.
 func cancelStep(bridge string, st *seqStep, status, reason string) {
 	st.Status, st.Reason = status, reason
 	if st.Kind != "run" {
 		return
 	}
-	retireIf(bridge, st.Run, status+": "+reason, "pending")
+	for _, ru := range st.runs() {
+		retireIf(bridge, ru.Run, status+": "+reason, "pending")
+	}
 }
 
 // retireIf makes a run terminal, but only if it is still in one of the given states when its lock is held. It reports whether it did.
@@ -401,7 +603,7 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 		if len(parts) == 0 {
 			return ""
 		}
-		return strings.Join(parts, "\n") + "\n\n" + sf.listing()
+		return strings.Join(parts, "\n") + "\n\n" + sf.listing(bridge)
 	}
 	for _, seq := range sf.Sequences {
 		if seq.Closed {
@@ -411,6 +613,18 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 			break
 		}
 		for {
+			if !seq.Halted {
+				// A run that waited for its folder may be free to start now.
+				for _, st := range seq.Steps {
+					if st.Kind != "run" || !st.holds() {
+						continue
+					}
+					texts, _, _ := startRuns(bridge, session, st)
+					for _, t := range texts {
+						parts = append(parts, fmt.Sprintf("step %d: %s", st.N, t))
+					}
+				}
+			}
 			if seq.holding() {
 				return finish(), nil
 			}
@@ -426,21 +640,24 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 			}
 			switch st.Kind {
 			case "run":
-				text, err := startRunStep(bridge, session, st)
-				var busy *folderBusyError
-				if errors.As(err, &busy) {
-					st.Reason = "waiting: " + err.Error()
-					parts = append(parts, fmt.Sprintf("step %d can't start yet: %v", st.N, err))
-					return finish(), nil
-				}
-				if err != nil {
-					retireIf(bridge, st.Run, "failed: "+err.Error(), "pending")
+				texts, busy, err := startRuns(bridge, session, st)
+				switch {
+				case len(texts) > 0:
+					st.Status, st.Reason = "active", ""
+					parts = append(parts, fmt.Sprintf("step %d: %s", st.N, strings.Join(texts, "\n\n")))
+					if busy != nil {
+						parts = append(parts, fmt.Sprintf("step %d: another run of it can't start yet: %v", st.N, busy))
+					}
+				case busy != nil:
+					st.Reason = "waiting: " + busy.Error()
+					parts = append(parts, fmt.Sprintf("step %d can't start yet: %v", st.N, busy))
+				case err != nil:
 					st.Status, st.Reason = "failed", err.Error()
 					sf.failed(bridge, seq, st)
 					continue
+				default:
+					st.Status, st.Reason = "active", ""
 				}
-				st.Status, st.Reason = "active", ""
-				parts = append(parts, fmt.Sprintf("step %d: %s", st.N, text))
 				return finish(), nil
 			case "publish":
 				out, err := runPublish(bridge, seq, st)
@@ -480,27 +697,55 @@ func decideText(st *seqStep) string {
 		firstLine(st.Reason), st.N, st.N)
 }
 
-// startRunStep approves a queued run and binds it to the session. It returns what the session does next, the same text go gives a plain run.
-func startRunStep(bridge, session string, st *seqStep) (string, error) {
+// startRuns starts the queued runs of a step's group, each in its own code folder. It returns what the session does next for each run it started, the first folder-busy error of a run that must wait for a later advance, and the first other error; a run that fails to start is retired.
+func startRuns(bridge, session string, st *seqStep) (texts []string, busy, failure error) {
+	for _, ru := range st.runs() {
+		if ru.Status != "" && ru.Status != "pending" {
+			continue
+		}
+		text, err := startRun(bridge, session, st.Task, ru.Run)
+		var b *folderBusyError
+		switch {
+		case errors.As(err, &b):
+			ru.Reason = "waiting: " + err.Error()
+			if busy == nil {
+				busy = err
+			}
+		case err != nil:
+			retireIf(bridge, ru.Run, "failed: "+err.Error(), "pending")
+			ru.Status, ru.Reason = "error", err.Error()
+			if failure == nil {
+				failure = err
+			}
+		default:
+			ru.Status, ru.Reason = "running", ""
+			texts = append(texts, text)
+		}
+	}
+	return texts, busy, failure
+}
+
+// startRun approves a queued run and binds it to the session. It returns what the session does next, the same text go gives a plain run.
+func startRun(bridge, session, task, run string) (string, error) {
 	if data, err := os.ReadFile(sessionFile(bridge, session) + ".pin"); err == nil {
 		if started := strings.TrimSpace(string(data)); started != pinnedCommit(bridge) {
 			return "", fmt.Errorf("the bridge was updated to a new starship release after this session started; restart claude before starting a run")
 		}
 	}
-	r, err := openRun(bridge, st.Run)
+	r, err := openRun(bridge, run)
 	if err != nil {
 		return "", fmt.Errorf("its run can't be opened: %v", err)
 	}
 	defer r.close()
 	if r.State.Status != "pending" {
-		return "", fmt.Errorf("its run %s is %s, not waiting", st.Run, r.State.Status)
+		return "", fmt.Errorf("its run %s is %s, not waiting", run, r.State.Status)
 	}
 	l, err := lockFolders(bridge)
 	if err != nil {
 		return "", err
 	}
 	defer l.Unlock()
-	if err := folderHolder(bridge, r.Snap.Workspace, st.Run); err != nil {
+	if err := folderHolder(bridge, r.Snap.Workspace, run); err != nil {
 		return "", err
 	}
 	r.State.Session, r.State.Approved, r.State.Status = session, true, "running"
@@ -509,11 +754,11 @@ func startRunStep(bridge, session string, st *seqStep) (string, error) {
 		return "", err
 	}
 	l.Unlock()
-	if err := bindSession(bridge, session, st.Run); err != nil {
+	if err := bindSession(bridge, session, run); err != nil {
 		return "", err
 	}
-	if st.Task != "" {
-		os.WriteFile(sessionFile(bridge, session)+".task", []byte(st.Task+"\n"), 0o644)
+	if task != "" {
+		os.WriteFile(sessionFile(bridge, session)+".task", []byte(task+"\n"), 0o644)
 	}
 	return approvalText(r), nil
 }
@@ -592,7 +837,7 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 		text = fmt.Sprintf("sequence %d approved (%d steps). ", seq.N, len(seq.Steps))
 		adv, err := sf.advance(bridge, session)
 		if adv == "" {
-			adv = "It starts when the step in progress finishes.\n\n" + sf.listing()
+			adv = "It starts when the step in progress finishes.\n\n" + sf.listing(bridge)
 		}
 		text += adv + "\n\nSequence rules: `ensign help sequence`."
 		return err
@@ -614,6 +859,15 @@ func sequenceStop(bridge string, in *HookInput) any {
 				switch {
 				case st.deciding():
 					todo = decideText(st)
+				case st.Kind == "run" && st.holds():
+					var leads []string
+					for _, ru := range st.runs() {
+						if r, err := readRun(bridge, ru.Run); err == nil && r.State.Approved && r.State.Status == "running" &&
+							!r.State.Started && len(r.State.Dispatches) == 0 {
+							leads = append(leads, approvalText(r))
+						}
+					}
+					todo = strings.Join(leads, "\n\n")
 				case st.Status != "active":
 				case st.Kind == "do":
 					// Background work in flight means the session is waiting on it, not stopping.
@@ -624,17 +878,12 @@ func sequenceStop(bridge string, in *HookInput) any {
 					if !st.Started {
 						todo = releaseText(st)
 					}
-				case st.Kind == "run":
-					if r, err := readRun(bridge, st.Run); err == nil && r.State.Approved && r.State.Status == "running" &&
-						!r.State.Started && len(r.State.Dispatches) == 0 {
-						todo = approvalText(r)
-					}
 				}
 				if todo == "" || st.Blocks >= seqStopBudget {
 					continue
 				}
 				st.Blocks++
-				out = block(fmt.Sprintf("sequence step %d is waiting for you.\n\n%s\n\n%s\n\nSequence rules: `ensign help sequence`.", st.N, todo, sf.listing()))
+				out = block(fmt.Sprintf("sequence step %d is waiting for you.\n\n%s\n\n%s\n\nSequence rules: `ensign help sequence`.", st.N, todo, sf.listing(bridge)))
 				return nil
 			}
 		}
@@ -655,15 +904,20 @@ func carrySequence(bridge, old, session string) {
 	withSeq(bridge, session, func(sf *seqFile) error {
 		for _, seq := range sf.Sequences {
 			for _, st := range seq.Steps {
-				if st.Kind != "run" || !st.open() || slices.Contains(bound, st.Run) {
+				if st.Kind != "run" || !st.open() {
 					continue
 				}
-				if r, err := openRun(bridge, st.Run); err == nil {
-					if r.State.Session == old {
-						r.State.Session = session
-						r.save()
+				for _, ru := range st.runs() {
+					if slices.Contains(bound, ru.Run) {
+						continue
 					}
-					r.close()
+					if r, err := openRun(bridge, ru.Run); err == nil {
+						if r.State.Session == old {
+							r.State.Session = session
+							r.save()
+						}
+						r.close()
+					}
 				}
 			}
 		}
@@ -746,7 +1000,7 @@ func releaseRun(bridge, session string, n int, out io.Writer) error {
 			}
 			text, aerr := sf.advance(bridge, owner)
 			if text == "" {
-				text = sf.listing()
+				text = sf.listing(bridge)
 			}
 			fmt.Fprintf(out, "%s\n%s", note, text)
 			return aerr
@@ -789,7 +1043,7 @@ func cmdSequence(args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return withSeq(bridge, session, func(sf *seqFile) error {
 			sf.reconcile(bridge)
-			if l := sf.listing(); l != "" {
+			if l := sf.listing(bridge); l != "" {
 				fmt.Fprint(out, l)
 			} else {
 				fmt.Fprintln(out, "no sequence in this session")
@@ -810,11 +1064,28 @@ func cmdSequence(args []string, out io.Writer) error {
 		if err := checkAddable(bridge, session); err != nil {
 			return err
 		}
-		snap, err := createRun(bridge, o, true, out)
-		if err != nil || snap == nil {
+		var group []subtask
+		if o.task != "" && !o.dry {
+			pending, _, err := pendingSubtasks(bridge, o.task)
+			if err != nil {
+				return err
+			}
+			if len(pending) > 0 {
+				group = subtaskGroups(bridge, o.task, pending)[0]
+			}
+		}
+		if len(group) == 0 {
+			snap, err := createRun(bridge, o, true, out)
+			if err != nil || snap == nil {
+				return err
+			}
+			return seqAdd(bridge, session, out, newRunStep(snap.Task, 0, []*Snapshot{snap}))
+		}
+		snaps, err := createGroupRuns(bridge, o.task, group, nil, o.staleOK, &o, out)
+		if err != nil {
 			return err
 		}
-		return seqAdd(bridge, session, out, &seqStep{Kind: "run", Task: snap.Task, Run: snap.Run, Headline: stepHeadline(snap)})
+		return seqAdd(bridge, session, out, newRunStep(o.task, 1, snaps))
 	case "publish":
 		if len(rest) != 1 {
 			return fmt.Errorf("usage: ensign sequence publish <project>/<task>")
@@ -863,7 +1134,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				return fmt.Errorf("there is no sequence waiting for go; add a step first")
 			}
 			seq.Mode = rest[0]
-			fmt.Fprint(out, sf.listing())
+			fmt.Fprint(out, sf.listing(bridge))
 			return nil
 		})
 	case "halt":
@@ -872,7 +1143,11 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		}
 		// A paused step's run may be held by a finishing hook, whose order is run then sequence; so its run is retired here between two holds of the sequence lock.
-		var paused []*seqStep
+		type pausedStep struct {
+			n    int
+			runs []string
+		}
+		var paused []pausedStep
 		err = withSeq(bridge, session, func(sf *seqFile) error {
 			var cur *sequence
 			for _, seq := range sf.Sequences {
@@ -895,7 +1170,16 @@ func cmdSequence(args []string, out io.Writer) error {
 			for _, st := range cur.Steps {
 				switch {
 				case st.Status == "paused":
-					paused = append(paused, &seqStep{N: st.N, Run: st.Run})
+					p := pausedStep{n: st.N}
+					for _, ru := range st.runs() {
+						p.runs = append(p.runs, ru.Run)
+					}
+					paused = append(paused, p)
+				case st.Kind == "run" && st.Status == "active":
+					// A run still queued for a busy folder never starts now.
+					for _, ru := range st.runs() {
+						retireIf(bridge, ru.Run, "cancelled: "+reason, "pending")
+					}
 				case st.Status == "pending" || st.deciding() || (st.Status == "active" && (st.Kind == "do" || (st.Kind == "release" && !st.Started))):
 					cancelStep(bridge, st, "cancelled", reason)
 				}
@@ -910,7 +1194,15 @@ func cmdSequence(args []string, out io.Writer) error {
 		}
 		retired := map[int]bool{}
 		for _, p := range paused {
-			retired[p.N] = retireIf(bridge, p.Run, "cancelled: "+reason, "pending", "ask-user")
+			retired[p.n] = true
+			for _, id := range p.runs {
+				// A run that is still going keeps its step paused; one that has finished does not.
+				if !retireIf(bridge, id, "cancelled: "+reason, "pending", "ask-user") {
+					if r, err := readRun(bridge, id); err == nil && !finishedRun(r.State) {
+						retired[p.n] = false
+					}
+				}
+			}
 		}
 		return withSeq(bridge, session, func(sf *seqFile) error {
 			for n, ok := range retired {
@@ -923,7 +1215,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			if text != "" {
 				fmt.Fprintln(out, text)
 			} else {
-				fmt.Fprint(out, sf.listing())
+				fmt.Fprint(out, sf.listing(bridge))
 			}
 			return err
 		})
@@ -941,7 +1233,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			sf.failed(bridge, seq, st)
 			text, err := sf.advance(bridge, session)
 			if text == "" {
-				text = sf.listing()
+				text = sf.listing(bridge)
 			}
 			fmt.Fprint(out, text)
 			return err
@@ -987,34 +1279,35 @@ func cmdSequence(args []string, out io.Writer) error {
 			case left == "":
 				return fmt.Errorf("ensign sequence retry needs --state <what is left>")
 			}
-			old, err := readRun(bridge, st.Run)
-			if err != nil {
-				return fmt.Errorf("the failed run can't be read: %v", err)
-			}
-			o := runOpts{start: old.Snap.Start, staleOK: old.State.StaleOK, retryOf: st.Run, retryBase: old.State.Base, location: old.Snap.Location, subtask: old.Snap.Subtask, rebuild: old.State.Rebuild,
-				workItem: old.Snap.WorkItem + "\n\n## Current state\n\nThis is a retry. The workspace holds the previous attempt's work, uncommitted changes included; build on it.\n\nWhy the previous attempt failed: " + diagnosis + "\n\nWhat is left: " + left + "\n"}
-			if old.Snap.Narrowed {
-				o.sides = sideNames(old.Snap.Sides)
-			}
-			for _, dep := range old.Snap.Dependencies {
-				if dep.Branch != "" {
-					o.dependencies = append(o.dependencies, dep.Location+"="+dep.Branch)
+			// Only the runs that failed are rerun; the others of the group stay as they are.
+			var failed []*seqRun
+			var fresh []*Snapshot
+			for _, ru := range st.runs() {
+				old, err := readRun(bridge, ru.Run)
+				if err != nil || old.State.Status != "error" {
+					continue
 				}
+				snap, err := retryRun(bridge, old, diagnosis, left, out)
+				if err != nil {
+					for _, f := range fresh {
+						retireIf(bridge, f.Run, "withdrawn: "+err.Error(), "pending")
+					}
+					return err
+				}
+				failed, fresh = append(failed, ru), append(fresh, snap)
 			}
-			if old.Snap.Task != "" {
-				o.task = old.Snap.Task
-			} else {
-				o.pipeline, o.project = old.Snap.Pipeline.Name, old.Snap.Project
+			if len(failed) == 0 {
+				return fmt.Errorf("step %d has no failed run to retry", n)
 			}
-			snap, err := createRun(bridge, o, true, out)
-			if err != nil {
-				return err
+			for i, ru := range failed {
+				*ru = seqRun{Run: fresh[i].Run, Subtask: fresh[i].Subtask, Location: fresh[i].Location, Prev: ru.Run, Status: "pending"}
 			}
-			st.Prev, st.Diagnosis, st.Run = st.Run, diagnosis, snap.Run
+			st.Prev, st.Diagnosis = failed[0].Prev, diagnosis
+			st.setRuns(st.Runs)
 			st.Status, st.Reason, st.Blocks = "pending", "", 0
 			text, err := sf.advance(bridge, session)
 			if text == "" {
-				text = sf.listing()
+				text = sf.listing(bridge)
 			}
 			fmt.Fprint(out, text)
 			return err
@@ -1052,13 +1345,33 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			text, err := sf.advance(bridge, session)
 			if text == "" {
-				text = sf.listing()
+				text = sf.listing(bridge)
 			}
 			fmt.Fprint(out, text)
 			return err
 		})
 	}
 	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <n> | do <instruction> | mode stop|keep-going | halt | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> | fail <n> --reason <text>]")
+}
+
+// retryRun queues a new run for a failed one, with the diagnosis in its work item.
+func retryRun(bridge string, old *RunFiles, diagnosis, left string, out io.Writer) (*Snapshot, error) {
+	o := runOpts{start: old.Snap.Start, staleOK: old.State.StaleOK, retryOf: old.State.Run, retryBase: old.State.Base, location: old.Snap.Location, subtask: old.Snap.Subtask, rebuild: old.State.Rebuild,
+		workItem: old.Snap.WorkItem + "\n\n## Current state\n\nThis is a retry. The workspace holds the previous attempt's work, uncommitted changes included; build on it.\n\nWhy the previous attempt failed: " + diagnosis + "\n\nWhat is left: " + left + "\n"}
+	if old.Snap.Narrowed {
+		o.sides = sideNames(old.Snap.Sides)
+	}
+	for _, dep := range old.Snap.Dependencies {
+		if dep.Branch != "" && !dep.Auto {
+			o.dependencies = append(o.dependencies, dep.Location+"="+dep.Branch)
+		}
+	}
+	if old.Snap.Task != "" {
+		o.task = old.Snap.Task
+	} else {
+		o.pipeline, o.project = old.Snap.Pipeline.Name, old.Snap.Project
+	}
+	return createRun(bridge, o, true, out)
 }
 
 func stepArg(args []string, usage string) (int, error) {
@@ -1118,7 +1431,7 @@ func seqAdd(bridge, session string, out io.Writer, st *seqStep) error {
 			r.close()
 		}
 		sf.add(st)
-		fmt.Fprint(out, sf.listing())
+		fmt.Fprint(out, sf.listing(bridge))
 		return nil
 	})
 }

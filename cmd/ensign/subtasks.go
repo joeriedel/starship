@@ -191,8 +191,9 @@ func subtaskProgress(bridge, task string) string {
 
 // chosenSubtask is the subtask a run works on, with the subtasks before it that are on the branch or dropped.
 type chosenSubtask struct {
-	sub     subtask
-	earlier []string
+	sub      subtask
+	earlier  []string
+	doneLocs []string // the locations of the earlier subtasks that are done
 }
 
 // pickSubtask finds the subtask a run of o.task works on: the one named, else the first pending. It returns nil for a task without subtasks.
@@ -260,6 +261,9 @@ func pickSubtask(bridge string, o runOpts) (*chosenSubtask, error) {
 		switch marks[s.Name].Status {
 		case "done":
 			ch.earlier = append(ch.earlier, "- "+s.Name+": "+firstLine(firstNonEmpty(s.Goal, s.Scope)))
+			if s.Location != "" {
+				ch.doneLocs = append(ch.doneLocs, s.Location)
+			}
 		case "dropped":
 			ch.earlier = append(ch.earlier, "- "+s.Name+": dropped, not on the branch")
 		}

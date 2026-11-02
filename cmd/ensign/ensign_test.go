@@ -109,9 +109,15 @@ func (w *world) approve() {
 // id when allowed, or "" and the deny reason.
 func (w *world) spawn(caller, callerType, role string) (string, string) {
 	w.t.Helper()
+	return w.spawnPrompt(caller, callerType, role, "do the thing")
+}
+
+// spawnPrompt is spawn with the prompt the caller passes.
+func (w *world) spawnPrompt(caller, callerType, role, prompt string) (string, string) {
+	w.t.Helper()
 	in := map[string]any{
 		"tool_name":  "Agent",
-		"tool_input": map[string]any{"subagent_type": role, "prompt": "do the thing", "description": "x"},
+		"tool_input": map[string]any{"subagent_type": role, "prompt": prompt, "description": "x"},
 	}
 	if caller != "" {
 		in["agent_id"], in["agent_type"] = caller, callerType
@@ -128,8 +134,8 @@ func (w *world) spawn(caller, callerType, role string) (string, string) {
 	}
 	w.agents++
 	id := fmt.Sprintf("agent%02d", w.agents)
-	prompt := res["hookSpecificOutput"].(map[string]any)["updatedInput"].(map[string]any)["prompt"].(string)
-	rec, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": prompt}})
+	updated := res["hookSpecificOutput"].(map[string]any)["updatedInput"].(map[string]any)["prompt"].(string)
+	rec, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": updated}})
 	write(w.t, agentTranscript(w.session, id), string(rec)+"\n")
 	return id, ""
 }
@@ -201,7 +207,7 @@ func (w *world) leaf(lead, role, outcome string) {
 	}
 }
 
-// liveStepRun starts a sequence step's run in the folder, the way startRunStep does, with a coder dispatch for agent when given.
+// liveStepRun starts a sequence step's run in the folder, the way startRun does, with a coder dispatch for agent when given.
 func (w *world) liveStepRun(folder, agent string) string {
 	w.t.Helper()
 	var out bytes.Buffer
@@ -213,7 +219,7 @@ func (w *world) liveStepRun(folder, agent string) string {
 	if err := writeJSON(filepath.Join(runsDir(w.bridge), snap.Run, "pipeline.json"), snap); err != nil {
 		w.t.Fatal(err)
 	}
-	if _, err := startRunStep(w.bridge, w.sid, &seqStep{Run: snap.Run, Task: snap.Task}); err != nil {
+	if _, err := startRun(w.bridge, w.sid, snap.Task, snap.Run); err != nil {
 		w.t.Fatal(err)
 	}
 	if agent != "" {
@@ -826,7 +832,7 @@ func TestAStepWaitsForABusyFolder(t *testing.T) {
 	}
 	snap.Workspace = folder
 	writeJSON(filepath.Join(runsDir(w.bridge), snap.Run, "pipeline.json"), snap)
-	_, err = startRunStep(w.bridge, w.sid, &seqStep{Run: snap.Run, Task: snap.Task})
+	_, err = startRun(w.bridge, w.sid, snap.Task, snap.Run)
 	var busy *folderBusyError
 	if !errors.As(err, &busy) || busy.run != a {
 		t.Fatalf("starting a step in a held folder: %v", err)
@@ -841,7 +847,7 @@ func TestAStepWaitsForABusyFolder(t *testing.T) {
 	r.State.Status = "success"
 	r.save()
 	r.close()
-	if _, err := startRunStep(w.bridge, w.sid, &seqStep{Run: snap.Run, Task: snap.Task}); err != nil {
+	if _, err := startRun(w.bridge, w.sid, snap.Task, snap.Run); err != nil {
 		t.Fatalf("after the holder finished, the refusal left the folder lock held or the folder busy: %v", err)
 	}
 }

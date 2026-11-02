@@ -136,8 +136,11 @@ func heldRuns(bridge string) (held map[string]bool, ok bool) {
 		}
 		for _, seq := range sf.Sequences {
 			for _, st := range seq.Steps {
-				if st.open() && st.Run != "" {
-					held[st.Run] = true
+				if !st.open() {
+					continue
+				}
+				for _, ru := range st.runs() {
+					held[ru.Run] = true
 				}
 			}
 		}

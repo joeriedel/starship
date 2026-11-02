@@ -110,7 +110,7 @@ func TestParseRunArgsDependency(t *testing.T) {
 
 func TestDependencyRefusals(t *testing.T) {
 	w := depWorld(t, depApply, "touch tested")
-	runGit(t, w.sideFolder("models"), "branch", "feature-x")
+	runGit(t, w.sideFolder("models"), "checkout", "-q", "-b", "feature-x")
 	server := locTask(t, w, "s", "server")
 	models := locTask(t, w, "m", "models")
 	cases := []struct{ task, dep, want string }{
@@ -140,7 +140,7 @@ func TestDependencyRefusals(t *testing.T) {
 
 func TestRunRefusedForASideWithoutTheBinding(t *testing.T) {
 	w := depWorld(t, "", "touch tested")
-	runGit(t, w.sideFolder("models"), "branch", "feature-x")
+	runGit(t, w.sideFolder("models"), "checkout", "-q", "-b", "feature-x")
 	var out bytes.Buffer
 	_, err := createRun(w.bridge, runOpts{task: locTask(t, w, "s", "server"), dependencies: []string{"models=feature-x"}, dry: true}, false, &out)
 	if err == nil || !strings.Contains(err.Error(), "server (needs the branch of models)") || !strings.Contains(err.Error(), "add @apply-dependency") || !strings.Contains(err.Error(), "not-applicable") {
@@ -157,7 +157,7 @@ func TestRunRefusedForASideWithoutTheBinding(t *testing.T) {
 
 func TestSummaryNamesTheDependencies(t *testing.T) {
 	w := depWorld(t, depApply, "touch tested")
-	runGit(t, w.sideFolder("models"), "branch", "feature-x")
+	runGit(t, w.sideFolder("models"), "checkout", "-q", "-b", "feature-x")
 	var out bytes.Buffer
 	if _, err := createRun(w.bridge, runOpts{task: locTask(t, w, "s", "server"), dependencies: []string{"models=feature-x"}, dry: true}, false, &out); err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestSummaryNamesTheDependencies(t *testing.T) {
 
 func TestRunAcceptedWithNotApplicable(t *testing.T) {
 	w := depWorld(t, `  apply-dependency: { not-applicable: "builds from the sibling checkout" }`, "touch tested")
-	runGit(t, w.sideFolder("models"), "branch", "feature-x")
+	runGit(t, w.sideFolder("models"), "checkout", "-q", "-b", "feature-x")
 	var out bytes.Buffer
 	if _, err := createRun(w.bridge, runOpts{task: locTask(t, w, "s", "server"), dependencies: []string{"models=feature-x"}, dry: true}, false, &out); err != nil {
 		t.Fatal(err)
@@ -232,7 +232,7 @@ func TestPlainStageApplyFailureIsAnError(t *testing.T) {
 
 func TestPlainStageCrossTestSeesTheEditedWiring(t *testing.T) {
 	w := depWorld(t, depApply, "touch tested")
-	runGit(t, w.sideFolder("models"), "branch", "feature-x")
+	runGit(t, w.sideFolder("models"), "checkout", "-q", "-b", "feature-x")
 	write(t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"), `platforms: [linux]
 
 bindings:
@@ -338,7 +338,13 @@ func ignoredNow(t *testing.T, ws string) []string {
 	return got
 }
 
-var unitDep = Dependency{Location: "models", Branch: "feature-x", Path: "models", Sides: []string{"server"}}
+// unitDep is a dependency on the feature-x branch of a models checkout that has it checked out.
+func unitDep(t *testing.T) Dependency {
+	t.Helper()
+	models := newRepo(t, filepath.Join(t.TempDir(), "models"))
+	runGit(t, models, "checkout", "-q", "-b", "feature-x")
+	return Dependency{Location: "models", Branch: "feature-x", Path: models, Sides: []string{"server"}}
+}
 
 func TestParseAppliedList(t *testing.T) {
 	got, err := parseAppliedList("go.mod\r\n\r\nsub\\dir\\go.sum\r\n./a/../b.txt\n")
@@ -361,7 +367,7 @@ func TestRestoreReturnsADirtyFileToItsPreApplyContent(t *testing.T) {
 	write(t, filepath.Join(ws, "go.mod"), "module x\nmine\n")
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo replace >> go.mod; touch new.txt; echo go.mod > $STARSHIP_APPLIED_FILES; echo new.txt >> $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := restoreDependencies(ws, "settle"); err != nil {
@@ -389,7 +395,7 @@ func TestRestoreLeavesAFileEditedAfterTheApply(t *testing.T) {
 	ws := newRepo(t, filepath.Join(t.TempDir(), "server"))
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo replace >> go.mod; touch new.txt; echo go.mod > $STARSHIP_APPLIED_FILES; echo new.txt >> $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(ws, "go.mod"), "module x\nreplace\nfixed\n")
@@ -452,7 +458,7 @@ func TestApplyFailureKeepsWhatWasTouchedRestorable(t *testing.T) {
 	ws := newRepo(t, filepath.Join(t.TempDir(), "server"))
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo replace >> go.mod; echo go.mod > $STARSHIP_APPLIED_FILES; exit 3")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err == nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err == nil {
 		t.Fatal("a failing binding is an error")
 	}
 	if _, err := restoreDependencies(ws, "settle"); err != nil {
@@ -470,7 +476,7 @@ func TestApplyRefusesPathsOutsideTheWorkspace(t *testing.T) {
 	ws := newRepo(t, filepath.Join(t.TempDir(), "server"))
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo ../outside > $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err == nil || !strings.Contains(err.Error(), "not a file inside the workspace") {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err == nil || !strings.Contains(err.Error(), "not a file inside the workspace") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -482,7 +488,7 @@ func TestBadLineInTheAppliedListKeepsTheValidEntries(t *testing.T) {
 	ws := newRepo(t, filepath.Join(t.TempDir(), "server"))
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo replace >> go.mod; echo go.mod > $STARSHIP_APPLIED_FILES; echo /etc/passwd >> $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err == nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err == nil {
 		t.Fatal("a bad line is an error")
 	}
 	if err := checkNoDependencyWiring(r); err == nil || !strings.Contains(err.Error(), "go.mod") {
@@ -518,7 +524,7 @@ func TestGithubCommitRefusesWhileWiringIsInTheTree(t *testing.T) {
 	runGit(t, ws, "checkout", "-q", "-b", "task/dep")
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo replace >> go.mod; echo go.mod > $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(ws, "lib.txt"), "work\n")
@@ -547,7 +553,7 @@ func TestCatalogCommitPassRefusesWhileWiringIsInTheTree(t *testing.T) {
 	ws := newRepo(t, filepath.Join(t.TempDir(), "server"))
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo replace >> go.mod; echo go.mod > $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(ws, "lib.txt"), "work\n")
@@ -584,7 +590,7 @@ func TestRestoreLeavesAPreExistingIgnoredFileTheApplyModified(t *testing.T) {
 	write(t, filepath.Join(ws, "go.work"), "use ./a\n")
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo use ../models >> go.work; echo go.work > $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	if err := checkNoDependencyWiring(r); err != nil {
@@ -612,7 +618,7 @@ func TestRestoreDeletesAnIgnoredFileTheApplyCreated(t *testing.T) {
 	ws := ignoredRepo(t)
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo use ../models >> go.work; echo go.work > $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	notice, err := restoreDependencies(ws, "settle")
@@ -635,7 +641,7 @@ func TestSecondApplyAfterRestoreRestoresAFileInAnIgnoredFolder(t *testing.T) {
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "mkdir -p gen; echo use ../models >> gen/go.work; echo gen/go.work > $STARSHIP_APPLIED_FILES")
 	for i := 0; i < 2; i++ {
-		if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+		if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 			t.Fatal(err)
 		}
 		notice, err := restoreDependencies(ws, "settle")
@@ -662,7 +668,7 @@ func TestApplyLeavesIgnoredFilesThatExistedBefore(t *testing.T) {
 	write(t, filepath.Join(ws, "gen", "go.work"), "use ./a\n")
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo use ../models >> gen/go.work; echo gen/go.work > $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	notice, err := restoreDependencies(ws, "settle")
@@ -685,7 +691,7 @@ func TestApplyRestoresAFileCreatedInANonEmptyIgnoredFolder(t *testing.T) {
 	write(t, filepath.Join(ws, "gen", "cache"), "c\n")
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo use ../models > gen/go.work; echo gen/go.work > $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := restoreDependencies(ws, "settle"); err != nil {
@@ -711,7 +717,7 @@ func TestRestoreKeepsAnIgnoredFileInAnUntrackedFolder(t *testing.T) {
 	write(t, filepath.Join(ws, "tools", "env.local"), "A=1\n")
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo B=2 >> tools/env.local; echo tools/env.local > $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := restoreDependencies(ws, "settle"); err != nil {
@@ -729,14 +735,14 @@ func TestReapplyIsRefusedWhileAKeptFileIsUnsettled(t *testing.T) {
 	ws := newRepo(t, filepath.Join(t.TempDir(), "server"))
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo replace >> go.mod; echo go.mod > $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(ws, "go.mod"), "module x\nreplace\nfixed\n")
 	if _, err := restoreDependencies(ws, "settle"); err == nil {
 		t.Fatal("restore keeps the edited file")
 	}
-	_, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws))
+	_, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws))
 	if err == nil || !strings.Contains(err.Error(), "--done go.mod") {
 		t.Fatalf("apply should be refused naming --done go.mod, got %v", err)
 	}
@@ -747,7 +753,7 @@ func TestReapplyIsRefusedWhileAKeptFileIsUnsettled(t *testing.T) {
 	if err := settleApplied(ws, []string{"go.mod"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatalf("apply after --done: %v", err)
 	}
 }
@@ -761,7 +767,7 @@ func TestReapplyOfAFileAtItsPostKeepsTheOriginalTarget(t *testing.T) {
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo replace >> go.mod; echo go.mod > $STARSHIP_APPLIED_FILES")
 	for i := 0; i < 2; i++ {
-		if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+		if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -782,7 +788,7 @@ func TestRestoreReturnsADirtyNonASCIIFileToItsPreApplyContent(t *testing.T) {
 	write(t, filepath.Join(ws, "docs", "café.md"), "mine\n")
 	r := unitRun(t, ws)
 	sd := unitSide(ws, "echo wired >> docs/café.md; echo docs/café.md > $STARSHIP_APPLIED_FILES")
-	if _, err := applyDependency(r, nil, sd, unitDep, ignoredNow(t, ws)); err != nil {
+	if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := restoreDependencies(ws, "settle"); err != nil {
@@ -790,5 +796,104 @@ func TestRestoreReturnsADirtyNonASCIIFileToItsPreApplyContent(t *testing.T) {
 	}
 	if got := readFile(t, ws, "docs", "café.md"); got != "mine\n" {
 		t.Errorf("café.md = %q, want the content from before the apply", got)
+	}
+}
+
+// autoWorld is a dependency world whose task t has its models subtask done and its server subtask pending, with models' checkout on main and an origin that has it.
+func autoWorld(t *testing.T) *world {
+	t.Helper()
+	w := depWorld(t, depApply, "touch tested")
+	models := w.sideFolder("models")
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, models, "clone", "-q", "--bare", models, bare)
+	runGit(t, models, "remote", "add", "origin", bare)
+	runGit(t, models, "fetch", "-q", "origin")
+	runGit(t, models, "remote", "set-head", "origin", "main")
+	locTask(t, w, "t", "models, server")
+	w.subtaskFile("t", "01-models", "---\nlocation: models\n---\n\n## Goal\n\nmodels.\n")
+	w.subtaskFile("t", "02-server", "---\nlocation: server\n---\n\n## Goal\n\nserver.\n")
+	if out, err := w.taskCmd("subtask", "done", "supernova/t", "01-models"); err != nil {
+		t.Fatal(out, err)
+	}
+	return w
+}
+
+// taskBranchAhead puts the task's branch in models one commit ahead of main and leaves it checked out.
+func taskBranchAhead(t *testing.T, w *world) {
+	t.Helper()
+	models := w.sideFolder("models")
+	runGit(t, models, "checkout", "-q", "-b", "task/t")
+	write(t, filepath.Join(models, "schema.txt"), "schema\n")
+	runGit(t, models, "add", "schema.txt")
+	runGit(t, models, "commit", "-q", "-m", "schema")
+}
+
+func TestAutomaticDependencyOnTheTaskBranchWhenItIsAhead(t *testing.T) {
+	w := autoWorld(t)
+	taskBranchAhead(t, w)
+	snap, err := w.snapOf("t", runOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Dependency{Location: "models", Branch: "task/t", Path: w.sideFolder("models"), Sides: []string{"server"}, Auto: true}
+	if !reflect.DeepEqual(snap.Dependencies, []Dependency{want}) {
+		t.Fatalf("dependencies %+v, want %+v", snap.Dependencies, want)
+	}
+	if lines := strings.Join(dependencyLines(snap.sides(), snap.Dependencies), "\n"); !strings.Contains(lines, "dependency models @ task/t") || !strings.Contains(lines, "automatic") {
+		t.Errorf("the summary should show it as automatic:\n%s", lines)
+	}
+}
+
+func TestAutomaticDependencyIsLeftOutWhenTheBranchIsMissingOrNotAhead(t *testing.T) {
+	w := autoWorld(t)
+	snap, err := w.snapOf("t", runOpts{})
+	if err != nil || len(snap.Dependencies) != 0 {
+		t.Fatalf("no task branch (published): %v %+v", err, snap)
+	}
+	runGit(t, w.sideFolder("models"), "checkout", "-q", "-b", "task/t")
+	snap, err = w.snapOf("t", runOpts{})
+	if err != nil || len(snap.Dependencies) != 0 {
+		t.Fatalf("a branch with nothing its base lacks: %v %+v", err, snap)
+	}
+}
+
+func TestExplicitDependencyWinsOverTheAutomaticOne(t *testing.T) {
+	w := autoWorld(t)
+	taskBranchAhead(t, w)
+	runGit(t, w.sideFolder("models"), "checkout", "-q", "-b", "feature-x")
+	snap, err := w.snapOf("t", runOpts{dependencies: []string{"models=feature-x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Dependencies) != 1 || snap.Dependencies[0].Branch != "feature-x" || snap.Dependencies[0].Auto {
+		t.Fatalf("dependencies %+v", snap.Dependencies)
+	}
+}
+
+func TestDependencyRefusedWhenItsCheckoutIsOnAnotherBranch(t *testing.T) {
+	w := autoWorld(t)
+	taskBranchAhead(t, w)
+	models := w.sideFolder("models")
+	runGit(t, models, "checkout", "-q", "main")
+	_, err := w.snapOf("t", runOpts{})
+	for _, want := range []string{models, "branch main", "task/t"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("the automatic dependency: got %v, want it to name %q", err, want)
+		}
+	}
+	runGit(t, models, "checkout", "-q", "--detach")
+	if _, err := w.snapOf("t", runOpts{dependencies: []string{"models=task/t"}}); err == nil || !strings.Contains(err.Error(), "detached HEAD") || !strings.Contains(err.Error(), "task/t") {
+		t.Fatalf("an explicit dependency on a detached checkout: %v", err)
+	}
+}
+
+func TestApplyRefusesWhenTheDependencyCheckoutMovedAway(t *testing.T) {
+	ws := newRepo(t, filepath.Join(t.TempDir(), "server"))
+	r := unitRun(t, ws)
+	dep := unitDep(t)
+	runGit(t, dep.Path, "checkout", "-q", "-b", "other")
+	_, err := applyDependency(r, nil, unitSide(ws, "true"), dep, ignoredNow(t, ws))
+	if err == nil || !strings.Contains(err.Error(), dep.Path) || !strings.Contains(err.Error(), "branch other") || !strings.Contains(err.Error(), "feature-x") {
+		t.Fatalf("got %v", err)
 	}
 }

@@ -147,6 +147,11 @@ func (l *Locations) Dependents(name string) []string {
 	return out
 }
 
+// Related says whether two locations are one, or either depends on the other, directly or through others.
+func (l *Locations) Related(a, b string) bool {
+	return a == b || l.reaches(a, b, map[string]bool{}) || l.reaches(b, a, map[string]bool{})
+}
+
 func (l *Locations) reaches(from, to string, seen map[string]bool) bool {
 	for _, d := range l.deps[from] {
 		if d == to {
@@ -275,8 +280,8 @@ func latestRunLocation(bridge, task string, successOnly bool) string {
 func precedingRunLocation(bridge string, seq *sequence, n int, task string) string {
 	var run string
 	for _, s := range seq.Steps {
-		if s.N < n && s.Kind == "run" && s.Task == task && s.Run != "" {
-			run = s.Run
+		if rs := s.runs(); s.N < n && s.Kind == "run" && s.Task == task && len(rs) > 0 {
+			run = rs[len(rs)-1].Run
 		}
 	}
 	if run == "" {

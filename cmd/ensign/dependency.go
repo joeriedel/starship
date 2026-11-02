@@ -28,6 +28,7 @@ type Dependency struct {
 	Branch   string   `json:"branch,omitempty"` // empty: the branch the run's own workspace is on when the dependency is applied
 	Path     string   `json:"path"`             // the dependency's checkout on this machine
 	Sides    []string `json:"sides"`            // the sides it is applied on
+	Auto     bool     `json:"auto,omitempty"`   // added for the run's subtask, not named with --dependency
 }
 
 // label names the branch for people.
@@ -53,13 +54,26 @@ func hasApplyBinding(bs map[string]Binding) bool {
 	return ok && (b.Command != "" || b.NotApplicable != "")
 }
 
-// resolveDependencies works out the dependencies of the run: the branches named with --dependency, then the run's own location for each dependent side.
-func (c *Config) resolveDependencies(bridge string, flags []string) error {
+// checkDependencyCheckout refuses a dependency whose checkout is not on the named branch: the branch is applied from what that folder holds.
+func checkDependencyCheckout(d Dependency) error {
+	cur := currentBranch(d.Path)
+	if cur == d.Branch {
+		return nil
+	}
+	on := "on branch " + cur
+	if cur == "" {
+		on = "on a detached HEAD"
+	}
+	return fmt.Errorf("dependency %s: the checkout %s is %s, not on %s; check out %s there first", d.Location, d.Path, on, d.Branch, d.Branch)
+}
+
+// resolveDependencies works out the dependencies of the run: the branches named with --dependency, the automatic ones (the same form, found for the run's subtask), then the run's own location for each dependent side.
+func (c *Config) resolveDependencies(bridge string, flags, auto []string) error {
 	if len(flags) > 0 && c.Location == "" {
 		return fmt.Errorf("--dependency has no meaning for a run without a location: the project declares none, or the run names none")
 	}
 	seen := map[string]bool{}
-	for _, f := range flags {
+	for _, f := range append(slices.Clone(flags), auto...) {
 		loc, branch, err := parseDependencyFlag(f)
 		if err != nil {
 			return err
@@ -83,7 +97,10 @@ func (c *Config) resolveDependencies(bridge string, flags []string) error {
 		if _, err := gitOut(p, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
 			return fmt.Errorf("--dependency: location %s has no branch %q in %s", loc, branch, p)
 		}
-		dep := Dependency{Location: loc, Branch: branch, Path: p}
+		dep := Dependency{Location: loc, Branch: branch, Path: p, Auto: slices.Contains(auto, f)}
+		if err := checkDependencyCheckout(dep); err != nil {
+			return err
+		}
 		for _, sd := range c.Sides {
 			if contains(dependents, sd.Location) {
 				dep.Sides = append(dep.Sides, sd.Location)
@@ -114,6 +131,49 @@ func (c *Config) resolveDependencies(bridge string, flags []string) error {
 		return fmt.Errorf("these sides need another location's branch applied but have no @%s binding: %s; add @%s to that location (or `not-applicable: <reason>` when it already builds from the local checkout), or narrow --sides", applyDependencyBinding, strings.Join(lacking, ", "), applyDependencyBinding)
 	}
 	return nil
+}
+
+// automaticDependencies names, as --dependency values, the task branches that earlier subtasks left in the locations this run depends on. doneLocs are the locations of the task's earlier done subtasks; flags are the dependencies the session already named, which win. A branch that is missing (published) or has no commits its base lacks is left out.
+func (c *Config) automaticDependencies(bridge string, doneLocs, flags []string) []string {
+	if c.Locations == nil || c.Location == "" {
+		return nil
+	}
+	branch := taskBranch(c.Task)
+	named := map[string]bool{}
+	for _, f := range flags {
+		if loc, _, err := parseDependencyFlag(f); err == nil {
+			named[loc] = true
+		}
+	}
+	var out []string
+	for _, loc := range doneLocs {
+		if named[loc] || loc == c.Location || !contains(c.Locations.Dependents(loc), c.Location) {
+			continue
+		}
+		named[loc] = true
+		p, err := locationPathFor(bridge, c.Project, loc)
+		if err != nil {
+			continue
+		}
+		if _, err := gitOut(p, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil && branchAhead(p, branch) {
+			out = append(out, loc+"="+branch)
+		}
+	}
+	return out
+}
+
+// branchAhead says whether a local branch has commits the default branch lacks. When the default branch can't be told, a branch that exists counts as ahead.
+func branchAhead(ws, branch string) bool {
+	base, err := defaultBranch(ws)
+	if err != nil {
+		return true
+	}
+	ref := "refs/heads/" + base
+	if _, err := gitOut(ws, "rev-parse", "--verify", "--quiet", ref); err != nil {
+		ref = "origin/" + base
+	}
+	n, err := gitOut(ws, "rev-list", "--count", ref+".."+"refs/heads/"+branch)
+	return err != nil || n != "0"
 }
 
 // dependenciesFor lists the dependencies applied on a side.
@@ -156,6 +216,9 @@ func dependencyLines(sides []Side, deps []Dependency) []string {
 			}
 		}
 		line := fmt.Sprintf("dependency %s @ %s (%s)", d.Location, d.label(), d.Path)
+		if d.Auto {
+			line += " automatic: an earlier subtask of the task is done there"
+		}
 		if len(applied) > 0 {
 			line += " applied on " + strings.Join(applied, ", ")
 		}
@@ -384,6 +447,11 @@ func applyDependency(r *RunFiles, d *Dispatch, sd Side, dep Dependency, ignoredB
 	branch, err := resolveDependencyBranch(dep)
 	if err != nil {
 		return "", err
+	}
+	if dep.Branch != "" {
+		if err := checkDependencyCheckout(dep); err != nil {
+			return "", err
+		}
 	}
 	rec, recPath, err := loadApplied(sd.Workspace)
 	if err != nil {

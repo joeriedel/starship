@@ -7,3 +7,10 @@ When several runs of the session are live:
 - Pass `--run <id>` to `ensign next`, `ensign resume` and `ensign run-stage`; without it they refuse and name the live runs.
 - One run per code folder: start a run or a step there only when no other live run of any session holds the folder. Ensign refuses it otherwise; a step left waiting starts once the folder is free.
 - Each run finishes on its own: write each one's journal account as it ends.
+
+When a run step names a task with subtasks:
+
+- The step holds a group of runs, one per subtask, side by side; `go` and each later group's start return one dispatch instruction per run. Dispatch every lead, passing the prompt exactly as given: its first line names the run.
+- The Stop hook names every lead still waiting to be dispatched.
+- A failed run does not stop the others of its group. When all are over the step waits; `retry` reruns only the failed ones, `accept` ends the step and later groups do not run.
+- Details: `ensign help subtasks`.

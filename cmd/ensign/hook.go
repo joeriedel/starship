@@ -50,6 +50,11 @@ type BackgroundTask struct {
 
 var tagRe = regexp.MustCompile(`\[starship run=(\S+) dispatch=(\S+)`)
 
+var spawnTagRe = regexp.MustCompile(`\[starship run=(\S+) lead\]`)
+
+// spawnTag begins the prompt the session passes when it spawns a run's lead, so with several live runs the spawn is tied to its run.
+func spawnTag(run string) string { return "[starship run=" + run + " lead]" }
+
 func tagLine(run string, d *Dispatch) string {
 	t := fmt.Sprintf("[starship run=%s dispatch=%s stage=%s", run, d.ID, d.Stage)
 	if d.Dim != "" {
@@ -549,7 +554,7 @@ func approvalText(r *RunFiles) string {
 			r.State.Run, m.expect(""), r.State.Run)
 	}
 	return fmt.Sprintf("run %s approved. Dispatch its lead now: use the Agent tool with subagent_type %q, "+
-		"and pass this work item as the prompt:\n\n%s", r.State.Run, lead.Role, r.Snap.WorkItem)
+		"and pass this work item as the prompt, first line included:\n\n%s\n\n%s", r.State.Run, lead.Role, spawnTag(r.State.Run), r.Snap.WorkItem)
 }
 
 var reportRe = regexp.MustCompile("(?s)```starship-report\\s*\\n(.*?)```")
@@ -909,8 +914,8 @@ func cmdResume(args []string, out io.Writer) error {
 		}
 	}
 	lead := r.Snap.Pipeline.Stages[0]
-	fmt.Fprintf(out, "run %s resumed. Dispatch its lead now: use the Agent tool with subagent_type %q and this work item as the prompt:\n\n%s\n",
-		r.State.Run, lead.Role, r.Snap.WorkItem)
+	fmt.Fprintf(out, "run %s resumed. Dispatch its lead now: use the Agent tool with subagent_type %q and this work item as the prompt, first line included:\n\n%s\n\n%s\n",
+		r.State.Run, lead.Role, spawnTag(r.State.Run), r.Snap.WorkItem)
 	return nil
 }
 

@@ -393,9 +393,36 @@ func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 	return r, nil
 }
 
+// openSpawnRun finds the run the session's own spawn of a lead belongs to: the one named by the tag the prompt begins with, when it is one of the session's live runs. It returns nil, nil when there is none.
+func openSpawnRun(bridge string, in *HookInput) (*RunFiles, error) {
+	if in.ToolName != "Agent" && in.ToolName != "Task" {
+		return nil, nil
+	}
+	prompt, _ := in.ToolInput["prompt"].(string)
+	m := spawnTagRe.FindStringSubmatch(prompt)
+	if m == nil || !slices.Contains(liveSessionRuns(bridge, in.SessionID), m[1]) {
+		return nil, nil
+	}
+	r, err := openRun(bridge, m[1])
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if r.State.terminal() {
+		r.close()
+		return nil, nil
+	}
+	return r, nil
+}
+
 // openHookRun opens the run a hook call is checked against. An agent's own live run comes first, even when its session is bound to another run, and that binding is left alone; the session is rebound only when it has no live run. Otherwise it is the session's run, when it has just one live run. The session's run is closed before another is opened, so no two run locks are held.
 func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
 	if len(liveSessionRuns(bridge, in.SessionID)) > 1 {
+		if in.AgentID == "" {
+			return openSpawnRun(bridge, in)
+		}
 		return findAgentRun(bridge, in)
 	}
 	r, err := openSoleSessionRun(bridge, in.SessionID)
@@ -687,7 +714,11 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		c.Subtask = pick.sub.Name
 		c.WorkItem = pick.workItem(c.WorkItem)
 	}
-	if err := c.resolveDependencies(bridge, o.dependencies); err != nil {
+	var auto []string
+	if pick != nil {
+		auto = c.automaticDependencies(bridge, pick.doneLocs, o.dependencies)
+	}
+	if err := c.resolveDependencies(bridge, o.dependencies, auto); err != nil {
 		return nil, err
 	}
 	errs := validate(c)
