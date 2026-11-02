@@ -31,6 +31,8 @@ A plan names task, pipeline (usually `coding`), work item, what done looks like,
 
 Product code reaches a workspace only through a pipeline run, **never through you, any size**. Never edit workspace files or run builds/tests. If a change seems too small for a run, say so; the user decides. You run only inspection (`git status`, `git log`, diffs) and `ensign`.
 
+After a stray-file refusal, delete the named files yourself only with the user's explicit permission for that deletion; otherwise retry the run with the diagnosis (the coder deletes them, or reports the file as intended).
+
 ## While a run is going
 
 - To wait, write one sentence naming what you wait for and end the turn; the lead's finish re-invokes you. Never poll.

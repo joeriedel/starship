@@ -232,6 +232,9 @@ func githubCommit(r *RunFiles) error {
 	if !dirty(ws) {
 		return nil
 	}
+	if err := checkNoStrayFiles(r); err != nil {
+		return err
+	}
 	_, name, _ := strings.Cut(r.Snap.Task, "/")
 	if err := git(ws, "add", "-A"); err != nil {
 		return err

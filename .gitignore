@@ -1,6 +1,7 @@
 # Local builds. Binaries are never committed; CI attaches them to releases.
-/ensign
-/ensign.exe
+ensign
+ensign.exe
+!ensign/
 /dist/
 /bin/
 *.test
