@@ -43,7 +43,9 @@ func locationsWorld(t *testing.T) *world {
 	write(t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"), locationsProject)
 	for _, l := range []string{"client", "server", "models"} {
 		dir := filepath.Join(t.TempDir(), l)
-		os.MkdirAll(dir, 0o755)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := setLocationPath(w.bridge, "supernova", l, dir); err != nil {
 			t.Fatal(err)
 		}
@@ -195,7 +197,9 @@ func TestTaskNewLocations(t *testing.T) {
 	}
 	m := loadMachine(w.bridge)
 	delete(m.Locations["supernova"], "server")
-	saveMachine(w.bridge, m)
+	if err := saveMachine(w.bridge, m); err != nil {
+		t.Fatal(err)
+	}
 	if err := cmdTask([]string{"new", "supernova/b", "--locations", "server"}, &out); err == nil || !strings.Contains(err.Error(), "ensign workspace supernova --location server") {
 		t.Errorf("unrecorded location: %v", err)
 	}
@@ -260,7 +264,9 @@ func TestRunPicksOneLocation(t *testing.T) {
 	}
 	m := loadMachine(w.bridge)
 	delete(m.Locations["supernova"], "client")
-	saveMachine(w.bridge, m)
+	if err := saveMachine(w.bridge, m); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := createRun(w.bridge, runOpts{task: one}, true, &out); err == nil || !strings.Contains(err.Error(), "ensign workspace supernova --location client") {
 		t.Errorf("unrecorded path: %v", err)
 	}
@@ -520,7 +526,9 @@ func TestRunSidesRefused(t *testing.T) {
 	}
 	m := loadMachine(w.bridge)
 	delete(m.Locations["supernova"], "server")
-	saveMachine(w.bridge, m)
+	if err := saveMachine(w.bridge, m); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := createRun(w.bridge, runOpts{task: models}, true, &out); err == nil || !strings.Contains(err.Error(), "ensign workspace supernova --location server") {
 		t.Errorf("unrecorded side folder: %v", err)
 	}
@@ -611,5 +619,226 @@ func TestTesterPromptShowsGuidanceSideBindings(t *testing.T) {
 	prompt := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil)
 	if !strings.Contains(prompt, "- @test: run the client suite by hand") {
 		t.Errorf("tester prompt lacks the guidance binding:\n%s", prompt)
+	}
+}
+
+// releaseLocationsWorld is locationsWorld with a @release on the project that records the folder it ran in, and a different one on client.
+func releaseLocationsWorld(t *testing.T, project string) *world {
+	t.Helper()
+	w := locationsWorld(t)
+	write(t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"), project)
+	return w
+}
+
+const releaseProject = `platforms: [linux]
+
+bindings:
+  build: { command: "./build.sh" }
+  release: { command: "echo project $VERSION >> released.txt" }
+
+locations:
+  client:
+    bindings:
+      release: { command: "echo client $VERSION >> released.txt" }
+  server: {}
+`
+
+func (w *world) releasedIn(location string) string {
+	data, _ := os.ReadFile(filepath.Join(loadMachine(w.bridge).Locations["supernova"][location], "released.txt"))
+	return strings.TrimSpace(string(data))
+}
+
+func TestSequenceReleaseInALocation(t *testing.T) {
+	w := releaseLocationsWorld(t, releaseProject)
+	if _, err := w.seq("release", "supernova", "1.0.0"); err == nil || !strings.Contains(err.Error(), "client, server") || !strings.Contains(err.Error(), "--location") {
+		t.Errorf("several locations and none given should be refused, naming them: %v", err)
+	}
+	if _, err := w.seq("release", "supernova", "1.0.0", "--location", "nope"); err == nil || !strings.Contains(err.Error(), "declares no location") {
+		t.Errorf("an unknown location should be refused: %v", err)
+	}
+	w.mustSeq("release", "supernova", "1.0.0", "--location", "client")
+	if st := w.step(1); st.Location != "client" {
+		t.Fatalf("the step should keep its location: %+v", st)
+	}
+	w.goContext()
+	w.mustSeq("release-run", "1")
+	if got := w.releasedIn("client"); got != "client 1.0.0" {
+		t.Errorf("client released.txt = %q, want the location's own @release", got)
+	}
+	if got := w.releasedIn("server"); got != "" {
+		t.Errorf("server must not have run a release, got %q", got)
+	}
+	w.mustSeq("release", "supernova", "1.0.1", "--location", "server")
+	w.goContext()
+	w.mustSeq("release-run", "2")
+	if got := w.releasedIn("server"); got != "project 1.0.1" {
+		t.Errorf("server released.txt = %q, want the project's @release", got)
+	}
+}
+
+func TestSequenceReleaseOnlyLocationIsTheDefault(t *testing.T) {
+	w := releaseLocationsWorld(t, strings.Replace(releaseProject, "  server: {}\n", "", 1))
+	w.mustSeq("release", "supernova", "2.0.0")
+	w.goContext()
+	w.mustSeq("release-run", "1")
+	if got := w.releasedIn("client"); got != "client 2.0.0" {
+		t.Errorf("client released.txt = %q", got)
+	}
+}
+
+func TestSequenceReleaseLocationWithoutLocations(t *testing.T) {
+	w := releaseWorld(t, 0)
+	if _, err := w.seq("release", "supernova", "1.0.0", "--location", "client"); err == nil || !strings.Contains(err.Error(), "declares no locations") {
+		t.Errorf("--location on a project without locations should be refused: %v", err)
+	}
+}
+
+func TestStyleIngestInALocation(t *testing.T) {
+	w := locationsWorld(t)
+	var out bytes.Buffer
+	client := loadMachine(w.bridge).Locations["supernova"]["client"]
+	dir := filepath.Join(client, "internal")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdStyle([]string{"ingest", "supernova", dir, "--trust", "exemplar"}, &out); err == nil || !strings.Contains(err.Error(), "--location") {
+		t.Errorf("several locations and none given should be refused: %v", err)
+	}
+	if err := cmdStyle([]string{"ingest", "supernova", dir, "--trust", "exemplar", "--location", "client"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	src := loadSources(w.bridge, "supernova").Sources
+	if len(src) != 1 || src[0].Ref != "$WORKSPACE/internal" || src[0].Location != "client" {
+		t.Fatalf("sources: %+v", src)
+	}
+	if got := resolveRef(client, src[0].Ref); got != filepath.ToSlash(dir) {
+		t.Errorf("ref resolves to %q, want %q", got, filepath.ToSlash(dir))
+	}
+}
+
+func TestStyleSourceInAnUnrecordedLocation(t *testing.T) {
+	w := locationsWorld(t)
+	var out bytes.Buffer
+	m := loadMachine(w.bridge)
+	client, server := m.Locations["supernova"]["client"], m.Locations["supernova"]["server"]
+	dir := filepath.Join(server, "internal")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdStyle([]string{"ingest", "supernova", dir, "--trust", "exemplar", "--location", "server"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	delete(m.Locations["supernova"], "server")
+	if err := saveMachine(w.bridge, m); err != nil {
+		t.Fatal(err)
+	}
+	src := loadSources(w.bridge, "supernova").Sources
+	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Project: "supernova", Workspace: client}, State: &State{Run: "r1"}}
+	st := &Stage{Parallel: &Parallel{Over: "unprocessed-sources"}}
+	text := itemContext(r, st, src[0].ID, &Dispatch{Fields: map[string][]string{}})
+	if strings.Contains(text, resolveRef(client, src[0].Ref)) {
+		t.Errorf("prompt points at the run's workspace:\n%s", text)
+	}
+	if !strings.Contains(text, "location server") || !strings.Contains(text, "ensign workspace supernova --location server <path>") {
+		t.Errorf("prompt should name the missing location:\n%s", text)
+	}
+}
+
+func TestStyleAbsoluteSourceIgnoresLocation(t *testing.T) {
+	w := locationsWorld(t)
+	var out bytes.Buffer
+	m := loadMachine(w.bridge)
+	client := m.Locations["supernova"]["client"]
+	outside := t.TempDir()
+	if err := cmdStyle([]string{"ingest", "supernova", outside, "--trust", "exemplar", "--location", "client"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	src := loadSources(w.bridge, "supernova").Sources[0]
+	if src.Location != "" || !filepath.IsAbs(src.Ref) {
+		t.Fatalf("source = %+v, want absolute ref and no location", src)
+	}
+	delete(m.Locations["supernova"], "client")
+	if err := saveMachine(w.bridge, m); err != nil {
+		t.Fatal(err)
+	}
+	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Project: "supernova", Workspace: client}, State: &State{Run: "r1"}}
+	st := &Stage{Parallel: &Parallel{Over: "unprocessed-sources"}}
+	text := itemContext(r, st, src.ID, &Dispatch{Fields: map[string][]string{}})
+	if !strings.Contains(text, filepath.ToSlash(outside)) || strings.Contains(text, "cannot be read") {
+		t.Errorf("prompt should point at the absolute path:\n%s", text)
+	}
+}
+
+func TestProjectNewWithLocations(t *testing.T) {
+	b := newBridge(t)
+	var out bytes.Buffer
+	for name, args := range map[string][]string{
+		"neither":      {"new", "supernova", "--platforms", "linux"},
+		"both":         {"new", "supernova", "--workspace", t.TempDir(), "--locations", "a,b", "--platforms", "linux"},
+		"no platforms": {"new", "supernova", "--locations", "a,b"},
+		"bad name":     {"new", "supernova", "--locations", "a,B", "--platforms", "linux"},
+	} {
+		if err := cmdProject(args, &out); err == nil {
+			t.Errorf("%s should be refused", name)
+		}
+	}
+	if err := cmdProject([]string{"new", "supernova", "--locations", "client, server", "--platforms", "linux,macos"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	locs, err := loadLocations(b, "supernova")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := locs.Names(); !reflect.DeepEqual(got, []string{"client", "server"}) {
+		t.Errorf("locations = %v", got)
+	}
+	if _, err := workspaceFor(b, "supernova", ""); err == nil {
+		t.Error("no workspace should be recorded")
+	}
+	if !strings.Contains(out.String(), "ensign workspace supernova --location client <path>") {
+		t.Errorf("output should say how to record each path:\n%s", out.String())
+	}
+}
+
+func TestSequenceRetryKeepsSidesOnlyWhenNarrowed(t *testing.T) {
+	w := locationsWorld(t)
+	models := locTask(t, w, "m", "models")
+	approveAndFail := func(task string, args ...string) {
+		w.mustSeq(append([]string{"run", task}, args...)...)
+		w.approve()
+		lead, _ := w.spawn("", "", "orchestrator")
+		w.failRun(lead)
+	}
+	approveAndFail(models, "--sides", "models,server")
+	first := w.step(1).Run
+	w.retryStep("1")
+	r, err := readRun(w.bridge, w.step(1).Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sideNamesOf(r.Snap); !reflect.DeepEqual(got, []string{"models", "server"}) || !r.Snap.Narrowed || w.step(1).Prev != first {
+		t.Errorf("a narrowed retry should keep its sides: %v narrowed %v", got, r.Snap.Narrowed)
+	}
+
+	w = locationsWorld(t)
+	locTask(t, w, "m", "models")
+	approveAndFail(models)
+	// A location added after the failure joins the default sides of the retry only if the old sides were not copied.
+	p := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
+	base, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, p, strings.Replace(string(base), "cross-location:", "  docs:\n    depends-on: [models]\n\ncross-location:", 1))
+	if _, err := setLocationPath(w.bridge, "supernova", "docs", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	w.retryStep("1")
+	r, err = readRun(w.bridge, w.step(1).Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sideNamesOf(r.Snap); r.Snap.Narrowed || !contains(got, "docs") {
+		t.Errorf("an un-narrowed retry should take the current default sides: %v narrowed %v", got, r.Snap.Narrowed)
 	}
 }

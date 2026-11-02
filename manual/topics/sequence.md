@@ -15,4 +15,10 @@ When a run step names a task with subtasks:
 - A failed run does not stop the others of its group. When all are over the step waits; `retry` reruns only the failed ones, `accept` ends the step and later groups do not run.
 - Details: `ensign help subtasks`.
 
+When the project declares locations:
+
+- A run step for a task with several locations needs `--location <name>`; `--sides <a,b>` narrows its sides. Both go on `ensign sequence run`.
+- Retry keeps the run's location. It keeps the sides only if the old run was narrowed; otherwise the retry takes the default sides.
+- A release step takes `--location <name>`: `ensign sequence release <project> <version> --location <name>`. Its `@release` is the project's overridden by that location's, and it runs in that location's folder. Without `--location` the project's only location is used; with several, the step is refused.
+
 Drop pending steps with `ensign sequence drop <n>... --reason <why>` only when the user asks; it keeps the rest running, and dropping a run step drops its task's publish step.

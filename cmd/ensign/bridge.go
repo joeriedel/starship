@@ -461,11 +461,11 @@ bindings:
 `
 
 func cmdProject(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path> [--platforms <list>]")
+	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>]")
 	if len(args) < 4 || args[0] != "new" {
 		return usage
 	}
-	var workspace, platformList string
+	var workspace, platformList, locationList string
 	for i := 2; i < len(args); i += 2 {
 		if i+1 >= len(args) {
 			return usage
@@ -473,13 +473,15 @@ func cmdProject(args []string, out io.Writer) error {
 		switch args[i] {
 		case "--workspace":
 			workspace = args[i+1]
+		case "--locations":
+			locationList = args[i+1]
 		case "--platforms":
 			platformList = args[i+1]
 		default:
 			return usage
 		}
 	}
-	if workspace == "" {
+	if (workspace == "") == (locationList == "") {
 		return usage
 	}
 	var platforms []string
@@ -500,6 +502,9 @@ func cmdProject(args []string, out io.Writer) error {
 	p := filepath.Join(bridge, "projects", name, "project.yaml")
 	if _, err := os.Stat(p); err == nil {
 		return fmt.Errorf("project %s already exists", name)
+	}
+	if locationList != "" {
+		return newLocationsProject(bridge, name, p, locationList, platforms, platformList, out)
 	}
 	dir, err := filepath.Abs(expandHome(workspace))
 	if err != nil {
@@ -542,6 +547,39 @@ func cmdProject(args []string, out io.Writer) error {
 		return nil
 	}
 	fmt.Fprintf(out, "created %s; define its bindings before starting a run\n", relTo(bridge, p))
+	return nil
+}
+
+// newLocationsProject writes a project that declares code locations in place of a workspace; each location's folder is recorded afterwards, per machine.
+func newLocationsProject(bridge, name, file, locationList string, platforms []string, platformList string, out io.Writer) error {
+	var names []string
+	for _, n := range strings.Split(locationList, ",") {
+		n = strings.TrimSpace(n)
+		if !validName(n) {
+			return fmt.Errorf("--locations %q: name each location with lower-case letters, digits and dashes", locationList)
+		}
+		if contains(names, n) {
+			return fmt.Errorf("--locations %q: %s is named twice", locationList, n)
+		}
+		names = append(names, n)
+	}
+	if len(platforms) == 0 {
+		return fmt.Errorf("a project declares the platforms it supports: pass --platforms <list>, e.g. --platforms linux,macos,windows; ask the user, never guess")
+	}
+	if errs := platformProblems(platforms); len(errs) > 0 {
+		return fmt.Errorf("--platforms %q: %s", platformList, strings.Join(errs, "; "))
+	}
+	content := fmt.Sprintf(projectTemplate, name, strings.Join(platforms, ", ")) + "\n# The code locations; each location's folder is recorded per machine.\nlocations:\n"
+	for _, n := range names {
+		content += "  " + n + ": {}\n"
+	}
+	if err := writeFile(file, content); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "created %s with locations %s; define its bindings before starting a run\n", relTo(bridge, file), strings.Join(names, ", "))
+	for _, n := range names {
+		fmt.Fprintf(out, "record where %s is on this machine: ensign workspace %s --location %s <path>\n", n, name, n)
+	}
 	return nil
 }
 

@@ -197,6 +197,29 @@ func taskLocation(locs *Locations, project, task string, taskLocs []string, want
 	return want, nil
 }
 
+// projectLocation picks the location a project-level action works in, with its folder on this machine. A project without locations has none and works in its workspace; otherwise it is the one asked for, or the project's only one.
+func projectLocation(bridge, project, want string) (location, path string, locs *Locations, err error) {
+	if locs, err = loadLocations(bridge, project); err != nil {
+		return "", "", nil, err
+	}
+	names := locs.Names()
+	switch {
+	case len(names) == 0 && want != "":
+		return "", "", nil, fmt.Errorf("project %s declares no locations, so --location %s has no meaning", project, want)
+	case len(names) == 0:
+		path, err = workspaceFor(bridge, project, "")
+		return "", path, locs, err
+	case want == "" && len(names) == 1:
+		want = names[0]
+	case want == "":
+		return "", "", nil, fmt.Errorf("project %s declares several locations (%s); name one with --location <name>", project, strings.Join(names, ", "))
+	case !locs.Has(want):
+		return "", "", nil, fmt.Errorf("project %s declares no location %q (it declares %s)", project, want, strings.Join(names, ", "))
+	}
+	path, err = locationPathFor(bridge, project, want)
+	return want, path, locs, err
+}
+
 // locationPathFor is where a project's location is on this machine.
 func locationPathFor(bridge, project, location string) (string, error) {
 	if p := loadMachine(bridge).Locations[project][location]; p != "" {

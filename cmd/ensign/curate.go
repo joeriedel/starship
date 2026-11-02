@@ -194,9 +194,10 @@ func styleReport(bridge, project string) string {
 // Source is an ingested style source.
 type Source struct {
 	ID        string `yaml:"id"`
-	Path      string `yaml:"path,omitempty"` // copied document, relative to style/
-	Ref       string `yaml:"ref,omitempty"`  // code referenced in place
-	Trust     string `yaml:"trust"`          // authoritative or exemplar
+	Path      string `yaml:"path,omitempty"`     // copied document, relative to style/
+	Ref       string `yaml:"ref,omitempty"`      // code referenced in place
+	Location  string `yaml:"location,omitempty"` // the project location a $WORKSPACE ref is relative to
+	Trust     string `yaml:"trust"`              // authoritative or exemplar
 	Note      string `yaml:"note,omitempty"`
 	Ingested  string `yaml:"ingested"`
 	Processed string `yaml:"processed,omitempty"`
@@ -478,9 +479,9 @@ func styleCurateInput(r *RunFiles) string {
 	return b.String()
 }
 
-// cmdStyle implements `ensign style ingest <project> <path-or-url> --trust <t> [--note <n>]`.
+// cmdStyle implements `ensign style ingest <project> <path-or-url> --trust <t> [--note <n>] [--location <name>]`.
 func cmdStyle(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] | ensign style report <project>")
+	usage := fmt.Errorf("usage: ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] [--location <name>] | ensign style report <project>")
 	if len(args) == 2 && args[0] == "report" {
 		bridge, err := cwdBridge()
 		if err != nil {
@@ -496,13 +497,15 @@ func cmdStyle(args []string, out io.Writer) error {
 		return usage
 	}
 	project, from := args[1], args[2]
-	var trust, note string
+	var trust, note, location string
 	for i := 3; i+1 < len(args); i += 2 {
 		switch args[i] {
 		case "--trust":
 			trust = args[i+1]
 		case "--note":
 			note = args[i+1]
+		case "--location":
+			location = args[i+1]
 		default:
 			return usage
 		}
@@ -537,8 +540,14 @@ func cmdStyle(args []string, out io.Writer) error {
 		}
 		if fi.IsDir() || trust == "exemplar" {
 			abs, _ := filepath.Abs(from)
-			ws, _ := workspaceFor(bridge, project, "")
+			loc, ws, _, err := projectLocation(bridge, project, location)
+			if _, noWorkspace := err.(errNoWorkspace); err != nil && !noWorkspace {
+				return err
+			}
 			s.Ref = workspaceRef(ws, abs)
+			if strings.HasPrefix(s.Ref, "$WORKSPACE") {
+				s.Location = loc
+			}
 		} else {
 			data, err := os.ReadFile(from)
 			if err != nil {

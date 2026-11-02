@@ -133,20 +133,20 @@ func usage() {
   ensign link [--force] [--migrate]
   ensign selftest
   ensign help [topic]
-  ensign project new <name> --workspace <path> [--platforms <list>]
+  ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>]
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
   ensign task open <project>/<task>
   ensign task subtask <done|drop> <project>/<task> <name>
   ensign run <project>/<task> [--subtask <name>] [--start <stage>] [--sync] [--dependency <location>=<branch>] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
-  ensign sequence [run <project>/<task> [run flags] | publish <project>/<task> | release <project> <version> | do <instruction> | mode stop|keep-going | halt [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> [--note <text>] | fail <n> --reason <text>]
-  ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>]
+  ensign sequence [run <project>/<task> [run flags, e.g. --location <name> --sides <a,b>] | publish <project>/<task> | release <project> <version> [--location <name>] | do <instruction> | mode stop|keep-going | halt [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> [--note <text>] | fail <n> --reason <text>]
+  ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] [--location <name>]
   ensign style report <project>
   ensign skill new <name> --description <text> | ensign skill discard <name>
   ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]
   ensign journal commit -m <message> [files…] | ensign journal push
-  ensign git-catalog squash <project>/<task> -m <message>
-  ensign github-pr pull-request|merge|update <project>/<task>
+  ensign git-catalog squash <project>/<task> [--location <name>] -m <message>
+  ensign github-pr pull-request|merge|update <project>/<task> [--location <name>]
   ensign next [--bridge <dir>] [--run <id>]
   ensign run-stage [--bridge <dir>] [--run <id>]
   ensign dependency apply --side <location> | restore [--side <location>] [--bridge <dir>] [--run <id>]

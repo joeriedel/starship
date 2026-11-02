@@ -37,9 +37,10 @@ type seqStep struct {
 	Group       int       `json:"group,omitempty"`   // the number of that group
 	Command     string    `json:"command,omitempty"` // publish: the extension's operation
 	Instruction string    `json:"instruction,omitempty"`
-	Version     string    `json:"version,omitempty"` // release: the version to release, fixed when the step is added
-	Started     bool      `json:"started,omitempty"` // release: release-run has begun the project's @release command
-	Token       string    `json:"token,omitempty"`   // release: identifies this start, so the result finds the step if the sequence moved to another session
+	Version     string    `json:"version,omitempty"`  // release: the version to release, fixed when the step is added
+	Location    string    `json:"location,omitempty"` // release: the project location whose @release runs
+	Started     bool      `json:"started,omitempty"`  // release: release-run has begun the project's @release command
+	Token       string    `json:"token,omitempty"`    // release: identifies this start, so the result finds the step if the sequence moved to another session
 	Headline    string    `json:"headline,omitempty"`
 	Status      string    `json:"status"` // pending, active, paused, decide, done, failed, skipped, cancelled
 	Reason      string    `json:"reason,omitempty"`
@@ -941,29 +942,37 @@ func carrySequence(bridge, old, session string) {
 	})
 }
 
-// releaseCommand finds a project's @release command and the project's workspace.
-func releaseCommand(bridge, project string) (cmd, workspace string, err error) {
+// releaseCommand finds a project's @release command and the folder it runs in: the project's workspace, or the folder of the location asked for (the project's only one if none is asked for), whose bindings add to the project's.
+func releaseCommand(bridge, project, location string) (cmd, workspace string, err error) {
 	var l Layer
 	if err := readYAML(filepath.Join(bridge, "projects", project, "project.yaml"), &l); err != nil {
 		return "", "", fmt.Errorf("project %q: %v", project, err)
 	}
-	c := &Config{Bindings: map[string]Binding{}}
+	c := &Config{Project: project, Bindings: map[string]Binding{}}
 	if err := c.addBindings(&l.Bindings, "project "+project); err != nil {
 		return "", "", err
+	}
+	location, workspace, locs, err := projectLocation(bridge, project, location)
+	if err != nil {
+		return "", "", err
+	}
+	if location != "" {
+		c.Locations, c.Location = locs, location
+		le := c.locationLayer(bridge)
+		if err := c.addBindings(&le.layer.Bindings, le.label); err != nil {
+			return "", "", err
+		}
 	}
 	b := c.Bindings["release"]
 	if b.Command == "" || b.NotApplicable != "" {
 		return "", "", fmt.Errorf("project %s has no @release binding with a command", project)
-	}
-	if workspace, err = workspaceFor(bridge, project, ""); err != nil {
-		return "", "", err
 	}
 	return b.Command, workspace, nil
 }
 
 // releaseRun runs the project's @release command for the release step that is due. The command runs without the sequence lock and without a time limit; the step is marked started first so the Stop hook doesn't ask for a second start.
 func releaseRun(bridge, session string, n int, out io.Writer) error {
-	var project, version string
+	var project, version, location string
 	token := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
 	err := withSeq(bridge, session, func(sf *seqFile) error {
 		_, st := sf.step(n)
@@ -971,13 +980,13 @@ func releaseRun(bridge, session string, n int, out io.Writer) error {
 			return fmt.Errorf("step %d is not a release step that is due", n)
 		}
 		st.Started, st.Token = true, token
-		project, version = st.Task, st.Version
+		project, version, location = st.Task, st.Version, st.Location
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	cmd, ws, err := releaseCommand(bridge, project)
+	cmd, ws, err := releaseCommand(bridge, project, location)
 	if err == nil {
 		var output string
 		output, err = shellFor(ws, cmd, projectEnv(bridge, project, append(os.Environ(), "VERSION="+version)), 0)
@@ -1124,16 +1133,20 @@ func cmdSequence(args []string, out io.Writer) error {
 		}
 		return seqAdd(bridge, session, out, &seqStep{Kind: "do", Instruction: text})
 	case "release":
-		if len(rest) != 2 || strings.TrimSpace(rest[1]) == "" {
-			return fmt.Errorf("usage: ensign sequence release <project> <version>")
+		var location string
+		if len(rest) == 4 && rest[2] == "--location" {
+			location, rest = rest[3], rest[:2]
 		}
-		if _, _, err := releaseCommand(bridge, rest[0]); err != nil {
+		if len(rest) != 2 || strings.TrimSpace(rest[1]) == "" {
+			return fmt.Errorf("usage: ensign sequence release <project> <version> [--location <name>]")
+		}
+		if _, _, err := releaseCommand(bridge, rest[0], location); err != nil {
 			return err
 		}
 		if err := checkAddable(bridge, session); err != nil {
 			return err
 		}
-		return seqAdd(bridge, session, out, &seqStep{Kind: "release", Task: rest[0], Version: strings.TrimSpace(rest[1])})
+		return seqAdd(bridge, session, out, &seqStep{Kind: "release", Task: rest[0], Version: strings.TrimSpace(rest[1]), Location: location})
 	case "release-run":
 		n, err := stepArg(rest, "usage: ensign sequence release-run <n>")
 		if err != nil {

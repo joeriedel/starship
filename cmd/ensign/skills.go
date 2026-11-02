@@ -414,7 +414,16 @@ func itemContext(r *RunFiles, s *Stage, item string, d *Dispatch) string {
 				}
 				text += "```\n" + string(data) + "\n```\n"
 			} else {
-				text += "Read the code at " + resolveRef(r.Snap.Workspace, s.Ref) + " — the files a person would hold up as the project's style.\n"
+				ws := r.Snap.Workspace
+				if s.Location != "" && strings.HasPrefix(s.Ref, "$WORKSPACE") {
+					p, err := locationPathFor(r.Snap.Bridge, r.Snap.Project, s.Location)
+					if err != nil {
+						text += fmt.Sprintf("This source is code in location %s, which has no folder recorded on this machine, so it cannot be read. Ask the user where that code is, never guess, then record it with `ensign workspace %s --location %s <path>`.\n", s.Location, r.Snap.Project, s.Location)
+						return text
+					}
+					ws = p
+				}
+				text += "Read the code at " + resolveRef(ws, s.Ref) + " — the files a person would hold up as the project's style.\n"
 			}
 			return text
 		}
