@@ -87,7 +87,7 @@ A fact naming a nonexistent skill is held; `status` lists it. Before making its 
 
 ## Sequences
 
-When the user asks for several steps, build a sequence: read `ensign help sequence` first.
+When the user asks for several steps, build a sequence: read `ensign help sequence` first. A task with a `subtasks/` folder: read `ensign help subtasks`.
 
 ## Pushing and landing
 

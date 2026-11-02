@@ -629,9 +629,12 @@ New.
 `
 
 func cmdTask(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign task new <project>/<task> [--workspace <path> | --locations <a,b>] [--branch <branch>] | ensign task open <project>/<task>")
+	usage := fmt.Errorf("usage: ensign task new <project>/<task> [--workspace <path> | --locations <a,b>] [--branch <branch>] | ensign task open <project>/<task> | ensign task subtask <done|drop> <project>/<task> <name>")
 	if len(args) < 2 {
 		return usage
+	}
+	if args[0] == "subtask" {
+		return cmdTaskSubtask(args[1:], out)
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
@@ -737,6 +740,9 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "task       %s\n", task)
+	if p := subtaskProgress(bridge, task); p != "" {
+		fmt.Fprintf(out, "subtasks   %s\n", strings.TrimPrefix(p, "subtasks "))
+	}
 	project, name, _ := strings.Cut(task, "/")
 	if len(tf.Locations) > 0 {
 		for _, loc := range tf.Locations {

@@ -278,6 +278,9 @@ func (sf *seqFile) reconcile(bridge string) {
 			switch r.State.Status {
 			case "success":
 				st.Status, st.Reason = "done", ""
+				if r.Snap.Subtask != "" {
+					sf.nextSubtaskRun(bridge, seq, st, r)
+				}
 			case "error":
 				st.Reason = r.State.Reason
 				if st.Prev == "" && !seq.Halted {
@@ -293,6 +296,57 @@ func (sf *seqFile) reconcile(bridge string) {
 			}
 		}
 	}
+}
+
+// stepHeadline is the line a run step shows: its work item's headline, and the subtask it works on.
+func stepHeadline(snap *Snapshot) string {
+	h := headline(snap.WorkItem)
+	if snap.Subtask != "" {
+		h += " (subtask " + snap.Subtask + ")"
+	}
+	return h
+}
+
+// nextSubtaskRun is called when a step's run for a subtask has succeeded. While the task has pending subtasks the step is not done: it moves to a new queued run for the next one, which advance then starts. A step gets one retry for each subtask.
+func (sf *seqFile) nextSubtaskRun(bridge string, seq *sequence, st *seqStep, done *RunFiles) {
+	fail := func(err error) {
+		st.Status, st.Reason = "failed", err.Error()
+		sf.failed(bridge, seq, st)
+	}
+	pending, _, err := pendingSubtasks(bridge, done.Snap.Task)
+	if err != nil {
+		fail(err)
+		return
+	}
+	// The run's own subtask is marked done when it finishes; skip it in case that mark is not yet written.
+	pending = slices.DeleteFunc(pending, func(s subtask) bool { return s.Name == done.Snap.Subtask })
+	if len(pending) == 0 {
+		return
+	}
+	next := pending[0]
+	if seq.Halted {
+		st.Reason = "sequence halted; subtask " + next.Name + " and later were not run"
+		return
+	}
+	o := runOpts{task: done.Snap.Task, subtask: next.Name, location: next.Location, staleOK: done.State.StaleOK}
+	if next.Location == "" || next.Location == done.Snap.Location {
+		o.location = done.Snap.Location
+		if done.Snap.Narrowed {
+			o.sides = sideNames(done.Snap.Sides)
+		}
+		for _, dep := range done.Snap.Dependencies {
+			if dep.Branch != "" {
+				o.dependencies = append(o.dependencies, dep.Location+"="+dep.Branch)
+			}
+		}
+	}
+	snap, err := createRun(bridge, o, true, io.Discard)
+	if err != nil {
+		fail(err)
+		return
+	}
+	st.Run, st.Prev, st.Diagnosis, st.Headline = snap.Run, "", "", stepHeadline(snap)
+	st.Status, st.Reason, st.Blocks = "pending", "", 0
 }
 
 // failed applies the failure rules for a step that has just failed.
@@ -750,6 +804,9 @@ func cmdSequence(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if o.subtask != "" {
+			return fmt.Errorf("a sequence step names a task, never a subtask; its run starts with the task's next pending subtask")
+		}
 		if err := checkAddable(bridge, session); err != nil {
 			return err
 		}
@@ -757,7 +814,7 @@ func cmdSequence(args []string, out io.Writer) error {
 		if err != nil || snap == nil {
 			return err
 		}
-		return seqAdd(bridge, session, out, &seqStep{Kind: "run", Task: snap.Task, Run: snap.Run, Headline: headline(snap.WorkItem)})
+		return seqAdd(bridge, session, out, &seqStep{Kind: "run", Task: snap.Task, Run: snap.Run, Headline: stepHeadline(snap)})
 	case "publish":
 		if len(rest) != 1 {
 			return fmt.Errorf("usage: ensign sequence publish <project>/<task>")
@@ -934,7 +991,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("the failed run can't be read: %v", err)
 			}
-			o := runOpts{start: old.Snap.Start, staleOK: old.State.StaleOK, retryOf: st.Run, retryBase: old.State.Base, location: old.Snap.Location, rebuild: old.State.Rebuild,
+			o := runOpts{start: old.Snap.Start, staleOK: old.State.StaleOK, retryOf: st.Run, retryBase: old.State.Base, location: old.Snap.Location, subtask: old.Snap.Subtask, rebuild: old.State.Rebuild,
 				workItem: old.Snap.WorkItem + "\n\n## Current state\n\nThis is a retry. The workspace holds the previous attempt's work, uncommitted changes included; build on it.\n\nWhy the previous attempt failed: " + diagnosis + "\n\nWhat is left: " + left + "\n"}
 			if old.Snap.Narrowed {
 				o.sides = sideNames(old.Snap.Sides)

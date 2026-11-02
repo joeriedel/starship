@@ -30,6 +30,7 @@ type Snapshot struct {
 	ControlPlane string               `json:"control_plane"`
 	Workspace    string               `json:"workspace"`
 	Location     string               `json:"location,omitempty"`
+	Subtask      string               `json:"subtask,omitempty"`
 	Sides        []Side               `json:"sides,omitempty"`    // the locations the test stage covers, the edited one first
 	Narrowed     bool                 `json:"narrowed,omitempty"` // Sides is fewer than the edited location and its dependents
 	Cross        map[string]Binding   `json:"cross,omitempty"`    // the cross-location bindings, when there are several sides
@@ -572,7 +573,7 @@ func writeJSON(path string, v any) error {
 // runOpts is what `ensign run` and `ensign sequence run` accept.
 type runOpts struct {
 	task, start, pipeline, project string
-	location                       string
+	location, subtask              string
 	sides, dependencies            []string
 	dry, sync, rebuild, staleOK    bool
 	// A retry inside a sequence: the failed run's id and base, and the work item to freeze instead of the task's.
@@ -582,7 +583,7 @@ type runOpts struct {
 // parseRunArgs reads the flags shared by `ensign run` and `ensign sequence run`; cmd names the command in the usage line.
 func parseRunArgs(cmd string, args []string) (runOpts, error) {
 	var o runOpts
-	usage := fmt.Errorf("usage: %s (<project>/<task> | --pipeline <name> [--project <p>]) [--location <name>] [--sides <a,b,...>] [--dependency <location>=<branch>] [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]", cmd)
+	usage := fmt.Errorf("usage: %s (<project>/<task> | --pipeline <name> [--project <p>]) [--location <name>] [--subtask <name>] [--sides <a,b,...>] [--dependency <location>=<branch>] [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]", cmd)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dry-run":
@@ -593,7 +594,7 @@ func parseRunArgs(cmd string, args []string) (runOpts, error) {
 			o.rebuild = true
 		case "--stale-branch":
 			o.staleOK = true
-		case "--pipeline", "--project", "--location", "--sides", "--dependency":
+		case "--pipeline", "--project", "--location", "--subtask", "--sides", "--dependency":
 			if i+1 >= len(args) {
 				return o, fmt.Errorf("%s needs a value", args[i])
 			}
@@ -617,6 +618,8 @@ func parseRunArgs(cmd string, args []string) (runOpts, error) {
 				if len(o.sides) == 0 {
 					return o, fmt.Errorf("--sides needs location names, comma-separated")
 				}
+			case "--subtask":
+				o.subtask = args[i+1]
 			default:
 				o.location = args[i+1]
 			}
@@ -658,7 +661,15 @@ func cmdRun(args []string, out io.Writer) error {
 func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot, error) {
 	task, start, pipeline, project := o.task, o.start, o.pipeline, o.project
 	dry, sync, rebuild, staleOK := o.dry, o.sync, o.rebuild, o.staleOK
-	c, err := loadTarget(bridge, Target{Task: task, Project: project, Pipeline: pipeline, Location: o.location, Sides: o.sides, WithSides: true})
+	pick, err := pickSubtask(bridge, o)
+	if err != nil {
+		return nil, err
+	}
+	location := o.location
+	if pick != nil && pick.sub.Location != "" {
+		location = pick.sub.Location
+	}
+	c, err := loadTarget(bridge, Target{Task: task, Project: project, Pipeline: pipeline, Location: location, Sides: o.sides, WithSides: true})
 	if err != nil {
 		return nil, err
 	}
@@ -671,6 +682,10 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		if section(string(body), "Goal") == "" && section(string(body), "Scope") == "" {
 			return nil, fmt.Errorf("task %s has no work item: its task file %s has neither a \"## Goal\" nor a \"## Scope\" section with text in it; add one and run again", c.Task, taskFile)
 		}
+	}
+	if pick != nil {
+		c.Subtask = pick.sub.Name
+		c.WorkItem = pick.workItem(c.WorkItem)
 	}
 	if err := c.resolveDependencies(bridge, o.dependencies); err != nil {
 		return nil, err
@@ -754,6 +769,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		ControlPlane: c.ControlPlane,
 		Workspace:    c.Workspace,
 		Location:     c.Location,
+		Subtask:      c.Subtask,
 		Sides:        c.Sides,
 		Narrowed:     c.Narrowed,
 		Cross:        c.Cross,
@@ -924,6 +940,9 @@ func freezeBriefs(c *Config, snap *Snapshot) error {
 func printSummary(out io.Writer, c *Config, start string) {
 	p := c.Pipeline
 	fmt.Fprintf(out, "task       %s\nworkspace  %s\n", c.Task, c.Workspace)
+	if c.Subtask != "" {
+		fmt.Fprintf(out, "subtask    %s\n", c.Subtask)
+	}
 	if c.Location != "" {
 		fmt.Fprintf(out, "location   %s\n", c.Location)
 		if len(c.Sides) > 0 {

@@ -326,6 +326,9 @@ func projectSummary(bridge, project string) string {
 		status := "(no task.md)"
 		if err == nil {
 			status = firstLine(section(string(body), "Status"))
+			if p := subtaskProgress(bridge, project+"/"+t.Name()); p != "" {
+				status += " (" + p + ")"
+			}
 		}
 		fmt.Fprintf(&b, "  %-24s %s\n", t.Name(), status)
 	}
@@ -339,6 +342,9 @@ func taskSummary(bridge, project, task string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Task %s / %s\n", project, task)
+	if p := subtaskProgress(bridge, project+"/"+task); p != "" {
+		fmt.Fprintf(&b, "%s\n", p)
+	}
 	for _, sec := range []string{"Goal", "Status", "Outstanding"} {
 		if t := section(string(body), sec); t != "" {
 			fmt.Fprintf(&b, "\n%s\n%s\n", sec, indent(t))

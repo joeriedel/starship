@@ -217,6 +217,11 @@ func finishRun(r *RunFiles) {
 		m.fail("handler", err.Error())
 		fire(r, "run.finish:error", nil)
 	}
+	if r.Snap.Subtask != "" && st.Status == "success" {
+		if err := markSubtask(r.Snap.Bridge, r.Snap.Task, r.Snap.Subtask, "done", st.Run); err != nil {
+			st.log("journal", "", "", "the subtask could not be marked done: "+err.Error())
+		}
+	}
 	if err := logRunInJournal(r); err != nil {
 		st.log("journal", "", "", "the run could not be added to the task's history: "+err.Error())
 	}
@@ -271,7 +276,11 @@ func runEntry(r *RunFiles) string {
 			}
 		}
 	}
-	line := fmt.Sprintf("- **%s, run %s (%s): %s.**", time.Now().Format("2006-01-02"), st.Run, r.Snap.Pipeline.Name, outcome)
+	which := ""
+	if r.Snap.Subtask != "" {
+		which = ", subtask " + r.Snap.Subtask
+	}
+	line := fmt.Sprintf("- **%s, run %s (%s)%s: %s.**", time.Now().Format("2006-01-02"), st.Run, r.Snap.Pipeline.Name, which, outcome)
 	if passes > 0 {
 		line += fmt.Sprintf(" %d coder pass%s.", passes, map[bool]string{true: "", false: "es"}[passes == 1])
 	}

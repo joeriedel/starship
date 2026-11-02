@@ -385,6 +385,7 @@ type Config struct {
 	Location     string     // the project location this run works in, when the project declares locations
 	Locations    *Locations // the project's declared locations
 	WorkItem     string     // task.md body
+	Subtask      string     // the subtask this run works on, when the task has subtasks
 	Pipeline     *Pipeline
 	Bindings     map[string]Binding
 	Events       map[string][]Handler
