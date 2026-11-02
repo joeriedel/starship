@@ -878,7 +878,7 @@ func TestEachLiveRunFinishesOnItsOwn(t *testing.T) {
 	if st := w.runState(b); st.terminal() || st.Finished {
 		t.Fatalf("the other run is %s", st.Status)
 	}
-	if got := strings.Join(liveSessionRuns(w.bridge, w.sid), ","); got != b {
+	if got := strings.Join(mustLive(t, w.bridge, w.sid), ","); got != b {
 		t.Fatalf("live runs %q, want %q", got, b)
 	}
 	hr, err := openHookRun(w.bridge, &HookInput{SessionID: w.sid, AgentID: "agentB"})

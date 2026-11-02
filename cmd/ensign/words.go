@@ -92,7 +92,11 @@ func header(bridge, session string) string {
 
 // runLine describes the session's runs in plain words: one line for its one run or latest, one line each, led by the run id, when several are live.
 func runLine(bridge, session string) string {
-	if live := liveSessionRuns(bridge, session); len(live) > 1 {
+	live, err := liveSessionRuns(bridge, session)
+	if err != nil {
+		return err.Error()
+	}
+	if len(live) > 1 {
 		var lines []string
 		for _, id := range live {
 			if l := describeRun(bridge, id); l != "" {
@@ -101,7 +105,7 @@ func runLine(bridge, session string) string {
 		}
 		return strings.Join(lines, "\n")
 	}
-	id, _ := sessionRunID(bridge, session)
+	id, _, _ := sessionRunID(bridge, session)
 	return describeRun(bridge, id)
 }
 
@@ -144,7 +148,11 @@ func describeRun(bridge, id string) string {
 
 // seenLine says how long ago the live run's lead and its agents last made a hook call, for each live run.
 func seenLine(bridge, session string) string {
-	if live := liveSessionRuns(bridge, session); len(live) > 1 {
+	live, err := liveSessionRuns(bridge, session)
+	if err != nil {
+		return ""
+	}
+	if len(live) > 1 {
 		var lines []string
 		for _, id := range live {
 			if l := seenOf(bridge, id); l != "" {
@@ -153,7 +161,7 @@ func seenLine(bridge, session string) string {
 		}
 		return strings.Join(lines, "\n")
 	}
-	id, _ := sessionRunID(bridge, session)
+	id, _, _ := sessionRunID(bridge, session)
 	return seenOf(bridge, id)
 }
 

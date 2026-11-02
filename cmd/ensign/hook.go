@@ -534,7 +534,7 @@ func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 		return nil, err
 	}
 	defer l.Unlock()
-	if err := folderHolder(r.Snap.Bridge, r.Snap.Workspace, r.State.Run); err != nil {
+	if err := folderHolder(r.Snap.Bridge, r.Snap, r.State.Session, r.State.Run); err != nil {
 		return ctx(fmt.Sprintf("run %s was not started: %v.", r.State.Run, err)), nil
 	}
 	r.State.Approved, r.State.Status = true, "running"
@@ -897,7 +897,7 @@ func cmdResume(args []string, out io.Writer) error {
 		return err
 	}
 	defer l.Unlock()
-	if err := folderHolder(bridge, r.Snap.Workspace, r.State.Run); err != nil {
+	if err := folderHolder(bridge, r.Snap, r.State.Session, r.State.Run); err != nil {
 		return err
 	}
 	m := &machine{snap: r.Snap, st: r.State}
@@ -954,24 +954,30 @@ func priorSessions(transcript, current string) []string {
 
 // carryOverSession binds a restarted session to the live run of the session it continues.
 // It assumes a resumed, cleared or compacted session's transcript still holds records
-// stamped with the earlier session's id. Failures are ignored: SessionStart never fails
-// over this.
-func carryOverSession(bridge string, in *HookInput) {
+// stamped with the earlier session's id. A failure to read the earlier session's runs is
+// returned for SessionStart to report; SessionStart never fails over this.
+func carryOverSession(bridge string, in *HookInput) error {
 	switch in.Source {
 	case "resume", "compact", "clear":
 	default:
-		return
+		return nil
 	}
 	if in.SessionID == "" || in.TranscriptPath == "" {
-		return
+		return nil
 	}
 	if _, err := os.Stat(sessionFile(bridge, in.SessionID)); err == nil {
-		return
+		return nil
 	}
 	for _, old := range priorSessions(in.TranscriptPath, in.SessionID) {
-		carrySequence(bridge, old, in.SessionID)
+		if err := carrySequence(bridge, old, in.SessionID); err != nil {
+			return err
+		}
 		carried := false
-		for _, id := range sessionRuns(bridge, old) {
+		ids, err := sessionRuns(bridge, old)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
 			r, err := openRun(bridge, id)
 			if err != nil {
 				continue
@@ -990,9 +996,10 @@ func carryOverSession(bridge string, in *HookInput) {
 			r.close()
 		}
 		if carried {
-			return
+			return nil
 		}
 	}
+	return nil
 }
 
 // stageRoleAnywhere reports whether role is a stage role, not free, in a live run's

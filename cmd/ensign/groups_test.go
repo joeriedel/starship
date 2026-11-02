@@ -256,7 +256,7 @@ func TestSequenceWaitingRunShowsItsReasonAndPausedStepStillNamesItsLead(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap.Workspace = folder
+	snap.Workspace, snap.Sides = folder, nil
 	if err := writeJSON(filepath.Join(runsDir(w.bridge), snap.Run, "pipeline.json"), snap); err != nil {
 		t.Fatal(err)
 	}

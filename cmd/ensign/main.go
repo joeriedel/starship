@@ -139,6 +139,7 @@ func usage() {
   ensign task subtask <done|drop> <project>/<task> <name>
   ensign run <project>/<task> [--subtask <name>] [--start <stage>] [--sync] [--dependency <location>=<branch>] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
+  ensign run retire <run>
   ensign sequence [run <project>/<task> [run flags, e.g. --location <name> --sides <a,b>] | publish <project>/<task> | release <project> <version> [--location <name>] | do <instruction> | mode stop|keep-going | halt [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> [--note <text>] | fail <n> --reason <text>]
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] [--location <name>]
   ensign style report <project>
@@ -308,7 +309,7 @@ func failHook(in *HookInput, r *RunFiles, err error, stderr io.Writer) int {
 // hookSessionStart gives the session's commands its id, so `ensign run` can bind the run
 // to this session, and prints the heartbeat the bridge's CLAUDE.md checks for.
 func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) int {
-	carryOverSession(bridge, in)
+	carryErr := carryOverSession(bridge, in)
 	var envNote string
 	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
 		env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -374,6 +375,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	upgradeHookSettings(bridge)
 	fmt.Fprintf(&ctx, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
+	if carryErr != nil {
+		fmt.Fprintf(&ctx, "starship: could not carry the earlier session's runs over: %v\n", carryErr)
+	}
 	if envNote != "" {
 		fmt.Fprintln(&ctx, envNote)
 	}

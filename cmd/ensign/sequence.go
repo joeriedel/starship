@@ -44,9 +44,10 @@ type seqStep struct {
 	Headline    string    `json:"headline,omitempty"`
 	Status      string    `json:"status"` // pending, active, paused, decide, done, failed, skipped, cancelled
 	Reason      string    `json:"reason,omitempty"`
-	Blocks      int       `json:"blocks,omitempty"`    // stops held open for this step
-	Prev        string    `json:"prev_run,omitempty"`  // the first run this step's retry replaces; a step gets one retry for each group
-	Diagnosis   string    `json:"diagnosis,omitempty"` // why the previous run failed, as the session wrote it
+	Blocks      int       `json:"blocks,omitempty"`      // stops held open for this step
+	WaitBlocks  int       `json:"wait_blocks,omitempty"` // stops held open while this step waited for a busy folder
+	Prev        string    `json:"prev_run,omitempty"`    // the first run this step's retry replaces; a step gets one retry for each group
+	Diagnosis   string    `json:"diagnosis,omitempty"`   // why the previous run failed, as the session wrote it
 }
 
 // seqRun is one run of a run step's group.
@@ -547,7 +548,7 @@ func (sf *seqFile) nextSubtaskGroup(bridge string, seq *sequence, st *seqStep, d
 	fresh := newRunStep(task, max(st.Group, 1)+1, snaps)
 	st.setRuns(fresh.Runs)
 	st.Group, st.Prev, st.Diagnosis, st.Headline = fresh.Group, "", "", fresh.Headline
-	st.Status, st.Reason, st.Blocks = "pending", "", 0
+	st.Status, st.Reason, st.Blocks, st.WaitBlocks = "pending", "", 0, 0
 }
 
 // failed applies the failure rules for a step that has just failed.
@@ -759,7 +760,7 @@ func startRun(bridge, session, task, run string) (string, error) {
 		return "", err
 	}
 	defer l.Unlock()
-	if err := folderHolder(bridge, r.Snap.Workspace, run); err != nil {
+	if err := folderHolder(bridge, r.Snap, session, run); err != nil {
 		return "", err
 	}
 	r.State.Session, r.State.Approved, r.State.Status = session, true, "running"
@@ -859,6 +860,23 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 	return
 }
 
+// waitingText says what a run step waits for when its run, or the step, is waiting for a busy code folder, else "".
+func waitingText(st *seqStep) string {
+	var lines []string
+	if strings.HasPrefix(st.Reason, "waiting:") {
+		lines = append(lines, fmt.Sprintf("Step %d is %s", st.N, st.Reason))
+	}
+	for _, ru := range st.runs() {
+		if strings.HasPrefix(ru.Reason, "waiting:") && ru.Reason != st.Reason {
+			lines = append(lines, fmt.Sprintf("Step %d, run %s, is %s", st.N, ru.Run, ru.Reason))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n") + "\nIt starts by itself once that run has finished; this turn is held only a few times for it."
+}
+
 // sequenceStop holds a turn open while a step waits for the session to act on it. Each step gets seqStopBudget holds, as the sequence file's lock allows, then the turn may end.
 func sequenceStop(bridge string, in *HookInput) any {
 	if !seqExists(bridge, in.SessionID) {
@@ -866,7 +884,11 @@ func sequenceStop(bridge string, in *HookInput) any {
 	}
 	var out any
 	withSeq(bridge, in.SessionID, func(sf *seqFile) error {
-		sf.advance(bridge, in.SessionID)
+		adv, advErr := sf.advance(bridge, in.SessionID)
+		var advNote string
+		if advErr != nil {
+			advNote = "\n\nThe sequence could not advance: " + advErr.Error()
+		}
 		for _, seq := range sf.Sequences {
 			for _, st := range seq.Steps {
 				var todo string
@@ -896,11 +918,30 @@ func sequenceStop(bridge string, in *HookInput) any {
 						todo = releaseText(st)
 					}
 				}
-				if todo == "" || st.Blocks >= seqStopBudget {
+				// Holds spent on a wait must not use up the holds that prompt the session to dispatch the lead once the step starts.
+				blocks := &st.Blocks
+				waitable := st.Kind == "run" && !seq.Halted && (st.Status == "pending" || st.holds())
+				if waitable && todo == "" {
+					blocks = &st.WaitBlocks
+				}
+				if waitable {
+					todo = strings.TrimSpace(todo + "\n\n" + waitingText(st))
+				}
+				if todo == "" || *blocks >= seqStopBudget {
 					continue
 				}
-				st.Blocks++
-				out = block(fmt.Sprintf("sequence step %d is waiting for you.\n\n%s\n\n%s\n\nSequence rules: `ensign help sequence`.", st.N, todo, sf.listing(bridge)))
+				*blocks++
+				// adv repeats this step's lead, wait or work text, which todo already carries.
+				tail := adv
+				for _, p := range []string{fmt.Sprintf("step %d: ", st.N), fmt.Sprintf("step %d can't start yet", st.N)} {
+					if strings.HasPrefix(adv, p) || strings.Contains(adv, "\n"+p) {
+						tail = ""
+					}
+				}
+				if tail == "" {
+					tail = sf.listing(bridge)
+				}
+				out = block(fmt.Sprintf("sequence step %d is waiting for you.\n\n%s\n\n%s%s\n\nSequence rules: `ensign help sequence`.", st.N, todo, tail, advNote))
 				return nil
 			}
 		}
@@ -910,15 +951,18 @@ func sequenceStop(bridge string, in *HookInput) any {
 }
 
 // carrySequence moves a session's sequence to the session that continues it, and points the runs that are not bound to the old session at the new one.
-func carrySequence(bridge, old, session string) {
+func carrySequence(bridge, old, session string) error {
 	if !seqExists(bridge, old) || seqExists(bridge, session) {
-		return
+		return nil
 	}
 	if os.Rename(seqPath(bridge, old), seqPath(bridge, session)) != nil {
-		return
+		return nil
 	}
-	bound := sessionRuns(bridge, old)
-	withSeq(bridge, session, func(sf *seqFile) error {
+	bound, err := sessionRuns(bridge, old)
+	if err != nil {
+		return err
+	}
+	return withSeq(bridge, session, func(sf *seqFile) error {
 		for _, seq := range sf.Sequences {
 			for _, st := range seq.Steps {
 				if st.Kind != "run" || !st.open() {
@@ -1397,7 +1441,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			st.Prev, st.Diagnosis = failed[0].Prev, diagnosis
 			st.setRuns(st.Runs)
-			st.Status, st.Reason, st.Blocks = "pending", "", 0
+			st.Status, st.Reason, st.Blocks, st.WaitBlocks = "pending", "", 0, 0
 			text, err := sf.advance(bridge, session)
 			if text == "" {
 				text = sf.listing(bridge)
@@ -1491,7 +1535,11 @@ func flagValue(args []string, flag, usage string) (string, error) {
 
 // checkAddable refuses to add steps while the session has a plain run under way.
 func checkAddable(bridge, session string) error {
-	for _, id := range liveSessionRuns(bridge, session) {
+	live, err := liveSessionRuns(bridge, session)
+	if err != nil {
+		return err
+	}
+	for _, id := range live {
 		r, err := readRun(bridge, id)
 		if err == nil && !r.State.Sequence && r.State.Approved {
 			return fmt.Errorf("this session already has an active run, %s; add steps once it has finished", id)
@@ -1503,7 +1551,11 @@ func checkAddable(bridge, session string) error {
 // seqAdd appends a step to the session's open sequence and prints the sequence. A plain run waiting for go becomes the sequence's first step.
 func seqAdd(bridge, session string, out io.Writer, st *seqStep) error {
 	return withSeq(bridge, session, func(sf *seqFile) error {
-		for _, id := range liveSessionRuns(bridge, session) {
+		live, err := liveSessionRuns(bridge, session)
+		if err != nil {
+			return err
+		}
+		for _, id := range live {
 			r, err := openRun(bridge, id)
 			if err != nil {
 				return err

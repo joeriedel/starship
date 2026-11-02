@@ -216,14 +216,17 @@ func openRun(bridge, id string) (*RunFiles, error) {
 	return r, nil
 }
 
-// sessionRuns lists the ids of a session's runs, oldest first. An older session file holds one id.
-func sessionRuns(bridge, session string) []string {
+// sessionRuns lists the ids of a session's runs, oldest first. An older session file holds one id. A session without a file has none; any other read error is returned.
+func sessionRuns(bridge, session string) ([]string, error) {
 	if session == "" {
-		return nil
+		return nil, nil
 	}
 	data, err := os.ReadFile(sessionFile(bridge, session))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("reading the runs of session %s: %w", session, err)
 	}
 	var ids []string
 	for _, l := range strings.Split(string(data), "\n") {
@@ -231,19 +234,23 @@ func sessionRuns(bridge, session string) []string {
 			ids = append(ids, l)
 		}
 	}
-	return ids
+	return ids, nil
 }
 
 // liveSessionRuns lists the ids of a session's runs that have not finished.
-func liveSessionRuns(bridge, session string) []string {
+func liveSessionRuns(bridge, session string) ([]string, error) {
 	var live []string
-	for _, id := range sessionRuns(bridge, session) {
+	ids, err := sessionRuns(bridge, session)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
 		var st State
 		if readJSON(filepath.Join(runsDir(bridge), id, "state.json"), &st) == nil && !st.terminal() {
 			live = append(live, id)
 		}
 	}
-	return live
+	return live, nil
 }
 
 // writeSessionRuns replaces a session's run ids; an empty list removes the file.
@@ -274,7 +281,11 @@ func editSessionRuns(bridge, session string, edit func(ids []string) []string) e
 		return err
 	}
 	defer l.Unlock()
-	return writeSessionRuns(bridge, session, edit(sessionRuns(bridge, session)))
+	ids, err := sessionRuns(bridge, session)
+	if err != nil {
+		return err
+	}
+	return writeSessionRuns(bridge, session, edit(ids))
 }
 
 // unbindSession removes a run from a session's run set.
@@ -285,23 +296,33 @@ func unbindSession(bridge, session, run string) error {
 }
 
 // sessionRunID names the run a call from the session means: its one live run, else its latest. When several are live, it returns them in several.
-func sessionRunID(bridge, session string) (id string, several []string) {
-	live := liveSessionRuns(bridge, session)
+func sessionRunID(bridge, session string) (id string, several []string, err error) {
+	live, err := liveSessionRuns(bridge, session)
+	if err != nil {
+		return "", nil, err
+	}
 	if len(live) > 1 {
-		return "", live
+		return "", live, nil
 	}
 	if len(live) == 1 {
-		return live[0], nil
+		return live[0], nil, nil
 	}
-	if ids := sessionRuns(bridge, session); len(ids) > 0 {
-		return ids[len(ids)-1], nil
+	ids, err := sessionRuns(bridge, session)
+	if err != nil {
+		return "", nil, err
 	}
-	return "", nil
+	if len(ids) > 0 {
+		return ids[len(ids)-1], nil, nil
+	}
+	return "", nil, nil
 }
 
 // openSessionRun opens the run a command from the session means when it names none with --run. It returns nil, nil when the session has none, and an error when several are live.
 func openSessionRun(bridge, session string) (*RunFiles, error) {
-	id, several := sessionRunID(bridge, session)
+	id, several, err := sessionRunID(bridge, session)
+	if err != nil {
+		return nil, err
+	}
 	if len(several) > 0 {
 		return nil, fmt.Errorf("this session has several live runs (%s); pass --run <id> to name one", strings.Join(several, ", "))
 	}
@@ -310,7 +331,10 @@ func openSessionRun(bridge, session string) (*RunFiles, error) {
 
 // openSoleSessionRun is openSessionRun for hooks: with several live runs the session has no one run, so it returns nil, nil.
 func openSoleSessionRun(bridge, session string) (*RunFiles, error) {
-	id, _ := sessionRunID(bridge, session)
+	id, _, err := sessionRunID(bridge, session)
+	if err != nil {
+		return nil, err
+	}
 	return openRunIfExists(bridge, id)
 }
 
@@ -380,7 +404,15 @@ func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 	if r == nil || err != nil {
 		return nil, err
 	}
-	if r.State.Session == in.SessionID || len(liveSessionRuns(bridge, in.SessionID)) > 0 {
+	if r.State.Session == in.SessionID {
+		return r, nil
+	}
+	live, err := liveSessionRuns(bridge, in.SessionID)
+	if err != nil {
+		r.close()
+		return nil, err
+	}
+	if len(live) > 0 {
 		return r, nil
 	}
 	if err := bindSession(bridge, in.SessionID, r.State.Run); err != nil {
@@ -400,7 +432,14 @@ func openSpawnRun(bridge string, in *HookInput) (*RunFiles, error) {
 	}
 	prompt, _ := in.ToolInput["prompt"].(string)
 	m := spawnTagRe.FindStringSubmatch(prompt)
-	if m == nil || !slices.Contains(liveSessionRuns(bridge, in.SessionID), m[1]) {
+	if m == nil {
+		return nil, nil
+	}
+	live, err := liveSessionRuns(bridge, in.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.Contains(live, m[1]) {
 		return nil, nil
 	}
 	r, err := openRun(bridge, m[1])
@@ -419,7 +458,11 @@ func openSpawnRun(bridge string, in *HookInput) (*RunFiles, error) {
 
 // openHookRun opens the run a hook call is checked against. An agent's own live run comes first, even when its session is bound to another run, and that binding is left alone; the session is rebound only when it has no live run. Otherwise it is the session's run, when it has just one live run. The session's run is closed before another is opened, so no two run locks are held.
 func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
-	if len(liveSessionRuns(bridge, in.SessionID)) > 1 {
+	live, err := liveSessionRuns(bridge, in.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(live) > 1 {
 		if in.AgentID == "" {
 			return openSpawnRun(bridge, in)
 		}
@@ -504,11 +547,34 @@ func bindSession(bridge, session, run string) error {
 	return nil
 }
 
-// folderBusyError is a run that can't start because another live run holds its code folder.
-type folderBusyError struct{ run, status, folder string }
+// folderBusyError is a run that can't start because another live run holds a code folder it needs. held says how the other run holds it: it works in the folder, or it only reads it (applies a branch from it); wanted says the same for the run that can't start.
+type folderBusyError struct {
+	run, status, folder string
+	held, wanted        folderMode
+	otherSession        bool
+}
+
+type folderMode int
+
+const (
+	folderWorks folderMode = iota // builds, tests or writes in the folder
+	folderReads                   // applies a branch from the folder and does not change it
+)
 
 func (e *folderBusyError) Error() string {
-	return fmt.Sprintf("run %s (%s) already holds the code folder %s; one run at a time works in a folder, so start this once that run has finished", e.run, e.status, e.folder)
+	var msg string
+	switch {
+	case e.held == folderWorks && e.wanted == folderWorks:
+		msg = fmt.Sprintf("run %s (%s) already holds the code folder %s; one run at a time works in a folder, so start this once that run has finished", e.run, e.status, e.folder)
+	case e.held == folderWorks:
+		msg = fmt.Sprintf("run %s (%s) works in the code folder %s, which this run applies a branch from; start this once that run has finished", e.run, e.status, e.folder)
+	default:
+		msg = fmt.Sprintf("run %s (%s) applies a branch from the code folder %s, which this run works in; start this once that run has finished", e.run, e.status, e.folder)
+	}
+	if e.otherSession {
+		msg += "; that run belongs to another session, see `ensign help runs`"
+	}
+	return msg
 }
 
 // lockFolders serializes the check that a folder is free with the approval that takes it. Take a run's lock before this one, never the reverse.
@@ -529,17 +595,54 @@ func sameFolder(a, b, goos string) bool {
 	return foldPath(resolveEditFolder(a, goos), goos) == foldPath(resolveEditFolder(b, goos), goos)
 }
 
-// folderHolder finds the run, other than those in skip, that holds the code folder: an approved run that has not finished. It returns nil when the folder is free.
-func folderHolder(bridge, folder string, skip ...string) error {
-	if folder == "" {
+// folderHolds are the code folders a run takes. It works in every folder it builds, tests or writes into: its workspace and each side's. It only reads the checkouts of the dependency branches it applies, unless it works in them too.
+func folderHolds(snap *Snapshot) (works, reads []string) {
+	for _, sd := range snap.sides() {
+		if sd.Workspace != "" {
+			works = append(works, sd.Workspace)
+		}
+	}
+	for _, d := range snap.Dependencies {
+		if d.Path != "" && !slices.ContainsFunc(works, func(w string) bool { return sameFolder(d.Path, w, runtime.GOOS) }) {
+			reads = append(reads, d.Path)
+		}
+	}
+	return works, reads
+}
+
+// folderHolder finds the run, other than those in skip, that holds a code folder the snapshot's run needs: an approved run that has not finished. A run that works in a folder excludes every other run that works in it or reads it; runs that only read a folder share it. It returns nil when the folders are free. session is the session of the run that wants them.
+func folderHolder(bridge string, snap *Snapshot, session string, skip ...string) error {
+	myWorks, myReads := folderHolds(snap)
+	if len(myWorks) == 0 && len(myReads) == 0 {
 		return nil
+	}
+	find := func(mine, theirs []string) string {
+		for _, m := range mine {
+			for _, t := range theirs {
+				if sameFolder(m, t, runtime.GOOS) {
+					return t
+				}
+			}
+		}
+		return ""
 	}
 	for _, ri := range liveRuns(bridge) {
 		if !ri.state.Approved || slices.Contains(skip, ri.id) || ri.snap.Workspace == "" {
 			continue
 		}
-		if sameFolder(folder, ri.snap.Workspace, runtime.GOOS) {
-			return &folderBusyError{run: ri.id, status: ri.state.Status, folder: ri.snap.Workspace}
+		theirWorks, theirReads := folderHolds(&ri.snap)
+		other := ri.state.Session != "" && ri.state.Session != session
+		busy := func(folder string, held, wanted folderMode) error {
+			return &folderBusyError{run: ri.id, status: ri.state.Status, folder: folder, held: held, wanted: wanted, otherSession: other}
+		}
+		if f := find(myWorks, theirWorks); f != "" {
+			return busy(f, folderWorks, folderWorks)
+		}
+		if f := find(myWorks, theirReads); f != "" {
+			return busy(f, folderReads, folderWorks)
+		}
+		if f := find(myReads, theirWorks); f != "" {
+			return busy(f, folderWorks, folderReads)
 		}
 	}
 	return nil
@@ -672,6 +775,9 @@ func parseRunArgs(cmd string, args []string) (runOpts, error) {
 
 // cmdRun implements `ensign run <project>/<task> [--start <stage>] [--dry-run]`.
 func cmdRun(args []string, out io.Writer) error {
+	if len(args) > 0 && args[0] == "retire" {
+		return cmdRunRetire(args[1:], out)
+	}
 	o, err := parseRunArgs("ensign run", args)
 	if err != nil {
 		return err
@@ -682,6 +788,54 @@ func cmdRun(args []string, out io.Writer) error {
 	}
 	_, err = createRun(bridge, o, false, out)
 	return err
+}
+
+// cmdRunRetire is `ensign run retire <run>`: it ends a live run of another session, whose session is gone, so the code folders it holds are free. The run's folder and the code folder are left as they are.
+func cmdRunRetire(args []string, out io.Writer) error {
+	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
+		return errors.New("usage: ensign run retire <run>")
+	}
+	session := os.Getenv("STARSHIP_SESSION")
+	if session == "" {
+		return errors.New("retiring a run needs the session it is called from, and STARSHIP_SESSION is not set")
+	}
+	bridge, err := cwdBridge()
+	if err != nil {
+		return err
+	}
+	r, err := openRun(bridge, args[0])
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("no run %s", args[0])
+	}
+	if err != nil {
+		return err
+	}
+	switch {
+	case r.State.terminal():
+		r.close()
+		return fmt.Errorf("run %s has finished (%s); there is nothing to retire", args[0], r.State.Status)
+	case r.State.Session == session:
+		r.close()
+		return fmt.Errorf("run %s belongs to this session; only a run of another session can be retired", args[0])
+	}
+	owner, id := r.State.Session, r.State.Run
+	works, _ := folderHolds(r.Snap)
+	if !r.State.Approved {
+		works = nil
+	}
+	if err := markRetired(r, fmt.Sprintf("retired by session %s after its session %s ended", session, owner)); err != nil {
+		return err
+	}
+	if owner != "" {
+		if err := unbindSession(bridge, owner, id); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(out, "Retired run %s of session %s. Its work in the code folders was left as it is.\n", id, owner)
+	for _, f := range works {
+		fmt.Fprintf(out, "Free now: %s\n", f)
+	}
+	return nil
 }
 
 // createRun validates and freezes a run. A queued run (a sequence step) belongs to the session but is not bound to it and replaces nothing. It returns nil for a dry run.
@@ -780,7 +934,8 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	}
 
 	if !queued {
-		if err := folderHolder(bridge, c.Workspace, replace...); err != nil {
+		want := &Snapshot{Workspace: c.Workspace, Location: c.Location, Sides: c.Sides, Dependencies: c.Dependencies}
+		if err := folderHolder(bridge, want, session, replace...); err != nil {
 			return nil, err
 		}
 	}

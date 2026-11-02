@@ -772,12 +772,12 @@ func TestSameFolderComparisonFollowsThePlatform(t *testing.T) {
 func TestSessionFileHoldsASetOfRuns(t *testing.T) {
 	w := newWorld(t)
 	write(t, sessionFile(w.bridge, "s9"), "a\r\nb\n\n")
-	if got := strings.Join(sessionRuns(w.bridge, "s9"), ","); got != "a,b" {
-		t.Fatalf("parsed %q", got)
+	if got, err := sessionRuns(w.bridge, "s9"); err != nil || strings.Join(got, ",") != "a,b" {
+		t.Fatalf("parsed %q: %v", got, err)
 	}
 	write(t, sessionFile(w.bridge, "s8"), "only\n")
-	if got := strings.Join(sessionRuns(w.bridge, "s8"), ","); got != "only" {
-		t.Fatalf("old single-id file parsed %q", got)
+	if got, err := sessionRuns(w.bridge, "s8"); err != nil || strings.Join(got, ",") != "only" {
+		t.Fatalf("old single-id file parsed %q: %v", got, err)
 	}
 }
 
@@ -786,7 +786,7 @@ func TestSeveralLiveRunsOfOneSession(t *testing.T) {
 	client, server := t.TempDir(), t.TempDir()
 	a := w.liveStepRun(client, "agentA")
 	b := w.liveStepRun(server, "agentB")
-	if got := strings.Join(liveSessionRuns(w.bridge, w.sid), ","); got != a+","+b {
+	if got, _ := liveSessionRuns(w.bridge, w.sid); strings.Join(got, ",") != a+","+b {
 		t.Fatalf("live runs %q", got)
 	}
 	if _, err := openSessionRun(w.bridge, w.sid); err == nil || !strings.Contains(err.Error(), "--run") || !strings.Contains(err.Error(), a) || !strings.Contains(err.Error(), b) {
@@ -816,7 +816,7 @@ func TestSeveralLiveRunsOfOneSession(t *testing.T) {
 	if id, why := w.spawn("ghost", "orchestrator", "coder"); id != "" || why == "" {
 		t.Errorf("an untied agent's spawn: %q %q", id, why)
 	}
-	if err := bindSession(w.bridge, w.sid, a); err != nil || len(liveSessionRuns(w.bridge, w.sid)) != 2 {
+	if err := bindSession(w.bridge, w.sid, a); err != nil || len(mustLive(t, w.bridge, w.sid)) != 2 {
 		t.Fatalf("binding a bound run again changed the set: %v", err)
 	}
 }
