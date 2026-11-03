@@ -202,7 +202,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}})
 				return 0
 			}
-			why, warn, err := editGuard(bridge, &in)
+			why, warning, err := editGuard(bridge, &in)
 			if err != nil {
 				return failHook(&in, nil, err, stderr)
 			}
@@ -211,8 +211,8 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 				out["hookSpecificOutput"] = map[string]any{
 					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}
 			}
-			if warn != nil {
-				out["systemMessage"] = "starship: " + warn.Error()
+			if warning != "" {
+				out["systemMessage"] = "starship: " + warning
 			}
 			if len(out) > 0 {
 				json.NewEncoder(stdout).Encode(out)

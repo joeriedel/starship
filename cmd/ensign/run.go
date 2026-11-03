@@ -559,10 +559,11 @@ func bindSession(bridge, session, run string) error {
 		return err
 	}
 	var snap Snapshot
-	if readJSON(filepath.Join(runsDir(bridge), run, "pipeline.json"), &snap) == nil {
-		if err := writeSetupFile(bridge, session, snap.Project); err != nil {
-			return fmt.Errorf("%w: %w", errSetupFile, err)
-		}
+	if err := readJSON(filepath.Join(runsDir(bridge), run, "pipeline.json"), &snap); err != nil {
+		return fmt.Errorf("%w: the session's setup file was not written because the run's pipeline could not be read: %w", errSetupFile, err)
+	}
+	if err := writeSetupFile(bridge, session, snap.Project); err != nil {
+		return fmt.Errorf("%w: %w", errSetupFile, err)
 	}
 	return nil
 }

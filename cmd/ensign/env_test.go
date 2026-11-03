@@ -400,3 +400,125 @@ func TestGitBashPath(t *testing.T) {
 		t.Errorf("git on PATH: got %q, want %q", got, bash)
 	}
 }
+
+// agentOnNewSession starts a run with a live lead on s1 and moves the session to s2, which has no live runs, so the lead's next hook rebinds the run. Edits are allowed only in the returned folder.
+func agentOnNewSession(t *testing.T) (w *world, lead, run, allowed string) {
+	t.Helper()
+	w = newWorld(t)
+	gitBashFound = func() bool { return true }
+	t.Cleanup(func() { gitBashFound = detectGitBash })
+	runEnv(t, "supernova", "SUPERNOVA_TOOL=hello")
+	lead = w.startLead()
+	run = w.state().Run
+	w.sid = "s2"
+	allowed = t.TempDir()
+	old := editTempFolders
+	editTempFolders = func() []string { return []string{allowed} }
+	t.Cleanup(func() { editTempFolders = old })
+	return
+}
+
+func editHook(w *world, lead, target string) map[string]any {
+	w.t.Helper()
+	res, code := w.hook("PreToolUse", map[string]any{"agent_id": lead, "agent_type": "orchestrator",
+		"tool_name": "Edit", "tool_input": map[string]any{"file_path": target}})
+	if code != 0 {
+		w.t.Fatalf("PreToolUse exited %d: %v", code, res)
+	}
+	return res
+}
+
+func countRebound(st *State) int {
+	n := 0
+	for _, h := range st.History {
+		if h.Kind == "rebound" {
+			n++
+		}
+	}
+	return n
+}
+
+func TestEditGuardSavesTheRebind(t *testing.T) {
+	w, lead, run, allowed := agentOnNewSession(t)
+	target := filepath.Join(allowed, "x.txt")
+	for i := 0; i < 2; i++ {
+		if res := editHook(w, lead, target); res != nil {
+			t.Fatalf("edit %d: %v", i, res)
+		}
+		st := w.runState(run)
+		if st.Session != "s2" || countRebound(st) != 1 {
+			t.Fatalf("edit %d: session %q, rebound entries %d; want s2 and one", i, st.Session, countRebound(st))
+		}
+	}
+}
+
+func TestEditGuardWarnsWhenTheSetupFileFails(t *testing.T) {
+	w, lead, run, allowed := agentOnNewSession(t)
+	path := blockSetupFile(t, w.bridge, "s2")
+	res := editHook(w, lead, filepath.Join(allowed, "x.txt"))
+	if msg := dig(res, "systemMessage"); !strings.HasPrefix(msg, "starship: ") || !strings.Contains(msg, path) {
+		t.Fatalf("the allowed edit should carry the warning: %v", res)
+	}
+	if _, ok := res["hookSpecificOutput"]; ok {
+		t.Errorf("the edit should be allowed: %v", res)
+	}
+	if st := w.runState(run); st.Session != "s2" || countRebound(st) != 1 {
+		t.Errorf("the rebind should be saved: session %q, rebound entries %d", st.Session, countRebound(st))
+	}
+}
+
+func TestEditGuardRefusalCarriesTheWarning(t *testing.T) {
+	w, lead, _, _ := agentOnNewSession(t)
+	path := blockSetupFile(t, w.bridge, "s2")
+	res := editHook(w, lead, filepath.Join(t.TempDir(), "x.txt"))
+	if dig(res, "hookSpecificOutput", "permissionDecision") != "deny" {
+		t.Fatalf("the edit should be refused: %v", res)
+	}
+	if msg := dig(res, "systemMessage"); !strings.HasPrefix(msg, "starship: ") || !strings.Contains(msg, path) {
+		t.Fatalf("the refusal should carry the warning: %v", res)
+	}
+}
+
+func TestAgentHookRebindWarnsWhenTheSetupFileFails(t *testing.T) {
+	w, lead, run, _ := agentOnNewSession(t)
+	path := blockSetupFile(t, w.bridge, "s2")
+	res, code := w.hook("PostToolUse", map[string]any{"agent_id": lead, "agent_type": "orchestrator",
+		"tool_name": "Bash", "tool_response": map[string]any{"backgroundTaskId": "bash1"}})
+	if code != 0 {
+		t.Fatalf("PostToolUse exited %d: %v", code, res)
+	}
+	if msg := dig(res, "systemMessage"); !strings.HasPrefix(msg, "starship: ") || !strings.Contains(msg, path) {
+		t.Fatalf("the reply should carry the warning: %v", res)
+	}
+	if st := w.runState(run); st.Session != "s2" {
+		t.Errorf("the rebind should be saved: session %q", st.Session)
+	}
+}
+
+func TestBindSessionReportsAnUnreadablePipeline(t *testing.T) {
+	w := newWorld(t)
+	gitBashFound = func() bool { return true }
+	t.Cleanup(func() { gitBashFound = detectGitBash })
+	runEnv(t, "supernova", "SUPERNOVA_TOOL=hello")
+	w.run("supernova/auth-refactor")
+	ids, _ := sessionRuns(w.bridge, "s1")
+	if len(ids) != 1 {
+		t.Fatalf("runs %v", ids)
+	}
+	pipeline := filepath.Join(runsDir(w.bridge), ids[0], "pipeline.json")
+	if err := os.Remove(pipeline); err != nil {
+		t.Fatal(err)
+	}
+	if err := bindSession(w.bridge, "s5", ids[0]); !errors.Is(err, errSetupFile) || !strings.Contains(err.Error(), "pipeline") {
+		t.Fatalf("missing pipeline: %v", err)
+	}
+	write(t, pipeline, "{not json")
+	if err := bindSession(w.bridge, "s6", ids[0]); !errors.Is(err, errSetupFile) || !strings.Contains(err.Error(), "pipeline") {
+		t.Fatalf("corrupt pipeline: %v", err)
+	}
+	for _, s := range []string{"s5", "s6"} {
+		if got := mustLive(t, w.bridge, s); !reflect.DeepEqual(got, ids) {
+			t.Errorf("%s: the run should still be bound: %v", s, got)
+		}
+	}
+}

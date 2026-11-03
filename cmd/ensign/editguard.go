@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -8,34 +10,38 @@ import (
 	"strings"
 )
 
-// editGuard refuses an Edit, Write or NotebookEdit outside the folders the calling agent may edit. It returns the reason, or "" to allow, and the warning from binding the run, if any. The last error means the run could not be looked up.
-func editGuard(bridge string, in *HookInput) (string, error, error) {
+// editGuard refuses an Edit, Write or NotebookEdit outside the folders the calling agent may edit. It returns the reason, or "" to allow, and the warning from binding the run, if any. The error means the run could not be looked up or saved.
+func editGuard(bridge string, in *HookInput) (reason, warning string, err error) {
 	if in.ToolName != "Edit" && in.ToolName != "Write" && in.ToolName != "NotebookEdit" {
-		return "", nil, nil
+		return "", "", nil
 	}
 	target, _ := in.ToolInput["file_path"].(string)
 	if target == "" {
 		target, _ = in.ToolInput["notebook_path"].(string)
 	}
 	if target == "" {
-		return "", nil, nil
+		return "", "", nil
 	}
 	var folders []string
 	var who string
-	var warn error
 	if in.AgentID == "" {
 		who = "the session"
 		folders = sessionEditFolders(bridge)
 	} else {
 		r, err := openHookRun(bridge, in)
 		if err != nil {
-			return "", nil, err
+			return "", "", err
 		}
 		folders = editTempFolders()
 		who = "this agent"
 		if r != nil {
-			warn = r.warn
 			defer r.close()
+			if r.warn != nil {
+				warning = r.warn.Error()
+			}
+			if err := r.save(); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return "", "", err
+			}
 			if d := callerDispatch(r, in); d != nil {
 				scratch := filepath.Join(r.Dir, "scratch")
 				who = "this " + d.Role
@@ -50,11 +56,11 @@ func editGuard(bridge string, in *HookInput) (string, error, error) {
 	resolved := resolveEditTarget(target, in.Cwd, runtime.GOOS)
 	for _, f := range folders {
 		if pathWithin(resolved, resolveEditFolder(f, runtime.GOOS), runtime.GOOS) {
-			return "", warn, nil
+			return "", warning, nil
 		}
 	}
 	return "this edit was refused because " + target + " is outside the folders " + who + " may edit: " + strings.Join(folders, ", ") +
-		". The same limit applies to shell commands (redirection, sed -i, cp, git apply, scripts) that write files. Working around the guard is a failure, not a fix.", warn, nil
+		". The same limit applies to shell commands (redirection, sed -i, cp, git apply, scripts) that write files. Working around the guard is a failure, not a fix.", warning, nil
 }
 
 // sessionEditFolders is what the session agent may edit: the bridge, temp, Claude Code's user config, and the folders bridge.yaml lists under session-edit.
