@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -413,12 +414,9 @@ func controlPlaneEdit(bridge string, in *HookInput) string {
 	if cp, err := controlPlaneDir(bridge, bf); err == nil {
 		roots = append(roots, cp)
 	}
-	abs, _ := filepath.Abs(path)
+	target := resolveEditTarget(path, in.Cwd, runtime.GOOS)
 	for _, root := range roots {
-		if r, err := filepath.EvalSymlinks(root); err == nil {
-			root = r
-		}
-		if rel, err := filepath.Rel(root, resolveExisting(abs)); err == nil && !strings.HasPrefix(rel, "..") {
+		if pathWithin(target, resolveEditFolder(root, runtime.GOOS), runtime.GOOS) {
 			return "this is the bridge's pinned copy of starship, which isn't edited. To change starship, work on a starship checkout as a project task; the change lands as a pull request."
 		}
 	}

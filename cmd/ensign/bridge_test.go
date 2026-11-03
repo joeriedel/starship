@@ -205,8 +205,8 @@ func TestWorkItemIsGoalAndScope(t *testing.T) {
 
 func TestControlPlaneEditsAreRefused(t *testing.T) {
 	b := newBridge(t)
-	try := func(path string) map[string]any {
-		in, _ := json.Marshal(map[string]any{"hook_event_name": "PreToolUse", "session_id": "s",
+	tryIn := func(path, cwd string) map[string]any {
+		in, _ := json.Marshal(map[string]any{"hook_event_name": "PreToolUse", "session_id": "s", "cwd": cwd,
 			"tool_name": "Edit", "tool_input": map[string]any{"file_path": path}})
 		var out, errb bytes.Buffer
 		if code := cmdHook("PreToolUse", bytes.NewReader(in), &out, &errb); code != 0 {
@@ -216,11 +216,22 @@ func TestControlPlaneEditsAreRefused(t *testing.T) {
 		json.Unmarshal(out.Bytes(), &res)
 		return res
 	}
+	try := func(path string) map[string]any { return tryIn(path, "") }
 	if res := try(filepath.Join(repoRoot(t), "roles/coder.md")); dig(res, "hookSpecificOutput", "permissionDecision") != "deny" {
 		t.Errorf("an edit to the control plane was not refused: %v", res)
 	}
 	if res := try(filepath.Join(b, "projects/x/project.yaml")); res != nil {
 		t.Errorf("an edit inside the bridge was refused: %v", res)
+	}
+	root := repoRoot(t)
+	if res := try(filepath.Join(root, "..foo")); dig(res, "hookSpecificOutput", "permissionDecision") != "deny" {
+		t.Errorf("an edit to a ..-named file in the control plane was not refused: %v", res)
+	}
+	if res := tryIn("roles/coder.md", root); dig(res, "hookSpecificOutput", "permissionDecision") != "deny" {
+		t.Errorf("a relative edit from the control plane was not refused: %v", res)
+	}
+	if res := tryIn("projects/supernova/project.yaml", b); res != nil {
+		t.Errorf("a relative edit from the bridge was refused: %v", res)
 	}
 }
 
