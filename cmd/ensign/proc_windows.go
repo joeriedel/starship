@@ -17,7 +17,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// killTreeOnCancel kills the command and everything it started when its context ends. The command runs in a job object, which catches descendants whose parent already exited; if the job can't be set up it falls back to taskkill, which walks the tree at kill time and can miss those. The returned started func must be called right after Start succeeds, and finish after the command ends; finish closes the job and, if the fallback killed anything, notes that on c.Stderr. While signals are shielded (see shieldSignals) they do not cancel the command. While signals are held (see holdSignals), Ctrl-C and termination cancel the command and finish returns an error, so that ensign can stop its services before it exits. When the command ends without being cancelled, finish first clears the job's kill-on-close flag so background children it left running survive, as they do on Unix.
+// killTreeOnCancel kills the command and everything it started when its context ends. The command runs in a job object, which catches descendants whose parent already exited; if the job can't be set up it falls back to taskkill, which walks the tree at kill time and can miss those. The returned started func must be called right after Start succeeds, and finish after the command ends; finish closes the job and, if the fallback killed anything, notes that on c.Stderr. While signals are shielded (see shieldSignals) they do not cancel the command, and the command runs on its own hidden console so that Ctrl-Break does not reach it either. While signals are held (see holdSignals), Ctrl-C and termination cancel the command and finish returns an error, so that ensign can stop its services before it exits. When the command ends without being cancelled, finish first clears the job's kill-on-close flag so background children it left running survive, as they do on Unix.
 func killTreeOnCancel(c *exec.Cmd, cancel context.CancelFunc) (started func(), finish func() error) {
 	var mu sync.Mutex
 	var job windows.Handle
@@ -27,12 +27,17 @@ func killTreeOnCancel(c *exec.Cmd, cancel context.CancelFunc) (started func(), f
 
 	job, jobErr = newKillOnCloseJob()
 
-	// A new process group disables console Ctrl-C for the command and its descendants, so only ensign receives it and decides what to cancel.
-	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
+	// A new process group disables console Ctrl-C for the command and its descendants, so only ensign receives it and decides what to cancel. A new process group still receives Ctrl-Break, so a shielded command also gets its own hidden console, which the user's Ctrl-Break never reaches.
+	isShielded := shielded()
+	flags := uint32(syscall.CREATE_NEW_PROCESS_GROUP)
+	if isShielded {
+		flags |= windows.CREATE_NO_WINDOW
+	}
+	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags}
 
 	var caught os.Signal
 	stopWatch := func() {}
-	if signalsHeld() && !shielded() {
+	if signalsHeld() && !isShielded {
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 		done := make(chan struct{})
@@ -106,7 +111,7 @@ func killTreeOnCancel(c *exec.Cmd, cancel context.CancelFunc) (started func(), f
 	return started, finish
 }
 
-// watchSignals notes Ctrl-C and termination with noteSignal until stop is called, so that one arriving between commands is not lost.
+// watchSignals notes Ctrl-C, Ctrl-Break and termination with noteSignal until stop is called, so that one arriving between commands is not lost.
 func watchSignals() (stop func()) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
