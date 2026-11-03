@@ -377,6 +377,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		fmt.Fprintln(&ctx, note)
 	}
 	upgradeHookSettings(bridge)
+	removeOldExe(bridge)
 	fmt.Fprintf(&ctx, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
 	if carryErr != nil {
 		fmt.Fprintf(&ctx, "starship: could not carry the earlier session's runs over: %v\n", carryErr)
