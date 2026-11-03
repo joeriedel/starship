@@ -35,17 +35,17 @@ func journalChanges(bridge string) []string {
 		if len(line) < 4 {
 			continue
 		}
-		path := strings.Trim(line[3:], `"`)
-		if _, after, ok := strings.Cut(path, " -> "); ok {
-			path = after
-		}
-		if p, ok := strings.CutPrefix(path, "projects/"); ok {
-			project, _, _ := strings.Cut(p, "/")
-			if journalOff(bridge, project) {
-				continue
+		// A rename lists both sides; both are committed so the old path is removed.
+		for _, path := range strings.Split(line[3:], " -> ") {
+			path = strings.Trim(path, `"`)
+			if p, ok := strings.CutPrefix(path, "projects/"); ok {
+				project, _, _ := strings.Cut(p, "/")
+				if journalOff(bridge, project) {
+					continue
+				}
 			}
+			out = append(out, path)
 		}
-		out = append(out, path)
 	}
 	return out
 }
@@ -141,8 +141,19 @@ func cmdJournal(args []string, out io.Writer) error {
 	if err := checkJournalSources(bridge, files); err != nil {
 		return err
 	}
-	if err := git(bridge, append([]string{"add", "--"}, files...)...); err != nil {
-		return err
+	// add errors on a path that is neither in the worktree nor the index (a deletion already staged), but commit -- still takes it.
+	var addable []string
+	for _, f := range files {
+		if _, err := os.Stat(filepath.Join(bridge, filepath.FromSlash(f))); err == nil {
+			addable = append(addable, f)
+		} else if tracked, _ := gitOut(bridge, "ls-files", "--", f); tracked != "" {
+			addable = append(addable, f)
+		}
+	}
+	if len(addable) > 0 {
+		if err := git(bridge, append([]string{"add", "-A", "--"}, addable...)...); err != nil {
+			return err
+		}
 	}
 	if err := git(bridge, append([]string{"commit", "-q", "-m", args[2], "--"}, files...)...); err != nil {
 		return err
@@ -246,19 +257,77 @@ func pushBridge(bridge string, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("the bridge's HEAD is detached")
 	}
+	if files := unmergedFiles(bridge); len(files) > 0 {
+		return fmt.Errorf("the bridge has unmerged files from an earlier conflict (%s). Resolve them, then run git add or git reset -- %s, and run ensign journal push",
+			strings.Join(files, ", "), strings.Join(files, " "))
+	}
+	var stashed []string
 	if remoteHas(bridge, remote, branch) {
-		if err := git(bridge, "pull", "-q", "--rebase", remote, branch); err != nil {
-			conflicts, _ := gitOut(bridge, "diff", "--name-only", "--diff-filter=U")
+		if err := git(bridge, "pull", "-q", "--rebase", "--autostash", remote, branch); err != nil {
+			conflicts := unmergedFiles(bridge)
 			git(bridge, "rebase", "--abort")
+			if len(conflicts) == 0 {
+				return fmt.Errorf("pulling %s/%s failed: %w. Fix that, then run ensign journal push", remote, branch, err)
+			}
 			return fmt.Errorf("another machine changed the same files (%s). Pull with rebase, merge the two versions — "+
-				"keep both where each only added lines — and run ensign journal push", strings.ReplaceAll(conflicts, "\n", ", "))
+				"keep both where each only added lines — and run ensign journal push", strings.Join(conflicts, ", "))
 		}
+		stashed = unmergedFiles(bridge)
+	}
+	// Re-applying the autostash can conflict while git still exits 0, keeping the stash.
+	stashNote := ""
+	if len(stashed) > 0 {
+		// Unmerged index entries would block every later pull, so leave the markers as plain modifications.
+		if err := git(bridge, append([]string{"reset", "-q", "--"}, stashed...)...); err != nil {
+			return fmt.Errorf("clearing the unmerged state of %s failed: %w", strings.Join(stashed, ", "), err)
+		}
+		// A file the pushed commits deleted is untracked now; committing it would bring it back.
+		var marked, removed []string
+		for _, f := range stashed {
+			if git(bridge, "cat-file", "-e", "HEAD:"+f) == nil {
+				marked = append(marked, f)
+				continue
+			}
+			if err := os.Remove(filepath.Join(bridge, filepath.FromSlash(f))); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("removing %s, which the pushed version deleted, failed: %w", f, err)
+			}
+			removed = append(removed, f)
+		}
+		var notes []string
+		if len(marked) > 0 {
+			notes = append(notes, fmt.Sprintf("re-applying the bridge's uncommitted changes conflicted in (%s); they are kept in git stash and the files hold conflict markers. "+
+				"Either resolve the markers and run git stash drop, or run git checkout -- %s to take the pushed version and keep your changes in the stash",
+				strings.Join(marked, ", "), strings.Join(marked, " ")))
+		}
+		if len(removed) > 0 {
+			notes = append(notes, fmt.Sprintf("the pushed version deleted (%s), so they were removed from the bridge; your changes to them are kept in git stash (see git stash show -p)",
+				strings.Join(removed, ", ")))
+		}
+		stashNote = strings.Join(notes, "; and ")
 	}
 	if err := git(bridge, "push", "-q", "-u", remote, "HEAD"); err != nil {
+		if stashNote != "" {
+			return fmt.Errorf("%w; also, %s", err, stashNote)
+		}
 		return err
+	}
+	if stashNote != "" {
+		return fmt.Errorf("the journal was pushed to %s/%s, but %s", remote, branch, stashNote)
 	}
 	fmt.Fprintf(out, "pushed to %s/%s\n", remote, branch)
 	return nil
+}
+
+// unmergedFiles lists the bridge's unmerged paths, NUL-separated so odd names survive.
+func unmergedFiles(bridge string) []string {
+	out, _ := gitOut(bridge, "diff", "--name-only", "-z", "--diff-filter=U")
+	var files []string
+	for _, f := range strings.Split(out, "\x00") {
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return files
 }
 
 func remoteHas(dir, remote, branch string) bool {

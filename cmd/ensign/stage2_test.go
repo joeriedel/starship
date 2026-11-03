@@ -630,3 +630,286 @@ func TestDeclaredPlatformsReachLeadAndReviewerOnly(t *testing.T) {
 		t.Errorf("a coder prompt should not carry the platforms")
 	}
 }
+
+// journalFixture makes the world's bridge a git repo pushed to a bare remote and returns the remote.
+func journalFixture(t *testing.T, w *world) string {
+	t.Helper()
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, filepath.Dir(remote), "init", "-q", "--bare", "-b", "main", remote)
+	runGit(t, w.bridge, "init", "-q", "-b", "main")
+	runGit(t, w.bridge, "config", "user.email", "t@example.com")
+	runGit(t, w.bridge, "config", "user.name", "t")
+	write(t, filepath.Join(w.bridge, ".gitignore"), ".starship/\n")
+	runGit(t, w.bridge, "add", "-A")
+	runGit(t, w.bridge, "commit", "-q", "-m", "bridge")
+	runGit(t, w.bridge, "remote", "add", "origin", remote)
+	runGit(t, w.bridge, "push", "-q", "-u", "origin", "main")
+	return remote
+}
+
+func cloneRemote(t *testing.T, remote string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "other")
+	runGit(t, filepath.Dir(dir), "clone", "-q", remote, dir)
+	return dir
+}
+
+func TestJournalCommitsRename(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	runGit(t, w.bridge, "mv", "projects/supernova/tasks/auth-refactor", "projects/supernova/tasks/auth-rework")
+	var out bytes.Buffer
+	if err := cmdJournal([]string{"commit", "-m", "Rename task"}, &out); err != nil {
+		t.Fatalf("journal commit: %v\n%s", err, out.String())
+	}
+	files := runGit(t, remote, "ls-tree", "-r", "--name-only", "HEAD")
+	if strings.Contains(files, "tasks/auth-refactor/") || !strings.Contains(files, "tasks/auth-rework/task.md") {
+		t.Fatalf("remote files:\n%s", files)
+	}
+	if st := runGit(t, w.bridge, "status", "--porcelain", "--", "projects"); st != "" {
+		t.Fatalf("status not clean:\n%s", st)
+	}
+}
+
+func TestJournalCommitsExplicitDeletions(t *testing.T) {
+	needGit(t)
+	task := "projects/supernova/tasks/auth-refactor/task.md"
+	for name, remove := range map[string]func(t *testing.T, bridge string){
+		"worktree": func(t *testing.T, bridge string) { os.Remove(filepath.Join(bridge, filepath.FromSlash(task))) },
+		"staged":   func(t *testing.T, bridge string) { runGit(t, bridge, "rm", "-q", task) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			remote := journalFixture(t, w)
+			remove(t, w.bridge)
+			var out bytes.Buffer
+			if err := cmdJournal([]string{"commit", "-m", "Drop task", task}, &out); err != nil {
+				t.Fatalf("journal commit: %v\n%s", err, out.String())
+			}
+			if files := runGit(t, remote, "ls-tree", "-r", "--name-only", "HEAD"); strings.Contains(files, task) {
+				t.Fatalf("deletion not recorded:\n%s", files)
+			}
+		})
+	}
+}
+
+func TestJournalPushIgnoresUnrelatedChanges(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	other := cloneRemote(t, remote)
+	write(t, filepath.Join(other, "elsewhere.txt"), "remote change\n")
+	runGit(t, other, "add", "-A")
+	runGit(t, other, "commit", "-q", "-m", "other")
+	runGit(t, other, "push", "-q")
+
+	gi := filepath.Join(w.bridge, ".gitignore")
+	write(t, gi, ".starship/\n# local edit\n")
+	history := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/history.md")
+	write(t, history, "# history\n")
+	var out bytes.Buffer
+	if err := cmdJournal([]string{"commit", "-m", "Add history"}, &out); err != nil {
+		t.Fatalf("journal commit: %v\n%s", err, out.String())
+	}
+	if got := runGit(t, remote, "log", "--format=%s", "-1"); got != "Add history" {
+		t.Fatalf("remote has %q", got)
+	}
+	if data, _ := os.ReadFile(gi); !strings.Contains(string(data), "# local edit") {
+		t.Fatalf("unstaged modification lost: %q", data)
+	}
+}
+
+func TestJournalPushStashConflict(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	other := cloneRemote(t, remote)
+	write(t, filepath.Join(other, ".gitignore"), "theirs\n")
+	runGit(t, other, "commit", "-q", "-am", "theirs")
+	runGit(t, other, "push", "-q")
+
+	write(t, filepath.Join(w.bridge, ".gitignore"), "mine\n")
+	write(t, filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/history.md"), "# history\n")
+	var out bytes.Buffer
+	err := cmdJournal([]string{"commit", "-m", "Add history"}, &out)
+	if err == nil || !strings.Contains(err.Error(), ".gitignore") || !strings.Contains(err.Error(), "git stash") {
+		t.Fatalf("want a stash conflict naming .gitignore, got %v", err)
+	}
+	if got := runGit(t, remote, "log", "--format=%s", "-1"); got != "Add history" {
+		t.Fatalf("remote has %q", got)
+	}
+	if got := runGit(t, w.bridge, "diff", "--name-only", "--diff-filter=U"); got != "" {
+		t.Fatalf("files still unmerged:\n%s", got)
+	}
+	if data, _ := os.ReadFile(filepath.Join(w.bridge, ".gitignore")); !strings.Contains(string(data), "<<<<<<<") {
+		t.Fatalf("no conflict markers: %q", data)
+	}
+	if runGit(t, w.bridge, "stash", "list") == "" {
+		t.Fatal("stash was not kept")
+	}
+	runGit(t, w.bridge, "checkout", "--", ".gitignore")
+	out.Reset()
+	if err := cmdJournal([]string{"push"}, &out); err != nil {
+		t.Fatalf("push after recovery: %v\n%s", err, out.String())
+	}
+}
+
+func TestJournalPushStashDeletedByPushedVersion(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	rel := "projects/supernova/tasks/auth-refactor/task.md"
+	other := cloneRemote(t, remote)
+	runGit(t, other, "rm", "-q", rel)
+	runGit(t, other, "commit", "-q", "-m", "delete task")
+	runGit(t, other, "push", "-q")
+
+	file := filepath.Join(w.bridge, filepath.FromSlash(rel))
+	write(t, file, "mine\n")
+	var out bytes.Buffer
+	err := cmdJournal([]string{"push"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "pushed version deleted") || !strings.Contains(err.Error(), rel) || strings.Contains(err.Error(), "conflict markers") {
+		t.Fatalf("want a note that %s was deleted by the pushed version, got %v", rel, err)
+	}
+	if _, err := os.Stat(file); err == nil {
+		t.Fatal("deleted file was left in the worktree")
+	}
+	if runGit(t, w.bridge, "stash", "list") == "" {
+		t.Fatal("stash was not kept")
+	}
+	if got := runGit(t, w.bridge, "diff", "--name-only", "--diff-filter=U"); got != "" {
+		t.Fatalf("files still unmerged:\n%s", got)
+	}
+	changes := journalChanges(w.bridge)
+	for _, c := range changes {
+		if strings.Contains(c, "task.md") {
+			t.Fatalf("journalChanges offers the deleted file: %v", changes)
+		}
+	}
+}
+
+func TestJournalPushStashConflictNameWithSpace(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	name := "my notes.txt"
+	other := cloneRemote(t, remote)
+	write(t, filepath.Join(other, name), "base\n")
+	runGit(t, other, "add", "-A")
+	runGit(t, other, "commit", "-q", "-m", "notes")
+	runGit(t, other, "push", "-q")
+	runGit(t, w.bridge, "pull", "-q", "--ff-only")
+	write(t, filepath.Join(other, name), "theirs\n")
+	runGit(t, other, "commit", "-q", "-am", "theirs")
+	runGit(t, other, "push", "-q")
+
+	write(t, filepath.Join(w.bridge, name), "mine\n")
+	var out bytes.Buffer
+	err := cmdJournal([]string{"push"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "("+name+")") || !strings.Contains(err.Error(), "conflict markers") {
+		t.Fatalf("want a stash conflict naming %q, got %v", name, err)
+	}
+	if got := runGit(t, w.bridge, "diff", "--name-only", "--diff-filter=U"); got != "" {
+		t.Fatalf("files still unmerged:\n%s", got)
+	}
+	if data, _ := os.ReadFile(filepath.Join(w.bridge, name)); !strings.Contains(string(data), "<<<<<<<") {
+		t.Fatalf("no conflict markers: %q", data)
+	}
+}
+
+func TestJournalPushRefusesUnmergedFiles(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	journalFixture(t, w)
+	gi := filepath.Join(w.bridge, ".gitignore")
+	runGit(t, w.bridge, "checkout", "-q", "-b", "side")
+	write(t, gi, "side\n")
+	runGit(t, w.bridge, "commit", "-q", "-am", "side")
+	runGit(t, w.bridge, "checkout", "-q", "main")
+	write(t, gi, "main\n")
+	runGit(t, w.bridge, "commit", "-q", "-am", "main")
+	merge := exec.Command("git", "-C", w.bridge, "merge", "side")
+	if err := merge.Run(); err == nil {
+		t.Fatal("merge should have conflicted")
+	}
+	var out bytes.Buffer
+	err := cmdJournal([]string{"push"}, &out)
+	if err == nil || !strings.Contains(err.Error(), ".gitignore") || strings.Contains(err.Error(), "another machine") {
+		t.Fatalf("want an unmerged-files error naming .gitignore, got %v", err)
+	}
+}
+
+func TestJournalPushRefusesUnmergedFilesWithoutRemoteBranch(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	journalFixture(t, w)
+	runGit(t, w.bridge, "checkout", "-q", "-b", "fresh")
+	notes := filepath.Join(w.bridge, "notes.md")
+	runGit(t, w.bridge, "checkout", "-q", "-b", "side")
+	write(t, notes, "side\n")
+	runGit(t, w.bridge, "add", "notes.md")
+	runGit(t, w.bridge, "commit", "-q", "-m", "side")
+	runGit(t, w.bridge, "checkout", "-q", "fresh")
+	write(t, notes, "fresh\n")
+	runGit(t, w.bridge, "add", "notes.md")
+	runGit(t, w.bridge, "commit", "-q", "-m", "fresh")
+	merge := exec.Command("git", "-C", w.bridge, "merge", "side")
+	if err := merge.Run(); err == nil {
+		t.Fatal("merge should have conflicted")
+	}
+	var out bytes.Buffer
+	err := cmdJournal([]string{"push"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "unmerged files") || !strings.Contains(err.Error(), "notes.md") {
+		t.Fatalf("want an unmerged-files error naming notes.md, got %v", err)
+	}
+	if b, rerr := os.ReadFile(notes); rerr != nil || !strings.Contains(string(b), "fresh") {
+		t.Fatalf("notes.md should keep its content, got %q, %v", b, rerr)
+	}
+	if got, _ := gitOut(w.bridge, "ls-remote", remoteName(w.bridge), "refs/heads/fresh"); got != "" {
+		t.Fatalf("nothing should have been pushed, remote has %q", got)
+	}
+}
+
+func TestJournalPushConflict(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	rel := "projects/supernova/tasks/auth-refactor/task.md"
+	other := cloneRemote(t, remote)
+	write(t, filepath.Join(other, filepath.FromSlash(rel)), "theirs\n")
+	runGit(t, other, "commit", "-q", "-am", "theirs")
+	runGit(t, other, "push", "-q")
+
+	write(t, filepath.Join(w.bridge, filepath.FromSlash(rel)), "mine\n")
+	var out bytes.Buffer
+	err := cmdJournal([]string{"commit", "-m", "Mine"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "another machine changed the same files") || !strings.Contains(err.Error(), rel) {
+		t.Fatalf("want a conflict naming %s, got %v", rel, err)
+	}
+	for _, d := range []string{"rebase-merge", "rebase-apply"} {
+		if _, err := os.Stat(filepath.Join(w.bridge, ".git", d)); err == nil {
+			t.Fatalf("bridge left mid-rebase (%s)", d)
+		}
+	}
+}
+
+func TestJournalPushNonConflictFailure(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	other := cloneRemote(t, remote)
+	write(t, filepath.Join(other, "incoming.txt"), "theirs\n")
+	runGit(t, other, "add", "-A")
+	runGit(t, other, "commit", "-q", "-m", "incoming")
+	runGit(t, other, "push", "-q")
+
+	write(t, filepath.Join(w.bridge, "incoming.txt"), "untracked\n")
+	history := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/history.md")
+	write(t, history, "# history\n")
+	var out bytes.Buffer
+	err := cmdJournal([]string{"commit", "-m", "Add history"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "incoming.txt") || strings.Contains(err.Error(), "another machine") {
+		t.Fatalf("want git's own message without a conflict claim, got %v", err)
+	}
+}

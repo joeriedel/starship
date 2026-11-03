@@ -1112,7 +1112,7 @@ depend on the project's VCS:
   hook then skips journal checks for that project. Turning it off needs a reason, like a
   `not-applicable` binding.
 - The agent commits through `ensign journal commit -m "<message>" <files>`, which stages,
-  commits and pushes in one step.
+  commits and pushes in one step. Deletions and both sides of a rename are committed too. The push rebases onto the remote with `--autostash`, so unrelated uncommitted changes in the bridge do not block it; if the pull fails with no conflicted files, the error carries git's own message. The push refuses while unmerged files remain from an earlier conflict. If re-applying the autostash conflicts, the push still goes out and the error says so: files with conflict markers are left as plain modifications with the stash kept, and files the pushed version deleted are removed from the bridge (so they are not committed back) with their changes kept in the stash.
 
 ---
 
