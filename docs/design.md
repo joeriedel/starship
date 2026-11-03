@@ -667,7 +667,7 @@ The run then waits for `go`. Until then the hooks refuse its lead dispatch.
     pipeline.json            the snapshot: resolved pipeline with sources, bindings,
                              workspace, work item, and every brief the run can use
     state.json               written only by the driver
-    reports/<dispatch>.md    each stage agent's final message
+    reports/<dispatch>.md    each stage's report: the agent's handback, else its final message; ensign writes a plain stage's report itself
     lock
 ```
 
@@ -1317,7 +1317,7 @@ So there are two defences:
 - **A heartbeat at session start.** SessionStart replies with JSON. Its
   `additionalContext` holds `STARSHIP-READY ensign <version> bridge <tag>`, followed by
   the session manual, which appear in the session's context (§7.1). Claude Code cuts
-  `additionalContext` over 10,000 characters to a preview, so a test keeps the whole text, with a 200-character bridge path, under 8 KB.
+  `additionalContext` over 10,000 characters to a preview, so a test keeps the heading, the manual and its pointers, with a 200-character bridge path, under 8,000 characters (`manualLimit`, `cmd/ensign/selftest.go`); project notes reprinted after a compaction or clear are bounded only by `sessionContextLimit` (10,000).
   Its `systemMessage` shows the user one line at startup, "Starship ready · bridge
   <name> · <release>", without calling the model. The bridge's `CLAUDE.md`: **if that line is absent, or starship hooks report
   errors, say so plainly and do nothing except help fix it** — no pipeline, no agent
@@ -1455,8 +1455,7 @@ runs against Claude Code, except where listed below.
   prints `.starship/session.md` after the heartbeat; SessionStart fires only for the
   session, and again after a compaction. It removes the old import from an existing
   bridge's `CLAUDE.md` and commits that, unless the file has uncommitted edits.
-  `ensign selftest` checks from the session transcript that the hook's output reached the session whole, and that it stays out of
-  subagents, and a unit test keeps the manual under the size it checks (8 KB, which covers the whole text).
+  `ensign selftest` checks from the session transcript that the hook's output reached the session whole, and from each agent's own transcript that it stays out of subagents. A unit test keeps the heading, the manual and its pointers under the size it checks (8,000 characters); project notes reprinted after a compaction or clear are bounded only by `sessionContextLimit` (10,000).
 - **A `claude` started from inside another Claude Code session is a child session.**
   Its prompt reaches UserPromptSubmit with a `Claude` line in front, so `help` doesn't
   match, and it inherits the parent's project directory. This is why `help` once went to

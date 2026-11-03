@@ -21,8 +21,7 @@ type HelpEntry struct {
 	Run  string `yaml:"run" json:"run,omitempty"`
 }
 
-// requestCommands is what the session is told, after its manual, about carrying out the
-// requests that pipelines and extensions answer to.
+// requestCommands is the body of `ensign help requests`, about carrying out the requests that pipelines and extensions answer to; SessionStart prints only a pointer to that topic.
 func requestCommands(bridge string) string {
 	var lines []string
 	extra := extraHelp(bridge)
