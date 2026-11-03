@@ -506,31 +506,19 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 	c := &Config{Bridge: bridge, Project: t.Project, Task: t.Task, Bindings: map[string]Binding{},
 		Events: map[string][]Handler{}, needs: map[string]string{}}
 
-	bridgeFile := filepath.Join(bridge, "bridge.yaml")
-	bfp, err := loadBridgeFile(bridge)
+	bl, err := c.bridgeLayer(bridge)
 	if err != nil {
 		return nil, err
 	}
-	if c.ControlPlane, err = controlPlaneDir(bridge, bfp); err != nil {
-		return nil, err
-	}
-	layers := []layerEntry{{"bridge:" + relTo(bridge, bridgeFile), bridgeFile, bfp.Layer}}
+	layers := []layerEntry{bl}
 	name := t.Pipeline
 
-	var pf Layer
 	loadProject := func() error {
-		projectFile := filepath.Join(bridge, "projects", c.Project, "project.yaml")
-		if err := readYAML(projectFile, &pf); err != nil {
-			return fmt.Errorf("project %q: %v", c.Project, err)
-		}
-		layers = append(layers, layerEntry{"project:" + relTo(bridge, projectFile), projectFile, pf})
-		if c.Locations, err = loadLocations(bridge, c.Project); err != nil {
+		pl, err := c.projectLayer(bridge)
+		if err != nil {
 			return err
 		}
-		c.Platforms = pf.Platforms
-		if pf.Journal.Commit == "off" {
-			c.JournalOff = pf.Journal.Reason
-		}
+		layers = append(layers, pl)
 		return nil
 	}
 
@@ -633,14 +621,13 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 	extensions := availableExtensions(bridge, c.ControlPlane)
 	for _, l := range layers {
 		for _, use := range l.layer.Use {
-			if contains(c.Extensions, use) {
+			b, err := c.enableExtension(l, use, extensions)
+			if err != nil {
+				return nil, err
+			}
+			if b == nil {
 				continue
 			}
-			b, ok := extensions[use]
-			if !ok {
-				return nil, fmt.Errorf("%s: no extension %q", l.label, use)
-			}
-			c.Extensions = append(c.Extensions, use)
 			label := "extension:" + use
 			if po, ok := b.Pipelines[name]; ok {
 				for i := range po.Ops {
@@ -649,13 +636,7 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 					}
 				}
 			}
-			c.addEvents(b.Events, label, b.dir)
-			for _, req := range b.RequiresBindings {
-				c.needs[req] = label
-			}
-			// An extension's bindings are defaults: the layer that uses it, and any
-			// later layer, can replace them.
-			if err := c.addBindings(&b.Bindings, label); err != nil {
+			if err := c.mergeExtension(b, label); err != nil {
 				return nil, err
 			}
 		}
@@ -676,6 +657,97 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 	}
 	if t.WithSides {
 		if err := c.loadSides(bridge, layers, extensions, t.Sides); err != nil {
+			return nil, err
+		}
+	}
+	return c, nil
+}
+
+// bridgeLayer loads bridge.yaml and the control plane it names, and returns the bridge's layer.
+func (c *Config) bridgeLayer(bridge string) (layerEntry, error) {
+	bridgeFile := filepath.Join(bridge, "bridge.yaml")
+	bfp, err := loadBridgeFile(bridge)
+	if err != nil {
+		return layerEntry{}, err
+	}
+	if c.ControlPlane, err = controlPlaneDir(bridge, bfp); err != nil {
+		return layerEntry{}, err
+	}
+	return layerEntry{"bridge:" + relTo(bridge, bridgeFile), bridgeFile, bfp.Layer}, nil
+}
+
+// projectLayer loads c.Project's project.yaml, sets the project's locations, platforms and journal setting, and returns the project's layer.
+func (c *Config) projectLayer(bridge string) (layerEntry, error) {
+	var pf Layer
+	projectFile := filepath.Join(bridge, "projects", c.Project, "project.yaml")
+	if err := readYAML(projectFile, &pf); err != nil {
+		return layerEntry{}, fmt.Errorf("project %q: %v", c.Project, err)
+	}
+	var err error
+	if c.Locations, err = loadLocations(bridge, c.Project); err != nil {
+		return layerEntry{}, err
+	}
+	c.Platforms = pf.Platforms
+	if pf.Journal.Commit == "off" {
+		c.JournalOff = pf.Journal.Reason
+	}
+	return layerEntry{"project:" + relTo(bridge, projectFile), projectFile, pf}, nil
+}
+
+// enableExtension records that layer l uses an extension. It returns nil if an earlier layer already enabled it.
+func (c *Config) enableExtension(l layerEntry, use string, extensions map[string]*Extension) (*Extension, error) {
+	if contains(c.Extensions, use) {
+		return nil, nil
+	}
+	b, ok := extensions[use]
+	if !ok {
+		return nil, fmt.Errorf("%s: no extension %q", l.label, use)
+	}
+	c.Extensions = append(c.Extensions, use)
+	return b, nil
+}
+
+// mergeExtension adds an extension's events, needs and bindings. Its bindings are defaults: the layer that uses it, and any later layer, can replace them.
+func (c *Config) mergeExtension(b *Extension, label string) error {
+	c.addEvents(b.Events, label, b.dir)
+	for _, req := range b.RequiresBindings {
+		c.needs[req] = label
+	}
+	return c.addBindings(&b.Bindings, label)
+}
+
+// loadProjectBindings merges the bindings of the layers that apply to a project, with no task or pipeline: bridge, project, then the location's layer when location is not empty. Extensions merge as in loadTarget.
+func loadProjectBindings(bridge, project, location string) (*Config, error) {
+	c := &Config{Bridge: bridge, Project: project, Bindings: map[string]Binding{},
+		Events: map[string][]Handler{}, needs: map[string]string{}}
+	bl, err := c.bridgeLayer(bridge)
+	if err != nil {
+		return nil, err
+	}
+	pl, err := c.projectLayer(bridge)
+	if err != nil {
+		return nil, err
+	}
+	layers := []layerEntry{bl, pl}
+	if location != "" {
+		c.Location = location
+		layers = append(layers, c.locationLayer(bridge))
+	}
+	extensions := availableExtensions(bridge, c.ControlPlane)
+	for _, l := range layers {
+		for _, use := range l.layer.Use {
+			b, err := c.enableExtension(l, use, extensions)
+			if err != nil {
+				return nil, err
+			}
+			if b == nil {
+				continue
+			}
+			if err := c.mergeExtension(b, "extension:"+use); err != nil {
+				return nil, err
+			}
+		}
+		if err := c.addBindings(&l.layer.Bindings, l.label); err != nil {
 			return nil, err
 		}
 	}

@@ -1045,3 +1045,54 @@ func TestSequenceListingKeepsApprovedHalted(t *testing.T) {
 		t.Fatalf("an approved halted sequence with open steps should be listed, a closed one not:\n%s", out)
 	}
 }
+
+// bridgeRelease adds a @release to bridge.yaml that records its tag and $VERSION in the workspace.
+func bridgeRelease(t *testing.T, w *world, tag string) {
+	t.Helper()
+	path := filepath.Join(w.bridge, "bridge.yaml")
+	base, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, string(base)+"bindings:\n  release: { command: \"echo "+tag+" $VERSION >> released.txt\" }\n")
+}
+
+func TestSequenceReleaseFromTheBridge(t *testing.T) {
+	w := newWorld(t)
+	bridgeRelease(t, w, "bridge")
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.goContext()
+	w.mustSeq("release-run", "1")
+	if got := w.released(); got != "bridge 1.0.0" {
+		t.Errorf("the bridge's @release should run, got %q", got)
+	}
+}
+
+func TestSequenceReleaseProjectOverridesBridge(t *testing.T) {
+	w := releaseWorld(t, 0)
+	bridgeRelease(t, w, "bridge")
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.goContext()
+	w.mustSeq("release-run", "1")
+	if got := w.released(); got != "1.0.0" {
+		t.Errorf("the project's @release should win over the bridge's, got %q", got)
+	}
+}
+
+func TestSequenceReleaseFromAnExtension(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "extensions", "shipper", "extension.yaml"),
+		"name: shipper\nbindings:\n  release: { command: \"echo shipper $VERSION >> released.txt\" }\n")
+	path := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	base, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, "use: [shipper]\n"+string(base))
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.goContext()
+	w.mustSeq("release-run", "1")
+	if got := w.released(); got != "shipper 1.0.0" {
+		t.Errorf("the extension's @release should run, got %q", got)
+	}
+}

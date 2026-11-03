@@ -999,24 +999,13 @@ func carrySequence(bridge, old, session string) error {
 
 // releaseCommand finds a project's @release command and the folder it runs in: the project's workspace, or the folder of the location asked for (the project's only one if none is asked for), whose bindings add to the project's.
 func releaseCommand(bridge, project, location string) (cmd, workspace string, err error) {
-	var l Layer
-	if err := readYAML(filepath.Join(bridge, "projects", project, "project.yaml"), &l); err != nil {
-		return "", "", fmt.Errorf("project %q: %v", project, err)
-	}
-	c := &Config{Project: project, Bindings: map[string]Binding{}}
-	if err := c.addBindings(&l.Bindings, "project "+project); err != nil {
-		return "", "", err
-	}
-	location, workspace, locs, err := projectLocation(bridge, project, location)
+	location, workspace, _, err = projectLocation(bridge, project, location)
 	if err != nil {
 		return "", "", err
 	}
-	if location != "" {
-		c.Locations, c.Location = locs, location
-		le := c.locationLayer(bridge)
-		if err := c.addBindings(&le.layer.Bindings, le.label); err != nil {
-			return "", "", err
-		}
+	c, err := loadProjectBindings(bridge, project, location)
+	if err != nil {
+		return "", "", err
 	}
 	b := c.Bindings["release"]
 	if b.Command == "" || b.NotApplicable != "" {
