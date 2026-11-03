@@ -670,7 +670,7 @@ func TestSequenceReleaseInALocation(t *testing.T) {
 	}
 	w.mustSeq("release", "supernova", "1.0.1", "--location", "server")
 	w.goContext()
-	w.mustSeq("release-run", "2")
+	w.mustSeq("release-run", "2.1")
 	if got := w.releasedIn("server"); got != "project 1.0.1" {
 		t.Errorf("server released.txt = %q, want the project's @release", got)
 	}

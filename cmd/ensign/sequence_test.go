@@ -34,11 +34,14 @@ func (w *world) mustSeq(args ...string) string {
 
 func (w *world) step(n int) *seqStep {
 	w.t.Helper()
-	_, st := readSeq(w.bridge, w.sid).step(n)
-	if st == nil {
-		w.t.Fatalf("no step %d", n)
+	for _, seq := range readSeq(w.bridge, w.sid).Sequences {
+		if n <= len(seq.Steps) {
+			return seq.Steps[n-1]
+		}
+		n -= len(seq.Steps)
 	}
-	return st
+	w.t.Fatalf("no step %d", n)
+	return nil
 }
 
 func (w *world) wantStatus(want ...string) {
@@ -206,7 +209,7 @@ func TestSequenceKeepGoingSkipsLaterStepsOfTheFailedTask(t *testing.T) {
 	w.wantStatus("decide", "pending", "pending", "pending")
 	w.mustSeq("accept", "1")
 	w.wantStatus("failed", "skipped", "active", "pending")
-	if r := w.step(2).Reason; !strings.Contains(r, "step 1 failed") {
+	if r := w.step(2).Reason; !strings.Contains(r, "step 1.1 failed") {
 		t.Errorf("the skip should name the failed step: %q", r)
 	}
 	if skipped := w.runState(w.step(2).Run); !skipped.terminal() {
@@ -243,7 +246,7 @@ func TestSequenceDoStepWaitsForDoneOrFail(t *testing.T) {
 	w.mustSeq("do", "update the changelog")
 	w.mustSeq("do", "tell the user")
 	ctx := w.goContext()
-	if !strings.Contains(ctx, "update the changelog") || !strings.Contains(ctx, "ensign sequence done 1") {
+	if !strings.Contains(ctx, "update the changelog") || !strings.Contains(ctx, "ensign sequence done 1.1") {
 		t.Fatalf("go should hand over the do step: %s", ctx)
 	}
 	w.wantStatus("active", "pending")
@@ -735,12 +738,12 @@ func TestSequenceStopHookDoesNotBlockOnceReleaseStarted(t *testing.T) {
 	w := releaseWorld(t, 0)
 	w.mustSeq("release", "supernova", "1.0.0")
 	w.goContext()
-	_, st := readSeq(w.bridge, w.sid).step(1)
+	_, st := readSeq(w.bridge, w.sid).step(1, 1)
 	if st.Started {
 		t.Fatal("not started yet")
 	}
 	withSeq(w.bridge, w.sid, func(sf *seqFile) error {
-		_, st := sf.step(1)
+		_, st := sf.step(1, 1)
 		st.Started = true
 		return nil
 	})
@@ -822,7 +825,7 @@ func TestSequenceFailEndsStartedRelease(t *testing.T) {
 	w.mustSeq("do", "later")
 	w.goContext()
 	withSeq(w.bridge, w.sid, func(sf *seqFile) error {
-		_, st := sf.step(1)
+		_, st := sf.step(1, 1)
 		st.Started = true
 		return nil
 	})
@@ -849,10 +852,10 @@ func TestSequenceReleaseResultFollowsCarriedSequence(t *testing.T) {
 	w.goContext()
 	w.mustSeq("release-run", "1")
 	sf := readSeq(w.bridge, "other")
-	if _, st := sf.step(1); st == nil || st.Status != "done" {
+	if _, st := sf.step(1, 1); st == nil || st.Status != "done" {
 		t.Fatalf("the new owner should hold the finished release: %+v", sf)
 	}
-	if _, st := sf.step(2); st == nil || st.Status != "active" {
+	if _, st := sf.step(1, 2); st == nil || st.Status != "active" {
 		t.Errorf("the new owner should have advanced: %+v", sf)
 	}
 }
@@ -1002,7 +1005,7 @@ func TestSequenceListingShowsOnlyOpenSequences(t *testing.T) {
 	for i := 1; i <= 12; i++ {
 		w.mustSeq("do", "tell the user about supernova")
 		w.approve()
-		w.mustSeq("done", strconv.Itoa(i))
+		w.mustSeq("done", strconv.Itoa(i)+".1")
 	}
 	w.mustSeq("do", "next supernova chore")
 	ctx := w.goContext()
@@ -1095,4 +1098,141 @@ func TestSequenceReleaseFromAnExtension(t *testing.T) {
 	if got := w.released(); got != "shipper 1.0.0" {
 		t.Errorf("the extension's @release should run, got %q", got)
 	}
+}
+
+func TestSequenceStepsNumberFromOneInEachSequence(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "first supernova chore")
+	w.approve()
+	w.mustSeq("done", "1")
+	out := w.mustSeq("do", "second supernova chore")
+	if !strings.Contains(out, "sequence 2 (mode") || !strings.Contains(out, "  1  do") {
+		t.Fatalf("the second sequence should number its first step 1:\n%s", out)
+	}
+	ctx := w.goContext()
+	if !strings.Contains(ctx, "step 2.1:") || !strings.Contains(ctx, "ensign sequence done 2.1") {
+		t.Fatalf("text outside the listing should name the step <seq>.<step>:\n%s", ctx)
+	}
+	w.mustSeq("done", "1") // the only open sequence is the second
+	w.wantStatus("done", "done")
+}
+
+func TestSequenceStepAddressedBySequenceAndStep(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "first supernova chore", "--name", "hygiene fixes")
+	w.mustSeq("do", "second supernova chore")
+	w.approve()
+	w.mustSeq("do", "third supernova chore", "--name", "docs pass")
+	w.wantStatus("active", "pending", "pending")
+
+	_, err := w.seq("done", "1")
+	if err == nil || !strings.Contains(err.Error(), `sequence 1 "hygiene fixes"`) || !strings.Contains(err.Error(), `sequence 2 "docs pass"`) || !strings.Contains(err.Error(), "<seq>.<step>") {
+		t.Fatalf("a plain number with two open sequences should be refused, naming them: %v", err)
+	}
+	w.wantStatus("active", "pending", "pending")
+	if _, err := w.seq("done", "2.1"); err == nil {
+		t.Error("a pending step can't be marked done")
+	}
+	if _, err := w.seq("done", "9.1"); err == nil || !strings.Contains(err.Error(), "no sequence 9") {
+		t.Errorf("an unknown sequence should be named: %v", err)
+	}
+	if _, err := w.seq("done", "1.9"); err == nil || !strings.Contains(err.Error(), "no step 9") {
+		t.Errorf("an unknown step should be named: %v", err)
+	}
+	if _, err := w.seq("done", "x.1"); err == nil {
+		t.Error("a malformed step should be refused")
+	}
+	w.mustSeq("done", "1.1")
+	w.wantStatus("done", "active", "pending")
+}
+
+func TestSequencePlainStepNeedsAnOpenSequence(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "supernova chore")
+	w.approve()
+	w.mustSeq("done", "1")
+	_, err := w.seq("done", "1")
+	if err == nil || !strings.Contains(err.Error(), "<seq>.<step>") {
+		t.Errorf("with no open sequence a plain number should ask for <seq>.<step>: %v", err)
+	}
+}
+
+func TestSequenceFileWithSessionWideStepNumbersStillWorks(t *testing.T) {
+	w := newWorld(t)
+	old := `{"next_step":4,"sequences":[` +
+		`{"n":1,"mode":"stop","approved":true,"closed":true,"steps":[` +
+		`{"n":1,"kind":"do","instruction":"old supernova chore","status":"done"},` +
+		`{"n":2,"kind":"do","instruction":"older supernova chore","status":"done"}]},` +
+		`{"n":2,"mode":"stop","approved":true,"steps":[` +
+		`{"n":3,"kind":"do","instruction":"current supernova chore","status":"active"},` +
+		`{"n":4,"kind":"do","instruction":"later supernova chore","status":"pending"}]}]}`
+	write(t, seqPath(w.bridge, w.sid), old)
+	out := w.mustSeq()
+	if !strings.Contains(out, "  1  do      current supernova chore") || !strings.Contains(out, "  2  do      later supernova chore") {
+		t.Fatalf("the listing should renumber the steps from 1:\n%s", out)
+	}
+	if _, err := w.seq("done", "2.2"); err == nil {
+		t.Error("a pending step can't be marked done")
+	}
+	w.mustSeq("done", "2.1")
+	w.wantStatus("done", "done", "done", "active")
+	data, err := os.ReadFile(seqPath(w.bridge, w.sid))
+	if err != nil || strings.Contains(string(data), "next_step") {
+		t.Errorf("the rewritten file should not carry next_step: %v\n%s", err, data)
+	}
+}
+
+func TestSequenceNameShowsWhereTheSequenceNumberDoes(t *testing.T) {
+	w := newWorld(t)
+	out := w.mustSeq("do", "first supernova chore", "--name", "  hygiene fixes ")
+	if !strings.Contains(out, `sequence 1 "hygiene fixes" (mode stop, not approved yet)`) {
+		t.Fatalf("the listing header should carry the name:\n%s", out)
+	}
+	if ctx := w.goContext(); !strings.Contains(ctx, `sequence 1 "hygiene fixes" approved (1 steps).`) {
+		t.Fatalf("the approval should carry the name:\n%s", ctx)
+	}
+	out = w.mustSeq("done", "1")
+	if !strings.Contains(out, `sequence 1 "hygiene fixes" finished.`) {
+		t.Errorf("the finish message should carry the name:\n%s", out)
+	}
+	w.mustSeq("do", "second supernova chore", "--name", "docs pass")
+	w.approve()
+	if out := w.mustSeq("halt", "--reason", "enough"); !strings.Contains(out, `sequence 2 "docs pass" halted: enough`) {
+		t.Errorf("the halt message should carry the name:\n%s", out)
+	}
+	out = w.mustSeq("do", "third supernova chore")
+	if !strings.Contains(out, "sequence 3 (mode stop, not approved yet)") || strings.Contains(out, `sequence 3 "`) {
+		t.Errorf("an unnamed sequence should read as before:\n%s", out)
+	}
+	if ctx := w.goContext(); !strings.Contains(ctx, "sequence 3 approved (1 steps).") {
+		t.Errorf("an unnamed approval should read as before:\n%s", ctx)
+	}
+}
+
+func TestSequenceNameBelongsToTheFirstStep(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "first supernova chore")
+	_, err := w.seq("do", "second supernova chore", "--name", "hygiene fixes")
+	if err == nil || !strings.Contains(err.Error(), "first step") {
+		t.Fatalf("a name on a step that joins a sequence should be refused: %v", err)
+	}
+	if sf := readSeq(w.bridge, w.sid); len(sf.Sequences[0].Steps) != 1 || sf.Sequences[0].Name != "" {
+		t.Errorf("the refused step must not be added: %+v", sf.Sequences[0])
+	}
+}
+
+func TestSequenceNameIsValidated(t *testing.T) {
+	w := newWorld(t)
+	for _, name := range []string{"", "   ", `say "hi"`, "two\nlines", strings.Repeat("x", 61)} {
+		if _, err := w.seq("do", "supernova chore", "--name", name); err == nil {
+			t.Errorf("name %q should be refused", name)
+		}
+	}
+	if _, err := w.seq("do", "supernova chore", "--name"); err == nil {
+		t.Error("--name without a value should be refused")
+	}
+	if sf := readSeq(w.bridge, w.sid); len(sf.Sequences) != 0 {
+		t.Errorf("a refused name must not start a sequence: %+v", sf)
+	}
+	w.mustSeq("do", "supernova chore", "--name", strings.Repeat("x", 60))
 }

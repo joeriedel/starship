@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofrs/flock"
 )
@@ -26,10 +27,13 @@ const (
 	modeKeepGoing = "keep-going"
 	// seqStopBudget is how many times the Stop hook holds a turn open for one waiting step.
 	seqStopBudget = 3
+	// maxSeqName is the longest name a sequence may have, in characters.
+	maxSeqName = 60
 )
 
 type seqStep struct {
-	N           int       `json:"n"`
+	N           int       `json:"n"`    // counts from 1 within its sequence
+	Seq         int       `json:"-"`    // the number of its sequence, set when the file is read
 	Kind        string    `json:"kind"` // run, publish, do, release
 	Task        string    `json:"task,omitempty"`
 	Run         string    `json:"run,omitempty"`     // the first of Runs, kept so a sequence file written before groups still loads
@@ -88,6 +92,7 @@ func newRunStep(task string, group int, snaps []*Snapshot) *seqStep {
 
 type sequence struct {
 	N        int        `json:"n"`
+	Name     string     `json:"name,omitempty"` // what the sequence is for; display only
 	Mode     string     `json:"mode"`
 	Approved bool       `json:"approved"`
 	Halted   bool       `json:"halted,omitempty"`
@@ -97,7 +102,7 @@ type sequence struct {
 }
 
 type seqFile struct {
-	NextStep  int         `json:"next_step"`
+	NextStep  int         `json:"next_step,omitempty"` // only in files written when steps were numbered across the session
 	Sequences []*sequence `json:"sequences"`
 }
 
@@ -126,6 +131,7 @@ func withSeq(bridge, session string, fn func(sf *seqFile) error) error {
 	if err := readJSON(path, sf); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
+	sf.normalize()
 	if err := fn(sf); err != nil {
 		return err
 	}
@@ -141,8 +147,30 @@ func readSeq(bridge, session string) *seqFile {
 	if session != "" {
 		readJSON(seqPath(bridge, session), sf)
 	}
+	sf.normalize()
 	return sf
 }
+
+// normalize numbers each sequence's steps from 1 in their stored order, which also converts a file written when steps were numbered across the session, and tells each step its sequence.
+func (sf *seqFile) normalize() {
+	for _, seq := range sf.Sequences {
+		for i, st := range seq.Steps {
+			st.N, st.Seq = i+1, seq.N
+		}
+	}
+	sf.NextStep = 0
+}
+
+// label names a sequence in text for the session: its number, then its name when it has one.
+func (s *sequence) label() string {
+	if s.Name == "" {
+		return fmt.Sprintf("sequence %d", s.N)
+	}
+	return fmt.Sprintf("sequence %d \"%s\"", s.N, s.Name)
+}
+
+// ref is how text outside a sequence's own listing names a step: <sequence>.<step>.
+func (s *seqStep) ref() string { return fmt.Sprintf("%d.%d", s.Seq, s.N) }
 
 // sequenceUnfinished reports whether the session has a step that has not finished.
 func sequenceUnfinished(bridge, session string) bool {
@@ -204,26 +232,75 @@ func (sf *seqFile) openSeq() *sequence {
 	return nil
 }
 
-func (sf *seqFile) step(n int) (*sequence, *seqStep) {
+func (sf *seqFile) step(seqN, n int) (*sequence, *seqStep) {
 	for _, seq := range sf.Sequences {
+		if seq.N != seqN {
+			continue
+		}
 		for _, st := range seq.Steps {
 			if st.N == n {
 				return seq, st
 			}
 		}
+		return seq, nil
 	}
 	return nil, nil
 }
 
-// add appends a step to the open sequence, starting one if the newest is approved or halted.
-func (sf *seqFile) add(st *seqStep) {
+// stepRef finds the step a command names: <seq>.<step>, or a plain <step> when exactly one sequence is open.
+func (sf *seqFile) stepRef(arg string) (*sequence, *seqStep, error) {
+	seqPart, stepPart, dotted := strings.Cut(arg, ".")
+	if !dotted {
+		stepPart = arg
+	}
+	n, err := strconv.Atoi(stepPart)
+	seqN := 0
+	if dotted && err == nil {
+		seqN, err = strconv.Atoi(seqPart)
+	}
+	if err != nil || n < 1 || (dotted && seqN < 1) {
+		return nil, nil, fmt.Errorf("%q is not a step; write <seq>.<step>, for example 2.3", arg)
+	}
+	if !dotted {
+		var open []*sequence
+		for _, seq := range sf.Sequences {
+			if sf.isOpen(seq) {
+				open = append(open, seq)
+			}
+		}
+		switch len(open) {
+		case 0:
+			return nil, nil, fmt.Errorf("no sequence is open, so step %d is ambiguous; write <seq>.<step>, for example 2.%d (`ensign sequence --all` lists every sequence)", n, n)
+		case 1:
+			seqN = open[0].N
+		default:
+			var names []string
+			for _, seq := range open {
+				names = append(names, seq.label())
+			}
+			return nil, nil, fmt.Errorf("%d sequences are open (%s), so step %d is ambiguous; write <seq>.<step>, for example %d.%d", len(open), strings.Join(names, ", "), n, open[0].N, n)
+		}
+	}
+	seq, st := sf.step(seqN, n)
+	switch {
+	case seq == nil && dotted:
+		return nil, nil, fmt.Errorf("there is no sequence %d", seqN)
+	case seq == nil:
+		return nil, nil, fmt.Errorf("there is no step %d", n)
+	case st == nil:
+		return nil, nil, fmt.Errorf("%s has no step %d", seq.label(), n)
+	}
+	return seq, st, nil
+}
+
+// add appends a step to the open sequence, starting one with the given name if the newest is approved or halted.
+func (sf *seqFile) add(st *seqStep, name string) {
 	seq := sf.openSeq()
 	if seq == nil {
-		seq = &sequence{N: len(sf.Sequences) + 1, Mode: modeStop}
+		seq = &sequence{N: len(sf.Sequences) + 1, Mode: modeStop, Name: name}
 		sf.Sequences = append(sf.Sequences, seq)
 	}
-	sf.NextStep++
-	st.N, st.Status = sf.NextStep, "pending"
+	st.Seq, st.N, st.Status = seq.N, len(seq.Steps)+1, "pending"
 	seq.Steps = append(seq.Steps, st)
 }
 
@@ -251,7 +328,7 @@ func (sf *seqFile) render(bridge string, all bool) string {
 		if seq.Halted {
 			state += ", halted: " + seq.Reason
 		}
-		fmt.Fprintf(&b, "sequence %d (mode %s, %s)\n", seq.N, seq.Mode, state)
+		fmt.Fprintf(&b, "%s (mode %s, %s)\n", seq.label(), seq.Mode, state)
 		for _, st := range seq.Steps {
 			what := st.Task
 			switch st.Kind {
@@ -564,7 +641,7 @@ func (sf *seqFile) nextSubtaskGroup(bridge string, seq *sequence, st *seqStep, d
 
 // failed applies the failure rules for a step that has just failed.
 func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
-	why := fmt.Sprintf("step %d failed", failed.N)
+	why := fmt.Sprintf("step %s failed", failed.ref())
 	if seq.Mode == modeKeepGoing {
 		for _, st := range seq.Steps {
 			if st.Status == "pending" && failed.Task != "" && (st.Task == failed.Task ||
@@ -647,7 +724,7 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 					}
 					texts, _, _ := startRuns(bridge, session, st)
 					for _, t := range texts {
-						parts = append(parts, fmt.Sprintf("step %d: %s", st.N, t))
+						parts = append(parts, fmt.Sprintf("step %s: %s", st.ref(), t))
 					}
 				}
 			}
@@ -658,9 +735,9 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 			if st == nil {
 				seq.Closed = true
 				if seq.Halted {
-					parts = append(parts, fmt.Sprintf("sequence %d halted: %s", seq.N, seq.Reason))
+					parts = append(parts, fmt.Sprintf("%s halted: %s", seq.label(), seq.Reason))
 				} else {
-					parts = append(parts, fmt.Sprintf("sequence %d finished.", seq.N))
+					parts = append(parts, fmt.Sprintf("%s finished.", seq.label()))
 				}
 				break
 			}
@@ -670,13 +747,13 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 				switch {
 				case len(texts) > 0:
 					st.Status, st.Reason = "active", ""
-					parts = append(parts, fmt.Sprintf("step %d: %s", st.N, strings.Join(texts, "\n\n")))
+					parts = append(parts, fmt.Sprintf("step %s: %s", st.ref(), strings.Join(texts, "\n\n")))
 					if busy != nil {
-						parts = append(parts, fmt.Sprintf("step %d: another run of it can't start yet: %v", st.N, busy))
+						parts = append(parts, fmt.Sprintf("step %s: another run of it can't start yet: %v", st.ref(), busy))
 					}
 				case busy != nil:
 					st.Reason = "waiting: " + busy.Error()
-					parts = append(parts, fmt.Sprintf("step %d can't start yet: %v", st.N, busy))
+					parts = append(parts, fmt.Sprintf("step %s can't start yet: %v", st.ref(), busy))
 				case err != nil:
 					st.Status, st.Reason = "failed", err.Error()
 					sf.failed(bridge, seq, st)
@@ -690,17 +767,17 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 				if err != nil {
 					st.Status, st.Reason = "failed", err.Error()
 					sf.failed(bridge, seq, st)
-					parts = append(parts, fmt.Sprintf("step %d (publish %s) failed: %v", st.N, st.Task, err))
+					parts = append(parts, fmt.Sprintf("step %s (publish %s) failed: %v", st.ref(), st.Task, err))
 					continue
 				}
 				st.Status, st.Reason = "done", out
 			case "do":
 				st.Status = "active"
-				parts = append(parts, fmt.Sprintf("step %d: %s", st.N, doText(st)))
+				parts = append(parts, fmt.Sprintf("step %s: %s", st.ref(), doText(st)))
 				return finish(), nil
 			case "release":
 				st.Status = "active"
-				parts = append(parts, fmt.Sprintf("step %d: %s", st.N, releaseText(st)))
+				parts = append(parts, fmt.Sprintf("step %s: %s", st.ref(), releaseText(st)))
 				return finish(), nil
 			}
 		}
@@ -709,18 +786,18 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 }
 
 func doText(st *seqStep) string {
-	return fmt.Sprintf("%s\nWhen it is done run `ensign sequence done %d`, or `ensign sequence fail %d --reason …` if it can't be.",
-		st.Instruction, st.N, st.N)
+	return fmt.Sprintf("%s\nWhen it is done run `ensign sequence done %s`, or `ensign sequence fail %s --reason …` if it can't be.",
+		st.Instruction, st.ref(), st.ref())
 }
 
 func releaseText(st *seqStep) string {
-	return fmt.Sprintf("Release %s %s. Start `ensign sequence release-run %d` as a background shell command (Bash with run_in_background), wait for its completion notification without polling, then report the outcome. If the command dies without finishing, run `ensign sequence fail %d --reason …`.",
-		st.Task, st.Version, st.N, st.N)
+	return fmt.Sprintf("Release %s %s. Start `ensign sequence release-run %s` as a background shell command (Bash with run_in_background), wait for its completion notification without polling, then report the outcome. If the command dies without finishing, run `ensign sequence fail %s --reason …`.",
+		st.Task, st.Version, st.ref(), st.ref())
 }
 
 func decideText(st *seqStep) string {
-	return fmt.Sprintf("Its run failed: %s\nRetry once only for a diagnosed, small, fixable cause: `ensign sequence retry %d --diagnosis \"<why it failed>\" --state \"<what is left>\"`. Otherwise `ensign sequence accept %d`.",
-		firstLine(st.Reason), st.N, st.N)
+	return fmt.Sprintf("Its run failed: %s\nRetry once only for a diagnosed, small, fixable cause: `ensign sequence retry %s --diagnosis \"<why it failed>\" --state \"<what is left>\"`. Otherwise `ensign sequence accept %s`.",
+		firstLine(st.Reason), st.ref(), st.ref())
 }
 
 // startRuns starts the queued runs of a step's group, each in its own code folder. It returns what the session does next for each run it started, the first folder-busy error of a run that must wait for a later advance, and the first other error; a run that fails to start is retired.
@@ -860,7 +937,7 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 			return nil
 		}
 		ok, seq.Approved = true, true
-		text = fmt.Sprintf("sequence %d approved (%d steps). ", seq.N, len(seq.Steps))
+		text = fmt.Sprintf("%s approved (%d steps). ", seq.label(), len(seq.Steps))
 		adv, err := sf.advance(bridge, session)
 		if adv == "" {
 			adv = "It starts when the step in progress finishes.\n\n" + sf.listing(bridge)
@@ -875,11 +952,11 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 func waitingText(st *seqStep) string {
 	var lines []string
 	if strings.HasPrefix(st.Reason, "waiting:") {
-		lines = append(lines, fmt.Sprintf("Step %d is %s", st.N, st.Reason))
+		lines = append(lines, fmt.Sprintf("Step %s is %s", st.ref(), st.Reason))
 	}
 	for _, ru := range st.runs() {
 		if strings.HasPrefix(ru.Reason, "waiting:") && ru.Reason != st.Reason {
-			lines = append(lines, fmt.Sprintf("Step %d, run %s, is %s", st.N, ru.Run, ru.Reason))
+			lines = append(lines, fmt.Sprintf("Step %s, run %s, is %s", st.ref(), ru.Run, ru.Reason))
 		}
 	}
 	if len(lines) == 0 {
@@ -944,7 +1021,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 				*blocks++
 				// adv repeats this step's lead, wait or work text, which todo already carries.
 				tail := adv
-				for _, p := range []string{fmt.Sprintf("step %d: ", st.N), fmt.Sprintf("step %d can't start yet", st.N)} {
+				for _, p := range []string{fmt.Sprintf("step %s: ", st.ref()), fmt.Sprintf("step %s can't start yet", st.ref())} {
 					if strings.HasPrefix(adv, p) || strings.Contains(adv, "\n"+p) {
 						tail = ""
 					}
@@ -952,7 +1029,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 				if tail == "" {
 					tail = sf.listing(bridge)
 				}
-				out = block(fmt.Sprintf("sequence step %d is waiting for you.\n\n%s\n\n%s%s\n\nSequence rules: `ensign help sequence`.", st.N, todo, tail, advNote))
+				out = block(fmt.Sprintf("sequence step %s is waiting for you.\n\n%s\n\n%s%s\n\nSequence rules: `ensign help sequence`.", st.ref(), todo, tail, advNote))
 				return nil
 			}
 		}
@@ -1015,13 +1092,17 @@ func releaseCommand(bridge, project, location string) (cmd, workspace string, er
 }
 
 // releaseRun runs the project's @release command for the release step that is due. The command runs without the sequence lock and without a time limit; the step is marked started first so the Stop hook doesn't ask for a second start.
-func releaseRun(bridge, session string, n int, out io.Writer) error {
-	var project, version, location string
+func releaseRun(bridge, session, arg string, out io.Writer) error {
+	var project, version, location, ref string
 	token := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
 	err := withSeq(bridge, session, func(sf *seqFile) error {
-		_, st := sf.step(n)
-		if st == nil || st.Kind != "release" || st.Status != "active" || st.Started {
-			return fmt.Errorf("step %d is not a release step that is due", n)
+		_, st, err := sf.stepRef(arg)
+		if err != nil {
+			return err
+		}
+		ref = st.ref()
+		if st.Kind != "release" || st.Status != "active" || st.Started {
+			return fmt.Errorf("step %s is not a release step that is due", ref)
 		}
 		st.Started, st.Token = true, token
 		project, version, location = st.Task, st.Version, st.Location
@@ -1055,17 +1136,17 @@ func releaseRun(bridge, session string, n int, out io.Writer) error {
 			}
 			found = true
 			if st.Status != "active" {
-				fmt.Fprintf(out, "step %d is %s; the release command ended with: %v\n", st.N, st.Status, err)
+				fmt.Fprintf(out, "step %s is %s; the release command ended with: %v\n", st.ref(), st.Status, err)
 				return nil
 			}
 			var note string
 			if err != nil {
 				st.Status, st.Reason = "failed", err.Error()
 				sf.failed(bridge, seq, st)
-				note = fmt.Sprintf("step %d (release %s %s) failed: %v", st.N, project, version, err)
+				note = fmt.Sprintf("step %s (release %s %s) failed: %v", st.ref(), project, version, err)
 			} else {
 				st.Status, st.Reason = "done", ""
-				note = fmt.Sprintf("step %d (release %s %s) done.", st.N, project, version)
+				note = fmt.Sprintf("step %s (release %s %s) done.", st.ref(), project, version)
 			}
 			text, aerr := sf.advance(bridge, owner)
 			if text == "" {
@@ -1094,8 +1175,8 @@ func releaseRun(bridge, session string, n int, out io.Writer) error {
 	if err != nil {
 		outcome = "failed: " + err.Error()
 	}
-	fmt.Fprintf(out, "step %d (release %s %s) %s\n", n, project, version, outcome)
-	return fmt.Errorf("step %d is no longer in any session's sequence; its release outcome was not recorded", n)
+	fmt.Fprintf(out, "step %s (release %s %s) %s\n", ref, project, version, outcome)
+	return fmt.Errorf("step %s is no longer in any session's sequence; its release outcome was not recorded", ref)
 }
 
 // cmdSequence implements `ensign sequence [run|publish|do|mode|halt|drop|done|fail …]`.
@@ -1130,6 +1211,12 @@ func cmdSequence(args []string, out io.Writer) error {
 		})
 	}
 	rest := args[1:]
+	var name string
+	if slices.Contains([]string{"run", "publish", "do", "release"}, args[0]) {
+		if name, rest, err = takeName(rest); err != nil {
+			return err
+		}
+	}
 	switch args[0] {
 	case "run":
 		o, err := parseRunArgs("ensign sequence run", rest)
@@ -1139,7 +1226,7 @@ func cmdSequence(args []string, out io.Writer) error {
 		if o.subtask != "" {
 			return fmt.Errorf("a sequence step names a task, never a subtask; its run starts with the task's next pending subtask")
 		}
-		if err := checkAddable(bridge, session); err != nil {
+		if err := checkAddable(bridge, session, name); err != nil {
 			return err
 		}
 		var group []subtask
@@ -1157,13 +1244,13 @@ func cmdSequence(args []string, out io.Writer) error {
 			if err != nil || snap == nil {
 				return err
 			}
-			return seqAdd(bridge, session, out, newRunStep(snap.Task, 0, []*Snapshot{snap}))
+			return seqAdd(bridge, session, out, name, newRunStep(snap.Task, 0, []*Snapshot{snap}))
 		}
 		snaps, err := createGroupRuns(bridge, o.task, group, nil, o.staleOK, &o, out)
 		if err != nil {
 			return err
 		}
-		return seqAdd(bridge, session, out, newRunStep(o.task, 1, snaps))
+		return seqAdd(bridge, session, out, name, newRunStep(o.task, 1, snaps))
 	case "publish":
 		if len(rest) != 1 {
 			return fmt.Errorf("usage: ensign sequence publish <project>/<task>")
@@ -1172,19 +1259,19 @@ func cmdSequence(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if err := checkAddable(bridge, session); err != nil {
+		if err := checkAddable(bridge, session, name); err != nil {
 			return err
 		}
-		return seqAdd(bridge, session, out, &seqStep{Kind: "publish", Task: rest[0], Command: cmd})
+		return seqAdd(bridge, session, out, name, &seqStep{Kind: "publish", Task: rest[0], Command: cmd})
 	case "do":
 		text := strings.TrimSpace(strings.Join(rest, " "))
 		if text == "" {
 			return fmt.Errorf("usage: ensign sequence do <instruction>")
 		}
-		if err := checkAddable(bridge, session); err != nil {
+		if err := checkAddable(bridge, session, name); err != nil {
 			return err
 		}
-		return seqAdd(bridge, session, out, &seqStep{Kind: "do", Instruction: text})
+		return seqAdd(bridge, session, out, name, &seqStep{Kind: "do", Instruction: text})
 	case "release":
 		var location string
 		if len(rest) == 4 && rest[2] == "--location" {
@@ -1196,16 +1283,15 @@ func cmdSequence(args []string, out io.Writer) error {
 		if _, _, err := releaseCommand(bridge, rest[0], location); err != nil {
 			return err
 		}
-		if err := checkAddable(bridge, session); err != nil {
+		if err := checkAddable(bridge, session, name); err != nil {
 			return err
 		}
-		return seqAdd(bridge, session, out, &seqStep{Kind: "release", Task: rest[0], Version: strings.TrimSpace(rest[1]), Location: location})
+		return seqAdd(bridge, session, out, name, &seqStep{Kind: "release", Task: rest[0], Version: strings.TrimSpace(rest[1]), Location: location})
 	case "release-run":
-		n, err := stepArg(rest, "usage: ensign sequence release-run <n>")
-		if err != nil {
-			return err
+		if len(rest) != 1 {
+			return errors.New("usage: ensign sequence release-run <seq>.<step>")
 		}
-		return releaseRun(bridge, session, n, out)
+		return releaseRun(bridge, session, rest[0], out)
 	case "mode":
 		if len(rest) != 1 || (rest[0] != modeStop && rest[0] != modeKeepGoing) {
 			return fmt.Errorf("usage: ensign sequence mode stop|keep-going")
@@ -1225,12 +1311,13 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		}
 		// A paused step's run may be held by a finishing hook, whose order is run then sequence; so its run is retired here between two holds of the sequence lock.
+		type stepKey struct{ seq, n int }
 		type pausedStep struct {
-			n    int
+			key  stepKey
 			runs []string
 		}
 		var paused []pausedStep
-		var haltedN int
+		var halted string
 		err = withSeq(bridge, session, func(sf *seqFile) error {
 			var cur *sequence
 			for _, seq := range sf.Sequences {
@@ -1249,12 +1336,12 @@ func cmdSequence(args []string, out io.Writer) error {
 				reason = "halted"
 			}
 			cur.Halted, cur.Reason = true, reason
-			haltedN = cur.N
+			halted = cur.label()
 			sf.reconcile(bridge)
 			for _, st := range cur.Steps {
 				switch {
 				case st.Status == "paused":
-					p := pausedStep{n: st.N}
+					p := pausedStep{key: stepKey{cur.N, st.N}}
 					for _, ru := range st.runs() {
 						p.runs = append(p.runs, ru.Run)
 					}
@@ -1282,22 +1369,22 @@ func cmdSequence(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		retired := map[int]bool{}
+		retired := map[stepKey]bool{}
 		for _, p := range paused {
-			retired[p.n] = true
+			retired[p.key] = true
 			for _, id := range p.runs {
 				// A run that is still going keeps its step paused; one that has finished does not.
 				if !retireIf(bridge, id, "cancelled: "+reason, "pending", "ask-user") {
 					if r, err := readRun(bridge, id); err == nil && !finishedRun(r.State) {
-						retired[p.n] = false
+						retired[p.key] = false
 					}
 				}
 			}
 		}
 		return withSeq(bridge, session, func(sf *seqFile) error {
-			for n, ok := range retired {
+			for k, ok := range retired {
 				// A run that was resumed meanwhile is left running; its step finishes like any active one.
-				if _, st := sf.step(n); ok && st != nil && st.Status == "paused" {
+				if _, st := sf.step(k.seq, k.n); ok && st != nil && st.Status == "paused" {
 					st.Status, st.Reason = "cancelled", reason
 				}
 			}
@@ -1305,7 +1392,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			if text != "" {
 				fmt.Fprintln(out, text)
 			} else {
-				fmt.Fprintf(out, "sequence %d halted: %s\n", haltedN, reason)
+				fmt.Fprintf(out, "%s halted: %s\n", halted, reason)
 				if l := sf.listing(bridge); l != "" {
 					fmt.Fprint(out, "\n"+l)
 				}
@@ -1313,8 +1400,8 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		})
 	case "drop":
-		const dropUsage = "usage: ensign sequence drop <n>... [--reason <text>]"
-		var ns []int
+		const dropUsage = "usage: ensign sequence drop <step>... [--reason <text>]"
+		var steps []string
 		reason := "dropped by the user"
 		for i := 0; i < len(rest); i++ {
 			if rest[i] == "--reason" {
@@ -1324,27 +1411,23 @@ func cmdSequence(args []string, out io.Writer) error {
 				reason = rest[i+1]
 				break
 			}
-			n, err := stepArg(rest[i:i+1], dropUsage)
-			if err != nil {
-				return err
-			}
-			ns = append(ns, n)
+			steps = append(steps, rest[i])
 		}
-		if len(ns) == 0 {
+		if len(steps) == 0 {
 			return errors.New(dropUsage)
 		}
 		return withSeq(bridge, session, func(sf *seqFile) error {
 			sf.reconcile(bridge)
 			drop := map[*seqStep]bool{}
-			for _, n := range ns {
-				seq, st := sf.step(n)
+			for _, arg := range steps {
+				seq, st, err := sf.stepRef(arg)
 				switch {
-				case st == nil:
-					return fmt.Errorf("there is no step %d", n)
+				case err != nil:
+					return err
 				case !seq.Approved || seq.Closed:
-					return fmt.Errorf("step %d is not in an approved, open sequence", n)
+					return fmt.Errorf("step %s is not in an approved, open sequence", st.ref())
 				case st.Status != "pending":
-					return fmt.Errorf("step %d is %s; only pending steps can be dropped", n, st.Status)
+					return fmt.Errorf("step %s is %s; only pending steps can be dropped", st.ref(), st.Status)
 				}
 				drop[st] = true
 				if st.Kind != "run" {
@@ -1371,14 +1454,16 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		})
 	case "accept":
-		n, err := stepArg(rest, "usage: ensign sequence accept <n>")
-		if err != nil {
-			return err
+		if len(rest) != 1 {
+			return errors.New("usage: ensign sequence accept <seq>.<step>")
 		}
 		return withSeq(bridge, session, func(sf *seqFile) error {
-			seq, st := sf.step(n)
-			if st == nil || !st.deciding() {
-				return fmt.Errorf("step %d is not waiting for a decision", n)
+			seq, st, err := sf.stepRef(rest[0])
+			if err != nil {
+				return err
+			}
+			if !st.deciding() {
+				return fmt.Errorf("step %s is not waiting for a decision", st.ref())
 			}
 			st.Status = "failed"
 			sf.failed(bridge, seq, st)
@@ -1390,13 +1475,9 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		})
 	case "retry":
-		usage := "usage: ensign sequence retry <n> --diagnosis <why it failed> --state <what is left>"
+		usage := "usage: ensign sequence retry <seq>.<step> --diagnosis <why it failed> --state <what is left>"
 		if len(rest) < 1 {
 			return errors.New(usage)
-		}
-		n, err := strconv.Atoi(rest[0])
-		if err != nil {
-			return fmt.Errorf("%q is not a step number", rest[0])
 		}
 		var diagnosis, left string
 		for i := 1; i < len(rest); i += 2 {
@@ -1413,18 +1494,19 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 		}
 		return withSeq(bridge, session, func(sf *seqFile) error {
-			seq, st := sf.step(n)
+			seq, st, err := sf.stepRef(rest[0])
+			if err != nil {
+				return err
+			}
 			switch {
-			case st == nil:
-				return fmt.Errorf("there is no step %d", n)
 			case seq.Halted:
-				return fmt.Errorf("the sequence is halted; step %d can't be retried", n)
+				return fmt.Errorf("the sequence is halted; step %s can't be retried", st.ref())
 			case st.Kind != "run":
-				return fmt.Errorf("step %d is a %s step; only run steps can be retried, not publish, do or release steps", n, st.Kind)
+				return fmt.Errorf("step %s is a %s step; only run steps can be retried, not publish, do or release steps", st.ref(), st.Kind)
 			case st.Prev != "":
-				return fmt.Errorf("step %d was already retried; a step gets one retry", n)
+				return fmt.Errorf("step %s was already retried; a step gets one retry", st.ref())
 			case !st.deciding():
-				return fmt.Errorf("step %d is not waiting for a decision (it is %s)", n, st.Status)
+				return fmt.Errorf("step %s is not waiting for a decision (it is %s)", st.ref(), st.Status)
 			case diagnosis == "":
 				return fmt.Errorf("ensign sequence retry needs --diagnosis <why it failed>")
 			case left == "":
@@ -1448,7 +1530,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				failed, fresh = append(failed, ru), append(fresh, snap)
 			}
 			if len(failed) == 0 {
-				return fmt.Errorf("step %d has no failed run to retry", n)
+				return fmt.Errorf("step %s has no failed run to retry", st.ref())
 			}
 			for i, ru := range failed {
 				*ru = seqRun{Run: fresh[i].Run, Subtask: fresh[i].Subtask, Location: fresh[i].Location, Prev: ru.Run, Status: "pending"}
@@ -1465,17 +1547,13 @@ func cmdSequence(args []string, out io.Writer) error {
 		})
 	case "done", "fail":
 		if len(rest) < 1 {
-			return fmt.Errorf("usage: ensign sequence done <n> [--note <text>] | fail <n> --reason <text>")
-		}
-		n, err := strconv.Atoi(rest[0])
-		if err != nil {
-			return fmt.Errorf("%q is not a step number", rest[0])
+			return fmt.Errorf("usage: ensign sequence done <seq>.<step> [--note <text>] | fail <seq>.<step> --reason <text>")
 		}
 		flag := "--note"
 		if args[0] == "fail" {
 			flag = "--reason"
 		}
-		why, err := flagValue(rest[1:], flag, "usage: ensign sequence done <n> [--note <text>] | fail <n> --reason <text>")
+		why, err := flagValue(rest[1:], flag, "usage: ensign sequence done <seq>.<step> [--note <text>] | fail <seq>.<step> --reason <text>")
 		if err != nil {
 			return err
 		}
@@ -1483,9 +1561,12 @@ func cmdSequence(args []string, out io.Writer) error {
 			return fmt.Errorf("ensign sequence fail needs --reason <text>")
 		}
 		return withSeq(bridge, session, func(sf *seqFile) error {
-			seq, st := sf.step(n)
-			if st == nil || st.Status != "active" || st.Kind != "do" && !(st.Kind == "release" && args[0] == "fail") {
-				return fmt.Errorf("step %d is not an active do step (or, for fail, an active release step)", n)
+			seq, st, err := sf.stepRef(rest[0])
+			if err != nil {
+				return err
+			}
+			if st.Status != "active" || st.Kind != "do" && !(st.Kind == "release" && args[0] == "fail") {
+				return fmt.Errorf("step %s is not an active do step (or, for fail, an active release step)", st.ref())
 			}
 			st.Reason = why
 			if args[0] == "done" {
@@ -1502,7 +1583,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		})
 	}
-	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <n> | do <instruction> | mode stop|keep-going | halt | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> | fail <n> --reason <text>]")
+	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <seq>.<step> | do <instruction> | mode stop|keep-going | halt | drop <step>... [--reason <text>] | retry <step> --diagnosis <why> --state <what is left> | accept <step> | done <step> | fail <step> --reason <text>]; add steps with --name <text> to name a new sequence]")
 }
 
 // retryRun queues a new run for a failed one, with the diagnosis in its work item.
@@ -1525,15 +1606,25 @@ func retryRun(bridge string, old *RunFiles, diagnosis, left string, out io.Write
 	return createRun(bridge, o, true, out)
 }
 
-func stepArg(args []string, usage string) (int, error) {
-	if len(args) != 1 {
-		return 0, errors.New(usage)
+// takeName removes a "--name <text>" pair from the arguments of a command that adds a step, and checks the name.
+func takeName(args []string) (string, []string, error) {
+	i := slices.Index(args, "--name")
+	if i < 0 {
+		return "", args, nil
 	}
-	n, err := strconv.Atoi(args[0])
-	if err != nil {
-		return 0, fmt.Errorf("%q is not a step number", args[0])
+	if i+1 >= len(args) {
+		return "", nil, errors.New("--name needs the sequence's name")
 	}
-	return n, nil
+	name := strings.TrimSpace(args[i+1])
+	switch {
+	case name == "":
+		return "", nil, errors.New("--name needs a name that is not empty")
+	case strings.ContainsAny(name, "\"\r\n"):
+		return "", nil, errors.New("a sequence name can't contain a double quote or a line break")
+	case utf8.RuneCountInString(name) > maxSeqName:
+		return "", nil, fmt.Errorf("a sequence name is at most %d characters; this one has %d", maxSeqName, utf8.RuneCountInString(name))
+	}
+	return name, slices.Delete(slices.Clone(args), i, i+2), nil
 }
 
 // flagValue reads one optional "--flag value" pair from args.
@@ -1547,8 +1638,14 @@ func flagValue(args []string, flag, usage string) (string, error) {
 	return "", errors.New(usage)
 }
 
+// errNameJoins refuses a name for a step that would join the sequence waiting for go.
+var errNameJoins = errors.New("--name can't be used here: the name is set by the sequence's first step, and this step joins the sequence already waiting for go")
+
 // checkAddable refuses to add steps while the session has a plain run under way.
-func checkAddable(bridge, session string) error {
+func checkAddable(bridge, session, name string) error {
+	if name != "" && readSeq(bridge, session).openSeq() != nil {
+		return errNameJoins
+	}
 	live, err := liveSessionRuns(bridge, session)
 	if err != nil {
 		return err
@@ -1563,8 +1660,11 @@ func checkAddable(bridge, session string) error {
 }
 
 // seqAdd appends a step to the session's open sequence and prints the sequence. A plain run waiting for go becomes the sequence's first step.
-func seqAdd(bridge, session string, out io.Writer, st *seqStep) error {
+func seqAdd(bridge, session string, out io.Writer, name string, st *seqStep) error {
 	return withSeq(bridge, session, func(sf *seqFile) error {
+		if name != "" && sf.openSeq() != nil {
+			return errNameJoins
+		}
 		live, err := liveSessionRuns(bridge, session)
 		if err != nil {
 			return err
@@ -1584,12 +1684,13 @@ func seqAdd(bridge, session string, out io.Writer, st *seqStep) error {
 					r.close()
 					return err
 				}
-				sf.add(&seqStep{Kind: "run", Task: r.Snap.Task, Run: r.State.Run, Headline: headline(r.Snap.WorkItem)})
-				fmt.Fprintf(out, "run %s was waiting for go; it is now step %d of the sequence\n", r.State.Run, sf.NextStep)
+				first := &seqStep{Kind: "run", Task: r.Snap.Task, Run: r.State.Run, Headline: headline(r.Snap.WorkItem)}
+				sf.add(first, name)
+				fmt.Fprintf(out, "run %s was waiting for go; it is now step %s of the sequence\n", r.State.Run, first.ref())
 			}
 			r.close()
 		}
-		sf.add(st)
+		sf.add(st, name)
 		fmt.Fprint(out, sf.listing(bridge))
 		return nil
 	})
