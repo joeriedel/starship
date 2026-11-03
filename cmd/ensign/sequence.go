@@ -187,6 +187,18 @@ func sequenceUnfinished(bridge, session string) bool {
 	return false
 }
 
+// onlyWaitingSequenceUnfinished reports whether the sequence waiting for go has unfinished steps and no approved sequence does, so discard is the way to clear it.
+func onlyWaitingSequenceUnfinished(bridge, session string) bool {
+	sf := readSeq(bridge, session)
+	for _, seq := range sf.Sequences {
+		if seq.Approved && seq.unfinished() {
+			return false
+		}
+	}
+	open := sf.openSeq()
+	return open != nil && open.unfinished()
+}
+
 func sequenceListing(bridge, session string) string {
 	return readSeq(bridge, session).listing(bridge)
 }

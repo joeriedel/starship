@@ -952,6 +952,9 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		}
 	}
 	if !queued && session != "" && sequenceUnfinished(bridge, session) {
+		if onlyWaitingSequenceUnfinished(bridge, session) {
+			return nil, fmt.Errorf("this session has a sequence waiting for go; add the run with ensign sequence run, or ensign sequence discard first")
+		}
 		return nil, fmt.Errorf("this session has a sequence in progress; add the run with ensign sequence run, or ensign sequence halt first")
 	}
 	var replace []string

@@ -364,6 +364,26 @@ func TestPlainRunRefusedWhileASequenceIsOpen(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ensign sequence run") {
 		t.Fatalf("a plain run should point at ensign sequence run: %v", err)
 	}
+	if !strings.Contains(err.Error(), "ensign sequence discard") || strings.Contains(err.Error(), "ensign sequence halt") {
+		t.Fatalf("a sequence waiting for go should be cleared with discard, not halt: %v", err)
+	}
+}
+
+func TestPlainRunRefusedWhileAnApprovedSequenceIsUnfinished(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "tell the user")
+	w.approve()
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	err := cmdRun([]string{"supernova/auth-refactor"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "ensign sequence run") {
+		t.Fatalf("a plain run should point at ensign sequence run: %v", err)
+	}
+	if !strings.Contains(err.Error(), "ensign sequence halt") || strings.Contains(err.Error(), "ensign sequence discard") {
+		t.Fatalf("an approved sequence should be cleared with halt, not discard: %v", err)
+	}
 }
 
 func TestWaitingPlainRunBecomesTheFirstStep(t *testing.T) {
