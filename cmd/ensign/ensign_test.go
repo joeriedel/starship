@@ -935,7 +935,7 @@ func TestSessionStartDeliversTheManual(t *testing.T) {
 	}
 	git(w.bridge, "init", "-q")
 	git(w.bridge, "-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A")
-	write(t, filepath.Join(w.bridge, "CLAUDE.md"), "# Bridge\n\n"+sessionImport+"\n")
+	write(t, filepath.Join(w.bridge, "CLAUDE.md"), "# Bridge\n\n## The heartbeat\n\n"+oldHeartbeat+"\n\n"+sessionImport+"\n")
 	git(w.bridge, "add", "CLAUDE.md")
 	git(w.bridge, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "old bridge")
 
@@ -955,12 +955,80 @@ func TestSessionStartDeliversTheManual(t *testing.T) {
 	if _, ctx := sessionStartReply(t, out.Bytes()); len(ctx) >= sessionContextLimit {
 		t.Errorf("the session context is %d characters; over 10,000 it is cut to a preview", len(ctx))
 	}
-	if claude, _ := os.ReadFile(filepath.Join(w.bridge, "CLAUDE.md")); strings.Contains(string(claude), sessionImport) {
+	claude, _ := os.ReadFile(filepath.Join(w.bridge, "CLAUDE.md"))
+	if strings.Contains(string(claude), sessionImport) {
 		t.Errorf("the old import should be removed")
+	}
+	if !strings.Contains(string(claude), heartbeat) || strings.Contains(string(claude), oldHeartbeat) {
+		t.Errorf("the old heartbeat should be replaced:\n%s", claude)
 	}
 	if dirty, _ := gitOut(w.bridge, "status", "--porcelain", "--", "CLAUDE.md"); dirty != "" {
 		t.Errorf("removing the import should be committed: %q", dirty)
 	}
+}
+
+func TestSessionImportMigration(t *testing.T) {
+	claudePath := func(w *world) string { return filepath.Join(w.bridge, "CLAUDE.md") }
+	read := func(w *world) string {
+		b, _ := os.ReadFile(claudePath(w))
+		return string(b)
+	}
+	setup := func(t *testing.T, content string, initGit bool) *world {
+		w := newWorld(t)
+		write(t, claudePath(w), content)
+		if initGit {
+			git(w.bridge, "init", "-q")
+			git(w.bridge, "add", "CLAUDE.md")
+			git(w.bridge, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "old bridge")
+		}
+		t.Setenv("GIT_AUTHOR_NAME", "t")
+		t.Setenv("GIT_AUTHOR_EMAIL", "t@example.com")
+		t.Setenv("GIT_COMMITTER_NAME", "t")
+		t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
+		return w
+	}
+	old := "# Bridge\n\n" + sessionImport + "\n\nNotes.\n"
+	want := "# Bridge\n\n\nNotes.\n"
+
+	t.Run("clean file loses the import and is committed", func(t *testing.T) {
+		w := setup(t, old, true)
+		dropSessionImport(w.bridge)
+		got := read(w)
+		if got != want {
+			t.Errorf("import not dropped cleanly:\n%q", got)
+		}
+		if dirty, _ := gitOut(w.bridge, "status", "--porcelain", "--", "CLAUDE.md"); dirty != "" {
+			t.Errorf("the change should be committed: %q", dirty)
+		}
+		head, _ := gitOut(w.bridge, "rev-parse", "HEAD")
+		dropSessionImport(w.bridge)
+		if again, _ := gitOut(w.bridge, "rev-parse", "HEAD"); read(w) != got || again != head {
+			t.Errorf("a second run should change nothing")
+		}
+	})
+	t.Run("dirty file is left alone", func(t *testing.T) {
+		w := setup(t, old, true)
+		head, _ := gitOut(w.bridge, "rev-parse", "HEAD")
+		dirty := old + "my edit\n"
+		write(t, claudePath(w), dirty)
+		dropSessionImport(w.bridge)
+		if read(w) != dirty {
+			t.Errorf("a dirty CLAUDE.md should be unchanged")
+		}
+		if after, _ := gitOut(w.bridge, "rev-parse", "HEAD"); after != head {
+			t.Errorf("HEAD moved from %s to %s", head, after)
+		}
+	})
+	t.Run("a bridge that is not a git repo is rewritten without a commit", func(t *testing.T) {
+		w := setup(t, old, false)
+		dropSessionImport(w.bridge)
+		if got := read(w); got != want {
+			t.Errorf("import not dropped cleanly:\n%q", got)
+		}
+		if _, err := os.Stat(filepath.Join(w.bridge, ".git")); err == nil {
+			t.Errorf("no .git should exist in the bridge")
+		}
+	})
 }
 
 func TestHeartbeatMigration(t *testing.T) {

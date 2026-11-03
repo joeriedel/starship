@@ -529,13 +529,17 @@ func TestLogRunBeforeSplit(t *testing.T) {
 	dir := filepath.Join(bridge, "projects", "p", "tasks", "t")
 	write(t, filepath.Join(dir, "task.md"), "# t\n\n## Progress log\n\n- one.\n")
 	r := &RunFiles{Snap: &Snapshot{Bridge: bridge, Task: "p/t", Pipeline: &Pipeline{Name: "x"}}, State: &State{}}
+	doc := "# t\n\n## Progress log\n\n- one.\n"
+	// The entry carries today's date, so accept the entry as of either side of the call in case it straddles midnight.
+	before := insertProgress(doc, runEntry(r))
 	if err := logRunInJournal(r); err != nil {
 		t.Fatal(err)
 	}
+	after := insertProgress(doc, runEntry(r))
 	if _, err := os.Stat(filepath.Join(dir, "history.md")); err == nil {
 		t.Errorf("history.md should not be created while task.md still has the log")
 	}
-	if got, _ := os.ReadFile(filepath.Join(dir, "task.md")); strings.Count(string(got), "\n- ") < 2 {
+	if got, _ := os.ReadFile(filepath.Join(dir, "task.md")); string(got) != before && string(got) != after {
 		t.Errorf("the run should be in task.md's log:\n%s", got)
 	}
 }
