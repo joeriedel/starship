@@ -186,6 +186,7 @@ type RunFiles struct {
 	Snap  *Snapshot
 	State *State
 	lock  *flock.Flock
+	warn  error // The session's setup file could not be written; the run is bound and the hook proceeds.
 }
 
 // openRun locks and loads one run. A run whose folder is gone gives an error matching fs.ErrNotExist.
@@ -427,13 +428,15 @@ func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 	if len(live) > 0 {
 		return r, nil
 	}
-	if err := bindSession(bridge, in.SessionID, r.State.Run); err != nil {
+	bindErr := bindSession(bridge, in.SessionID, r.State.Run)
+	if bindErr != nil && !errors.Is(bindErr, errSetupFile) {
 		r.close()
-		return nil, err
+		return nil, bindErr
 	}
 	copySessionTask(bridge, r.State.Session, in.SessionID)
 	r.State.log("rebound", "", "", fmt.Sprintf("session %s -> %s, found through agent %s", r.State.Session, in.SessionID, in.AgentID))
 	r.State.Session = in.SessionID
+	r.warn = bindErr
 	return r, nil
 }
 
@@ -537,7 +540,10 @@ func copySessionTask(bridge, from, to string) {
 	}
 }
 
-// bindSession records that a run belongs to a session, and writes the setup file with the run's project environment for the session's agents. Runs of the session that have finished are dropped from its set.
+// errSetupFile marks a bindSession error where the run is bound to the session but its setup file could not be written.
+var errSetupFile = errors.New("setup file")
+
+// bindSession records that a run belongs to a session, and writes the setup file with the run's project environment for the session's agents. Runs of the session that have finished are dropped from its set. A setup-file failure is returned, wrapping errSetupFile, after the run is bound.
 func bindSession(bridge, session, run string) error {
 	err := editSessionRuns(bridge, session, func(ids []string) []string {
 		keep := []string{}
@@ -554,7 +560,9 @@ func bindSession(bridge, session, run string) error {
 	}
 	var snap Snapshot
 	if readJSON(filepath.Join(runsDir(bridge), run, "pipeline.json"), &snap) == nil {
-		writeSetupFile(bridge, session, snap.Project)
+		if err := writeSetupFile(bridge, session, snap.Project); err != nil {
+			return fmt.Errorf("%w: %w", errSetupFile, err)
+		}
 	}
 	return nil
 }
@@ -1070,8 +1078,11 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		}
 		replaced = append(replaced, old)
 	}
+	var setupErr error
 	if session != "" && !queued {
-		if err := bindSession(bridge, session, snap.Run); err != nil {
+		if err := bindSession(bridge, session, snap.Run); errors.Is(err, errSetupFile) {
+			setupErr = err
+		} else if err != nil {
 			return nil, err
 		}
 	}
@@ -1088,6 +1099,9 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		fmt.Fprintf(out, "\nreplaced waiting run %s\n", old)
 	}
 	fmt.Fprintf(out, "\nrun %s created (pipeline sha %s), waiting for go\n", snap.Run, hex.EncodeToString(sum[:])[:12])
+	if setupErr != nil {
+		fmt.Fprintf(out, "starship: %v\n", setupErr)
+	}
 	return snap, nil
 }
 

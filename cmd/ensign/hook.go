@@ -514,10 +514,12 @@ func claimRun(bridge, session string) (*RunFiles, error) {
 			continue
 		}
 		r.State.Session = session
-		if err := bindSession(bridge, session, ri.id); err != nil {
+		bindErr := bindSession(bridge, session, ri.id)
+		if bindErr != nil && !errors.Is(bindErr, errSetupFile) {
 			r.close()
-			return nil, err
+			return nil, bindErr
 		}
+		r.warn = bindErr
 		return r, nil
 	}
 	return nil, nil
@@ -525,8 +527,12 @@ func claimRun(bridge, session string) (*RunFiles, error) {
 
 func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 	ctx := func(s string) any {
+		s = "starship: " + s
+		if r != nil && r.warn != nil {
+			s += "\n\nstarship: " + r.warn.Error()
+		}
 		return map[string]any{"hookSpecificOutput": map[string]any{
-			"hookEventName": "UserPromptSubmit", "additionalContext": "starship: " + s,
+			"hookEventName": "UserPromptSubmit", "additionalContext": s,
 		}}
 	}
 	if r == nil {
@@ -966,6 +972,7 @@ func priorSessions(transcript, current string) []string {
 // It assumes a resumed, cleared or compacted session's transcript still holds records
 // stamped with the earlier session's id. A failure to read the earlier session's runs is
 // returned for SessionStart to report; SessionStart never fails over this.
+// A run whose setup file could not be written is still carried over, and that error is returned too.
 func carryOverSession(bridge string, in *HookInput) error {
 	switch in.Source {
 	case "resume", "compact", "clear":
@@ -983,6 +990,7 @@ func carryOverSession(bridge string, in *HookInput) error {
 			return err
 		}
 		carried := false
+		var setupErr error
 		ids, err := sessionRuns(bridge, old)
 		if err != nil {
 			return err
@@ -996,7 +1004,14 @@ func carryOverSession(bridge string, in *HookInput) error {
 			case r.State.terminal():
 			case r.State.Session == in.SessionID:
 				carried = true
-			case bindSession(bridge, in.SessionID, id) == nil:
+			default:
+				bindErr := bindSession(bridge, in.SessionID, id)
+				if bindErr != nil && !errors.Is(bindErr, errSetupFile) {
+					break
+				}
+				if bindErr != nil {
+					setupErr = bindErr
+				}
 				carried = true
 				copySessionTask(bridge, old, in.SessionID)
 				r.State.Session = in.SessionID
@@ -1006,7 +1021,7 @@ func carryOverSession(bridge string, in *HookInput) error {
 			r.close()
 		}
 		if carried {
-			return nil
+			return setupErr
 		}
 	}
 	return nil

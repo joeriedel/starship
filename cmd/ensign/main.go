@@ -202,13 +202,20 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}})
 				return 0
 			}
-			why, err := editGuard(bridge, &in)
+			why, warn, err := editGuard(bridge, &in)
 			if err != nil {
 				return failHook(&in, nil, err, stderr)
 			}
+			out := map[string]any{}
 			if why != "" {
-				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
-					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}})
+				out["hookSpecificOutput"] = map[string]any{
+					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}
+			}
+			if warn != nil {
+				out["systemMessage"] = "starship: " + warn.Error()
+			}
+			if len(out) > 0 {
+				json.NewEncoder(stdout).Encode(out)
 			}
 			return 0
 		}
@@ -284,6 +291,17 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		if err != nil {
 			return failHook(&in, nil, err, stderr)
+		}
+	}
+	if r != nil && r.warn != nil && event != "UserPromptSubmit" {
+		// systemMessage is common to every hook event's reply.
+		m, isMap := out.(map[string]any)
+		if out == nil {
+			m, isMap = map[string]any{}, true
+		}
+		if isMap {
+			m["systemMessage"] = "starship: " + r.warn.Error()
+			out = m
 		}
 	}
 	if out != nil {

@@ -860,13 +860,18 @@ func startRun(bridge, session, task, run string) (string, error) {
 		return "", err
 	}
 	l.Unlock()
-	if err := bindSession(bridge, session, run); err != nil {
-		return "", err
+	bindErr := bindSession(bridge, session, run)
+	if bindErr != nil && !errors.Is(bindErr, errSetupFile) {
+		return "", bindErr
 	}
 	if task != "" {
 		os.WriteFile(sessionFile(bridge, session)+".task", []byte(task+"\n"), 0o644)
 	}
-	return approvalText(r), nil
+	text := approvalText(r)
+	if bindErr != nil {
+		text += "\nstarship: " + bindErr.Error()
+	}
+	return text, nil
 }
 
 // publishCommand finds the one publish operation a task's extensions declare.

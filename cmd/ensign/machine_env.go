@@ -4,8 +4,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,22 +33,26 @@ var hostOS = runtime.GOOS
 // gitBashFound says whether Claude Code has a Git Bash to run commands in on this Windows machine.
 var gitBashFound = detectGitBash
 
-func detectGitBash() bool {
+func detectGitBash() bool { return gitBashPath() != "" }
+
+// gitBashPath is the Git Bash Claude Code runs commands in on this machine, or "" when there is none.
+func gitBashPath() string {
 	if p := os.Getenv("CLAUDE_CODE_GIT_BASH_PATH"); p != "" {
 		if _, err := os.Stat(p); err == nil {
-			return true
+			return p
 		}
 	}
 	git, err := exec.LookPath("git")
 	if err != nil {
-		return false
+		return ""
 	}
 	for _, rel := range []string{filepath.Join("..", "bin", "bash.exe"), filepath.Join("..", "..", "bin", "bash.exe")} {
-		if _, err := os.Stat(filepath.Join(filepath.Dir(git), rel)); err == nil {
-			return true
+		p := filepath.Join(filepath.Dir(git), rel)
+		if _, err := os.Stat(p); err == nil {
+			return filepath.Clean(p)
 		}
 	}
-	return false
+	return ""
 }
 
 // plainEnvFile is whether the session's env file may only hold NAME=value lines: Windows without a Git Bash, where Claude Code applies it in PowerShell.
@@ -168,16 +174,24 @@ func setupScript(e ProjectEnv, windows bool) string {
 }
 
 // writeSetupFile records the project's environment for the session's agents, or removes the file when the project has none, so an earlier run's project doesn't linger. Windows without Git Bash gets its environment in the env file instead.
-func writeSetupFile(bridge, session, project string) {
+func writeSetupFile(bridge, session, project string) error {
 	if plainEnvFile() {
-		return
+		return nil
 	}
+	path := setupFile(bridge, session)
 	content := setupScript(loadMachine(bridge).Env[project], hostOS == "windows")
+	var err error
 	if content == "" {
-		os.Remove(setupFile(bridge, session))
-		return
+		if err = os.Remove(path); errors.Is(err, fs.ErrNotExist) {
+			err = nil
+		}
+	} else {
+		err = writeFile(path, content)
 	}
-	writeFile(setupFile(bridge, session), content)
+	if err != nil {
+		return fmt.Errorf("could not write the session's setup file %s: %w", path, err)
+	}
+	return nil
 }
 
 // plainSessionEnv is the env file's content where it may hold only NAME=value lines: every project's folders and variables, since the file is written once. A variable two projects set differently is left out, and the note says so.

@@ -131,7 +131,7 @@ func shellFor(dir, command string, env []string, limit time.Duration) (string, e
 	case runtime.GOOS != "windows":
 		c = exec.CommandContext(ctx, "sh", "-c", command)
 	default:
-		if bash, err := exec.LookPath("bash"); err == nil {
+		if bash := gitBashPath(); bash != "" {
 			c = exec.CommandContext(ctx, bash, "-c", command)
 		} else {
 			c = exec.CommandContext(ctx, "cmd", "/C", command)
