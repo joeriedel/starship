@@ -869,7 +869,7 @@ func cmdResume(args []string, out io.Writer) error {
 			if !ok || err != nil || v < 1 {
 				return usage
 			}
-			extra[name] += v
+			extra[canonicalBudget(name)] += v
 		default:
 			return usage
 		}

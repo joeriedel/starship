@@ -149,7 +149,7 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 		r.State.log("handler", "", d.ID, "commit-pass: no changes to commit")
 		return nil
 	}
-	cycle, pass := r.State.Spent["test"]+1, r.State.Spent["loop"]
+	cycle, pass := r.State.Spent["test"]+1, r.State.Spent["coder-loop"]
 	subject := fmt.Sprintf("wip(c%d p%d)", cycle, pass)
 	if d.Outcome == "broken" {
 		subject += " BROKEN"

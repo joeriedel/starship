@@ -493,8 +493,8 @@ func TestFindingsLoopAndJoinPrecedence(t *testing.T) {
 	w.leaf(lead, "reviewer", "clean")
 	w.leaf(lead, "reviewer", "findings")
 	st := w.state()
-	if st.Scopes["run"].Stage != "code" || st.Spent["loop"] != 2 {
-		t.Fatalf("after findings: stage %s loop %d", st.Scopes["run"].Stage, st.Spent["loop"])
+	if st.Scopes["run"].Stage != "code" || st.Spent["coder-loop"] != 2 {
+		t.Fatalf("after findings: stage %s loop %d", st.Scopes["run"].Stage, st.Spent["coder-loop"])
 	}
 }
 
@@ -505,7 +505,7 @@ func TestLoopBudgetExhausted(t *testing.T) {
 	w.leaf(lead, "coder", "broken")
 	w.leaf(lead, "coder", "broken")
 	st := w.state()
-	if st.Status != "error" || !strings.HasPrefix(st.Reason, "budget:loop") {
+	if st.Status != "error" || !strings.HasPrefix(st.Reason, "budget:coder-loop") || !strings.Contains(st.Reason, "coder loop budget exhausted (3)") {
 		t.Fatalf("status %s reason %s", st.Status, st.Reason)
 	}
 	if _, why := w.spawn(lead, "orchestrator", "coder"); !strings.Contains(why, "run is finished") {
@@ -525,8 +525,8 @@ func TestTestFailureResetsLoopAndSpendsTest(t *testing.T) {
 	}
 	cycle("fail")
 	st := w.state()
-	if st.Scopes["run"].Stage != "code" || st.Spent["loop"] != 1 || st.Spent["test"] != 1 {
-		t.Fatalf("after one failure: stage %s loop %d test %d", st.Scopes["run"].Stage, st.Spent["loop"], st.Spent["test"])
+	if st.Scopes["run"].Stage != "code" || st.Spent["coder-loop"] != 1 || st.Spent["test"] != 1 {
+		t.Fatalf("after one failure: stage %s loop %d test %d", st.Scopes["run"].Stage, st.Spent["coder-loop"], st.Spent["test"])
 	}
 	cycle("fail")
 	cycle("fail") // the project set test to 2
@@ -561,8 +561,8 @@ func TestStartAtTest(t *testing.T) {
 		t.Fatalf("expected test first: %s", why)
 	}
 	w.leaf(lead, "tester", "fail")
-	if st := w.state(); st.Scopes["run"].Stage != "code" || st.Spent["loop"] != 1 {
-		t.Fatalf("after failing test: stage %s loop %d", st.Scopes["run"].Stage, st.Spent["loop"])
+	if st := w.state(); st.Scopes["run"].Stage != "code" || st.Spent["coder-loop"] != 1 {
+		t.Fatalf("after failing test: stage %s loop %d", st.Scopes["run"].Stage, st.Spent["coder-loop"])
 	}
 }
 

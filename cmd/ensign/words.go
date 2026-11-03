@@ -202,8 +202,8 @@ func seenOf(bridge, id string) string {
 
 func budgetWord(b string) string {
 	switch b {
-	case "loop":
-		return "passes used this cycle"
+	case "coder-loop":
+		return "coder loops used"
 	case "test":
 		return "test cycles used"
 	}

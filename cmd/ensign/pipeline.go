@@ -57,8 +57,68 @@ func (m *machine) spend(budget, scope, into string, edge bool) bool {
 		m.st.Spent[budget]--
 		m.st.Resume = &ResumePoint{Scope: scope, Stage: into, Budget: budget, EdgeSpend: edge}
 	}
-	m.finish(t, fmt.Sprintf("budget %s exhausted (%d)", budget, m.limit(budget)))
+	m.finish(t, fmt.Sprintf("%s budget exhausted (%d)", strings.ReplaceAll(budget, "-", " "), m.limit(budget)))
 	return false
+}
+
+// canonicalBudget maps the old budget name loop to coder-loop; any other name is unchanged.
+func canonicalBudget(name string) string {
+	if name == "loop" {
+		return "coder-loop"
+	}
+	return name
+}
+
+// canonicalizeBudgets rewrites the old budget name loop to coder-loop throughout a pipeline:
+// budgets, on-exhausted, sources, and every stage and transition spend or reset.
+func (p *Pipeline) canonicalizeBudgets() error {
+	if _, old := p.Budgets["loop"]; old {
+		if _, cur := p.Budgets["coder-loop"]; cur {
+			return fmt.Errorf("budgets declare both loop and coder-loop: loop is the old name of coder-loop")
+		}
+	}
+	if _, old := p.OnExhausted["loop"]; old {
+		if _, cur := p.OnExhausted["coder-loop"]; cur {
+			return fmt.Errorf("on-exhausted declares both loop and coder-loop: loop is the old name of coder-loop")
+		}
+	}
+	if v, ok := p.Budgets["loop"]; ok {
+		delete(p.Budgets, "loop")
+		p.Budgets["coder-loop"] = v
+	}
+	if t, ok := p.OnExhausted["loop"]; ok {
+		delete(p.OnExhausted, "loop")
+		p.OnExhausted["coder-loop"] = t
+	}
+	for _, prefix := range []string{"budgets.", "on-exhausted."} {
+		if v, ok := p.Sources[prefix+"loop"]; ok {
+			delete(p.Sources, prefix+"loop")
+			p.Sources[prefix+"coder-loop"] = v
+		}
+	}
+	for k, t := range p.OnExhausted {
+		p.OnExhausted[k] = t.canonicalBudgets()
+	}
+	var walk func(list []*Stage)
+	walk = func(list []*Stage) {
+		for _, s := range list {
+			s.Spend = canonicalBudget(s.Spend)
+			for i := range s.Outcomes {
+				s.Outcomes[i].Then = s.Outcomes[i].Then.canonicalBudgets()
+			}
+			walk(s.Stages)
+		}
+	}
+	walk(p.Stages)
+	return nil
+}
+
+func (t Transition) canonicalBudgets() Transition {
+	t.Spend, t.Reset = canonicalBudget(t.Spend), canonicalBudget(t.Reset)
+	if t.Error == "budget:loop" {
+		t.Error = "budget:coder-loop"
+	}
+	return t
 }
 
 func (m *machine) budgetLine() string {

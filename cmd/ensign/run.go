@@ -199,11 +199,7 @@ func openRun(bridge, id string) (*RunFiles, error) {
 		return nil, fmt.Errorf("locking run %s: %w", id, err)
 	}
 	r := &RunFiles{Dir: dir, lock: l, Snap: &Snapshot{}, State: &State{}}
-	if err := readJSON(filepath.Join(dir, "pipeline.json"), r.Snap); err != nil {
-		l.Unlock()
-		return nil, err
-	}
-	if err := readJSON(filepath.Join(dir, "state.json"), r.State); err != nil {
+	if err := readRunFiles(dir, r.Snap, r.State); err != nil {
 		l.Unlock()
 		return nil, err
 	}
@@ -214,6 +210,19 @@ func openRun(bridge, id string) (*RunFiles, error) {
 		}
 	}
 	return r, nil
+}
+
+// readRunFiles reads a run's snapshot and state, folding the old budget name loop into coder-loop in both.
+func readRunFiles(dir string, snap *Snapshot, st *State) error {
+	err1 := readJSON(filepath.Join(dir, "pipeline.json"), snap)
+	if err := errors.Join(err1, readJSON(filepath.Join(dir, "state.json"), st)); err != nil {
+		return err
+	}
+	if err := snap.Pipeline.canonicalizeBudgets(); err != nil {
+		return err
+	}
+	st.canonicalizeBudgets()
+	return nil
 }
 
 // sessionRuns lists the ids of a session's runs, oldest first. An older session file holds one id. A session without a file has none; any other read error is returned.
@@ -875,6 +884,9 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	if err := c.resolveDependencies(bridge, o.dependencies, auto); err != nil {
 		return nil, err
 	}
+	if err := c.Pipeline.canonicalizeBudgets(); err != nil {
+		return nil, err
+	}
 	errs := validate(c)
 	var resolve func(list []*Stage)
 	resolve = func(list []*Stage) {
@@ -1178,7 +1190,7 @@ func printSummary(out io.Writer, c *Config, start string) {
 
 	fmt.Fprintln(out, "\nbudgets")
 	for _, k := range sortedKeys(p.Budgets) {
-		fmt.Fprintf(out, "  %-6s %d   from %s\n", k, p.Budgets[k], p.Sources["budgets."+k])
+		fmt.Fprintf(out, "  %-10s %d   from %s\n", k, p.Budgets[k], p.Sources["budgets."+k])
 	}
 	for _, k := range sortedKeys(p.OnExhausted) {
 		fmt.Fprintf(out, "  on %s exhausted → %s   from %s\n", k, p.OnExhausted[k], p.Sources["on-exhausted."+k])
@@ -1219,4 +1231,18 @@ func sideNames(sides []Side) []string {
 		names = append(names, sd.Location)
 	}
 	return names
+}
+
+// canonicalizeBudgets folds the old budget name loop into coder-loop in a saved run's state.
+func (st *State) canonicalizeBudgets() {
+	for _, m := range []map[string]int{st.Spent, st.Extra} {
+		if v, ok := m["loop"]; ok {
+			delete(m, "loop")
+			m["coder-loop"] += v
+		}
+	}
+	if st.Resume != nil {
+		st.Resume.Budget = canonicalBudget(st.Resume.Budget)
+		st.Resume.Reset = canonicalBudget(st.Resume.Reset)
+	}
 }

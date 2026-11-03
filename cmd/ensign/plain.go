@@ -550,8 +550,7 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 		return "", fmt.Errorf("locking run %s: %v", filepath.Base(r.Dir), err)
 	}
 	snap, st := &Snapshot{}, &State{}
-	err1 := readJSON(filepath.Join(r.Dir, "pipeline.json"), snap)
-	if err := errors.Join(err1, readJSON(filepath.Join(r.Dir, "state.json"), st)); err != nil {
+	if err := readRunFiles(r.Dir, snap, st); err != nil {
 		r.lock.Unlock() // r still holds the stale state, which must not be saved
 		return "", err
 	}

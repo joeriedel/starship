@@ -595,6 +595,9 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 		return nil, fmt.Errorf("pipeline %q: %v", name, err)
 	}
 	p.Sources = map[string]string{}
+	if err := p.canonicalizeBudgets(); err != nil {
+		return nil, fmt.Errorf("pipeline %q: %v", name, err)
+	}
 	rel := baseLabel
 	setSources(p.Stages, rel)
 	switch scope := p.scope(); {
@@ -985,6 +988,11 @@ func applySet(p *Pipeline, arg *yaml.Node, kind, where string) error {
 		} else {
 			err = setPipelineField(p, key, val, kind)
 			if err == nil {
+				if name, ok := strings.CutPrefix(key, "budgets."); ok {
+					key = "budgets." + canonicalBudget(name)
+				} else if name, ok := strings.CutPrefix(key, "on-exhausted."); ok {
+					key = "on-exhausted." + canonicalBudget(name)
+				}
 				p.Sources[key] = where
 			}
 		}
@@ -1062,6 +1070,7 @@ func setPipelineField(p *Pipeline, key string, val *yaml.Node, kind string) erro
 		return nil
 	}
 	if name, ok := strings.CutPrefix(key, "budgets."); ok {
+		name = canonicalBudget(name)
 		var v int
 		if err := val.Decode(&v); err != nil {
 			return err
@@ -1073,10 +1082,12 @@ func setPipelineField(p *Pipeline, key string, val *yaml.Node, kind string) erro
 		return nil
 	}
 	if name, ok := strings.CutPrefix(key, "on-exhausted."); ok {
+		name = canonicalBudget(name)
 		var t Transition
 		if err := val.Decode(&t); err != nil {
 			return err
 		}
+		t = t.canonicalBudgets()
 		if p.OnExhausted == nil {
 			p.OnExhausted = map[string]Transition{}
 		}

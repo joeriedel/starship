@@ -5,7 +5,7 @@ pipeline: coding
 version: 1
 summary: Implement a scoped change through code, review, style and test, looping until it builds and passes.
 requires-bindings: [build, test]
-budgets: { loop: 3, test: 3 }
+budgets: { coder-loop: 3, test: 3 }
 free-roles: [explorer]
 
 help:
@@ -20,7 +20,7 @@ stages:
     stages:
       - id: code
         role: coder
-        spend: loop
+        spend: coder-loop
         outcomes:
           compiled: next
           broken:   { goto: code }
@@ -40,9 +40,9 @@ stages:
         role: tester
         outcomes:
           pass:  { finish: success }
-          fail:  { goto: code, spend: test, reset: loop }
+          fail:  { goto: code, spend: test, reset: coder-loop }
           error: { error: test-error }
 
 on-exhausted:
-  loop: { error: "budget:loop" }
+  coder-loop: { error: "budget:coder-loop" }
   test: { error: "budget:test" }

@@ -395,6 +395,8 @@ Transitions:
 
 Budgets:
 
+`loop` is the old name of `coder-loop` and is still read as it in pipelines, overrides, extensions, `--budget` and saved runs.
+
 - `spend: <budget>` on a **stage** spends once each time the stage is entered.
 - `spend: <budget>` on an **edge** spends once each time that transition is taken.
 - `reset: <budget>` on an edge restores that budget to its full value.
@@ -412,7 +414,7 @@ includes itself) with `error: nesting`.
 pipeline: coding
 version: 1
 requires-bindings: [checkout, compile, build, test, diff, done]
-budgets: { loop: 3, test: 3 }
+budgets: { coder-loop: 3, test: 3 }
 free-roles: [explorer]        # may be spawned at any point; does not advance the pipeline
 
 stages:
@@ -422,7 +424,7 @@ stages:
     stages:
       - id: code
         role: coder
-        spend: loop
+        spend: coder-loop
         outcomes:
           compiled: next
           broken:   { goto: code }
@@ -442,20 +444,20 @@ stages:
         role: tester
         outcomes:
           pass:  { finish: success }
-          fail:  { goto: code, spend: test, reset: loop }
+          fail:  { goto: code, spend: test, reset: coder-loop }
           error: { error: test-error }
 
 on-exhausted:                         # run-wide, beside budgets
-  loop: { error: "budget:loop" }
+  coder-loop: { error: "budget:coder-loop" }
   test: { error: "budget:test" }
 ```
 
 What this encodes:
 
-- **`loop` bounds one cycle.** Every pass through `code` spends it, whether the pass was
+- **`coder-loop` bounds one cycle.** Every pass through `code` spends it, whether the pass was
   a compile retry or a response to review findings. Three passes without reaching a
   clean, compiling state ends the run.
-- **`test` bounds cycles.** A test failure starts a new cycle with a fresh `loop`. Worst
+- **`test` bounds cycles.** A test failure starts a new cycle with a fresh `coder-loop`. Worst
   case: 3 cycles × 3 passes = 9 coder passes.
 - **The coder reports whether it compiled** (`compiled` / `broken`), so every compile
   attempt is a pass the driver can count.
@@ -596,7 +598,7 @@ wrong, it is changed in the control plane, for everyone.
 | `ask-user` | waiting on a decision; carries the question; resumable |
 
 Reason codes come from whichever edge or budget ended the run (`blocked`,
-`test-error`, `budget:loop`, `budget:test`, `done-check`), so they are deterministic.
+`test-error`, `budget:coder-loop`, `budget:test`, `done-check`), so they are deterministic.
 The driver adds its own:
 
 | Code | When |
@@ -707,7 +709,7 @@ A step names a task, never a subtask (`ensign sequence run` refuses `--subtask`)
   "status": "running",
   "approved": true,
   "tasks": { "bq81f3": "a5ba254c…" },
-  "spent": { "loop": 1, "test": 1 },
+  "spent": { "coder-loop": 1, "test": 1 },
   "scopes": {
     "":    { "stage": "run" },
     "run": { "stage": "review", "branches": { "correctness": "d8", "tests": "d9" } }
@@ -719,8 +721,8 @@ A step names a task, never a subtask (`ensign sequence run` refuses `--subtask`)
     { "id": "d8", "stage": "review", "scope": "run", "dim": "correctness", "role": "reviewer", "done": false }
   ],
   "history": [
-    { "kind": "outcome", "stage": "test", "detail": "fail → goto code, spend test, reset loop" },
-    { "kind": "enter",   "stage": "code", "detail": "loop 1/3, test 1/3" }
+    { "kind": "outcome", "stage": "test", "detail": "fail → goto code, spend test, reset coder-loop" },
+    { "kind": "enter",   "stage": "code", "detail": "coder-loop 1/3, test 1/3" }
   ]
 }
 ```
@@ -880,7 +882,7 @@ generated from the configuration of the bridge you are in, never hand-maintained
 
 ```
 Bridge: work · Project: supernova · Task: auth-refactor
-Working on: review, 2 of 3 reviewers done · 2 of 3 passes used this cycle
+Working on: review, 2 of 3 reviewers done · 2 of 3 coder loops used
 
 Getting around
   "open supernova / auth-refactor"            pick up a task where it left off

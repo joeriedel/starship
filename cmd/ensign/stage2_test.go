@@ -6,7 +6,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,7 +244,7 @@ func TestAskUserAndResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	st = w.state()
-	if st.Status != "running" || st.Scopes["run"].Stage != "code" || st.Spent["test"] != 2 || st.Spent["loop"] != 1 || st.Extra["test"] != 1 {
+	if st.Status != "running" || st.Scopes["run"].Stage != "code" || st.Spent["test"] != 2 || st.Spent["coder-loop"] != 1 || st.Extra["test"] != 1 {
 		t.Fatalf("after resume: %s at %s, spent %v extra %v", st.Status, st.Scopes["run"].Stage, st.Spent, st.Extra)
 	}
 	lead2, why := w.spawn("", "", "orchestrator")
@@ -1102,4 +1104,119 @@ func TestMigrateWorkspacesSkipsQuotedPreDirtyPathsAndFailedStatus(t *testing.T) 
 			t.Error("nothing may be committed")
 		}
 	})
+}
+
+func TestOldLoopBudgetNameIsAnAlias(t *testing.T) {
+	w := newWorld(t)
+	w.project(`  coding2: {}
+`)
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	write(t, p, strings.Replace(string(data), "      - set:    { budgets.test: 2 }\n",
+		"      - set:    { budgets.test: 2 }\n      - set:    { budgets.loop: 1 }\n", 1))
+	lead := w.startLead()
+	r, err := openRun(w.bridge, w.state().Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := r.Snap.Pipeline.Budgets
+	r.close()
+	if _, old := b["loop"]; old || b["coder-loop"] != 1 {
+		t.Fatalf("budgets.loop should set coder-loop: %v", b)
+	}
+	w.leaf(lead, "coder", "broken")
+	if st := w.state(); st.Status != "error" || !strings.HasPrefix(st.Reason, "budget:coder-loop") {
+		t.Fatalf("status %s reason %s", st.Status, st.Reason)
+	}
+}
+
+func TestResumeBudgetOldLoopName(t *testing.T) {
+	w := newWorld(t)
+	w.project(`  coding2: {}
+`)
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	write(t, p, strings.Replace(string(data), "      - set:    { budgets.test: 2 }\n",
+		"      - set:    { budgets.test: 1 }\n      - set:    { on-exhausted.test: { ask-user: \"another cycle?\" } }\n", 1))
+	lead := w.startLead("--start", "test")
+	w.leaf(lead, "tester", "fail")
+	w.leaf(lead, "coder", "compiled")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+	w.leaf(lead, "tester", "fail")
+	var out bytes.Buffer
+	if err := cmdResume([]string{"--answer", "yes", "--budget", "test=1", "--budget", "loop=2"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.state(); st.Extra["coder-loop"] != 2 || st.Extra["loop"] != 0 {
+		t.Fatalf("extra %v", st.Extra)
+	}
+}
+
+func TestSavedRunWithOldLoopName(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.leaf(lead, "coder", "broken")
+	id := w.state().Run
+	dir := filepath.Join(runsDir(w.bridge), id)
+	for _, f := range []string{"pipeline.json", "state.json"} {
+		b, err := os.ReadFile(filepath.Join(dir, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(dir, f), strings.ReplaceAll(string(b), "coder-loop", "loop"))
+	}
+	if st := w.runState(id); st.Spent["coder-loop"] != 2 || st.Spent["loop"] != 0 {
+		t.Fatalf("spent %v", st.Spent)
+	}
+	w.leaf(lead, "coder", "broken")
+	if st := w.state(); st.Spent["coder-loop"] != 3 || st.Status != "running" {
+		t.Fatalf("after another pass: %s %v", st.Status, st.Spent)
+	}
+}
+
+func TestReadRunFilesFoldsOldLoopName(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.leaf(lead, "coder", "broken")
+	dir := filepath.Join(runsDir(w.bridge), w.state().Run)
+	for _, f := range []string{"pipeline.json", "state.json"} {
+		b, err := os.ReadFile(filepath.Join(dir, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(dir, f), strings.ReplaceAll(string(b), "coder-loop", "loop"))
+	}
+	snap, st := &Snapshot{}, &State{}
+	if err := readRunFiles(dir, snap, st); err != nil {
+		t.Fatal(err)
+	}
+	if _, old := st.Spent["loop"]; old || st.Spent["coder-loop"] != 2 {
+		t.Fatalf("spent %v", st.Spent)
+	}
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `"loop"`) {
+		t.Fatalf("snapshot still names loop: %s", b)
+	}
+}
+
+func TestOpenRunIfExistsMissingState(t *testing.T) {
+	w := depWorld(t, depApply, "touch tested")
+	w.run(locTask(t, w, "m", "models"))
+	w.approve()
+	id := w.state().Run
+	if err := os.Remove(filepath.Join(runsDir(w.bridge), id, "state.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openRun(w.bridge, id); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("openRun error = %v, want fs.ErrNotExist", err)
+	}
+	r, err := openRunIfExists(w.bridge, id)
+	if r != nil || err != nil {
+		t.Fatalf("openRunIfExists = %v, %v; want nil, nil", r, err)
+	}
 }
