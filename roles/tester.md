@@ -49,9 +49,7 @@ command outlives one tool call, background it and **stay in your turn, polling u
 has exited**, then collect its exit code and output. Arranging to be told later is not
 finishing. If something is genuinely stuck — no progress, no process — report that.
 
-**Services:** bring up what the suite needs, confirm it is ready rather than merely
-started, and stop it afterwards — on every path, including when you stop early. A leaked
-service breaks the next run in a way that looks like someone else's defect.
+**Services:** when `@services-up` and `@services-down` are bound, run `@services-up` before `@build` and `@test`, and `@services-down` on every path (pass, fail, error, interruption), including when `@services-up` failed. A failing `@services-up` is an `error`, not a test failure. Your report says what was started and confirms it was stopped. Without those bindings, bring up what the suite needs, confirm it is ready rather than merely started, and stop it afterwards on every path; a leaked service breaks the next run.
 
 ## Report
 

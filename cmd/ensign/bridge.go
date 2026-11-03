@@ -86,17 +86,19 @@ machine.yaml
 .claude/settings.local.json
 `
 
-func hookSettings() string { return hookSettingsWith(hookTimeout) }
+func hookSettings() string { return hookSettingsWith(hookTimeout, hookTimeout) }
 
-// hookSettingsWith is the generated settings.json. Timeout 0 gives the form ensign wrote
-// before the PreToolUse hook had a timeout, which SessionStart upgrades.
-func hookSettingsWith(timeout int) string {
-	pre := fmt.Sprintf(`{"type": "command", "command": %q}`, bridgeEnsign+" hook PreToolUse")
-	if timeout > 0 {
-		pre = fmt.Sprintf(`{"type": "command", "command": %q, "timeout": %d}`, bridgeEnsign+" hook PreToolUse", timeout)
+// hookSettingsWith is the generated settings.json. A timeout of 0 leaves that hook without one, as older ensigns wrote it; SessionStart upgrades those forms.
+func hookSettingsWith(preTimeout, stopTimeout int) string {
+	hook := func(ev string, timeout int) string {
+		if timeout > 0 {
+			return fmt.Sprintf(`{"type": "command", "command": %q, "timeout": %d}`, bridgeEnsign+" hook "+ev, timeout)
+		}
+		return fmt.Sprintf(`{"type": "command", "command": %q}`, bridgeEnsign+" hook "+ev)
 	}
+	pre := hook("PreToolUse", preTimeout)
 	cmd := func(ev string) string {
-		return fmt.Sprintf(`[{"hooks": [{"type": "command", "command": %q}]}]`, bridgeEnsign+" hook "+ev)
+		return "[{\"hooks\": [" + hook(ev, 0) + "]}]"
 	}
 	return `{
   "permissions": {
@@ -107,7 +109,7 @@ func hookSettingsWith(timeout int) string {
     "UserPromptSubmit": ` + cmd("UserPromptSubmit") + `,
     "PreToolUse":       [{"matcher": "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback", "hooks": [` + pre + `]}],
     "PostToolUse":      [{"matcher": "Agent|Task|Bash", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", bridgeEnsign+" hook PostToolUse") + `}]}],
-    "SubagentStop":     ` + cmd("SubagentStop") + `,
+    "SubagentStop":     [{"hooks": [` + hook("SubagentStop", stopTimeout) + `]}],
     "Stop":             ` + cmd("Stop") + `
   }
 }

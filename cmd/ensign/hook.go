@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // HookInput is the part of Claude Code's hook payload that ensign reads.
@@ -300,6 +301,9 @@ func hookHandback(in *HookInput, r *RunFiles) any {
 	refuse := func(reason, code, why string) any {
 		if d.spendStop() {
 			d.Done = true
+			if code == "lead-stopped" {
+				stopOrphanedServices(r, m, time.Now().Add(recoveryDownLimit))
+			}
 			m.fail(code, why)
 			return nil
 		}
@@ -382,8 +386,9 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 	s := m.stage(d.Stage)
 
 	if s.isLead() {
+		deadline := time.Now().Add(recoveryDownLimit)
 		if d := deadPlainOwner(r, m, s.ID); d != nil && !r.State.terminal() {
-			if err := completeDeadOwner(r, m, d); err != nil {
+			if _, err := completeDeadOwner(r, m, d, deadline); err != nil {
 				return nil, err
 			}
 		}
@@ -401,6 +406,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		}
 		if d.spendStop() {
 			d.Done = true
+			stopOrphanedServices(r, m, deadline)
 			m.fail("lead-stopped", "the lead stopped before the pipeline finished")
 			return nil, nil
 		}
@@ -653,7 +659,7 @@ func sidesSection(r *RunFiles) string {
 	b.WriteString("\n## Sides\n\nThis change affects several locations. Build and test each side with its own commands in its own folder, not the workspace's bindings above:\n")
 	for _, sd := range sides {
 		fmt.Fprintf(&b, "\nside %s: %s\n\n", sd.Location, sd.Workspace)
-		for _, k := range []string{"build", "test"} {
+		for _, k := range []string{servicesUp, "build", "test", servicesDown} {
 			if bd, ok := sd.Bindings[k]; ok {
 				b.WriteString(bindingLine(k, bd, sd.Workspace))
 			}
@@ -832,7 +838,11 @@ func cmdNext(args []string, out io.Writer) error {
 		break
 	}
 	if d := deadPlainOwner(r, m, scope); d != nil && !r.State.terminal() {
-		fmt.Fprintf(out, "Stage %q (run by ensign) died before it finished: its `ensign run-stage` is gone (killed, or the session or machine stopped), and its effect on the run is unknown. Run `ensign run-stage --bridge %s --run %s` to record it as an error; nothing is run again. Then rule on it as an error and run `ensign next`.\n", d.Stage, shellQuote(r.Snap.Bridge), r.State.Run)
+		runsAgain := "nothing is run again"
+		if hasServicesDown(r.Snap) {
+			runsAgain = "only its @services-down is run again, and its result is reported"
+		}
+		fmt.Fprintf(out, "Stage %q (run by ensign) died before it finished: its `ensign run-stage` is gone (killed, or the session or machine stopped), and its effect on the run is unknown. Run `ensign run-stage --bridge %s --run %s` to record it as an error; %s. Then rule on it as an error and run `ensign next`.\n", d.Stage, shellQuote(r.Snap.Bridge), r.State.Run, runsAgain)
 	} else {
 		fmt.Fprintln(out, m.expect(scope))
 	}

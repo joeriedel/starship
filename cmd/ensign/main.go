@@ -438,13 +438,19 @@ func beforeHandback(settings string) string {
 }
 
 // upgradeHookSettings brings a bridge's settings.json up to date (a timeout on the
-// PreToolUse hook, the PostToolUse hook, SubagentHandback) when it is exactly what an
+// PreToolUse and SubagentStop hooks, the PostToolUse hook, SubagentHandback) when it is exactly what an
 // older ensign wrote, and commits that. A settings file someone has edited is left alone.
 func upgradeHookSettings(bridge string) {
 	f := filepath.Join(bridge, ".claude", "settings.json")
 	data, err := os.ReadFile(f)
-	if err != nil || (string(data) != hookSettingsWith(0) && string(data) != beforeHandback(hookSettingsWith(0)) &&
-		string(data) != beforeHandback(hookSettings())) {
+	if err != nil {
+		return
+	}
+	older := false
+	for _, form := range []string{hookSettingsWith(0, 0), hookSettingsWith(hookTimeout, 0)} {
+		older = older || string(data) == form || string(data) == beforeHandback(form)
+	}
+	if !older {
 		return
 	}
 	if os.WriteFile(f, []byte(hookSettings()), 0o644) == nil && isGit(bridge) {

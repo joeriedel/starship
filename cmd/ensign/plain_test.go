@@ -6,11 +6,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -134,17 +136,19 @@ func TestPlainNeedsACommand(t *testing.T) {
 func TestHookSettingsUpgrade(t *testing.T) {
 	b := t.TempDir()
 	f := filepath.Join(b, ".claude", "settings.json")
-	write(t, f, hookSettingsWith(0))
-	upgradeHookSettings(b)
-	if data, _ := os.ReadFile(f); string(data) != hookSettings() {
-		t.Fatal("the upgrade should set the timeout")
+	for name, old := range map[string]string{
+		"no timeouts":                                 hookSettingsWith(0, 0),
+		"PreToolUse timeout":                          hookSettingsWith(hookTimeout, 0),
+		"no timeouts, before SubagentHandback":        beforeHandback(hookSettingsWith(0, 0)),
+		"PreToolUse timeout, before SubagentHandback": beforeHandback(hookSettingsWith(hookTimeout, 0)),
+	} {
+		write(t, f, old)
+		upgradeHookSettings(b)
+		if data, _ := os.ReadFile(f); string(data) != hookSettings() {
+			t.Fatalf("settings with %s should be upgraded", name)
+		}
 	}
-	write(t, f, beforeHandback(hookSettings()))
-	upgradeHookSettings(b)
-	if data, _ := os.ReadFile(f); string(data) != hookSettings() {
-		t.Fatal("settings from before SubagentHandback should be upgraded")
-	}
-	write(t, f, strings.Replace(hookSettingsWith(0), "ensign:*", "ensign:*\", \"Bash(make:*)", 1))
+	write(t, f, strings.Replace(hookSettingsWith(0, 0), "ensign:*", "ensign:*\", \"Bash(make:*)", 1))
 	upgradeHookSettings(b)
 	if data, _ := os.ReadFile(f); strings.Contains(string(data), "timeout") {
 		t.Fatal("an edited settings file must be left alone")
@@ -393,8 +397,13 @@ func TestSpawningTestersForAParallelStageIsNotDenied(t *testing.T) {
 // diedRun takes a run to its plain test stage, whose `ensign run-stage` is a separate process that kills itself, leaving the dispatch running with its lock free.
 func diedRun(t *testing.T) (w *world, lead string) {
 	t.Helper()
-	w = plainWorld(t, "kill -9 $PPID")
-	lead = w.startLead()
+	return diedRunIn(t, plainWorld(t, "kill -9 $PPID"))
+}
+
+// diedRunIn is diedRun for a world whose test command kills its run-stage.
+func diedRunIn(t *testing.T, w *world) (*world, string) {
+	t.Helper()
+	lead := w.startLead()
 	w.toTest(lead)
 	exe, err := os.Executable()
 	if err != nil {
@@ -645,5 +654,253 @@ func TestPlainStageOfASingleSideRunsAsBefore(t *testing.T) {
 	}
 	if !markerExists(w.sideFolder("client"), "tested") || markerExists(w.sideFolder("models"), "tested") || markerExists(w.sideFolder("client"), "cross") {
 		t.Error("a run of client alone tests client alone")
+	}
+}
+
+// servicesWorld is a plain world whose build, test, up and down commands each append their name to an order file in the workspace.
+func servicesWorld(t *testing.T, test, up, down string) *world {
+	t.Helper()
+	w := plainWorld(t, test)
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	s := strings.Replace(string(data), `command: "echo built"`, `command: "echo build >> order"`, 1)
+	s = strings.Replace(s, "bindings:\n", "bindings:\n  services-up: { command: \""+up+"\" }\n  services-down: { command: \""+down+"\" }\n", 1)
+	write(t, p, s)
+	return w
+}
+
+func (w *world) order() string {
+	b, _ := os.ReadFile(filepath.Join(filepath.Dir(w.bridge), "workspace", "order"))
+	return strings.Join(strings.Fields(string(b)), " ")
+}
+
+func lastDispatch(w *world) *Dispatch {
+	st := w.state()
+	return st.Dispatches[len(st.Dispatches)-1]
+}
+
+func TestServicesRunAroundBuildAndTest(t *testing.T) {
+	w := servicesWorld(t, "echo test >> order", "echo up >> order", "echo down >> order")
+	w.toTest(w.startLead())
+	out, err := w.runStage()
+	if err != nil || !strings.Contains(out, "Outcome: pass") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if got := w.order(); got != "up build test down" {
+		t.Fatalf("order %q", got)
+	}
+	if d := lastDispatch(w); !strings.Contains(d.Summary, "@services-up `echo up >> order`: exit 0") || !strings.Contains(d.Summary, "@services-down `echo down >> order`: exit 0") {
+		t.Fatalf("summary %q", d.Summary)
+	}
+}
+
+func TestServicesStopAfterATestFailure(t *testing.T) {
+	w := servicesWorld(t, "echo test >> order; exit 1", "echo up >> order", "echo down >> order")
+	w.toTest(w.startLead())
+	if out, err := w.runStage(); err != nil || !strings.Contains(out, "Outcome: fail") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if got := w.order(); got != "up build test down" {
+		t.Fatalf("order %q", got)
+	}
+}
+
+func TestServicesStopAfterATestTimeout(t *testing.T) {
+	w := servicesWorld(t, "sleep 5", "echo up >> order", "echo down >> order")
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	write(t, p, strings.Replace(string(data), `command: "sleep 5", plain: true`, `command: "sleep 5", plain: true, timeout: 1s`, 1))
+	w.toTest(w.startLead())
+	if out, err := w.runStage(); err != nil || !strings.Contains(out, "Outcome: error") || !strings.Contains(out, "timed out") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if got := w.order(); got != "up build down" {
+		t.Fatalf("order %q", got)
+	}
+}
+
+func TestFailingServicesUpIsAnErrorAndStillRunsDown(t *testing.T) {
+	w := servicesWorld(t, "echo test >> order", "echo up >> order; exit 1", "echo down >> order")
+	w.toTest(w.startLead())
+	out, err := w.runStage()
+	if err != nil || !strings.Contains(out, "Outcome: error") || !strings.Contains(out, "services did not start") {
+		t.Fatalf("a failing up is an error, not a failure: %q %v", out, err)
+	}
+	if got := w.order(); got != "up down" {
+		t.Fatalf("order %q", got)
+	}
+}
+
+func TestFailingServicesDownIsAnError(t *testing.T) {
+	w := servicesWorld(t, "echo test >> order", "echo up >> order", "echo down >> order; exit 3")
+	w.toTest(w.startLead())
+	out, err := w.runStage()
+	if err != nil || !strings.Contains(out, "Outcome: error") || !strings.Contains(out, "exit 3") || !strings.Contains(out, "the result without that was pass") {
+		t.Fatalf("a failing down is an error and keeps the result: %q %v", out, err)
+	}
+	if got := w.order(); got != "up build test down" {
+		t.Fatalf("order %q", got)
+	}
+}
+
+func TestServicesWithGuidanceOnlyNeedATester(t *testing.T) {
+	w := servicesWorld(t, "echo test >> order", "echo up >> order", "echo down >> order")
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	write(t, p, strings.Replace(string(data), `services-up: { command: "echo up >> order" }`, `services-up: { guidance: "start the stack by hand" }`, 1))
+	w.toTest(w.startLead())
+	if _, err := w.runStage(); err == nil || !strings.Contains(err.Error(), "not a plain stage") {
+		t.Fatalf("run-stage should refuse: %v", err)
+	}
+}
+
+func TestDeadRunStageStopsItsServices(t *testing.T) {
+	w, _ := diedRunIn(t, servicesWorld(t, "kill -9 $PPID", "echo up >> order", "echo down >> order"))
+	if got := w.order(); got != "up build" {
+		t.Fatalf("order before recovery %q", got)
+	}
+	out, err := w.runStage()
+	if err != nil || !strings.Contains(out, "Outcome: error") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if got := w.order(); got != "up build down" {
+		t.Fatalf("recovery should run down once: %q", got)
+	}
+	if d := lastDispatch(w); !d.Done || !strings.Contains(d.Summary, "@services-down") {
+		t.Fatalf("dispatch %+v", d)
+	}
+	if !strings.Contains(out, "ran only its @services-down") || strings.Contains(out, "ran nothing") || !strings.Contains(out, "exit 0") {
+		t.Fatalf("the reply should say the down ran and how it went: %q", out)
+	}
+}
+
+func TestDeadRunStageReportsAFailedDown(t *testing.T) {
+	w, _ := diedRunIn(t, servicesWorld(t, "kill -9 $PPID", "echo up >> order", "exit 3"))
+	out, err := w.runStage()
+	if err != nil || !strings.Contains(out, "@services-down") || !strings.Contains(out, "a service may still be running") {
+		t.Fatalf("the reply should report the failed down: %q %v", out, err)
+	}
+}
+
+func TestStopServicesIsCappedByTheDeadline(t *testing.T) {
+	w := servicesWorld(t, "echo ok", "echo up >> order", "sleep 30")
+	w.toTest(w.startLead())
+	r := lockRun(t, w, w.state().Run)
+	defer r.close()
+	sides := r.Snap.sides()
+	start := time.Now()
+	steps, _, failed := stopServices(r, &Dispatch{ID: "d-cap"}, sides, false, start.Add(time.Second))
+	if !failed || time.Since(start) > 10*time.Second || len(steps) != 1 || !strings.Contains(steps[0], "a service may still be running") {
+		t.Fatalf("the down should be cut off and counted as failed: %v %v", failed, steps)
+	}
+}
+
+func TestSecondSignalDoesNotCancelTheDown(t *testing.T) {
+	w := servicesWorld(t, "touch started; sleep 30", "echo up >> order", "touch downstarted; sleep 2; echo down >> order")
+	w.toTest(w.startLead())
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "run-stage", "--bridge", w.bridge, "--run", w.state().Run)
+	cmd.Env = append(os.Environ(), "STARSHIP_TEST_ENSIGN=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	wait := func(marker string) {
+		path := filepath.Join(filepath.Dir(w.bridge), "workspace", marker)
+		for i := 0; !markerExists(path); i++ {
+			if i > 200 {
+				cmd.Process.Kill()
+				t.Fatalf("%s never appeared", marker)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	wait("started")
+	cmd.Process.Signal(syscall.SIGTERM)
+	wait("downstarted")
+	cmd.Process.Signal(syscall.SIGINT)
+	cmd.Wait()
+	if got := w.order(); got != "up build down" {
+		t.Fatalf("the down should finish despite a second signal: %q", got)
+	}
+	if d := lastDispatch(w); !d.Done || d.Outcome != "error" || strings.Contains(d.Summary, "a service may still be running") {
+		t.Fatalf("dispatch %+v", d)
+	}
+}
+
+func TestCancelledRunStageStopsServicesBeforeDying(t *testing.T) {
+	w := servicesWorld(t, "touch started; sleep 30", "echo up >> order", "echo down >> order")
+	w.toTest(w.startLead())
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "run-stage", "--bridge", w.bridge, "--run", w.state().Run)
+	cmd.Env = append(os.Environ(), "STARSHIP_TEST_ENSIGN=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	started := filepath.Join(filepath.Dir(w.bridge), "workspace", "started")
+	for i := 0; !markerExists(started); i++ {
+		if i > 200 {
+			cmd.Process.Kill()
+			t.Fatal("the test command never started")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cmd.Process.Signal(syscall.SIGTERM)
+	err = cmd.Wait()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != -1 {
+		t.Fatalf("ensign should still die of the signal: %v", err)
+	}
+	if got := w.order(); got != "up build down" {
+		t.Fatalf("order %q", got)
+	}
+	if d := lastDispatch(w); !d.Done || d.Outcome != "error" || !strings.Contains(d.Summary, "interrupted") {
+		t.Fatalf("the interrupted stage should be recorded as an error: %+v", d)
+	}
+}
+
+func TestServicesRunPerSideInTheirOwnFolders(t *testing.T) {
+	w := sidesPlainWorld(t, "touch tested")
+	shared := filepath.Join(t.TempDir(), "shared")
+	p := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
+	data, _ := os.ReadFile(p)
+	svc := func(name string) string {
+		return `  services-` + name + `: { command: "echo ` + name + `-$(basename $PWD) >> ` + shared + `; echo ` + name + ` >> order" }` + "\n"
+	}
+	write(t, p, strings.Replace(string(data), "bindings:\n", "bindings:\n"+svc("up")+svc("down"), 1))
+	w.run(locTask(t, w, "m", "models"))
+	w.approve()
+	lead, why := w.spawn("", "", "orchestrator")
+	if lead == "" {
+		t.Fatalf("lead refused: %s", why)
+	}
+	w.toTestOneReview(lead)
+	if _, err := w.runStage(); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	b, _ := os.ReadFile(shared)
+	lines := strings.Fields(string(b))
+	if len(lines) != 6 {
+		t.Fatalf("shared log %q", lines)
+	}
+	for i := 0; i < 3; i++ {
+		up, down := strings.TrimPrefix(lines[i], "up-"), strings.TrimPrefix(lines[5-i], "down-")
+		if up != down {
+			t.Fatalf("downs should run in reverse order of ups: %q", lines)
+		}
+	}
+	for _, l := range []string{"models", "client", "server"} {
+		o, _ := os.ReadFile(filepath.Join(w.sideFolder(l), "order"))
+		if strings.Join(strings.Fields(string(o)), " ") != "up down" {
+			t.Errorf("side %s should have run its own up and down: %q", l, o)
+		}
 	}
 }

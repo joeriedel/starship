@@ -8,15 +8,17 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// killTreeOnCancel kills the command and everything it started when its context ends. The command runs in a job object, which catches descendants whose parent already exited; if the job can't be set up it falls back to taskkill, which walks the tree at kill time and can miss those. The returned started func must be called right after Start succeeds, and finish after the command ends; finish closes the job and, if the fallback killed anything, notes that on c.Stderr. When the command ends without being cancelled, finish first clears the job's kill-on-close flag so background children it left running survive, as they do on Unix.
-func killTreeOnCancel(c *exec.Cmd, _ context.CancelFunc) (started func(), finish func() error) {
+// killTreeOnCancel kills the command and everything it started when its context ends. The command runs in a job object, which catches descendants whose parent already exited; if the job can't be set up it falls back to taskkill, which walks the tree at kill time and can miss those. The returned started func must be called right after Start succeeds, and finish after the command ends; finish closes the job and, if the fallback killed anything, notes that on c.Stderr. While signals are shielded (see shieldSignals) they do not cancel the command. While signals are held (see holdSignals), Ctrl-C and termination cancel the command and finish returns an error, so that ensign can stop its services before it exits. When the command ends without being cancelled, finish first clears the job's kill-on-close flag so background children it left running survive, as they do on Unix.
+func killTreeOnCancel(c *exec.Cmd, cancel context.CancelFunc) (started func(), finish func() error) {
 	var mu sync.Mutex
 	var job windows.Handle
 	var jobErr error
@@ -24,6 +26,36 @@ func killTreeOnCancel(c *exec.Cmd, _ context.CancelFunc) (started func(), finish
 	cancelled := false
 
 	job, jobErr = newKillOnCloseJob()
+
+	// A new process group disables console Ctrl-C for the command and its descendants, so only ensign receives it and decides what to cancel.
+	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
+
+	var caught os.Signal
+	stopWatch := func() {}
+	if signalsHeld() && !shielded() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+		done := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sig := <-ch:
+				mu.Lock()
+				caught = sig
+				mu.Unlock()
+				noteSignal(sig)
+				cancel()
+			case <-done:
+			}
+		}()
+		stopWatch = func() {
+			signal.Stop(ch)
+			close(done)
+			wg.Wait()
+		}
+	}
 
 	c.Cancel = func() error {
 		mu.Lock()
@@ -49,6 +81,7 @@ func killTreeOnCancel(c *exec.Cmd, _ context.CancelFunc) (started func(), finish
 		jobErr = assignToJob(job, uint32(c.Process.Pid))
 	}
 	finish = func() error {
+		stopWatch()
 		mu.Lock()
 		defer mu.Unlock()
 		if job != 0 {
@@ -65,9 +98,48 @@ func killTreeOnCancel(c *exec.Cmd, _ context.CancelFunc) (started func(), finish
 		if usedFallback && c.Stderr != nil {
 			fmt.Fprintf(c.Stderr, "ensign: job object unavailable (%v); used taskkill, which can miss descendants whose parent already exited\n", jobErr)
 		}
+		if caught != nil {
+			return fmt.Errorf("interrupted by %s", caught)
+		}
 		return nil
 	}
 	return started, finish
+}
+
+// watchSignals notes Ctrl-C and termination with noteSignal until stop is called, so that one arriving between commands is not lost.
+func watchSignals() (stop func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case sig := <-ch:
+				noteSignal(sig)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(ch)
+		close(done)
+		wg.Wait()
+		select {
+		case sig := <-ch:
+			noteSignal(sig)
+		default:
+		}
+	}
+}
+
+// raiseSignal ends ensign as an interrupt would, there being no way to re-raise a signal on Windows.
+func raiseSignal(os.Signal) {
+	signal.Reset()
+	os.Exit(130)
 }
 
 // newKillOnCloseJob creates a job object whose processes are killed when its last handle closes.
