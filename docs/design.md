@@ -1178,7 +1178,7 @@ SHA256SUMS
   .starship/control-plane/       the bridge's clone, checked out at the tag (gitignored)
   .claude/agents/                generated from the pinned clone (gitignored)
   .claude/skills/                on-demand skills, generated likewise (gitignored)
-  CLAUDE.md                      setup steps and the heartbeat rule; no imports
+  CLAUDE.md                      setup steps, the session-only heartbeat rule; no imports
   machine.yaml                   where this machine keeps each project's code (gitignored)
 ```
 
@@ -1320,6 +1320,8 @@ So there are two defences:
   errors, say so plainly and do nothing except help fix it** — no pipeline, no agent
   spawn, no workspace change, no commit. This is a model-level rule, not a guarantee; it
   turns a silent failure into a visible one.
+
+  The rule is for the session agent only. Subagents never see the `STARSHIP-READY` line, so the rule tells them to ignore it rather than conclude that starship is broken. Bridges made before the rule was scoped get the new wording at SessionStart: `updateHeartbeat` runs beside `dropSessionImport`, which removes the manual's import that older versions of `ensign init` left in `CLAUDE.md`. `updateHeartbeat` looks for the old heartbeat paragraph in the bridge's `CLAUDE.md` (also in its CRLF form, which it keeps) and replaces it with the session-only one. It commits just that file with the message "Scope the heartbeat rule to the session agent". It leaves the file alone if it lacks the old paragraph, or if git shows uncommitted edits to it. `dropSessionImport` leaves a `CLAUDE.md` with uncommitted edits alone in the same way.
 - **`ensign` fails closed, and its errors end the run** (§6.1). Any internal error — a crash, a corrupt state file, an
   unreadable snapshot — exits 2 with the reason, so the action is blocked rather than let
   through. (A Go panic already exits 2.) One exception: when a stop arrives with
