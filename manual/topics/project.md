@@ -4,6 +4,8 @@ Then fill its bindings (`@build`, `@test`, …): read the code, propose commands
 
 `platforms:` is required in `project.yaml`: the platforms the project supports, which reviewers treat as real failure targets. `project new` takes `--platforms linux,macos,windows` unless the code ships them. Example: `platforms: [linux, macos, windows]`.
 
+`task open` reports when the code's shipped `.starship/project.yaml` has bindings, pipelines or extensions (`use`) that the project's `project.yaml` lacks or has with a different value; it only reports, and never changes settings. Review the differences with the user, change `project.yaml` if they want it, then run `ensign project reviewed <project>` to record the shipped values in `projects/<project>/shipped-reviewed.yaml` (commit it) so deliberate differences stay quiet until the shipped value changes again.
+
 # Code locations
 
 A project may keep its code in several repos (e.g. `client`, `server`, `models`). Declare them in `project.yaml`:

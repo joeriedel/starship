@@ -461,7 +461,10 @@ bindings:
 `
 
 func cmdProject(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>]")
+	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>] | ensign project reviewed <project>[/<task>]")
+	if len(args) == 2 && args[0] == "reviewed" {
+		return cmdProjectReviewed(args[1], out)
+	}
 	if len(args) < 4 || args[0] != "new" {
 		return usage
 	}
@@ -805,6 +808,7 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 		} else {
 			fmt.Fprintf(out, "workspace  %s\n", ws)
 			fmt.Fprintln(out, "vcs        "+vcsState(ws, tf.Vcs))
+			printShippedDrift(bridge, project, ws, out)
 		}
 	}
 	notes, err := projectNotes(bridge, project)

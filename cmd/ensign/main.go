@@ -136,6 +136,7 @@ func usage() {
   ensign selftest
   ensign help [topic]
   ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>]
+  ensign project reviewed <project>[/<task>]
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
   ensign task open <project>/<task>
   ensign task subtask <done|drop> <project>/<task> <name>
