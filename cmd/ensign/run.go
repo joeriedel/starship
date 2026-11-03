@@ -36,6 +36,7 @@ type Snapshot struct {
 	Cross        map[string]Binding   `json:"cross,omitempty"`    // the cross-location bindings, when there are several sides
 	Dependencies []Dependency         `json:"dependencies,omitempty"`
 	WorkItem     string               `json:"work_item"`
+	Rules        []Rule               `json:"rules,omitempty"` // the project rules WorkItem carries
 	Start        string               `json:"start,omitempty"`
 	Pipeline     *Pipeline            `json:"pipeline"`
 	Bindings     map[string]Binding   `json:"bindings"`
@@ -719,6 +720,7 @@ type runOpts struct {
 	dry, sync, rebuild, staleOK    bool
 	// A retry inside a sequence: the failed run's id and base, and the work item to freeze instead of the task's.
 	retryOf, retryBase, workItem string
+	rules                        []Rule // the retried run's rules, which workItem already carries
 }
 
 // parseRunArgs reads the flags shared by `ensign run` and `ensign sequence run`; cmd names the command in the usage line.
@@ -879,6 +881,14 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		c.Subtask = pick.sub.Name
 		c.WorkItem = pick.workItem(c.WorkItem)
 	}
+	if o.workItem != "" {
+		c.Rules = o.rules
+	} else if len(c.Rules) > 0 {
+		c.WorkItem += "\n\n## Project rules\n\n"
+		for _, r := range c.Rules {
+			c.WorkItem += "- " + r.Text + "\n"
+		}
+	}
 	var auto []string
 	if pick != nil {
 		auto = c.automaticDependencies(bridge, pick.doneLocs, o.dependencies)
@@ -975,6 +985,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		Cross:        c.Cross,
 		Dependencies: c.Dependencies,
 		WorkItem:     c.WorkItem,
+		Rules:        c.Rules,
 		Start:        start,
 		Pipeline:     c.Pipeline,
 		Bindings:     c.Bindings,
@@ -1215,6 +1226,12 @@ func printSummary(out io.Writer, c *Config, start string) {
 			v = "guidance: " + b.Guidance
 		}
 		fmt.Fprintf(out, "  @%-8s %s   from %s\n", k, v, b.Source)
+	}
+	if len(c.Rules) > 0 {
+		fmt.Fprintln(out, "\nrules")
+		for _, r := range c.Rules {
+			fmt.Fprintf(out, "  %s   from %s\n", r.Text, r.Source)
+		}
 	}
 }
 

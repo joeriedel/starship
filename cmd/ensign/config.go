@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -270,12 +271,19 @@ func parseBinding(n *yaml.Node, source string) (Binding, error) {
 	return b, nil
 }
 
+// Rule is one standing run rule and where it was declared.
+type Rule struct {
+	Text   string `json:"text"`
+	Source string `json:"source"`
+}
+
 // Layer is the shape shared by bridge.yaml, project.yaml and task.md frontmatter.
 type Layer struct {
 	Pipelines map[string]struct {
 		Ops []yaml.Node `yaml:"ops"`
 	} `yaml:"pipelines"`
 	Bindings  yaml.Node                `yaml:"bindings"`
+	Rules     yaml.Node                `yaml:"rules"` // standing run rules, one string each; the task layer's are ignored
 	Use       []string                 `yaml:"use"`
 	Skills    yaml.Node                `yaml:"skills"`
 	Workspace string                   `yaml:"workspace"` // the old place for a code location, now in machine.yaml; read only to move it
@@ -376,25 +384,27 @@ type TaskFile struct {
 
 // Config is everything a run is built from, after merging the layers.
 type Config struct {
-	Bridge       string
-	ControlPlane string
-	Project      string
-	Task         string // "<project>/<task>"
-	TaskDir      string
-	Workspace    string
-	Location     string     // the project location this run works in, when the project declares locations
-	Locations    *Locations // the project's declared locations
-	WorkItem     string     // task.md body
-	Subtask      string     // the subtask this run works on, when the task has subtasks
-	Pipeline     *Pipeline
-	Bindings     map[string]Binding
-	Events       map[string][]Handler
-	Extensions   []string
-	Platforms    []string // the platforms the project declares, from project.yaml
-	JournalOff   string   // reason, when the project turned journal commits off
-	Skills       []SkillDelivery
-	needs        map[string]string // binding -> what requires it, from extensions
-	problems     []string
+	Bridge        string
+	ControlPlane  string
+	Project       string
+	Task          string // "<project>/<task>"
+	TaskDir       string
+	Workspace     string
+	Location      string     // the project location this run works in, when the project declares locations
+	Locations     *Locations // the project's declared locations
+	WorkItem      string     // task.md body
+	Subtask       string     // the subtask this run works on, when the task has subtasks
+	Pipeline      *Pipeline
+	Bindings      map[string]Binding
+	Rules         []Rule // the project's standing run rules, first declaration kept
+	locationRules map[string]yaml.Node
+	Events        map[string][]Handler
+	Extensions    []string
+	Platforms     []string // the platforms the project declares, from project.yaml
+	JournalOff    string   // reason, when the project turned journal commits off
+	Skills        []SkillDelivery
+	needs         map[string]string // binding -> what requires it, from extensions
+	problems      []string
 	// Sides are the locations a run tests, the edited one first; Narrowed says they are fewer than the default. Cross holds the cross-location bindings when there are several sides.
 	Sides        []Side
 	Narrowed     bool
@@ -432,6 +442,30 @@ func (c *Config) addBindings(n *yaml.Node, label string) error {
 			return err
 		}
 		c.Bindings[key] = b
+	}
+	return nil
+}
+
+// addRules adds the rules a layer or extension declares, dropping any already present.
+func (c *Config) addRules(n *yaml.Node, label string) error {
+	if n.Kind == 0 || n.Tag == "!!null" {
+		return nil
+	}
+	if n.Kind != yaml.SequenceNode {
+		return fmt.Errorf("%s:%d: rules must be a list of strings", label, n.Line)
+	}
+	for _, item := range n.Content {
+		if item.Tag == "!!null" {
+			continue
+		}
+		if item.Kind != yaml.ScalarNode {
+			return fmt.Errorf("%s:%d: a rule must be a string", label, item.Line)
+		}
+		text := strings.TrimSpace(item.Value)
+		if text == "" || slices.ContainsFunc(c.Rules, func(r Rule) bool { return r.Text == text }) {
+			continue
+		}
+		c.Rules = append(c.Rules, Rule{Text: text, Source: fmt.Sprintf("%s:%d", label, item.Line)})
 	}
 	return nil
 }
@@ -642,6 +676,9 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 			if err := c.mergeExtension(b, label); err != nil {
 				return nil, err
 			}
+			if err := c.addRules(&b.Rules, label); err != nil {
+				return nil, err
+			}
 		}
 		c.addEvents(l.layer.Events, l.label, filepath.Dir(l.file))
 		if po, ok := l.layer.Pipelines[name]; ok {
@@ -653,6 +690,11 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 		}
 		if err := c.addBindings(&l.layer.Bindings, l.label); err != nil {
 			return nil, err
+		}
+		if !strings.HasPrefix(l.label, "task:") {
+			if err := c.addRules(&l.layer.Rules, l.label); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := c.selectSkills(layers); err != nil {
@@ -689,6 +731,18 @@ func (c *Config) projectLayer(bridge string) (layerEntry, error) {
 	var err error
 	if c.Locations, err = loadLocations(bridge, c.Project); err != nil {
 		return layerEntry{}, err
+	}
+	var lr struct {
+		Locations map[string]struct {
+			Rules yaml.Node `yaml:"rules"`
+		} `yaml:"locations"`
+	}
+	if err := readYAML(projectFile, &lr); err != nil {
+		return layerEntry{}, fmt.Errorf("project %q: %v", c.Project, err)
+	}
+	c.locationRules = map[string]yaml.Node{}
+	for name, loc := range lr.Locations {
+		c.locationRules[name] = loc.Rules
 	}
 	c.Platforms = pf.Platforms
 	if pf.Journal.Commit == "off" {
@@ -845,7 +899,7 @@ func (c *Config) locationLayer(bridge string) layerEntry {
 
 func (c *Config) locationLayerFor(bridge, location string) layerEntry {
 	file := filepath.Join(bridge, "projects", c.Project, "project.yaml")
-	return layerEntry{"location:" + relTo(bridge, file) + "#" + location, file, Layer{Bindings: c.Locations.bindings[location]}}
+	return layerEntry{"location:" + relTo(bridge, file) + "#" + location, file, Layer{Bindings: c.Locations.bindings[location], Rules: c.locationRules[location]}}
 }
 
 // findPipeline locates a pipeline file: the control plane's, then any extension's.

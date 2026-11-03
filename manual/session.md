@@ -24,7 +24,7 @@ A plan names task, pipeline (usually `coding`), work item, what done looks like,
 3. On `go`, the hook tells you to dispatch the lead; do that, then wait.
 
 - **Write the work item as a fragment, not a spec**: outcome and constraints; the lead works out files and mechanics. Verify any claim about code and say so, or pose it as a question.
-- **Bring Goal and Scope up to date before `ensign run`.** Fold every decision, ruling and pertinent note from the task file into them; only Goal and Scope reach the lead. No user approval needed.
+- **Bring Goal and Scope up to date before `ensign run`.** Fold every decision, ruling and pertinent note from the task file into them; only Goal and Scope reach the lead. No user approval needed. Standing rules declared under `rules:` in settings reach every run's work item under `## Project rules`; don't repeat them in Scope, only task-specific rules.
 - **Make the brief self-contained.** Goal and Scope state every fact they rely on; never point an agent at bridge files (no `see <other task>`, task-file or project-settings paths, `(task <name>)` labels). Say "a separate change" for what's out of scope. Agents follow pointers, burn run time reading the bridge, and can carry its details into project code.
 - **Size a work item for one cycle**: split unrelated behaviours into separate runs; settle open design decisions first, or the loop invents one.
 
@@ -51,7 +51,7 @@ Put anything the user says that governs future work in the project's or task's f
 
 Where it goes:
 - `projects/<project>/project.md`: standing instructions and context for the session, printed by `task open` and again after a compaction or clear, never seen by run agents. Copy a note a run needs into that run's Scope. `project new` doesn't create it; write it when there is something to say.
-- `project.yaml`: platforms, bindings, pipelines, extensions only. Comments in it reach nobody.
+- `project.yaml`: platforms, bindings, rules, pipelines, extensions only. Comments in it reach nobody.
 - The task journal: one task's state and history.
 - A skill: facts about a technology.
 

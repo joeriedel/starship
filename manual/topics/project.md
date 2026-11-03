@@ -6,6 +6,8 @@ If the test stage needs services, add `@services-up` (start them) and `@services
 
 `platforms:` is required in `project.yaml`: the platforms the project supports, which reviewers treat as real failure targets. `project new` takes `--platforms linux,macos,windows` unless the code ships them. Example: `platforms: [linux, macos, windows]`.
 
+`rules:` lists standing run rules, one string per rule, under `bridge.yaml`, an extension, `project.yaml` or a location (`rules: ["Never touch the vault."]` for project `supernova`). They merge in layer order with duplicates dropped, skip the task's frontmatter, and reach every run's work item under `## Project rules` (a retry keeps the original run's) and the run summary with their source. Task-specific rules go in the task's Scope.
+
 `task open` reports when the code's shipped `.starship/project.yaml` has bindings, pipelines or extensions (`use`) that the project's `project.yaml` lacks or has with a different value; it only reports, and never changes settings. Review the differences with the user, change `project.yaml` if they want it, then run `ensign project reviewed <project>` to record the shipped values in `projects/<project>/shipped-reviewed.yaml` (commit it) so deliberate differences stay quiet until the shipped value changes again.
 
 # Code locations
@@ -16,6 +18,7 @@ A project may keep its code in several repos (e.g. `client`, `server`, `models`)
 locations:
   models:
     bindings: { build: { command: "make" }, test: { command: "make test" } }
+    rules: ["Keep the schema backwards compatible."]
   client:
     depends-on: [models]
     bindings: { test: { command: "npm test" } }
