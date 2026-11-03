@@ -591,7 +591,7 @@ func TestConfigRejectsBadPlatforms(t *testing.T) {
 	w := newWorld(t)
 	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
 	data, _ := os.ReadFile(p)
-	for platforms, want := range map[string]string{"[linux, \"\"]": "empty", "[linux, linux]": "twice"} {
+	for platforms, want := range map[string]string{"[linux, \"\"]": "empty", "[linux, linux]": "twice", "[linux, \" linux\"]": "twice", "[linux, Linux]": "twice"} {
 		write(t, p, strings.Replace(string(data), "platforms: [linux]", "platforms: "+platforms, 1))
 		c, err := loadConfig(w.bridge, "supernova/auth-refactor")
 		if err != nil {
@@ -1301,5 +1301,27 @@ func TestOpenRunIfExistsMissingState(t *testing.T) {
 	r, err := openRunIfExists(w.bridge, id)
 	if r != nil || err != nil {
 		t.Fatalf("openRunIfExists = %v, %v; want nil, nil", r, err)
+	}
+}
+
+func TestConfigRefusesPlatformsOutsideProject(t *testing.T) {
+	for _, value := range []string{"[linux]", "[]", "", "~"} {
+		w := newWorld(t)
+		bf := filepath.Join(w.bridge, "bridge.yaml")
+		data, _ := os.ReadFile(bf)
+		write(t, bf, string(data)+"platforms: "+value+"\n")
+		_, err := loadConfig(w.bridge, "supernova/auth-refactor")
+		if err == nil || !strings.Contains(err.Error(), "project.yaml") || !strings.Contains(err.Error(), bf) {
+			t.Errorf("bridge.yaml with platforms: %s should be refused, naming project.yaml: %v", value, err)
+		}
+
+		w = newWorld(t)
+		task := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md")
+		data, _ = os.ReadFile(task)
+		write(t, task, strings.Replace(string(data), "pipeline: coding\n", "pipeline: coding\nplatforms: "+value+"\n", 1))
+		_, err = loadConfig(w.bridge, "supernova/auth-refactor")
+		if err == nil || !strings.Contains(err.Error(), "projects/supernova/project.yaml") || !strings.Contains(err.Error(), task) {
+			t.Errorf("task with platforms: %s should be refused, naming project.yaml: %v", value, err)
+		}
 	}
 }

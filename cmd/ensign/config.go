@@ -575,6 +575,9 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 		if err := yaml.Unmarshal(front, &tf); err != nil {
 			return nil, fmt.Errorf("%s: %v", taskFile, err)
 		}
+		if hasPlatformsKey(front) {
+			return nil, fmt.Errorf("%s: platforms: is a project setting; declare it in projects/%s/project.yaml", taskFile, c.Project)
+		}
 		if c.Location, err = taskLocation(c.Locations, c.Project, t.Task, tf.Locations, t.Location); err != nil {
 			return nil, err
 		}
@@ -714,6 +717,9 @@ func (c *Config) bridgeLayer(bridge string) (layerEntry, error) {
 	bfp, err := loadBridgeFile(bridge)
 	if err != nil {
 		return layerEntry{}, err
+	}
+	if data, rerr := os.ReadFile(bridgeFile); rerr == nil && hasPlatformsKey(data) {
+		return layerEntry{}, fmt.Errorf("%s: platforms: is a project setting; declare it in projects/<project>/project.yaml", bridgeFile)
 	}
 	if c.ControlPlane, err = controlPlaneDir(bridge, bfp); err != nil {
 		return layerEntry{}, err
@@ -1155,18 +1161,30 @@ func setPipelineField(p *Pipeline, key string, val *yaml.Node, kind string) erro
 	return fmt.Errorf("unknown pipeline field")
 }
 
-// platformProblems names the empty and duplicate entries in a project's platform list.
+// hasPlatformsKey reports whether a YAML document has a top-level platforms: key, whatever its value (a null or empty list leaves no trace in Layer.Platforms).
+func hasPlatformsKey(data []byte) bool {
+	var keys map[string]any
+	if yaml.Unmarshal(data, &keys) != nil {
+		return false
+	}
+	_, has := keys["platforms"]
+	return has
+}
+
+// platformProblems names the empty and duplicate entries in a project's platform list, ignoring surrounding space and case.
 func platformProblems(platforms []string) []string {
 	var errs []string
 	seen := map[string]bool{}
 	for _, pl := range platforms {
+		name := strings.TrimSpace(pl)
+		key := strings.ToLower(name)
 		switch {
-		case strings.TrimSpace(pl) == "":
+		case name == "":
 			errs = append(errs, "a platform name is empty")
-		case seen[pl]:
-			errs = append(errs, fmt.Sprintf("platform %q is declared twice", pl))
+		case seen[key]:
+			errs = append(errs, fmt.Sprintf("platform %q is declared twice", name))
 		}
-		seen[pl] = true
+		seen[key] = true
 	}
 	return errs
 }

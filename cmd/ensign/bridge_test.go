@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -323,6 +324,19 @@ func TestProjectNewNeedsPlatforms(t *testing.T) {
 	}
 	if _, serr := os.Stat(filepath.Join(b, "projects/void/project.yaml")); serr == nil {
 		t.Fatalf("a refused project should not be written")
+	}
+
+	// A null platforms: is as empty as a list with nothing in it.
+	for i, body := range []string{"platforms:\n", "platforms: ~\n"} {
+		null := t.TempDir()
+		write(t, filepath.Join(null, ".starship", "project.yaml"), body)
+		name := fmt.Sprintf("null%d", i)
+		if err := cmdProject([]string{"new", name, "--workspace", null, "--platforms", "linux"}, &out); err == nil || !strings.Contains(err.Error(), "empty platforms") {
+			t.Fatalf("a shipped %q should be refused: %v", strings.TrimSpace(body), err)
+		}
+		if _, serr := os.Stat(filepath.Join(b, "projects", name, "project.yaml")); serr == nil {
+			t.Fatalf("a refused project should not be written")
+		}
 	}
 
 	// A shipped file without platforms keeps its content and gains the flag's platforms.
