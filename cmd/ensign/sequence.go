@@ -33,7 +33,7 @@ const (
 
 type seqStep struct {
 	N           int       `json:"n"`    // counts from 1 within its sequence
-	Seq         int       `json:"-"`    // the number of its sequence, set when the file is read
+	Seq         int       `json:"-"`    // the number of its sequence, set when the file is read and by add
 	Kind        string    `json:"kind"` // run, publish, do, release
 	Task        string    `json:"task,omitempty"`
 	Run         string    `json:"run,omitempty"`     // the first of Runs, kept so a sequence file written before groups still loads
@@ -290,8 +290,6 @@ func (sf *seqFile) stepRef(arg string) (*sequence, *seqStep, error) {
 	switch {
 	case seq == nil && dotted:
 		return nil, nil, fmt.Errorf("there is no sequence %d", seqN)
-	case seq == nil:
-		return nil, nil, fmt.Errorf("there is no step %d", n)
 	case st == nil:
 		return nil, nil, fmt.Errorf("%s has no step %d", seq.label(), n)
 	}
