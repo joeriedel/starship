@@ -67,26 +67,25 @@ type dirtyPath struct {
 
 // dirtyPaths lists the staged, unstaged and untracked paths of the workspace.
 func dirtyPaths(ws string) ([]dirtyPath, error) {
-	status, err := gitOut(ws, "status", "--porcelain", "--untracked-files=all")
+	toks, err := gitZ(ws, "status", "--porcelain", "-z", "--untracked-files=all")
 	if err != nil {
 		return nil, err
 	}
 	var out []dirtyPath
-	for _, line := range strings.Split(status, "\n") {
-		if len(line) < 4 {
+	for i := 0; i < len(toks); i++ {
+		t := toks[i]
+		if len(t) < 4 {
 			continue
 		}
-		path := strings.Trim(line[3:], `"`)
-		if _, after, ok := strings.Cut(path, " -> "); ok {
-			path = after
+		out = append(out, dirtyPath{t[3:], t[1] != ' '})
+		if strings.ContainsAny(t[:2], "RC") {
+			i++ // the original path follows
 		}
-		out = append(out, dirtyPath{path, line[1] != ' '})
 	}
 	return out, nil
 }
 
-// catalogCommitPass runs after each coder pass: it commits exactly the files the coder
-// reported, and refuses if anything else in the workspace changed.
+// catalogCommitPass runs after each coder pass: it commits the files the coder reported plus the leftover files a retry carried over (r.State.Carried) that are still dirty, and refuses if anything else in the workspace changed.
 func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 	if d == nil {
 		return fmt.Errorf("commit-pass runs only after a stage")
@@ -112,7 +111,10 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 		listed[f] = true
 	}
 	// A retry starts on the previous attempt's leftovers; those still dirty count as reported.
-	dirty, _ := dirtyPaths(ws)
+	dirty, err := dirtyPaths(ws)
+	if err != nil {
+		return fmt.Errorf("git status: %v", err)
+	}
 	for _, d := range dirty {
 		for _, c := range r.State.Carried {
 			if d.path == c && !listed[c] {
@@ -126,7 +128,10 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 			return err
 		}
 	}
-	dirty, _ = dirtyPaths(ws)
+	dirty, err = dirtyPaths(ws)
+	if err != nil {
+		return fmt.Errorf("git status: %v", err)
+	}
 	var stray []string
 	for _, d := range dirty {
 		if d.unstaged || !listed[d.path] {
@@ -136,7 +141,11 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 	if len(stray) > 0 {
 		return fmt.Errorf("files changed that the coder did not report: %s", strings.Join(stray, ", "))
 	}
-	if staged, _ := gitOut(ws, "diff", "--cached", "--name-only"); staged == "" {
+	staged, err := gitOut(ws, "diff", "--cached", "--name-only")
+	if err != nil {
+		return fmt.Errorf("git diff --cached: %v", err)
+	}
+	if staged == "" {
 		r.State.log("handler", "", d.ID, "commit-pass: no changes to commit")
 		return nil
 	}

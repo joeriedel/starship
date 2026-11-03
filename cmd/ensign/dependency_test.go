@@ -943,3 +943,28 @@ func TestRestoreReturnsATrackedFileReportedInAnotherCaseToHead(t *testing.T) {
 		t.Errorf("go.mod = %q, want HEAD's content", got)
 	}
 }
+
+func TestCatalogCommitPassCommitsAFileNeedingQuoting(t *testing.T) {
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	r := unitRun(t, ws)
+	write(t, filepath.Join(ws, "supernova", "café au lait.txt"), "work\n")
+	d := &Dispatch{ID: "d1", Summary: "added café", Fields: map[string][]string{"files": {"supernova/café au lait.txt"}}}
+	if err := catalogCommitPass(r, d); err != nil {
+		t.Fatal(err)
+	}
+	if got := runGit(t, ws, "-c", "core.quotepath=off", "show", "--name-only", "--format=", "HEAD"); got != "supernova/café au lait.txt" {
+		t.Errorf("committed %q", got)
+	}
+}
+
+func TestCatalogCommitPassSurfacesAGitStatusFailure(t *testing.T) {
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	r := unitRun(t, ws)
+	if err := os.WriteFile(filepath.Join(ws, ".git", "index"), []byte("not an index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := &Dispatch{ID: "d1", Summary: "nothing", Fields: map[string][]string{}}
+	if err := catalogCommitPass(r, d); err == nil || !strings.Contains(err.Error(), "git status") {
+		t.Fatalf("got %v", err)
+	}
+}
