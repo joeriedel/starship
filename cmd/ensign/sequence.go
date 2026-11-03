@@ -440,6 +440,9 @@ func readRun(bridge, id string) (*RunFiles, error) {
 	return r, nil
 }
 
+// haltPrefix starts the reason of a run that halt retired, so reconcile can tell it from a run that failed.
+const haltPrefix = "cancelled: "
+
 // reconcile brings the steps of runs under way in line with their runs' saved states. A step with several runs waits until all of them are over before it succeeds or fails.
 func (sf *seqFile) reconcile(bridge string) {
 	for _, seq := range sf.Sequences {
@@ -449,8 +452,8 @@ func (sf *seqFile) reconcile(bridge string) {
 			}
 			runs := st.runs()
 			var snaps []*RunFiles
-			over, failed, lost := 0, 0, false
-			var reason, asked string
+			over, failed, retired, lost := 0, 0, 0, false
+			var reason, retiredReason, asked string
 			for _, ru := range runs {
 				r, err := readRun(bridge, ru.Run)
 				if err != nil {
@@ -472,7 +475,12 @@ func (sf *seqFile) reconcile(bridge string) {
 				case "error":
 					over++
 					failed++
-					if reason == "" {
+					if seq.Halted && strings.HasPrefix(ru.Reason, haltPrefix) {
+						retired++
+						if retiredReason == "" {
+							retiredReason = strings.TrimPrefix(ru.Reason, haltPrefix)
+						}
+					} else if reason == "" {
 						reason = ru.Reason
 					}
 				case "ask-user":
@@ -486,6 +494,9 @@ func (sf *seqFile) reconcile(bridge string) {
 				st.Status, st.Reason = "paused", asked
 			case over < len(runs):
 				st.Status, st.Reason = "active", ""
+			case failed > 0 && failed == retired:
+				// Every failed run was retired by halt, so the step was cancelled, not failed.
+				st.Status, st.Reason = "cancelled", retiredReason
 			case failed > 0:
 				st.Reason = reason
 				if !lost && st.Prev == "" && !seq.Halted {
@@ -1319,12 +1330,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		}
 		// A paused step's run may be held by a finishing hook, whose order is run then sequence; so its run is retired here between two holds of the sequence lock.
-		type stepKey struct{ seq, n int }
-		type pausedStep struct {
-			key  stepKey
-			runs []string
-		}
-		var paused []pausedStep
+		var pausedRuns []string
 		var halted string
 		err = withSeq(bridge, session, func(sf *seqFile) error {
 			var cur *sequence
@@ -1349,16 +1355,14 @@ func cmdSequence(args []string, out io.Writer) error {
 			for _, st := range cur.Steps {
 				switch {
 				case st.Status == "paused":
-					p := pausedStep{key: stepKey{cur.N, st.N}}
 					for _, ru := range st.runs() {
-						p.runs = append(p.runs, ru.Run)
+						pausedRuns = append(pausedRuns, ru.Run)
 					}
-					paused = append(paused, p)
 				case st.Kind == "run" && st.Status == "active":
 					// A run still queued for a busy folder, or approved with no lead yet, never starts now.
 					all := true
 					for _, ru := range st.runs() {
-						if !retireUnstarted(bridge, ru.Run, "cancelled: "+reason) {
+						if !retireUnstarted(bridge, ru.Run, haltPrefix+reason) {
 							all = false
 						}
 					}
@@ -1377,25 +1381,10 @@ func cmdSequence(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		retired := map[stepKey]bool{}
-		for _, p := range paused {
-			retired[p.key] = true
-			for _, id := range p.runs {
-				// A run that is still going keeps its step paused; one that has finished does not.
-				if !retireIf(bridge, id, "cancelled: "+reason, "pending", "ask-user") {
-					if r, err := readRun(bridge, id); err == nil && !finishedRun(r.State) {
-						retired[p.key] = false
-					}
-				}
-			}
+		for _, id := range pausedRuns {
+			retireIf(bridge, id, haltPrefix+reason, "pending", "ask-user")
 		}
 		return withSeq(bridge, session, func(sf *seqFile) error {
-			for k, ok := range retired {
-				// A run that was resumed meanwhile is left running; its step finishes like any active one.
-				if _, st := sf.step(k.seq, k.n); ok && st != nil && st.Status == "paused" {
-					st.Status, st.Reason = "cancelled", reason
-				}
-			}
 			text, err := sf.advance(bridge, session)
 			if text != "" {
 				fmt.Fprintln(out, text)

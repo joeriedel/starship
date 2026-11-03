@@ -1360,3 +1360,159 @@ func TestSequenceNameIsValidated(t *testing.T) {
 	}
 	w.mustSeq("do", "supernova chore", "--name", strings.Repeat("x", 60))
 }
+
+func TestSequenceHaltOfAGroupWithNoLeadStartedCancelsTheStep(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	w.mustSeq("halt", "--reason", "changed my mind")
+	w.wantStatus("cancelled")
+	for _, id := range ids {
+		if st := w.runState(id); st.Status != "error" || st.Reason != "cancelled: changed my mind" {
+			t.Errorf("run %s: %s %q", id, st.Status, st.Reason)
+		}
+	}
+	if l := readSeq(w.bridge, w.sid).listingAll(w.bridge); !strings.Contains(l, "[cancelled] changed my mind") || strings.Contains(l, "[failed]") {
+		t.Errorf("listing:\n%s", l)
+	}
+}
+
+func TestSequenceHaltOfAGroupWithOneRunGoingCancelsTheStepWhenItPasses(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	lead := w.leadOf(ids[1])
+	w.mustSeq("halt", "--reason", "changed my mind")
+	w.wantStatus("active")
+	if st := w.runState(ids[0]); st.Status != "error" || st.Reason != "cancelled: changed my mind" {
+		t.Fatalf("the run without a lead should be retired: %s %q", st.Status, st.Reason)
+	}
+	w.passLoc(lead)
+	w.wantStatus("cancelled")
+	if r := w.step(1).Reason; r != "changed my mind" {
+		t.Errorf("reason %q", r)
+	}
+	if l := readSeq(w.bridge, w.sid).listingAll(w.bridge); !strings.Contains(l, "[cancelled] changed my mind") || strings.Contains(l, "[failed]") {
+		t.Errorf("listing:\n%s", l)
+	}
+}
+
+func TestSequenceHaltOfAGroupWithOneRunGoingFailsTheStepWithTheRealReason(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	lead := w.leadOf(ids[1])
+	w.mustSeq("halt", "--reason", "changed my mind")
+	w.wantStatus("active")
+	w.failRun(lead)
+	w.wantStatus("failed")
+	real := w.runState(ids[1]).Reason
+	if r := w.step(1).Reason; r == "" || r != real || strings.HasPrefix(r, haltPrefix) {
+		t.Errorf("reason %q, want the failed run's %q", r, real)
+	}
+	if l := readSeq(w.bridge, w.sid).listingAll(w.bridge); !strings.Contains(l, "[failed] "+real) {
+		t.Errorf("listing should show the real failure %q:\n%s", real, l)
+	}
+}
+
+func TestSequenceHaltOfAPausedGroupCancelsTheStepWhenTheRestFinish(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	lead := w.leadOf(ids[1])
+	r, err := openRun(w.bridge, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status, r.State.Reason = "ask-user", "another cycle?"
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+	w.stopHook()
+	w.wantStatus("paused")
+	w.mustSeq("halt", "--reason", "changed my mind")
+	w.wantStatus("active")
+	if st := w.runState(ids[0]); st.Status != "error" || st.Reason != "cancelled: changed my mind" {
+		t.Fatalf("the paused run should be retired: %s %q", st.Status, st.Reason)
+	}
+	w.passLoc(lead)
+	w.wantStatus("cancelled")
+	if l := readSeq(w.bridge, w.sid).listingAll(w.bridge); !strings.Contains(l, "[cancelled] changed my mind") || strings.Contains(l, "[failed]") {
+		t.Errorf("listing:\n%s", l)
+	}
+}
+
+func TestSequenceDropOfAPendingGroupStepInAnApprovedSequenceRetiresItsRuns(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.addTask("other")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(2)
+	if len(ids) != 2 {
+		t.Fatalf("a pending group step should hold its queued runs: %v", ids)
+	}
+	out := w.mustSeq("drop", "2", "--reason", "not now")
+	w.wantStatus("active", "cancelled")
+	if !strings.Contains(out, "[cancelled] not now") {
+		t.Errorf("the listing should show the reason:\n%s", out)
+	}
+	for _, id := range ids {
+		if st := w.runState(id); st.Status != "error" || st.Reason != "cancelled: not now" {
+			t.Errorf("run %s: %s %q", id, st.Status, st.Reason)
+		}
+	}
+}
+
+func TestSequenceDropOfAGroupStepInTheOpenSequenceRemovesItAndRetiresItsRuns(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.addTask("other")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("run", "supernova/t")
+	ids := w.stepRuns(2)
+	if len(ids) != 2 {
+		t.Fatalf("a group step should hold its queued runs: %v", ids)
+	}
+	w.mustSeq("drop", "2", "--reason", "not now")
+	if n := len(readSeq(w.bridge, w.sid).Sequences[0].Steps); n != 1 {
+		t.Errorf("%d steps, the dropped step should be gone", n)
+	}
+	for _, id := range ids {
+		if st := w.runState(id); st.Status != "error" || st.Reason != "dropped: not now" {
+			t.Errorf("run %s: %s %q", id, st.Status, st.Reason)
+		}
+	}
+}
+
+func TestSequenceHaltOfAPausedGroupKeepsARealFailure(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	w.failRun(w.leadOf(ids[1]))
+	r, err := openRun(w.bridge, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status, r.State.Reason = "ask-user", "another cycle?"
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+	w.stopHook()
+	w.wantStatus("paused")
+	w.mustSeq("halt", "--reason", "changed my mind")
+	w.wantStatus("failed")
+	real := w.runState(ids[1]).Reason
+	if r := w.step(1).Reason; r == "" || r != real || strings.HasPrefix(r, haltPrefix) {
+		t.Errorf("reason %q, want the failed run's %q", r, real)
+	}
+	if l := readSeq(w.bridge, w.sid).listingAll(w.bridge); !strings.Contains(l, "[failed] "+real) {
+		t.Errorf("listing should show the real failure %q:\n%s", real, l)
+	}
+}
