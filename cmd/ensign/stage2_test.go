@@ -923,6 +923,89 @@ func TestJournalPushNonConflictFailure(t *testing.T) {
 	}
 }
 
+// failUnmergedCheckAfter lets the first n unmerged-file checks run for real, then makes every later one fail.
+func failUnmergedCheckAfter(t *testing.T, n int) {
+	t.Helper()
+	real := diffUnmerged
+	calls := 0
+	diffUnmerged = func(bridge string) (string, error) {
+		calls++
+		if calls > n {
+			return "", fmt.Errorf("simulated diff failure")
+		}
+		return real(bridge)
+	}
+	t.Cleanup(func() { diffUnmerged = real })
+}
+
+func TestJournalPushUnmergedCheckFailureRefuses(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	write(t, filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/history.md"), "# history\n")
+	runGit(t, w.bridge, "add", "-A")
+	runGit(t, w.bridge, "commit", "-q", "-m", "Add history")
+	corruptIndex(t, w.bridge)
+	var out bytes.Buffer
+	err := cmdJournal([]string{"push"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "couldn't check the bridge for unmerged files") || !strings.Contains(err.Error(), "git diff") {
+		t.Fatalf("want a refusal naming the failed check, got %v", err)
+	}
+	if got := runGit(t, remote, "log", "--format=%s", "-1"); got != "bridge" {
+		t.Fatalf("remote has %q", got)
+	}
+}
+
+func TestJournalPushUnmergedCheckFailureAfterFailedPull(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	rel := "projects/supernova/tasks/auth-refactor/task.md"
+	other := cloneRemote(t, remote)
+	write(t, filepath.Join(other, filepath.FromSlash(rel)), "theirs\n")
+	runGit(t, other, "commit", "-q", "-am", "theirs")
+	runGit(t, other, "push", "-q")
+
+	write(t, filepath.Join(w.bridge, filepath.FromSlash(rel)), "mine\n")
+	failUnmergedCheckAfter(t, 1)
+	var out bytes.Buffer
+	err := cmdJournal([]string{"commit", "-m", "Mine"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "pulling origin/main failed") || !strings.Contains(err.Error(), "unknown") || !strings.Contains(err.Error(), "simulated diff failure") || strings.Contains(err.Error(), "another machine") {
+		t.Fatalf("want a pull error saying the conflict state is unknown, got %v", err)
+	}
+	for _, d := range []string{"rebase-merge", "rebase-apply"} {
+		if _, err := os.Stat(filepath.Join(w.bridge, ".git", d)); err == nil {
+			t.Fatalf("bridge left mid-rebase (%s)", d)
+		}
+	}
+	if got := runGit(t, remote, "log", "--format=%s", "-1"); got != "theirs" {
+		t.Fatalf("remote has %q", got)
+	}
+}
+
+func TestJournalPushUnmergedCheckFailureAfterPull(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	other := cloneRemote(t, remote)
+	write(t, filepath.Join(other, "incoming.txt"), "theirs\n")
+	runGit(t, other, "add", "-A")
+	runGit(t, other, "commit", "-q", "-m", "incoming")
+	runGit(t, other, "push", "-q")
+
+	write(t, filepath.Join(w.bridge, ".gitignore"), "mine\n")
+	write(t, filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/history.md"), "# history\n")
+	failUnmergedCheckAfter(t, 1)
+	var out bytes.Buffer
+	err := cmdJournal([]string{"commit", "-m", "Add history"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "pulling origin/main succeeded") || !strings.Contains(err.Error(), "unknown") || !strings.Contains(err.Error(), "simulated diff failure") {
+		t.Fatalf("want an error saying the re-apply state is unknown, got %v", err)
+	}
+	if got := runGit(t, remote, "log", "--format=%s", "-1"); got != "incoming" {
+		t.Fatalf("remote has %q", got)
+	}
+}
+
 func corruptIndex(t *testing.T, dir string) {
 	t.Helper()
 	write(t, filepath.Join(dir, ".git", "index"), "not an index")

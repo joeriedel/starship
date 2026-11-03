@@ -270,22 +270,32 @@ func pushBridge(bridge string, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("the bridge's HEAD is detached")
 	}
-	if files := unmergedFiles(bridge); len(files) > 0 {
+	files, err := unmergedFiles(bridge)
+	if err != nil {
+		return fmt.Errorf("couldn't check the bridge for unmerged files, so nothing was pushed: %w. Fix that, then run ensign journal push", err)
+	}
+	if len(files) > 0 {
 		return fmt.Errorf("the bridge has unmerged files from an earlier conflict (%s). Resolve them, then run git add or git reset -- %s, and run ensign journal push",
 			strings.Join(files, ", "), strings.Join(files, " "))
 	}
 	var conflicted []string
 	if remoteHas(bridge, remote, branch) {
 		if err := git(bridge, "pull", "-q", "--rebase", "--autostash", remote, branch); err != nil {
-			conflicts := unmergedFiles(bridge)
+			conflicts, checkErr := unmergedFiles(bridge)
 			git(bridge, "rebase", "--abort")
+			if checkErr != nil {
+				return fmt.Errorf("pulling %s/%s failed: %w. Whether files conflicted is unknown, because checking for unmerged files failed: %v. Nothing was pushed; fix that, then run ensign journal push", remote, branch, err, checkErr)
+			}
 			if len(conflicts) == 0 {
 				return fmt.Errorf("pulling %s/%s failed: %w. Fix that, then run ensign journal push", remote, branch, err)
 			}
 			return fmt.Errorf("another machine changed the same files (%s). Pull with rebase, merge the two versions — "+
 				"keep both where each only added lines — and run ensign journal push", strings.Join(conflicts, ", "))
 		}
-		conflicted = unmergedFiles(bridge)
+		conflicted, err = unmergedFiles(bridge)
+		if err != nil {
+			return fmt.Errorf("pulling %s/%s succeeded, but whether re-applying the bridge's uncommitted changes conflicted is unknown, because checking for unmerged files failed: %w. Nothing was pushed; the changes may still be in git stash", remote, branch, err)
+		}
 	}
 	// Re-applying the autostash can conflict while git still exits 0, keeping the stash.
 	stashNote := ""
@@ -332,15 +342,23 @@ func pushBridge(bridge string, out io.Writer) error {
 }
 
 // unmergedFiles lists the bridge's unmerged paths, NUL-separated so odd names survive.
-func unmergedFiles(bridge string) []string {
-	out, _ := gitOut(bridge, "diff", "--name-only", "-z", "--diff-filter=U")
+func unmergedFiles(bridge string) ([]string, error) {
+	out, err := diffUnmerged(bridge)
+	if err != nil {
+		return nil, fmt.Errorf("git diff --diff-filter=U: %w", err)
+	}
 	var files []string
 	for _, f := range strings.Split(out, "\x00") {
 		if f != "" {
 			files = append(files, f)
 		}
 	}
-	return files
+	return files, nil
+}
+
+// diffUnmerged is a variable so tests can make the check fail midway through a push.
+var diffUnmerged = func(bridge string) (string, error) {
+	return gitOut(bridge, "diff", "--name-only", "-z", "--diff-filter=U")
 }
 
 func remoteHas(dir, remote, branch string) bool {
