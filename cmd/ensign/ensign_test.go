@@ -494,7 +494,7 @@ func TestFindingsLoopAndJoinPrecedence(t *testing.T) {
 	w.leaf(lead, "reviewer", "findings")
 	st := w.state()
 	if st.Scopes["run"].Stage != "code" || st.Spent["coder-loop"] != 2 {
-		t.Fatalf("after findings: stage %s loop %d", st.Scopes["run"].Stage, st.Spent["coder-loop"])
+		t.Fatalf("after findings: stage %s coder-loop %d", st.Scopes["run"].Stage, st.Spent["coder-loop"])
 	}
 }
 
@@ -526,7 +526,7 @@ func TestTestFailureResetsLoopAndSpendsTest(t *testing.T) {
 	cycle("fail")
 	st := w.state()
 	if st.Scopes["run"].Stage != "code" || st.Spent["coder-loop"] != 1 || st.Spent["test"] != 1 {
-		t.Fatalf("after one failure: stage %s loop %d test %d", st.Scopes["run"].Stage, st.Spent["coder-loop"], st.Spent["test"])
+		t.Fatalf("after one failure: stage %s coder-loop %d test %d", st.Scopes["run"].Stage, st.Spent["coder-loop"], st.Spent["test"])
 	}
 	cycle("fail")
 	cycle("fail") // the project set test to 2
