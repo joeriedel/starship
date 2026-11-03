@@ -476,24 +476,46 @@ func upgradeHookSettings(bridge string) {
 	}
 }
 
-// addGitattributes gives an existing bridge the .gitattributes that init writes, so its text files are LF on every machine, and commits just that file; committed blobs are not rewritten. Tracked files with uncommitted changes defer it to the next session. On a failure it removes and unstages the file unless HEAD has it, so the next session retries.
+// addGitattributes gives an existing bridge the .gitattributes that init writes, so its text files are LF on every machine, and commits just that file; committed blobs are not rewritten. Tracked files with uncommitted changes defer it to the next session. A non-blocking lock on .starship/gitattributes.lock keeps concurrent sessions from racing; a session that cannot take it skips. A .gitattributes that an interrupted attempt left untracked or staged, not in HEAD and holding exactly the expected content, is committed in place; any other .gitattributes is left alone. On a failure it removes and unstages the file unless HEAD has it, so the next session retries.
 func addGitattributes(bridge string) {
 	f := filepath.Join(bridge, ".gitattributes")
+	if os.MkdirAll(filepath.Join(bridge, ".starship"), 0o755) != nil {
+		return
+	}
+	lock := flock.New(filepath.Join(bridge, ".starship", "gitattributes.lock"))
+	if ok, err := lock.TryLock(); err != nil || !ok {
+		return
+	}
+	defer lock.Unlock()
 	if !isGit(bridge) {
 		return
 	}
-	if dirty, err := gitOut(bridge, "status", "--porcelain", "--untracked-files=no"); err != nil || dirty != "" {
+	data, rerr := os.ReadFile(f)
+	leftover := rerr == nil
+	if rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
 		return
 	}
-	// Exclusive create: only the session that makes the file may commit or undo it.
-	file, err := os.OpenFile(f, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if leftover && (string(data) != bridgeGitattributes || git(bridge, "cat-file", "-e", "HEAD:.gitattributes") == nil) {
+		return
+	}
+	dirty, err := gitOut(bridge, "status", "--porcelain", "-z", "--untracked-files=no")
 	if err != nil {
 		return
 	}
-	_, werr := file.WriteString(bridgeGitattributes)
-	if cerr := file.Close(); werr != nil || cerr != nil {
-		os.Remove(f)
+	if dirty != "" && !(leftover && (dirty == "A  .gitattributes\x00" || dirty == "AM .gitattributes\x00")) {
 		return
+	}
+	if !leftover {
+		// Exclusive create: only the session that makes the file may commit or undo it.
+		file, err := os.OpenFile(f, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			return
+		}
+		_, werr := file.WriteString(bridgeGitattributes)
+		if cerr := file.Close(); werr != nil || cerr != nil {
+			os.Remove(f)
+			return
+		}
 	}
 	if git(bridge, "add", "--", ".gitattributes") != nil ||
 		git(bridge, "commit", "-q", "-m", "Keep the bridge's text files at LF line endings", "--", ".gitattributes") != nil {

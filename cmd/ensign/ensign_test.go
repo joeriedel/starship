@@ -1749,6 +1749,7 @@ func TestGitattributesMigration(t *testing.T) {
 		git(w.bridge, "config", "core.autocrlf", autocrlf)
 		write(t, filepath.Join(w.bridge, "CLAUDE.md"), content)
 		write(t, filepath.Join(w.bridge, "with space.md"), content)
+		write(t, filepath.Join(w.bridge, ".gitignore"), ".starship/\n")
 		git(w.bridge, "add", "-A")
 		git(w.bridge, "commit", "-q", "-m", "old bridge")
 		return w
@@ -1836,6 +1837,76 @@ func TestGitattributesMigration(t *testing.T) {
 		addGitattributes(w.bridge)
 		if _, err := os.Stat(ga(w)); err != nil {
 			t.Errorf("migration should run once clean")
+		}
+	})
+	const lineEndings = "Keep the bridge's text files at LF line endings"
+	t.Run("untracked leftover", func(t *testing.T) {
+		w := setup(t, "false", "a\n")
+		write(t, ga(w), bridgeGitattributes)
+		addGitattributes(w.bridge)
+		if commits(w) != "2" || g(w, "show", "HEAD:.gitattributes") != strings.TrimSuffix(bridgeGitattributes, "\n") {
+			t.Errorf("leftover not committed: %s commits", commits(w))
+		}
+		if g(w, "log", "-1", "--format=%s") != lineEndings {
+			t.Errorf("commit message %q", g(w, "log", "-1", "--format=%s"))
+		}
+		if st := g(w, "status", "--porcelain"); st != "" {
+			t.Errorf("status: %q", st)
+		}
+	})
+	t.Run("staged leftover", func(t *testing.T) {
+		w := setup(t, "false", "a\n")
+		write(t, ga(w), bridgeGitattributes)
+		git(w.bridge, "add", "--", ".gitattributes")
+		addGitattributes(w.bridge)
+		if commits(w) != "2" || g(w, "show", "--name-only", "--format=", "HEAD") != ".gitattributes" {
+			t.Errorf("staged leftover not committed: %s commits", commits(w))
+		}
+		if st := g(w, "status", "--porcelain"); st != "" {
+			t.Errorf("status: %q", st)
+		}
+	})
+	t.Run("leftover with other content", func(t *testing.T) {
+		w := setup(t, "false", "a\n")
+		write(t, ga(w), "*.md text\n")
+		addGitattributes(w.bridge)
+		if data, _ := os.ReadFile(ga(w)); string(data) != "*.md text\n" {
+			t.Errorf(".gitattributes = %q", data)
+		}
+		if commits(w) != "1" {
+			t.Errorf("no commit expected")
+		}
+	})
+	t.Run("staged leftover with another change waits", func(t *testing.T) {
+		w := setup(t, "false", "a\n")
+		write(t, ga(w), bridgeGitattributes)
+		git(w.bridge, "add", "--", ".gitattributes")
+		write(t, filepath.Join(w.bridge, "CLAUDE.md"), "changed\n")
+		addGitattributes(w.bridge)
+		if commits(w) != "1" {
+			t.Errorf("no commit expected")
+		}
+	})
+	t.Run("lock held", func(t *testing.T) {
+		w := setup(t, "false", "a\n")
+		if err := os.MkdirAll(filepath.Join(w.bridge, ".starship"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lock := flock.New(filepath.Join(w.bridge, ".starship", "gitattributes.lock"))
+		if ok, err := lock.TryLock(); err != nil || !ok {
+			t.Fatalf("TryLock: %v %v", ok, err)
+		}
+		addGitattributes(w.bridge)
+		if _, err := os.Stat(ga(w)); err == nil {
+			t.Errorf(".gitattributes created while the lock was held")
+		}
+		if commits(w) != "1" {
+			t.Errorf("no commit expected")
+		}
+		lock.Unlock()
+		addGitattributes(w.bridge)
+		if commits(w) != "2" {
+			t.Errorf("migration should run once unlocked")
 		}
 	})
 }
