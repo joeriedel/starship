@@ -218,8 +218,10 @@ func readRunFiles(dir string, snap *Snapshot, st *State) error {
 	if err := errors.Join(err1, readJSON(filepath.Join(dir, "state.json"), st)); err != nil {
 		return err
 	}
-	if err := snap.Pipeline.canonicalizeBudgets(); err != nil {
-		return err
+	if snap.Pipeline != nil {
+		if err := snap.Pipeline.canonicalizeBudgets(); err != nil {
+			return err
+		}
 	}
 	st.canonicalizeBudgets()
 	return nil
