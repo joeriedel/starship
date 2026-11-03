@@ -227,6 +227,9 @@ func cmdSelftest(out io.Writer) error {
 		return err
 	}
 
+	fmt.Fprintln(out, "running a background-task probe for the Stop input…")
+	stopBgEvents := runStopBackgroundProbe(self, token)
+
 	str := func(e map[string]any, k string) string { s, _ := e[k].(string); return s }
 	find := func(match func(map[string]any) bool) []map[string]any {
 		var out []map[string]any
@@ -292,6 +295,7 @@ func cmdSelftest(out io.Writer) error {
 		{"an agent's Bash loads a setup file written after SessionStart", envLoaded(events)},
 	}
 	checks = append(checks, restartChecks(restart, out)...)
+	checks = append(checks, selftestCheck{"Stop background_tasks lists a background command, with the id PostToolUse saw", stopListsBackground(stopBgEvents)})
 	if askedBackground {
 		checks = append(checks, struct {
 			name string
@@ -379,12 +383,23 @@ func runProbeSession(dir, prompt string, claudeArgs ...string) ([]map[string]any
 	if err != nil {
 		return nil, "", "", fmt.Errorf("the probe session failed: %v: %s", err, lastLines(string(raw)+stderr.String(), 5))
 	}
+	result, sessionID, err := parseProbeSession(raw)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return readProbeLog(dir)[before:], result, sessionID, nil
+}
+
+// parseProbeSession reads the result and session id from the JSON a probe session printed.
+func parseProbeSession(raw []byte) (result, sessionID string, err error) {
 	var session struct {
 		Result    string `json:"result"`
 		SessionID string `json:"session_id"`
 	}
-	json.Unmarshal(raw, &session)
-	return readProbeLog(dir)[before:], session.Result, session.SessionID, nil
+	if err := json.Unmarshal(raw, &session); err != nil {
+		return "", "", fmt.Errorf("the probe session printed output that is not JSON: %v: %s", err, lastLines(string(raw), 5))
+	}
+	return session.Result, session.SessionID, nil
 }
 
 // envLoaded reports whether a probe-env Bash call saw the variable that the setup file, written after SessionStart, exports.
@@ -397,26 +412,54 @@ func envLoaded(events []map[string]any) bool {
 	return false
 }
 
-// backgroundListed reports whether a probe-bg SubagentStop input lists a background task
-// whose id is the one PostToolUse reported for that agent's background Bash call.
-func backgroundListed(events []map[string]any) bool {
-	ids := map[string]bool{}
+// backgroundTaskIDs maps each non-empty tool_response.backgroundTaskId that PostToolUse reported for the given agent_type ("" for the main session) to the session it came from.
+func backgroundTaskIDs(events []map[string]any, agentType string) map[string]string {
+	ids := map[string]string{}
 	for _, e := range events {
-		if e["hook_event_name"] == "PostToolUse" && e["agent_type"] == "probe-bg" {
+		if e["hook_event_name"] == "PostToolUse" && eventStr(e, "agent_type") == agentType {
 			resp, _ := e["tool_response"].(map[string]any)
 			if id, _ := resp["backgroundTaskId"].(string); id != "" {
-				ids[id] = true
+				ids[id] = eventStr(e, "session_id")
 			}
 		}
 	}
-	for _, e := range events {
-		if e["hook_event_name"] != "SubagentStop" || e["agent_type"] != "probe-bg" {
-			continue
+	return ids
+}
+
+// taskListed reports whether the event's background_tasks has an entry with an id in ids.
+func taskListed(e map[string]any, ids map[string]string) (string, bool) {
+	tasks, _ := e["background_tasks"].([]any)
+	for _, t := range tasks {
+		task, _ := t.(map[string]any)
+		if id, _ := task["id"].(string); id != "" {
+			if _, ok := ids[id]; ok {
+				return id, true
+			}
 		}
-		tasks, _ := e["background_tasks"].([]any)
-		for _, t := range tasks {
-			task, _ := t.(map[string]any)
-			if id, _ := task["id"].(string); ids[id] {
+	}
+	return "", false
+}
+
+// backgroundListed reports whether a probe-bg SubagentStop input lists a background task
+// whose id is the one PostToolUse reported for that agent's background Bash call.
+func backgroundListed(events []map[string]any) bool {
+	ids := backgroundTaskIDs(events, "probe-bg")
+	for _, e := range events {
+		if e["hook_event_name"] == "SubagentStop" && e["agent_type"] == "probe-bg" {
+			if _, ok := taskListed(e, ids); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stopListsBackground reports whether a Stop input lists the background task that PostToolUse reported for the main session's Bash call in the same session. A later Stop with an empty list does not undo it.
+func stopListsBackground(events []map[string]any) bool {
+	ids := backgroundTaskIDs(events, "")
+	for _, e := range events {
+		if e["hook_event_name"] == "Stop" {
+			if id, ok := taskListed(e, ids); ok && ids[id] == eventStr(e, "session_id") {
 				return true
 			}
 		}
@@ -694,6 +737,26 @@ func runRestartProbe(self, token string) (*restartProbe, error) {
 	}
 	p.resumed.transcript = transcriptLines(p.resumed.events)
 	return &p, nil
+}
+
+// runStopBackgroundProbe runs a session whose main agent starts a background command and ends its turn, and returns the hook events. The Stop hook lives in settings.local.json so the other probe folders keep their settings. A failure is noted on stderr and returns no events, so the check always fails without aborting the others.
+func runStopBackgroundProbe(self, token string) []map[string]any {
+	stopHook := fmt.Sprintf(`{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": %q}]}]}}`, self+" selftest-hook Stop")
+	dir, err := newProbeDir(self, token, map[string]string{".claude/settings.local.json": stopHook})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stop background probe: %v\n", err)
+		return nil
+	}
+	defer os.RemoveAll(dir)
+	events, _, _, err := runProbeSession(dir,
+		`This is a self-test of this project's hooks, which the user asked for. `+
+			`Use the Bash tool once, with command "sleep 30" and run_in_background set to true. Then reply with the word started at once. Do not wait for the command.`,
+		"--allowedTools", "Bash", "--permission-mode", "auto")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stop background probe: the session failed: %v\n", err)
+		return nil
+	}
+	return events
 }
 
 // transcriptLines reads the session transcript named by the first event that carries one.

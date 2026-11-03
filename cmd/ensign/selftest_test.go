@@ -298,3 +298,121 @@ func TestManualInTranscript(t *testing.T) {
 		}
 	}
 }
+
+func postBgEv(agentType, session string, resp any) map[string]any {
+	return map[string]any{"hook_event_name": "PostToolUse", "tool_name": "Bash", "agent_type": agentType, "session_id": session, "tool_response": resp}
+}
+
+func tasksOf(ids ...string) []any {
+	var out []any
+	for _, id := range ids {
+		out = append(out, map[string]any{"id": id, "type": "shell", "status": "running"})
+	}
+	return out
+}
+
+func TestBackgroundListed(t *testing.T) {
+	post := func(id string) map[string]any {
+		return postBgEv("probe-bg", "s1", map[string]any{"backgroundTaskId": id})
+	}
+	stop := func(agentType string, tasks any) map[string]any {
+		return stopEv(agentType, "a1", map[string]any{"background_tasks": tasks})
+	}
+	if backgroundListed(nil) || backgroundListed([]map[string]any{}) {
+		t.Error("no events should fail")
+	}
+	if !backgroundListed([]map[string]any{post("b1"), stop("probe-bg", tasksOf("b1"))}) {
+		t.Error("a matching id should pass")
+	}
+	if backgroundListed([]map[string]any{post("b1")}) {
+		t.Error("an id only in PostToolUse should fail")
+	}
+	if backgroundListed([]map[string]any{stop("probe-bg", tasksOf("b1"))}) {
+		t.Error("an id only in SubagentStop should fail")
+	}
+	if backgroundListed([]map[string]any{post("b1"), stop("probe-bg", tasksOf("b2"))}) {
+		t.Error("a mismatched id should fail")
+	}
+	if backgroundListed([]map[string]any{postBgEv("probe-leaf", "s1", map[string]any{"backgroundTaskId": "b1"}), stop("probe-bg", tasksOf("b1"))}) {
+		t.Error("a PostToolUse from another agent_type should fail")
+	}
+	if backgroundListed([]map[string]any{post("b1"), stop("probe-leaf", tasksOf("b1"))}) {
+		t.Error("a SubagentStop from another agent_type should fail")
+	}
+	if backgroundListed([]map[string]any{post(""), stop("probe-bg", tasksOf(""))}) {
+		t.Error("an empty id should fail")
+	}
+	if backgroundListed([]map[string]any{post("b1"), stop("probe-bg", []any{map[string]any{"type": "shell"}})}) {
+		t.Error("a task with no id should fail")
+	}
+	if backgroundListed([]map[string]any{postBgEv("probe-bg", "s1", "b1"), stop("probe-bg", tasksOf("b1"))}) {
+		t.Error("a string tool_response should fail")
+	}
+	if backgroundListed([]map[string]any{post("b1"), stop("probe-bg", "b1"), stop("probe-bg", map[string]any{"id": "b1"})}) {
+		t.Error("background_tasks of the wrong type should fail")
+	}
+	if !backgroundListed([]map[string]any{post("b2"), stop("probe-bg", tasksOf("b1", "b2", "b3"))}) {
+		t.Error("one matching task among several should pass")
+	}
+	if !backgroundListed([]map[string]any{stop("probe-bg", tasksOf("b1")), post("b1")}) {
+		t.Error("a SubagentStop logged before the PostToolUse should pass")
+	}
+}
+
+func TestStopListsBackground(t *testing.T) {
+	post := func(session, id string) map[string]any {
+		return postBgEv("", session, map[string]any{"backgroundTaskId": id})
+	}
+	stop := func(session string, tasks any) map[string]any {
+		return map[string]any{"hook_event_name": "Stop", "session_id": session, "background_tasks": tasks}
+	}
+	if stopListsBackground(nil) {
+		t.Error("no events should fail")
+	}
+	if !stopListsBackground([]map[string]any{post("s1", "b1"), stop("s1", tasksOf("b1"))}) {
+		t.Error("a matching id should pass")
+	}
+	if !stopListsBackground([]map[string]any{post("s1", "b1"), stop("s1", tasksOf("b1")), stop("s1", []any{})}) {
+		t.Error("a later empty Stop should not undo it")
+	}
+	if stopListsBackground([]map[string]any{post("s1", "b1"), stop("s1", []any{})}) {
+		t.Error("an empty list should fail")
+	}
+	if stopListsBackground([]map[string]any{post("s1", "b1")}) {
+		t.Error("no Stop should fail")
+	}
+	if stopListsBackground([]map[string]any{stop("s1", tasksOf("b1"))}) {
+		t.Error("no PostToolUse should fail")
+	}
+	if stopListsBackground([]map[string]any{post("s1", "b1"), stop("s1", tasksOf("b2"))}) {
+		t.Error("a mismatched id should fail")
+	}
+	if stopListsBackground([]map[string]any{post("s1", "b1"), stop("s2", tasksOf("b1"))}) {
+		t.Error("another session should fail")
+	}
+	if stopListsBackground([]map[string]any{post("s1", ""), stop("s1", tasksOf(""))}) {
+		t.Error("an empty id should fail")
+	}
+	if stopListsBackground([]map[string]any{postBgEv("probe-bg", "s1", map[string]any{"backgroundTaskId": "b1"}), stop("s1", tasksOf("b1"))}) {
+		t.Error("a subagent's PostToolUse should fail")
+	}
+	if stopListsBackground([]map[string]any{post("s1", "b1"), {"hook_event_name": "SubagentStop", "session_id": "s1", "background_tasks": tasksOf("b1")}}) {
+		t.Error("a SubagentStop should fail")
+	}
+	if stopListsBackground([]map[string]any{post("s1", "b1"), stop("s1", "b1")}) {
+		t.Error("background_tasks of the wrong type should fail")
+	}
+}
+
+func TestParseProbeSession(t *testing.T) {
+	result, id, err := parseProbeSession([]byte(`{"result": "done", "session_id": "abc"}`))
+	if err != nil || result != "done" || id != "abc" {
+		t.Errorf("valid JSON gave %q, %q, %v", result, id, err)
+	}
+	if _, _, err := parseProbeSession([]byte("Error: not logged in")); err == nil || !strings.Contains(err.Error(), "not logged in") {
+		t.Errorf("non-JSON should fail and show the output, got %v", err)
+	}
+	if _, _, err := parseProbeSession(nil); err == nil {
+		t.Error("empty output should fail")
+	}
+}

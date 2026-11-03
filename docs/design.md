@@ -848,7 +848,7 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | The project `CLAUDE.md`, with its imports, reaches subagents | yes; every agent in a live run carried the session manual while it was imported there |
 | `SubagentHandback` reaches PreToolUse with the report as `tool_input.message`; the later SubagentStop's `last_assistant_message` is only closing text | yes (2.1.314) |
 | SubagentStop's `background_tasks` lists in-flight tasks (`id`, `type`, `status`, `command`, `agent_type`), scoped to the parent session with no owner | yes (2.1.314); a background Bash id comes from PostToolUse `tool_response.backgroundTaskId`, a background agent's from `tool_response.agentId` |
-| Stop carries `background_tasks` too, one entry per in-flight task (same fields); empty when none | documented in the Claude Code hooks docs (Stop input); not probed |
+| Stop carries `background_tasks` too, one entry per in-flight task (same fields); empty when none | yes (2.1.317), for one observation only: a background Bash id from PostToolUse `tool_response.backgroundTaskId` is listed in a Stop that fires while the command runs. The field set and "empty when none" are documented, not probed |
 | A missing hook command blocks anything | no; non-blocking error, tool calls proceed |
 | PreToolUse `allow` lifts a permission `ask` rule | no (tested headless); the ask still applies |
 | SessionStart can pass values to the session's later commands | yes; a variable written to `CLAUDE_ENV_FILE` was visible to a Bash command in that session |
