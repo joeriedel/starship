@@ -83,7 +83,7 @@ func killTreeOnCancel(c *exec.Cmd, cancel context.CancelFunc) (started func(), f
 		if jobErr != nil {
 			return
 		}
-		jobErr = assignToJob(job, uint32(c.Process.Pid))
+		jobErr = assignToJobFn(job, uint32(c.Process.Pid))
 	}
 	finish = func() error {
 		stopWatch()
@@ -161,6 +161,9 @@ func newKillOnCloseJob() (windows.Handle, error) {
 	}
 	return job, nil
 }
+
+// assignToJobFn is a variable so tests can force the taskkill fallback.
+var assignToJobFn = assignToJob
 
 // assignToJob puts the process with the given pid into job.
 func assignToJob(job windows.Handle, pid uint32) error {
