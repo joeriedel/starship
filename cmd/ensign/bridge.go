@@ -489,9 +489,15 @@ bindings:
 `
 
 func cmdProject(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>] | ensign project reviewed <project>[/<task>]")
-	if len(args) == 2 && args[0] == "reviewed" {
-		return cmdProjectReviewed(args[1], out)
+	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>] | ensign project reviewed <project>[/<task>] [--location <name>]")
+	if len(args) >= 2 && args[0] == "reviewed" {
+		switch {
+		case len(args) == 2:
+			return cmdProjectReviewed(args[1], "", out)
+		case len(args) == 4 && args[2] == "--location":
+			return cmdProjectReviewed(args[1], args[3], out)
+		}
+		return usage
 	}
 	if len(args) < 4 || args[0] != "new" {
 		return usage
@@ -828,6 +834,13 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 	ws, err := workspaceFor(bridge, project, name)
 	switch {
 	case len(tf.Locations) > 0:
+		for _, loc := range tf.Locations {
+			if p, err := locationPathFor(bridge, project, loc); err == nil {
+				if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+					printShippedDrift(bridge, project, p, loc, out)
+				}
+			}
+		}
 	case err != nil:
 		fmt.Fprintf(out, "workspace  STOP: %v\n", err)
 	default:
@@ -836,7 +849,7 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 		} else {
 			fmt.Fprintf(out, "workspace  %s\n", ws)
 			fmt.Fprintln(out, "vcs        "+vcsState(ws, tf.Vcs))
-			printShippedDrift(bridge, project, ws, out)
+			printShippedDrift(bridge, project, ws, "", out)
 		}
 	}
 	notes, err := projectNotes(bridge, project)

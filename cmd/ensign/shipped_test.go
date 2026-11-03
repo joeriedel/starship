@@ -134,3 +134,95 @@ func TestShippedMissingPiecesAreQuiet(t *testing.T) {
 		t.Errorf("a missing workspace should not report:\n%s", got)
 	}
 }
+
+const locShippedClient = `bindings:
+  build: { command: "./build.sh" }
+  test:  { command: "./client-test.sh" }
+`
+
+const locShippedServer = `bindings:
+  build: { command: "./build.sh" }
+  test:  { command: "./test.sh" }
+`
+
+// openLocShipped sets each location's shipped file and opens a task with both locations.
+func openLocShipped(t *testing.T, w *world, task string) string {
+	t.Helper()
+	var out bytes.Buffer
+	taskDir := filepath.Join(w.bridge, "projects/supernova/tasks", strings.TrimPrefix(task, "supernova/"))
+	if err := openTask(w.bridge, task, taskDir, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
+}
+
+func locShipped(t *testing.T, w *world, loc, content string) {
+	t.Helper()
+	dir, err := locationPathFor(w.bridge, "supernova", loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, ".starship/project.yaml"), content)
+}
+
+func TestShippedLocationsQuietWhenEffectiveSettingsMatch(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "both", "client,server")
+	locShipped(t, w, "client", locShippedClient)
+	locShipped(t, w, "server", locShippedServer)
+	if got := openLocShipped(t, w, task); strings.Contains(got, "shipped") {
+		t.Errorf("a shipped binding equal to the location's override is not drift:\n%s", got)
+	}
+}
+
+func TestShippedLocationDriftNamesTheLocation(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "both", "client,server")
+	locShipped(t, w, "client", strings.Replace(locShippedClient, "./client-test.sh", "./other.sh", 1))
+	locShipped(t, w, "server", locShippedServer)
+	got := openLocShipped(t, w, task)
+	if !strings.Contains(got, "location client: the code's") || !strings.Contains(got, "binding test: changed") ||
+		!strings.Contains(got, "project reviewed supernova --location client") {
+		t.Errorf("client drift expected:\n%s", got)
+	}
+	if strings.Contains(got, "location server: the code's") || strings.Contains(got, "--location server") {
+		t.Errorf("server has no drift:\n%s", got)
+	}
+}
+
+func TestShippedLocationReviewedIsPerLocation(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "both", "client,server")
+	locShipped(t, w, "client", strings.Replace(locShippedClient, "./client-test.sh", "./other.sh", 1))
+	locShipped(t, w, "server", strings.Replace(locShippedServer, "./test.sh", "./other.sh", 1))
+	if err := cmdProject([]string{"reviewed", "supernova", "--location", "client"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	got := openLocShipped(t, w, task)
+	if strings.Contains(got, "--location client") || !strings.Contains(got, "--location server") {
+		t.Errorf("only client should be silenced:\n%s", got)
+	}
+	if err := cmdProject([]string{"reviewed", "supernova", "--location", "server"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := openLocShipped(t, w, task); strings.Contains(got, "shipped") {
+		t.Errorf("both should be quiet, client's entry kept:\n%s", got)
+	}
+}
+
+func TestShippedLocationReviewedWithoutFlagRecordsAll(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "both", "client,server")
+	locShipped(t, w, "client", strings.Replace(locShippedClient, "./client-test.sh", "./other.sh", 1))
+	locShipped(t, w, "server", strings.Replace(locShippedServer, "./test.sh", "./other.sh", 1))
+	var out bytes.Buffer
+	if err := cmdProject([]string{"reviewed", "supernova"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := openLocShipped(t, w, task); strings.Contains(got, "shipped") {
+		t.Errorf("both locations should be recorded:\n%s", got)
+	}
+	if err := cmdProject([]string{"reviewed", "supernova", "--location", "nope"}, &out); err == nil {
+		t.Error("an unknown location should fail")
+	}
+}
