@@ -301,6 +301,9 @@ func historyHeading(task string) string { return "# " + task + ": history\n\n" }
 // logRunInJournal adds the run's line to the end of its task's history.md, so every
 // run is in the journal even if nothing else gets written.
 func logRunInJournal(r *RunFiles) error {
+	if !strings.Contains(r.Snap.Task, "/") {
+		return nil
+	}
 	return addToJournal(r.Snap.Bridge, r.Snap.Task, runEntry(r))
 }
 
