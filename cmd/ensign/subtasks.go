@@ -2,13 +2,13 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -27,9 +27,8 @@ type subtask struct {
 
 // subtaskMark records that a subtask is done or dropped; a subtask with no mark is pending.
 type subtaskMark struct {
-	Status string `json:"status"` // done, dropped
-	Run    string `json:"run,omitempty"`
-	Date   string `json:"date"`
+	Status string // done, dropped
+	Run    string // the run that finished it, empty for a mark by hand
 }
 
 func subtasksDir(taskDir string) string { return filepath.Join(taskDir, "subtasks") }
@@ -120,42 +119,63 @@ func checkSubtasks(subs []subtask, taskLocs []string) error {
 	return nil
 }
 
-func subtaskStateFile(bridge, task string) string {
-	return taskStateFile(bridge, task, "", ".subtasks")
-}
-
-func readSubtaskMarks(bridge, task string) (map[string]subtaskMark, error) {
+// subtaskMarks reads which of subs are done or dropped from the task's journal, which the bridge commits: a run line "subtask <name>: success" and a hand line "subtask <name>: done by hand" or "dropped by hand" mark it, the last such line winning. A task whose history.md is missing and still logs in task.md is read there. No journal means no progress.
+func subtaskMarks(bridge, task string, subs []subtask) (map[string]subtaskMark, error) {
 	marks := map[string]subtaskMark{}
-	data, err := os.ReadFile(subtaskStateFile(bridge, task))
+	dir := taskDirOf(bridge, task)
+	// Writers rewrite task.md and create history.md in place, so read under their lock.
+	lock := taskStateFile(bridge, task, "", ".journal.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		return nil, err
+	}
+	l := flock.New(lock)
+	if err := l.RLock(); err != nil {
+		return nil, fmt.Errorf("locking the journal: %w", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "history.md"))
 	if errors.Is(err, fs.ErrNotExist) {
+		data, err = os.ReadFile(filepath.Join(dir, "task.md"))
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		l.Unlock()
 		return marks, nil
 	}
 	if err != nil {
+		l.Unlock()
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &marks); err != nil {
-		return nil, fmt.Errorf("%s: %v", subtaskStateFile(bridge, task), err)
+	l.Unlock()
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimRight(line, "\r")
+		head, _, ok := strings.Cut(strings.TrimPrefix(line, "- **"), ".**")
+		if !ok || !strings.HasPrefix(line, "- **") {
+			continue
+		}
+		before, after, ok := strings.Cut(head, ", subtask ")
+		if !ok {
+			continue
+		}
+		name, outcome, ok := strings.Cut(after, ": ")
+		if !ok || !slices.ContainsFunc(subs, func(s subtask) bool { return s.Name == name }) {
+			continue
+		}
+		m := subtaskMark{}
+		switch outcome {
+		case "success":
+			m.Status = "done"
+			if _, run, ok := strings.Cut(before, ", run "); ok {
+				m.Run, _, _ = strings.Cut(run, " ")
+			}
+		case "done by hand":
+			m.Status = "done"
+		case "dropped by hand":
+			m.Status = "dropped"
+		default:
+			continue
+		}
+		marks[name] = m
 	}
 	return marks, nil
-}
-
-// markSubtask records a subtask as done or dropped, under a lock so two runs ending together keep both marks.
-func markSubtask(bridge, task, name, status, run string) error {
-	path := subtaskStateFile(bridge, task)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	l := flock.New(path + ".lock")
-	if err := l.Lock(); err != nil {
-		return fmt.Errorf("locking the subtask state: %w", err)
-	}
-	defer l.Unlock()
-	marks, err := readSubtaskMarks(bridge, task)
-	if err != nil {
-		return err
-	}
-	marks[name] = subtaskMark{Status: status, Run: run, Date: time.Now().Format("2006-01-02")}
-	return writeJSON(path, marks)
 }
 
 // pendingSubtasks is a task's subtasks with no mark, in order, and the task's subtasks as a whole.
@@ -164,7 +184,7 @@ func pendingSubtasks(bridge, task string) (pending, all []subtask, err error) {
 	if err != nil || len(all) == 0 {
 		return nil, all, err
 	}
-	marks, err := readSubtaskMarks(bridge, task)
+	marks, err := subtaskMarks(bridge, task, all)
 	if err != nil {
 		return nil, all, err
 	}
@@ -226,7 +246,7 @@ func pickSubtask(bridge string, o runOpts) (*chosenSubtask, error) {
 	if err := checkSubtasks(subs, tf.Locations); err != nil {
 		return nil, err
 	}
-	marks, err := readSubtaskMarks(bridge, o.task)
+	marks, err := subtaskMarks(bridge, o.task, subs)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +351,8 @@ func cmdTaskSubtask(args []string, out io.Writer) error {
 		return fmt.Errorf("task %s has no subtask %q (it has %s)", task, name, subtaskNames(subs))
 	}
 	status := map[string]string{"done": "done", "drop": "dropped"}[args[0]]
-	if err := markSubtask(bridge, task, name, status, ""); err != nil {
+	entry := fmt.Sprintf("- **%s, subtask %s: %s by hand.**", time.Now().Format("2006-01-02"), name, status)
+	if err := addToJournal(bridge, task, entry); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "subtask %s of %s marked %s; %s\n", name, task, status, subtaskProgress(bridge, task))

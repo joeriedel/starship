@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 // version and releaseRepo are set at release build time with -ldflags
@@ -536,63 +538,77 @@ func splitHistory(bridge string) string {
 	files, _ := filepath.Glob(filepath.Join(bridge, "projects", "*", "tasks", "*", "task.md"))
 	var moved, notes []string
 	for _, tf := range files {
-		dir := filepath.Dir(tf)
-		hf := filepath.Join(dir, "history.md")
-		data, err := os.ReadFile(tf)
-		if err != nil {
-			continue
-		}
-		lines := strings.SplitAfter(string(data), "\n")
-		start := -1
-		for i, l := range lines {
-			if strings.TrimSpace(l) == "## Progress log" {
-				start = i
-				break
+		func() {
+			dir := filepath.Dir(tf)
+			task := filepath.Base(filepath.Dir(filepath.Dir(dir))) + "/" + filepath.Base(dir)
+			lock := taskStateFile(bridge, task, "", ".journal.lock")
+			if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+				notes = append(notes, fmt.Sprintf("starship: could not lock %s to split its progress log: %v", relTo(bridge, dir), err))
+				return
 			}
-		}
-		if start < 0 {
-			continue
-		}
-		rel := relTo(bridge, dir)
-		if _, err := os.Stat(hf); err == nil {
-			notes = append(notes, fmt.Sprintf("starship: %s has a progress log in task.md and a history.md; merge them by hand", rel))
-			continue
-		}
-		if tracked {
-			if dirty, _ := gitOut(bridge, "status", "--porcelain", "--", tf, hf); dirty != "" {
-				continue
+			l := flock.New(lock)
+			if err := l.Lock(); err != nil {
+				notes = append(notes, fmt.Sprintf("starship: could not lock %s to split its progress log: %v", relTo(bridge, dir), err))
+				return
 			}
-		}
-		end := len(lines)
-		for i := start + 1; i < len(lines); i++ {
-			if strings.HasPrefix(lines[i], "## ") {
-				end = i
-				break
+			defer l.Unlock()
+			hf := filepath.Join(dir, "history.md")
+			data, err := os.ReadFile(tf)
+			if err != nil {
+				return
 			}
-		}
-		entries := strings.ReplaceAll(strings.TrimSpace(strings.Join(lines[start+1:end], "")), "\r\n", "\n")
-		rest := lines[:start]
-		if end < len(lines) {
-			rest = append(rest, lines[end:]...)
-		} else {
-			for len(rest) > 1 && strings.TrimSpace(rest[len(rest)-1]) == "" {
-				rest = rest[:len(rest)-1]
+			lines := strings.SplitAfter(string(data), "\n")
+			start := -1
+			for i, l := range lines {
+				if strings.TrimSpace(l) == "## Progress log" {
+					start = i
+					break
+				}
 			}
-		}
-		history := historyHeading(filepath.Base(dir)) + entries + "\n"
-		if strings.Contains(string(data), "\r\n") {
-			history = strings.ReplaceAll(history, "\n", "\r\n")
-		}
-		if err := os.WriteFile(hf, []byte(history), 0o644); err != nil {
-			notes = append(notes, fmt.Sprintf("starship: could not write %s: %v", hf, err))
-			continue
-		}
-		if err := os.WriteFile(tf, []byte(strings.Join(rest, "")), 0o644); err != nil {
-			os.Remove(hf)
-			notes = append(notes, fmt.Sprintf("starship: could not write %s: %v", tf, err))
-			continue
-		}
-		moved = append(moved, tf, hf)
+			if start < 0 {
+				return
+			}
+			rel := relTo(bridge, dir)
+			if _, err := os.Stat(hf); err == nil {
+				notes = append(notes, fmt.Sprintf("starship: %s has a progress log in task.md and a history.md; merge them by hand", rel))
+				return
+			}
+			if tracked {
+				if dirty, _ := gitOut(bridge, "status", "--porcelain", "--", tf, hf); dirty != "" {
+					return
+				}
+			}
+			end := len(lines)
+			for i := start + 1; i < len(lines); i++ {
+				if strings.HasPrefix(lines[i], "## ") {
+					end = i
+					break
+				}
+			}
+			entries := strings.ReplaceAll(strings.TrimSpace(strings.Join(lines[start+1:end], "")), "\r\n", "\n")
+			rest := lines[:start]
+			if end < len(lines) {
+				rest = append(rest, lines[end:]...)
+			} else {
+				for len(rest) > 1 && strings.TrimSpace(rest[len(rest)-1]) == "" {
+					rest = rest[:len(rest)-1]
+				}
+			}
+			history := historyHeading(filepath.Base(dir)) + entries + "\n"
+			if strings.Contains(string(data), "\r\n") {
+				history = strings.ReplaceAll(history, "\n", "\r\n")
+			}
+			if err := os.WriteFile(hf, []byte(history), 0o644); err != nil {
+				notes = append(notes, fmt.Sprintf("starship: could not write %s: %v", hf, err))
+				return
+			}
+			if err := os.WriteFile(tf, []byte(strings.Join(rest, "")), 0o644); err != nil {
+				os.Remove(hf)
+				notes = append(notes, fmt.Sprintf("starship: could not write %s: %v", tf, err))
+				return
+			}
+			moved = append(moved, tf, hf)
+		}()
 	}
 	if len(moved) > 0 && tracked {
 		if err := git(bridge, append([]string{"add", "--"}, moved...)...); err != nil {

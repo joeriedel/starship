@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 // world is a copy of the fixture bridge with a fake Claude Code session around it.
@@ -1431,6 +1433,37 @@ func TestSplitHistory(t *testing.T) {
 			t.Errorf("history.md:\n%q", got)
 		}
 		clean(t, w)
+	})
+	t.Run("waits for the journal lock", func(t *testing.T) {
+		w := setup(t, doc, "false")
+		l := flock.New(taskStateFile(w.bridge, "supernova/auth-refactor", "", ".journal.lock"))
+		if err := os.MkdirAll(filepath.Dir(l.Path()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.Lock(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() {
+			splitHistory(w.bridge)
+			close(done)
+		}()
+		select {
+		case <-done:
+			t.Fatal("splitHistory did not wait for the journal lock")
+		case <-time.After(200 * time.Millisecond):
+		}
+		if got := read(w, "task.md"); got != doc {
+			t.Errorf("task.md changed while locked:\n%q", got)
+		}
+		l.Unlock()
+		<-done
+		if got := read(w, "task.md"); got != wantTask {
+			t.Errorf("task.md:\n%q", got)
+		}
+		if got := read(w, "history.md"); got != wantHistory {
+			t.Errorf("history.md:\n%q", got)
+		}
 	})
 	t.Run("CRLF working tree with autocrlf true is split and committed", func(t *testing.T) {
 		w := setup(t, crlf(doc), "true")

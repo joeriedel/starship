@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -42,7 +43,11 @@ func (w *world) snapOf(task string, o runOpts) (*Snapshot, error) {
 
 func (w *world) subtaskMarks(task string) map[string]subtaskMark {
 	w.t.Helper()
-	marks, err := readSubtaskMarks(w.bridge, "supernova/"+task)
+	subs, err := loadSubtasks(taskDirOf(w.bridge, "supernova/"+task))
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	marks, err := subtaskMarks(w.bridge, "supernova/"+task, subs)
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -351,5 +356,123 @@ func TestSequenceChainedSubtaskRunKeepsStaleBranch(t *testing.T) {
 	w.passRun(lead)
 	if st := w.runState(w.step(1).Run); !st.StaleOK {
 		t.Errorf("the chained run should keep stale_branch: %+v", st)
+	}
+}
+
+func TestSubtaskProgressSurvivesLosingMachineState(t *testing.T) {
+	w := newWorld(t)
+	w.subtaskTask("t", "01-a", "02-b")
+	w.run("supernova/t")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.passRun(lead)
+	if err := os.RemoveAll(filepath.Join(w.bridge, ".starship/tasks")); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := pickSubtask(w.bridge, runOpts{task: "supernova/t"})
+	if err != nil || ch.sub.Name != "02-b" || len(ch.earlier) != 1 || !strings.HasPrefix(ch.earlier[0], "- 01-a: Goal of 01-a") {
+		t.Fatalf("the next run should follow the journal: %v %+v", err, ch)
+	}
+}
+
+func TestTaskSubtaskByHandWritesJournalLine(t *testing.T) {
+	w := newWorld(t)
+	w.subtaskTask("t", "01-a", "02-b", "03-c")
+	if _, err := w.taskCmd("subtask", "done", "supernova/t", "01-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.taskCmd("subtask", "drop", "supernova/t", "02-b"); err != nil {
+		t.Fatal(err)
+	}
+	history, _ := os.ReadFile(filepath.Join(w.bridge, "projects/supernova/tasks/t/history.md"))
+	for _, want := range []string{", subtask 01-a: done by hand.**", ", subtask 02-b: dropped by hand.**"} {
+		if !strings.Contains(string(history), want) {
+			t.Errorf("history lacks %q:\n%s", want, history)
+		}
+	}
+	m := w.subtaskMarks("t")
+	if m["01-a"].Status != "done" || m["02-b"].Status != "dropped" || len(m) != 2 {
+		t.Errorf("marks %+v", m)
+	}
+}
+
+func TestSubtaskMarksFromJournalText(t *testing.T) {
+	w := newWorld(t)
+	w.subtaskTask("t", "01-a", "01-a-b", "02-b", "03-c")
+	hist := "# t: history\r\n\r\n" +
+		"- **2026-01-01, run r1 (supernova), subtask 01-a: success.** 1 coder pass.\r\n\r\n" +
+		"- **2026-01-02, run r2 (supernova), subtask 02-b: error (boom).**\r\n\r\n" +
+		"- **2026-01-03, run r3 (supernova), subtask 03-c: paused to ask the user.**\r\n\r\n" +
+		"- **2026-01-04, run r4 (supernova), subtask 09-gone: success.**\r\n"
+	write(t, filepath.Join(w.bridge, "projects/supernova/tasks/t/history.md"), hist)
+	m := w.subtaskMarks("t")
+	if len(m) != 1 || m["01-a"].Status != "done" || m["01-a"].Run != "r1" {
+		t.Errorf("only the successful known subtask is marked: %+v", m)
+	}
+	write(t, filepath.Join(w.bridge, "projects/supernova/tasks/t/history.md"), hist+"\r\n- **2026-01-05, subtask 01-a: dropped by hand.**\r\n")
+	if m := w.subtaskMarks("t"); m["01-a"].Status != "dropped" {
+		t.Errorf("the last line wins: %+v", m)
+	}
+}
+
+func TestSubtaskMarksFromLegacyProgressLog(t *testing.T) {
+	w := newWorld(t)
+	w.subtaskTask("t", "01-a", "02-b")
+	task := filepath.Join(w.bridge, "projects/supernova/tasks/t/task.md")
+	data, _ := os.ReadFile(task)
+	write(t, task, string(data)+"\n## Progress log\n\n- **2026-01-01, run r1 (supernova), subtask 01-a: success.**\n")
+	if m := w.subtaskMarks("t"); m["01-a"].Status != "done" || len(m) != 1 {
+		t.Errorf("marks %+v", m)
+	}
+	if _, err := w.taskCmd("subtask", "done", "supernova/t", "02-b"); err != nil {
+		t.Fatal(err)
+	}
+	if m := w.subtaskMarks("t"); m["02-b"].Status != "done" {
+		t.Errorf("a hand mark goes in the progress log too: %+v", m)
+	}
+	if _, err := os.Stat(filepath.Join(w.bridge, "projects/supernova/tasks/t/history.md")); err == nil {
+		t.Errorf("history.md should not be created while task.md keeps the log")
+	}
+}
+
+func TestAddToJournalConcurrentLegacy(t *testing.T) {
+	w := newWorld(t)
+	names := []string{"01-a", "02-b", "03-c", "04-d", "05-e", "06-f"}
+	w.subtaskTask("t", names...)
+	task := filepath.Join(w.bridge, "projects/supernova/tasks/t/task.md")
+	data, _ := os.ReadFile(task)
+	write(t, task, string(data)+"\n## Progress log\n\n")
+	var wg sync.WaitGroup
+	subs, _ := loadSubtasks(taskDirOf(w.bridge, "supernova/t"))
+	for range names {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 20 {
+				if _, err := subtaskMarks(w.bridge, "supernova/t", subs); err != nil {
+					t.Error(err)
+				}
+			}
+		}()
+	}
+	for _, n := range names {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			entry := "- **2026-01-01, run r-" + n + " (supernova), subtask " + n + ": success.**"
+			if err := addToJournal(w.bridge, "supernova/t", entry); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	got, _ := os.ReadFile(task)
+	for _, n := range names {
+		if !strings.Contains(string(got), "subtask "+n+": success") {
+			t.Errorf("line for %s lost:\n%s", n, got)
+		}
+	}
+	if m := w.subtaskMarks("t"); len(m) != len(names) {
+		t.Errorf("marks %+v", m)
 	}
 }

@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 const handlerTimeout = 10 * time.Minute
@@ -217,11 +219,6 @@ func finishRun(r *RunFiles) {
 		m.fail("handler", err.Error())
 		fire(r, "run.finish:error", nil)
 	}
-	if r.Snap.Subtask != "" && st.Status == "success" {
-		if err := markSubtask(r.Snap.Bridge, r.Snap.Task, r.Snap.Subtask, "done", st.Run); err != nil {
-			st.log("journal", "", "", "the subtask could not be marked done: "+err.Error())
-		}
-	}
 	if err := logRunInJournal(r); err != nil {
 		st.log("journal", "", "", "the run could not be added to the task's history: "+err.Error())
 	}
@@ -304,20 +301,35 @@ func historyHeading(task string) string { return "# " + task + ": history\n\n" }
 // logRunInJournal adds the run's line to the end of its task's history.md, so every
 // run is in the journal even if nothing else gets written.
 func logRunInJournal(r *RunFiles) error {
-	p, t, ok := strings.Cut(r.Snap.Task, "/")
+	return addToJournal(r.Snap.Bridge, r.Snap.Task, runEntry(r))
+}
+
+// addToJournal adds a line to the end of a task's history.md. Writers on this machine take
+// a per-task lock so two runs finishing together cannot lose each other's line.
+func addToJournal(bridge, task, entry string) error {
+	p, t, ok := strings.Cut(task, "/")
 	if !ok {
 		return nil
 	}
-	dir := filepath.Join(r.Snap.Bridge, "projects", p, "tasks", t)
+	lock := taskStateFile(bridge, task, "", ".journal.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		return err
+	}
+	l := flock.New(lock)
+	if err := l.Lock(); err != nil {
+		return fmt.Errorf("locking the journal: %w", err)
+	}
+	defer l.Unlock()
+	dir := filepath.Join(bridge, "projects", p, "tasks", t)
 	f := filepath.Join(dir, "history.md")
 	if _, err := os.Stat(f); os.IsNotExist(err) {
 		// A task not yet split keeps its log in task.md; the next clean session start moves it all.
 		tf := filepath.Join(dir, "task.md")
 		if data, err := os.ReadFile(tf); err == nil && hasProgressLog(string(data)) {
-			return os.WriteFile(tf, []byte(insertProgress(string(data), runEntry(r))), 0o644)
+			return os.WriteFile(tf, []byte(insertProgress(string(data), entry)), 0o644)
 		}
 	}
-	return appendHistory(f, t, runEntry(r))
+	return appendHistory(f, t, entry)
 }
 
 // hasProgressLog reports whether a task.md has a "## Progress log" section.
@@ -370,7 +382,7 @@ func insertProgress(doc, entry string) string {
 func appendHistory(f, task, entry string) error {
 	data, err := os.ReadFile(f)
 	if os.IsNotExist(err) {
-		return writeFile(f, historyHeading(task)+entry+"\n")
+		return os.WriteFile(f, []byte(historyHeading(task)+entry+"\n"), 0o644)
 	}
 	if err != nil {
 		return err
