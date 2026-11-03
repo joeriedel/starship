@@ -24,6 +24,7 @@ type projectLocationsFile struct {
 	Locations map[string]struct {
 		DependsOn []string  `yaml:"depends-on"`
 		Bindings  yaml.Node `yaml:"bindings"`
+		Platforms yaml.Node `yaml:"platforms"`
 	} `yaml:"locations"`
 	CrossLocation struct {
 		Bindings yaml.Node `yaml:"bindings"`
@@ -39,6 +40,11 @@ func loadLocations(bridge, project string) (*Locations, error) {
 	}
 	l := &Locations{deps: map[string][]string{}, bindings: map[string]yaml.Node{}, Cross: map[string]Binding{}}
 	label := relTo(bridge, file)
+	for _, name := range sortedKeys(pf.Locations) {
+		if pf.Locations[name].Platforms.Kind != 0 {
+			return nil, fmt.Errorf("%s: location %q: platforms: are declared once for the project, at the top level of this file", label, name)
+		}
+	}
 	for name, loc := range pf.Locations {
 		if !validName(name) {
 			return nil, fmt.Errorf("%s: location %q: name it with lower-case letters, digits and dashes", label, name)

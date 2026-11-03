@@ -1325,3 +1325,40 @@ func TestConfigRefusesPlatformsOutsideProject(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigRefusesPlatformsInUsedExtension(t *testing.T) {
+	for _, value := range []string{"[linux]", "[]", "", "~"} {
+		w := newWorld(t)
+		ext := filepath.Join(w.bridge, "extensions", "house", "extension.yaml")
+		write(t, ext, "name: house\nplatforms: "+value+"\n")
+		pf := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
+		data, _ := os.ReadFile(pf)
+
+		// Not used: loads fine.
+		if _, err := loadConfig(w.bridge, "supernova/auth-refactor"); err != nil {
+			t.Errorf("an unused extension with platforms: %s should not be refused: %v", value, err)
+		}
+		if _, err := loadProjectBindings(w.bridge, "supernova", ""); err != nil {
+			t.Errorf("an unused extension with platforms: %s should not be refused: %v", value, err)
+		}
+
+		write(t, pf, string(data)+"\nuse: [house]\n")
+		_, err := loadConfig(w.bridge, "supernova/auth-refactor")
+		if err == nil || !strings.Contains(err.Error(), "projects/supernova/project.yaml") || !strings.Contains(err.Error(), ext) {
+			t.Errorf("used extension with platforms: %s should be refused: %v", value, err)
+		}
+		_, err = loadProjectBindings(w.bridge, "supernova", "")
+		if err == nil || !strings.Contains(err.Error(), "projects/supernova/project.yaml") || !strings.Contains(err.Error(), ext) {
+			t.Errorf("loadProjectBindings with platforms: %s should be refused: %v", value, err)
+		}
+
+		// A bridge-scope run has no project, so the message names a <project> placeholder.
+		bf := filepath.Join(w.bridge, "bridge.yaml")
+		bdata, _ := os.ReadFile(bf)
+		write(t, bf, string(bdata)+"\nuse: [house]\n")
+		_, err = loadTarget(w.bridge, Target{Pipeline: "skill-curate"})
+		if err == nil || !strings.Contains(err.Error(), "projects/<project>/project.yaml") || !strings.Contains(err.Error(), ext) {
+			t.Errorf("bridge-scope use with platforms: %s should be refused: %v", value, err)
+		}
+	}
+}

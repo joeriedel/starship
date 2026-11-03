@@ -766,6 +766,14 @@ func (c *Config) enableExtension(l layerEntry, use string, extensions map[string
 	if !ok {
 		return nil, fmt.Errorf("%s: no extension %q", l.label, use)
 	}
+	file := filepath.Join(b.dir, "extension.yaml")
+	if data, rerr := os.ReadFile(file); rerr == nil && hasPlatformsKey(data) {
+		project := c.Project
+		if project == "" {
+			project = "<project>"
+		}
+		return nil, fmt.Errorf("%s: platforms: is a project setting; declare it in projects/%s/project.yaml", file, project)
+	}
 	c.Extensions = append(c.Extensions, use)
 	return b, nil
 }
@@ -1171,13 +1179,18 @@ func hasPlatformsKey(data []byte) bool {
 	return has
 }
 
+// platformName normalises a platform name for comparison: surrounding space and case do not matter.
+func platformName(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
 // platformProblems names the empty and duplicate entries in a project's platform list, ignoring surrounding space and case.
 func platformProblems(platforms []string) []string {
 	var errs []string
 	seen := map[string]bool{}
 	for _, pl := range platforms {
 		name := strings.TrimSpace(pl)
-		key := strings.ToLower(name)
+		key := platformName(pl)
 		switch {
 		case name == "":
 			errs = append(errs, "a platform name is empty")

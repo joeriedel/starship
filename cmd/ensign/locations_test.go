@@ -842,3 +842,33 @@ func TestSequenceRetryKeepsSidesOnlyWhenNarrowed(t *testing.T) {
 		t.Errorf("an un-narrowed retry should take the current default sides: %v narrowed %v", got, r.Snap.Narrowed)
 	}
 }
+
+func TestLocationsRefusePlatforms(t *testing.T) {
+	for _, value := range []string{"[linux]", "[]", "", "~"} {
+		w := locationsWorld(t)
+		file := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
+		write(t, file, strings.Replace(locationsProject, "  server:\n", "  server:\n    platforms: "+value+"\n", 1))
+		_, err := loadLocations(w.bridge, "supernova")
+		if err == nil || !strings.Contains(err.Error(), `"server"`) || !strings.Contains(err.Error(), "projects/supernova/project.yaml") {
+			t.Errorf("loadLocations with location platforms: %s should be refused: %v", value, err)
+		}
+		_, err = loadConfig(w.bridge, "supernova/auth-refactor")
+		if err == nil || !strings.Contains(err.Error(), `"server"`) || !strings.Contains(err.Error(), "projects/supernova/project.yaml") {
+			t.Errorf("loadConfig with location platforms: %s should be refused: %v", value, err)
+		}
+	}
+}
+
+func TestLocationsRefusePlatformsInSortedOrder(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		w := locationsWorld(t)
+		file := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
+		body := strings.Replace(locationsProject, "  server:\n", "  server:\n    platforms: [linux]\n", 1)
+		body = strings.Replace(body, "  client:\n", "  client:\n    platforms: [linux]\n", 1)
+		write(t, file, body)
+		_, err := loadLocations(w.bridge, "supernova")
+		if err == nil || !strings.Contains(err.Error(), `"client"`) {
+			t.Fatalf("the first bad location in sorted order should be named: %v", err)
+		}
+	}
+}

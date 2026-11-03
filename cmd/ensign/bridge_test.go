@@ -311,6 +311,28 @@ func TestProjectNewNeedsPlatforms(t *testing.T) {
 		t.Fatalf("the same platforms in another order should be accepted: %v", err)
 	}
 
+	// Platform names compare ignoring case and padding.
+	mixed := t.TempDir()
+	write(t, filepath.Join(mixed, ".starship", "project.yaml"), "platforms: [\" linux\"]\n")
+	if err := cmdProject([]string{"new", "mixed", "--workspace", mixed, "--platforms", "LINUX"}, &out); err != nil {
+		t.Fatalf("a padded shipped name should match whatever the case: %v", err)
+	}
+	lower := t.TempDir()
+	write(t, filepath.Join(lower, ".starship", "project.yaml"), "platforms: [linux]\n")
+	if err := cmdProject([]string{"new", "cased", "--workspace", lower, "--platforms", "Linux"}, &out); err != nil {
+		t.Fatalf("a differently cased flag should match the shipped platforms: %v", err)
+	}
+	data, _ = os.ReadFile(filepath.Join(b, "projects/cased/project.yaml"))
+	if !strings.Contains(string(data), "platforms: [linux]") {
+		t.Errorf("the shipped text should be kept:\n%s", data)
+	}
+	if err := cmdProject([]string{"new", "twice", "--workspace", lower, "--platforms", "linux,Linux"}, &out); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Fatalf("a case-only duplicate should be refused as declared twice: %v", err)
+	}
+	if err := cmdProject([]string{"new", "diff", "--workspace", lower, "--platforms", "macos"}, &out); err == nil || !strings.Contains(err.Error(), "differs") {
+		t.Fatalf("a different platform should still differ: %v", err)
+	}
+
 	// A duplicate in the flag is refused.
 	if err := cmdProject([]string{"new", "dup", "--workspace", ws, "--platforms", "linux,linux"}, &out); err == nil || !strings.Contains(err.Error(), "twice") {
 		t.Fatalf("a duplicate platform should be refused: %v", err)

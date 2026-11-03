@@ -623,9 +623,10 @@ func newLocationsProject(bridge, name, file, locationList string, platforms []st
 func sameSet(a, b []string) bool {
 	in := map[string]bool{}
 	for _, s := range a {
-		in[s] = true
+		in[platformName(s)] = true
 	}
 	for _, s := range b {
+		s = platformName(s)
 		if !in[s] {
 			return false
 		}
