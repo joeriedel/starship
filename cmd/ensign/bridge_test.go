@@ -46,7 +46,7 @@ func TestInitAndLink(t *testing.T) {
 	if status, _ := gitOut(b, "status", "--porcelain"); status != "" {
 		t.Errorf("init should commit the new bridge; uncommitted: %q", status)
 	}
-	if changed := journalChanges(b); len(changed) != 0 {
+	if changed, err := journalChanges(b); err != nil || len(changed) != 0 {
 		t.Errorf("a new bridge should have no journal changes: %v", changed)
 	}
 	for _, f := range []string{"bridge.yaml", "CLAUDE.md", ".gitignore", ".claude/settings.json",

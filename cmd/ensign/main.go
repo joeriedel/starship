@@ -464,7 +464,7 @@ func addGitattributes(bridge string) {
 	if !isGit(bridge) {
 		return
 	}
-	if dirty, _ := gitOut(bridge, "status", "--porcelain", "--untracked-files=no"); dirty != "" {
+	if dirty, err := gitOut(bridge, "status", "--porcelain", "--untracked-files=no"); err != nil || dirty != "" {
 		return
 	}
 	// Exclusive create: only the session that makes the file may commit or undo it.
@@ -527,7 +527,7 @@ func updateHeartbeat(bridge string) {
 	}
 	tracked := isGit(bridge)
 	if tracked {
-		if dirty, _ := gitOut(bridge, "status", "--porcelain", "--", "CLAUDE.md"); dirty != "" {
+		if dirty, err := gitOut(bridge, "status", "--porcelain", "--", "CLAUDE.md"); err != nil || dirty != "" {
 			return
 		}
 	}
@@ -582,7 +582,12 @@ func splitHistory(bridge string) string {
 				return
 			}
 			if tracked {
-				if dirty, _ := gitOut(bridge, "status", "--porcelain", "--", tf, hf); dirty != "" {
+				dirty, err := gitOut(bridge, "status", "--porcelain", "--", tf, hf)
+				if err != nil {
+					notes = append(notes, fmt.Sprintf("starship: could not read the git status of %s (%v), so its progress log was not split", rel, err))
+					return
+				}
+				if dirty != "" {
 					return
 				}
 			}
@@ -639,7 +644,7 @@ func dropSessionImport(bridge string) {
 	}
 	tracked := isGit(bridge)
 	if tracked {
-		if dirty, _ := gitOut(bridge, "status", "--porcelain", "--", "CLAUDE.md"); dirty != "" {
+		if dirty, err := gitOut(bridge, "status", "--porcelain", "--", "CLAUDE.md"); err != nil || dirty != "" {
 			return
 		}
 	}

@@ -781,7 +781,10 @@ func TestJournalPushStashDeletedByPushedVersion(t *testing.T) {
 	if got := runGit(t, w.bridge, "diff", "--name-only", "--diff-filter=U"); got != "" {
 		t.Fatalf("files still unmerged:\n%s", got)
 	}
-	changes := journalChanges(w.bridge)
+	changes, err := journalChanges(w.bridge)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range changes {
 		if strings.Contains(c, "task.md") {
 			t.Fatalf("journalChanges offers the deleted file: %v", changes)
@@ -912,4 +915,187 @@ func TestJournalPushNonConflictFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "incoming.txt") || strings.Contains(err.Error(), "another machine") {
 		t.Fatalf("want git's own message without a conflict claim, got %v", err)
 	}
+}
+
+func corruptIndex(t *testing.T, dir string) {
+	t.Helper()
+	write(t, filepath.Join(dir, ".git", "index"), "not an index")
+}
+
+// failingBridge is a git bridge with a remote and one committed supernova task, whose index is then corrupted so git status fails.
+func failingBridge(t *testing.T, files map[string]string) string {
+	t.Helper()
+	needGit(t)
+	b := newRepo(t, filepath.Join(t.TempDir(), "bridge"))
+	runGit(t, b, "remote", "add", "origin", filepath.ToSlash(t.TempDir()))
+	for p, s := range files {
+		write(t, filepath.Join(b, p), s)
+	}
+	runGit(t, b, "add", "-A")
+	runGit(t, b, "commit", "-q", "-m", "old bridge")
+	corruptIndex(t, b)
+	return b
+}
+
+func TestGitStatusFailuresAreNotACleanTree(t *testing.T) {
+	needGit(t)
+	t.Run("squash", func(t *testing.T) {
+		ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+		base := runGit(t, ws, "rev-parse", "HEAD")
+		write(t, filepath.Join(ws, "lib.txt"), "one\n")
+		runGit(t, ws, "add", "lib.txt")
+		runGit(t, ws, "commit", "-q", "-m", "more")
+		corruptIndex(t, ws)
+		if _, err := squash(ws, base, "squashed"); err == nil || !strings.Contains(err.Error(), "git status") {
+			t.Fatalf("got %v", err)
+		}
+		if n := runGit(t, ws, "rev-list", "--count", "HEAD"); n != "2" {
+			t.Errorf("history must not be rewritten, %s commits", n)
+		}
+	})
+	t.Run("githubCommit", func(t *testing.T) {
+		r, ws := strayRun(t)
+		write(t, filepath.Join(ws, "nova.txt"), "x\n")
+		corruptIndex(t, ws)
+		if err := githubCommit(r); err == nil || !strings.Contains(err.Error(), "git status") {
+			t.Fatalf("got %v", err)
+		}
+		if n := runGit(t, ws, "rev-list", "--count", "HEAD"); n != "1" {
+			t.Errorf("nothing may be committed, %s commits", n)
+		}
+	})
+	t.Run("vcsState", func(t *testing.T) {
+		ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+		corruptIndex(t, ws)
+		got := vcsState(ws, TaskVcs{})
+		if !strings.Contains(got, "status unknown") || strings.Contains(got, "0 changed files") {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("vcsStateKeepsBranchStop", func(t *testing.T) {
+		ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+		corruptIndex(t, ws)
+		got := vcsState(ws, TaskVcs{Branch: "feature/supernova-refactor"})
+		if !strings.Contains(got, "status unknown") || !strings.Contains(got, "STOP: the task expects branch feature/supernova-refactor") {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("syncBridge", func(t *testing.T) {
+		b := failingBridge(t, map[string]string{"projects/supernova/project.yaml": "x: 1\n"})
+		got := syncBridge(b)
+		if !strings.Contains(got, "could not be read") || !strings.Contains(got, "not updated") {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("journal", func(t *testing.T) {
+		b := failingBridge(t, map[string]string{"projects/supernova/project.yaml": "x: 1\n"})
+		if changed, err := journalChanges(b); err == nil || changed != nil {
+			t.Fatalf("got %v, %v", changed, err)
+		}
+		out := journalStop(b, &HookInput{})
+		if out == nil || !strings.Contains(fmt.Sprint(out), "could not be read") {
+			t.Errorf("the stop must be blocked: %v", out)
+		}
+		if out := journalStop(b, &HookInput{StopHookActive: true}); out != nil {
+			t.Errorf("a second stop must not trap the session: %v", out)
+		}
+		var buf bytes.Buffer
+		t.Chdir(b)
+		write(t, filepath.Join(b, "bridge.yaml"), "name: supernova\n")
+		if err := cmdJournal([]string{"commit", "-m", "x"}, &buf); err == nil || !strings.Contains(err.Error(), "git status") {
+			t.Errorf("journal commit got %v", err)
+		}
+	})
+	t.Run("session migrations", func(t *testing.T) {
+		const task = "projects/supernova/tasks/auth-refactor/task.md"
+		files := map[string]string{
+			"CLAUDE.md": "# Bridge\n\n## The heartbeat\n\n" + oldHeartbeat + "\n" + sessionImport + "\n",
+			task:        "---\npipeline: coding\n---\n\n# t\n\n## Progress log\n\n- one.\n",
+		}
+		for name, run := range map[string]func(b string){
+			"addGitattributes":  addGitattributes,
+			"updateHeartbeat":   updateHeartbeat,
+			"dropSessionImport": dropSessionImport,
+			"splitHistory":      func(b string) { splitHistory(b) },
+		} {
+			t.Run(name, func(t *testing.T) {
+				b := failingBridge(t, files)
+				head := runGit(t, b, "rev-parse", "HEAD")
+				run(b)
+				if got := runGit(t, b, "rev-parse", "HEAD"); got != head {
+					t.Error("nothing may be committed")
+				}
+				for p, want := range files {
+					if got, _ := os.ReadFile(filepath.Join(b, p)); string(got) != want {
+						t.Errorf("%s changed:\n%s", p, got)
+					}
+				}
+				if _, err := os.Stat(filepath.Join(b, ".gitattributes")); err == nil {
+					t.Error(".gitattributes was written")
+				}
+				if _, err := os.Stat(filepath.Join(b, filepath.Dir(task), "history.md")); err == nil {
+					t.Error("history.md was written")
+				}
+			})
+		}
+		b := failingBridge(t, files)
+		if notes := splitHistory(b); !strings.Contains(notes, "could not read") {
+			t.Errorf("splitHistory should say why: %q", notes)
+		}
+	})
+}
+
+func TestJournalChangesQuotedAndRenamedPaths(t *testing.T) {
+	needGit(t)
+	b := newRepo(t, filepath.Join(t.TempDir(), "bridge"))
+	write(t, filepath.Join(b, "projects/supernova/notes/old name.md"), "a\n")
+	runGit(t, b, "add", "-A")
+	runGit(t, b, "commit", "-q", "-m", "old")
+	runGit(t, b, "mv", "projects/supernova/notes/old name.md", "projects/supernova/notes/café au lait.md")
+	write(t, filepath.Join(b, "skills/supernova/Zoë's skill.md"), "b\n")
+	got, err := journalChanges(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"projects/supernova/notes/café au lait.md", "projects/supernova/notes/old name.md", "skills/supernova/Zoë's skill.md"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMigrateWorkspacesSkipsQuotedPreDirtyPathsAndFailedStatus(t *testing.T) {
+	needGit(t)
+	setup := func(t *testing.T) (string, string) {
+		b := newRepo(t, filepath.Join(t.TempDir(), "bridge"))
+		ws := filepath.ToSlash(t.TempDir())
+		write(t, filepath.Join(b, ".gitignore"), ".starship/\n")
+		write(t, filepath.Join(b, "projects/supernova/project.yaml"), "workspace: "+ws+"\n")
+		write(t, filepath.Join(b, "projects/supernova/tasks/café one/task.md"), "---\nworkspace: "+ws+"\n---\n\n# one\n")
+		runGit(t, b, "add", "-A")
+		runGit(t, b, "commit", "-q", "-m", "old")
+		return b, ws
+	}
+	t.Run("quoted path", func(t *testing.T) {
+		b, ws := setup(t)
+		write(t, filepath.Join(b, "projects/supernova/tasks/café one/task.md"), "---\nworkspace: "+ws+"\n---\n\n# one\n\nhalf written\n")
+		note := migrateWorkspaces(b)
+		if !strings.Contains(note, "café one/task.md") {
+			t.Errorf("the user's edited file is left uncommitted: %q", note)
+		}
+		if got := runGit(t, b, "-c", "core.quotepath=off", "show", "--name-only", "--format=", "HEAD"); strings.Contains(got, "task.md") {
+			t.Errorf("committed the user's file:\n%s", got)
+		}
+	})
+	t.Run("failed status", func(t *testing.T) {
+		b, _ := setup(t)
+		head := runGit(t, b, "rev-parse", "HEAD")
+		corruptIndex(t, b)
+		note := migrateWorkspaces(b)
+		if !strings.Contains(note, "could not be read") {
+			t.Errorf("note: %q", note)
+		}
+		if got := runGit(t, b, "rev-parse", "HEAD"); got != head {
+			t.Error("nothing may be committed")
+		}
+	})
 }

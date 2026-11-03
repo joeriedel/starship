@@ -208,11 +208,19 @@ func migrateWorkspaces(bridge string) string {
 	// What was already uncommitted is the user's; only the files this alone changed are
 	// committed.
 	before := map[string]bool{}
+	var statusErr error
 	if isGit(bridge) {
-		st, _ := gitOut(bridge, "status", "--porcelain")
-		for _, line := range strings.Split(st, "\n") {
-			if len(line) > 3 {
-				before[strings.Trim(line[3:], `"`)] = true
+		var toks []string
+		toks, statusErr = gitZ(bridge, "status", "--porcelain", "-z")
+		for i := 0; i < len(toks); i++ {
+			t := toks[i]
+			if len(t) < 4 {
+				continue
+			}
+			before[t[3:]] = true
+			if strings.ContainsAny(t[:2], "RC") && i+1 < len(toks) {
+				i++
+				before[toks[i]] = true
 			}
 		}
 	}
@@ -306,7 +314,7 @@ func migrateWorkspaces(bridge string) string {
 	}
 	var commit, left []string
 	for _, f := range changed {
-		if isGit(bridge) && !before[f] {
+		if isGit(bridge) && statusErr == nil && !before[f] {
 			commit = append(commit, f)
 		} else {
 			left = append(left, f)
@@ -318,8 +326,11 @@ func migrateWorkspaces(bridge string) string {
 		}
 	}
 	msg := ""
+	if statusErr != nil {
+		msg = fmt.Sprintf("The bridge's git status could not be read (%v), so none of these edits were committed.", statusErr)
+	}
 	if moved := len(changed) > 1 || changed[0] != ".gitignore"; moved {
-		msg = "Where each project's code is moved from the bridge's files into machine.yaml, which is this machine's own."
+		msg = "Where each project's code is moved from the bridge's files into machine.yaml, which is this machine's own." + strings.TrimRight(" "+msg, " ")
 	}
 	if len(left) > 0 {
 		msg += " Commit these with the journal: " + strings.Join(left, ", ") + "."

@@ -141,7 +141,7 @@ func TestGithubPRWithCIAsTheTests(t *testing.T) {
 		t.Fatalf("run.start should move the workspace to the task branch, it is on %q", b)
 	}
 	w.codeChange(lead, ws)
-	if !dirty(ws) {
+	if d, _ := dirty(ws); !d {
 		t.Fatal("nothing should be committed until the test stage is about to start")
 	}
 	why, _ := w.runStage()

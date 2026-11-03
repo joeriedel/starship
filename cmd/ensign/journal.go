@@ -25,29 +25,34 @@ func isGit(dir string) bool {
 
 // journalChanges lists changed files under projects/ and skills/, leaving out
 // projects that turned journal commits off.
-func journalChanges(bridge string) []string {
-	status, err := gitOut(bridge, "status", "--porcelain", "--untracked-files=all", "--", "projects", "skills")
-	if err != nil || status == "" {
-		return nil
+func journalChanges(bridge string) ([]string, error) {
+	toks, err := gitZ(bridge, "status", "--porcelain", "-z", "--untracked-files=all", "--", "projects", "skills")
+	if err != nil {
+		return nil, fmt.Errorf("git status: %v", err)
 	}
 	var out []string
-	for _, line := range strings.Split(status, "\n") {
-		if len(line) < 4 {
+	add := func(path string) {
+		if p, ok := strings.CutPrefix(path, "projects/"); ok {
+			project, _, _ := strings.Cut(p, "/")
+			if journalOff(bridge, project) {
+				return
+			}
+		}
+		out = append(out, path)
+	}
+	for i := 0; i < len(toks); i++ {
+		t := toks[i]
+		if len(t) < 4 {
 			continue
 		}
+		add(t[3:])
 		// A rename lists both sides; both are committed so the old path is removed.
-		for _, path := range strings.Split(line[3:], " -> ") {
-			path = strings.Trim(path, `"`)
-			if p, ok := strings.CutPrefix(path, "projects/"); ok {
-				project, _, _ := strings.Cut(p, "/")
-				if journalOff(bridge, project) {
-					continue
-				}
-			}
-			out = append(out, path)
+		if strings.ContainsAny(t[:2], "RC") && i+1 < len(toks) {
+			i++
+			add(toks[i])
 		}
 	}
-	return out
+	return out, nil
 }
 
 func journalOff(bridge, project string) bool {
@@ -99,7 +104,13 @@ func journalStop(bridge string, in *HookInput) any {
 	if !isGit(bridge) {
 		return nil
 	}
-	changed := journalChanges(bridge)
+	changed, err := journalChanges(bridge)
+	if err != nil {
+		if in.StopHookActive {
+			return nil // asked once already; don't trap the session
+		}
+		return block(fmt.Sprintf("the bridge's journal changes could not be read, so they may be uncommitted: %v", err))
+	}
 	ahead := len(changed) == 0 && unpushed(bridge)
 	if len(changed) == 0 && !ahead {
 		return nil
@@ -132,7 +143,9 @@ func cmdJournal(args []string, out io.Writer) error {
 	}
 	files := args[3:]
 	if len(files) == 0 {
-		files = journalChanges(bridge)
+		if files, err = journalChanges(bridge); err != nil {
+			return err
+		}
 	}
 	if len(files) == 0 {
 		fmt.Fprintln(out, "no journal changes to commit")
@@ -261,7 +274,7 @@ func pushBridge(bridge string, out io.Writer) error {
 		return fmt.Errorf("the bridge has unmerged files from an earlier conflict (%s). Resolve them, then run git add or git reset -- %s, and run ensign journal push",
 			strings.Join(files, ", "), strings.Join(files, " "))
 	}
-	var stashed []string
+	var conflicted []string
 	if remoteHas(bridge, remote, branch) {
 		if err := git(bridge, "pull", "-q", "--rebase", "--autostash", remote, branch); err != nil {
 			conflicts := unmergedFiles(bridge)
@@ -272,18 +285,18 @@ func pushBridge(bridge string, out io.Writer) error {
 			return fmt.Errorf("another machine changed the same files (%s). Pull with rebase, merge the two versions — "+
 				"keep both where each only added lines — and run ensign journal push", strings.Join(conflicts, ", "))
 		}
-		stashed = unmergedFiles(bridge)
+		conflicted = unmergedFiles(bridge)
 	}
 	// Re-applying the autostash can conflict while git still exits 0, keeping the stash.
 	stashNote := ""
-	if len(stashed) > 0 {
+	if len(conflicted) > 0 {
 		// Unmerged index entries would block every later pull, so leave the markers as plain modifications.
-		if err := git(bridge, append([]string{"reset", "-q", "--"}, stashed...)...); err != nil {
-			return fmt.Errorf("clearing the unmerged state of %s failed: %w", strings.Join(stashed, ", "), err)
+		if err := git(bridge, append([]string{"reset", "-q", "--"}, conflicted...)...); err != nil {
+			return fmt.Errorf("clearing the unmerged state of %s failed: %w", strings.Join(conflicted, ", "), err)
 		}
 		// A file the pushed commits deleted is untracked now; committing it would bring it back.
 		var marked, removed []string
-		for _, f := range stashed {
+		for _, f := range conflicted {
 			if git(bridge, "cat-file", "-e", "HEAD:"+f) == nil {
 				marked = append(marked, f)
 				continue
@@ -340,7 +353,11 @@ func syncBridge(bridge string) string {
 	if !isGit(bridge) || remoteName(bridge) == "" {
 		return ""
 	}
-	if status, _ := gitOut(bridge, "status", "--porcelain", "--untracked-files=no"); status != "" {
+	status, err := gitOut(bridge, "status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		return fmt.Sprintf("starship: the bridge's status could not be read (%v), so it was not updated from its remote.", err)
+	}
+	if status != "" {
 		return "starship: the bridge has local changes, so it was not updated from its remote."
 	}
 	branch, err := gitOut(bridge, "symbolic-ref", "--short", "HEAD")

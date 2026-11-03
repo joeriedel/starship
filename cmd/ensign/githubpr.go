@@ -82,9 +82,12 @@ func currentBranch(ws string) string {
 	return b
 }
 
-func dirty(ws string) bool {
-	s, _ := gitOut(ws, "status", "--porcelain")
-	return s != ""
+func dirty(ws string) (bool, error) {
+	s, err := gitOut(ws, "status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("git status: %v", err)
+	}
+	return s != "", nil
 }
 
 // githubBranch runs at run.start: the workspace moves to the task's branch, created from
@@ -104,7 +107,9 @@ func githubBranch(r *RunFiles) error {
 	if cur == want {
 		return nil
 	}
-	if dirty(ws) {
+	if d, err := dirty(ws); err != nil {
+		return err
+	} else if d {
 		return fmt.Errorf("the workspace has uncommitted changes on %s; commit or stash them, then start the run again", orDetached(cur))
 	}
 	if exists {
@@ -170,7 +175,9 @@ func githubUpdate(bridge, task, location string) (base, sha string, upToDate boo
 		return "", "", false, fmt.Errorf("the task branch %s doesn't exist; there is nothing to update", want)
 	}
 	cur := currentBranch(ws)
-	if dirty(ws) {
+	if d, err := dirty(ws); err != nil {
+		return "", "", false, err
+	} else if d {
 		return "", "", false, fmt.Errorf("the workspace has uncommitted changes on %s; commit or stash them first", orDetached(cur))
 	}
 	base, behind, err := branchBehind(ws, want)
@@ -229,7 +236,9 @@ func githubCommit(r *RunFiles) error {
 	if err := checkNoDependencyWiring(r); err != nil {
 		return err
 	}
-	if !dirty(ws) {
+	if d, err := dirty(ws); err != nil {
+		return err
+	} else if !d {
 		return nil
 	}
 	if err := checkNoStrayFiles(r); err != nil {
@@ -251,7 +260,9 @@ func githubCI(r *RunFiles, deadline time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if dirty(ws) {
+	if d, err := dirty(ws); err != nil {
+		return "", err
+	} else if d {
 		return "", fmt.Errorf("the workspace has uncommitted changes, so CI would not test them")
 	}
 	if err := git(ws, "push", "-q", "--force-with-lease", "-u", "origin", branch); err != nil {
@@ -324,8 +335,12 @@ func tested(bridge, task, location string) (c *Config, branch, sha string, err e
 	if head != sha {
 		return nil, "", "", fmt.Errorf("%s has changed since its tests passed (tested %s, now %s); run the task again", branch, short(sha), short(head))
 	}
-	if currentBranch(ws) == branch && dirty(ws) {
-		return nil, "", "", fmt.Errorf("%s has uncommitted changes that were never tested; commit or discard them first", branch)
+	if currentBranch(ws) == branch {
+		if d, err := dirty(ws); err != nil {
+			return nil, "", "", err
+		} else if d {
+			return nil, "", "", fmt.Errorf("%s has uncommitted changes that were never tested; commit or discard them first", branch)
+		}
 	}
 	return c, branch, sha, nil
 }

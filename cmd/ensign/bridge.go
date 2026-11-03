@@ -871,12 +871,17 @@ func vcsState(ws string, v TaskVcs) string {
 			}
 			branch = "detached at " + branch
 		}
-		status, _ := gitOut(ws, "status", "--porcelain")
-		dirty := 0
-		if status != "" {
-			dirty = len(strings.Split(status, "\n"))
+		var changed string
+		if status, err := gitOut(ws, "status", "--porcelain"); err != nil {
+			changed = fmt.Sprintf("status unknown (git status: %v)", err)
+		} else {
+			dirty := 0
+			if status != "" {
+				dirty = len(strings.Split(status, "\n"))
+			}
+			changed = fmt.Sprintf("%d changed files", dirty)
 		}
-		s := fmt.Sprintf("git, on %s, %d changed files", branch, dirty)
+		s := fmt.Sprintf("git, on %s, %s", branch, changed)
 		if v.Branch != "" && v.Branch != branch {
 			s += fmt.Sprintf(" — STOP: the task expects branch %s", v.Branch)
 		}

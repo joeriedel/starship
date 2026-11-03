@@ -175,7 +175,11 @@ func squash(ws, base, message string) (string, error) {
 	if n, _ := gitOut(ws, "rev-list", "--count", base+"..HEAD"); n == "0" || n == "" {
 		return "", fmt.Errorf("nothing to squash after %s", short(base))
 	}
-	if status, _ := gitOut(ws, "status", "--porcelain", "--untracked-files=no"); status != "" {
+	status, err := gitOut(ws, "status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		return "", fmt.Errorf("git status: %v", err)
+	}
+	if status != "" {
 		return "", fmt.Errorf("the workspace has uncommitted changes to tracked files: %s", lastLines(status, 5))
 	}
 	branch, err := gitOut(ws, "symbolic-ref", "--short", "HEAD")
