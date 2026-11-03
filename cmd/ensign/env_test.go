@@ -230,10 +230,13 @@ func TestRestartedSessionGetsTheSetupFile(t *testing.T) {
 	}
 }
 
-// blockSetupFile puts a non-empty directory where the session's setup file goes, so writing and removing it both fail on every platform.
+// blockSetupFile replaces any existing setup file with a non-empty directory, so writing and removing it both fail on every platform.
 func blockSetupFile(t *testing.T, bridge, session string) string {
 	t.Helper()
 	path := setupFile(bridge, session)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	write(t, filepath.Join(path, "keep"), "x")
 	return path
 }
