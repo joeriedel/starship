@@ -1449,7 +1449,7 @@ func TestSequenceHaltOfAPausedGroupCancelsTheStepWhenTheRestFinish(t *testing.T)
 
 func TestSequenceDropOfAPendingGroupStepInAnApprovedSequenceRetiresItsRuns(t *testing.T) {
 	w := groupWorld(t, "01-client", "02-server")
-	w.addTask("other")
+	locTask(t, w, "other", "models")
 	w.mustSeq("run", "supernova/other")
 	w.mustSeq("run", "supernova/t")
 	w.approve()
@@ -1471,7 +1471,7 @@ func TestSequenceDropOfAPendingGroupStepInAnApprovedSequenceRetiresItsRuns(t *te
 
 func TestSequenceDropOfAGroupStepInTheOpenSequenceRemovesItAndRetiresItsRuns(t *testing.T) {
 	w := groupWorld(t, "01-client", "02-server")
-	w.addTask("other")
+	locTask(t, w, "other", "models")
 	w.mustSeq("run", "supernova/other")
 	w.mustSeq("run", "supernova/t")
 	ids := w.stepRuns(2)
