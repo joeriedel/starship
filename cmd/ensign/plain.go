@@ -367,8 +367,10 @@ func cmdRunStage(args []string, out io.Writer) (err error) {
 	}
 	// Held until the completed state is saved, so a free lock while the dispatch is running means the owner died.
 	dl := dispatchLock(r, d.ID)
-	if ok, err := dl.TryLock(); err != nil || !ok {
+	if ok, err := dl.TryLock(); err != nil {
 		return fmt.Errorf("could not lock the dispatch of stage %q: %v", s.ID, err)
+	} else if !ok {
+		return fmt.Errorf("could not lock the dispatch of stage %q: the lock is already held", s.ID)
 	}
 	defer dl.Close()
 	d.Locked = true

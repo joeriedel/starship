@@ -11,10 +11,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 // plainWorld is a world whose project marks @test plain, with the given test command.
@@ -81,6 +84,26 @@ func TestPlainTestRunsWithoutAnAgent(t *testing.T) {
 	log, _ := os.ReadFile(filepath.Join(w.bridge, ".starship", "runs", st.Run, "reports", d.ID+".log"))
 	if !strings.Contains(string(log), "built") || !strings.Contains(string(log), "3 passed") {
 		t.Fatalf("the full output should be kept: %q", log)
+	}
+}
+
+func TestRunStageSaysWhenTheDispatchLockIsHeld(t *testing.T) {
+	w := plainWorld(t, "echo 3 passed")
+	lead := w.startLead()
+	w.toTest(lead)
+	st := w.state()
+	id := "d" + strconv.Itoa(len(st.Dispatches)+1)
+	lock := flock.New(filepath.Join(w.bridge, ".starship", "runs", st.Run, "dispatch-"+id+".lock"))
+	if ok, err := lock.TryLock(); err != nil || !ok {
+		t.Fatalf("TryLock: %v %v", ok, err)
+	}
+	defer lock.Close()
+	_, err := w.runStage()
+	if err == nil {
+		t.Fatal("run-stage should fail while the dispatch lock is held")
+	}
+	if !strings.Contains(err.Error(), "the lock is already held") || strings.Contains(err.Error(), "<nil>") {
+		t.Fatalf("the error should say the lock is held: %v", err)
 	}
 }
 
