@@ -151,6 +151,9 @@ func heldRuns(bridge string) (held map[string]bool, ok bool) {
 // staleGCAge is how old a leftover <id>.gc file must be before a sweep removes it, so a concurrent pass's in-flight file is never touched.
 const staleGCAge = 5 * time.Minute
 
+// pidRecordAge is how old a <pid>.pid record must be before a sweep removes it. Age, not liveness, because a session idle past it loses only the link to its earlier id, which is how /clear behaved before the record existed.
+const pidRecordAge = 30 * 24 * time.Hour
+
 // deadLinkRun returns the run a session link names and whether that run's folder is gone. A link that is empty, unreadable or names a path is not dead.
 func deadLinkRun(bridge, file string) (run string, dead bool) {
 	data, err := os.ReadFile(file)
@@ -162,16 +165,24 @@ func deadLinkRun(bridge, file string) (run string, dead bool) {
 	return run, errors.Is(err, fs.ErrNotExist)
 }
 
-// dropDeadLinks removes session links (the bare <session-id> files) whose run folder is gone, and returns how many. Live links are only read. A link that looks dead is renamed to <id>.gc and judged again, so a concurrent rebind is restored rather than deleted.
+// dropDeadLinks removes session links (the bare <session-id> files) whose run folder is gone, and returns how many. It also removes <pid>.pid records older than pidRecordAge. Live links are only read. A link that looks dead is renamed to <id>.gc and judged again, so a concurrent rebind is restored rather than deleted.
 func dropDeadLinks(bridge string) int {
 	dir := filepath.Join(bridge, ".starship", "sessions")
 	entries, _ := os.ReadDir(dir)
 	n := 0
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".gc") {
+		if e.IsDir() {
 			continue
 		}
-		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > staleGCAge {
+		maxAge := staleGCAge
+		switch {
+		case strings.HasSuffix(e.Name(), ".gc"):
+		case strings.HasSuffix(e.Name(), ".pid"):
+			maxAge = pidRecordAge
+		default:
+			continue
+		}
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > maxAge {
 			os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}

@@ -422,7 +422,7 @@ func TestSequenceSurvivesSessionIDChange(t *testing.T) {
 	w.approve()
 	first, second := w.step(1).Run, w.step(2).Run
 	write(t, w.session, `{"sessionId":"s1"}`+"\n")
-	carryOverSession(w.bridge, &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session})
+	carryOverSession(w.bridge, &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session}, "")
 	if seqExists(w.bridge, "s1") || !seqExists(w.bridge, "s2") {
 		t.Fatal("the sequence should move to the new session")
 	}

@@ -330,7 +330,13 @@ func failHook(in *HookInput, r *RunFiles, err error, stderr io.Writer) int {
 // hookSessionStart gives the session's commands its id, so `ensign run` can bind the run
 // to this session, and prints the heartbeat the bridge's CLAUDE.md checks for.
 func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) int {
-	carryErr := carryOverSession(bridge, in)
+	var prev string
+	if pid := claudePID(); pid != "" && in.SessionID != "" {
+		data, _ := os.ReadFile(pidRecord(bridge, pid))
+		prev = strings.TrimSpace(string(data))
+		writeFile(pidRecord(bridge, pid), in.SessionID+"\n")
+	}
+	carryErr := carryOverSession(bridge, in, prev)
 	var envNote string
 	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
 		env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)

@@ -223,7 +223,7 @@ func TestRestartedSessionGetsTheSetupFile(t *testing.T) {
 	runEnv(t, "supernova", "SUPERNOVA_TOOL=hello")
 	w.run("supernova/auth-refactor")
 	write(t, w.session, `{"sessionId":"s1"}`+"\n")
-	carryOverSession(w.bridge, &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session})
+	carryOverSession(w.bridge, &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session}, "")
 	data, err := os.ReadFile(setupFile(w.bridge, "s2"))
 	if err != nil || string(data) != "export SUPERNOVA_TOOL='hello'\n" {
 		t.Fatalf("setup file %q (%v)", data, err)
@@ -281,7 +281,7 @@ func TestCarryOverKeepsTheRunWhenTheSetupFileFails(t *testing.T) {
 	w.run("supernova/auth-refactor")
 	write(t, w.session, `{"sessionId":"s1"}`+"\n")
 	blockSetupFile(t, w.bridge, "s2")
-	err := carryOverSession(w.bridge, &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session})
+	err := carryOverSession(w.bridge, &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session}, "")
 	if !errors.Is(err, errSetupFile) {
 		t.Fatalf("carry-over error: %v", err)
 	}

@@ -968,24 +968,61 @@ func priorSessions(transcript, current string) []string {
 	return out
 }
 
+// claudePID returns CLAUDE_PID, which Claude Code gives hook commands and keeps across /clear, or "" when it is missing or not all digits: it becomes a file name.
+func claudePID() string {
+	pid := os.Getenv("CLAUDE_PID")
+	for _, c := range pid {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return pid
+}
+
+// pidRecord returns the path of the record that holds the id of the session last started under pid. The name needs its dot: dropDeadLinks treats every dotless file in the folder as a session link.
+func pidRecord(bridge, pid string) string {
+	return filepath.Join(bridge, ".starship", "sessions", pid+".pid")
+}
+
 // carryOverSession binds a restarted session to the live run of the session it continues.
-// It assumes a resumed, cleared or compacted session's transcript still holds records
-// stamped with the earlier session's id. A failure to read the earlier session's runs is
+// It assumes a resumed or compacted session's transcript still holds records
+// stamped with the earlier session's id; a cleared session's does not, see below. A failure to read the earlier session's runs is
 // returned for SessionStart to report; SessionStart never fails over this.
 // A run whose setup file could not be written is still carried over, and that error is returned too.
-func carryOverSession(bridge string, in *HookInput) error {
+// A clear leaves no records under the earlier id in the new transcript, so prev, the id the session's CLAUDE_PID last started under, is tried first; it counts only for a clear to a different id, and then the task is carried even with no live run.
+func carryOverSession(bridge string, in *HookInput, prev string) error {
 	switch in.Source {
 	case "resume", "compact", "clear":
 	default:
 		return nil
 	}
-	if in.SessionID == "" || in.TranscriptPath == "" {
+	if in.SessionID == "" {
 		return nil
+	}
+	linked := in.Source == "clear" && prev != "" && prev != in.SessionID
+	if in.TranscriptPath == "" && !linked {
+		return nil
+	}
+	if linked {
+		copySessionTask(bridge, prev, in.SessionID)
 	}
 	if _, err := os.Stat(sessionFile(bridge, in.SessionID)); err == nil {
 		return nil
 	}
-	for _, old := range priorSessions(in.TranscriptPath, in.SessionID) {
+	var priors []string
+	if in.TranscriptPath != "" {
+		priors = priorSessions(in.TranscriptPath, in.SessionID)
+	}
+	if linked {
+		kept := []string{prev}
+		for _, id := range priors {
+			if id != prev {
+				kept = append(kept, id)
+			}
+		}
+		priors = kept
+	}
+	for _, old := range priors {
 		if err := carrySequence(bridge, old, in.SessionID); err != nil {
 			return err
 		}

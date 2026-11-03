@@ -41,6 +41,7 @@ func newWorld(t *testing.T) *world {
 	}
 	t.Setenv("CLAUDE_PROJECT_DIR", bridge)
 	t.Setenv("STARSHIP_SESSION", "s1")
+	t.Setenv("CLAUDE_PID", "")
 	return &world{t: t, bridge: bridge, session: filepath.Join(tmp, "session.jsonl"), sid: "s1"}
 }
 

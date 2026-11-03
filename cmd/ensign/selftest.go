@@ -281,6 +281,7 @@ func cmdSelftest(out io.Writer) error {
 		ok   bool
 	}{
 		{"SessionStart runs and gets CLAUDE_ENV_FILE", len(starts) > 0 && starts[0]["env_file"] == true},
+		{"SessionStart gets CLAUDE_PID, which links a session to its id after /clear", len(starts) > 0 && starts[0]["claude_pid"] == true},
 		{"PreToolUse fires for spawns inside a subagent, with agent_id", len(nested) > 0 && str(nested[0], "agent_id") != ""},
 		{"PreToolUse updatedInput reaches the spawned agent", injected},
 		{"PreToolUse deny keeps an agent from starting", len(nested) >= 2 && len(deniedStops) == 0},
@@ -608,6 +609,7 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 	}
 	if event == "SessionStart" {
 		in["env_file"] = os.Getenv("CLAUDE_ENV_FILE") != ""
+		in["claude_pid"] = claudePID() != ""
 		token, _ := os.ReadFile(filepath.Join(dir, "selftest-token"))
 		if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" {
 			if env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
