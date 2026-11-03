@@ -393,6 +393,9 @@ func link(bridge string, force bool, out io.Writer) error {
 // renameAside is set where a running executable cannot be renamed over but can be renamed aside (Windows); tests flip it.
 var renameAside = runtime.GOOS == "windows"
 
+// rename is os.Rename; tests swap it to fail a step of replaceFile.
+var rename = os.Rename
+
 // replaceFile writes a file under a temporary name and renames it into place, so a
 // binary can be replaced while it is running (the hook that relinks is that binary).
 // Where renameAside is set, an existing executable is first renamed to p+".old" (removing a stale one), and renamed back if the new one cannot take its place; removeOldExe deletes the leftover on a later run.
@@ -413,16 +416,16 @@ func replaceFile(p string, data []byte, executable bool) error {
 	if renameAside && executable {
 		if _, err := os.Lstat(p); err == nil {
 			os.Remove(p + ".old")
-			if err := os.Rename(p, p+".old"); err != nil {
+			if err := rename(p, p+".old"); err != nil {
 				os.Remove(tmp)
 				return err
 			}
 			aside = true
 		}
 	}
-	if err := os.Rename(tmp, p); err != nil {
+	if err := rename(tmp, p); err != nil {
 		if aside {
-			os.Rename(p+".old", p)
+			rename(p+".old", p)
 		}
 		os.Remove(tmp)
 		return err

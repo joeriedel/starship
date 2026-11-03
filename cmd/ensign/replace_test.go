@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -112,5 +113,33 @@ func TestRemoveOldExe(t *testing.T) {
 	}
 	if !exists(p) {
 		t.Fatal("current ensign removed")
+	}
+}
+
+func TestReplaceFileRestoresTheOldExecutableWhenTheNewCannotTakeItsPlace(t *testing.T) {
+	setRenameAside(t, true)
+	p := filepath.Join(t.TempDir(), "supernova.exe")
+	os.WriteFile(p, []byte("old"), 0o755)
+	sentinel := errors.New("supernova: rename refused")
+	orig := rename
+	rename = func(from, to string) error {
+		if from == p+".new" {
+			return sentinel
+		}
+		return orig(from, to)
+	}
+	t.Cleanup(func() { rename = orig })
+	err := replaceFile(p, []byte("new"), true)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want the sentinel", err)
+	}
+	if got := readString(t, p); got != "old" {
+		t.Fatalf("p = %q, want old", got)
+	}
+	if exists(p + ".new") {
+		t.Fatal(".new left behind")
+	}
+	if exists(p + ".old") {
+		t.Fatal(".old left behind")
 	}
 }
