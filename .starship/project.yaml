@@ -26,8 +26,8 @@ bindings:
         [ -n "$ciid" ] || ciid=$(gh run list --workflow ci --branch master --event push --commit "$sha" --json databaseId -q '.[0].databaseId // empty') || ciid=
         [ -z "$ciid" ] || cistatus=$(gh run view "$ciid" --json status -q .status) || cistatus=
         [ "$cistatus" = completed ] && break
-        [ -z "$deadline" ] && [ "$cistatus" = in_progress ] && deadline=$(( $(date +%s) + 300 ))
-        [ -z "$deadline" ] || [ "$(date +%s)" -lt "$deadline" ] || { echo "release: ci run $ciid for $sha did not finish within 5 minutes of starting" >&2; exit 1; }
+        [ -z "$deadline" ] && [ "$cistatus" = in_progress ] && deadline=$(( $(date +%s) + 600 ))
+        [ -z "$deadline" ] || [ "$(date +%s)" -lt "$deadline" ] || { echo "release: ci run $ciid for $sha did not finish within 10 minutes of starting" >&2; exit 1; }
         [ -n "$deadline" ] || [ "$(date +%s)" -lt "$backstop" ] || { echo "release: ci for $sha did not start within an hour (run: ${ciid:-none}, status: ${cistatus:-none})" >&2; exit 1; }
         sleep 10
       done
