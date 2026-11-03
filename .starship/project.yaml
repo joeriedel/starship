@@ -21,14 +21,15 @@ bindings:
       sha=$(git rev-parse HEAD) || { echo "release: can't read HEAD" >&2; exit 1; }
       git fetch -q origin master || { echo "release: can't fetch origin master" >&2; exit 1; }
       [ "$sha" = "$(git rev-parse origin/master)" ] || { echo "release: HEAD is not master's head" >&2; exit 1; }
-      ciid=; cistatus=; deadline=; backstop=$(( $(date +%s) + 3600 ))
+      ciid=; cistatus=; jobsstate=; deadline=; backstop=$(( $(date +%s) + 3600 ))
       while :; do
         [ -n "$ciid" ] || ciid=$(gh run list --workflow ci --branch master --event push --commit "$sha" --json databaseId -q '.[0].databaseId // empty') || ciid=
         [ -z "$ciid" ] || cistatus=$(gh run view "$ciid" --json status -q .status) || cistatus=
         [ "$cistatus" = completed ] && break
-        [ -z "$deadline" ] && [ "$cistatus" = in_progress ] && deadline=$(( $(date +%s) + 600 ))
-        [ -z "$deadline" ] || [ "$(date +%s)" -lt "$deadline" ] || { echo "release: ci run $ciid for $sha did not finish within 10 minutes of starting" >&2; exit 1; }
-        [ -n "$deadline" ] || [ "$(date +%s)" -lt "$backstop" ] || { echo "release: ci for $sha did not start within an hour (run: ${ciid:-none}, status: ${cistatus:-none})" >&2; exit 1; }
+        [ -n "$deadline" ] || [ "$cistatus" != in_progress ] || jobsstate=$(gh run view "$ciid" --json jobs -q 'if (.jobs | length) > 0 and ([.jobs[] | select(.status != "in_progress" and .status != "completed")] | length) == 0 then "started" else "" end') || jobsstate=
+        [ -n "$deadline" ] || [ "$jobsstate" != started ] || deadline=$(( $(date +%s) + 600 ))
+        [ -z "$deadline" ] || [ "$(date +%s)" -lt "$deadline" ] || { echo "release: ci run $ciid for $sha did not finish within 10 minutes of all its jobs starting" >&2; exit 1; }
+        [ -n "$deadline" ] || [ "$(date +%s)" -lt "$backstop" ] || { echo "release: ci for $sha did not start, or not all its jobs started, within an hour (run: ${ciid:-none}, status: ${cistatus:-none})" >&2; exit 1; }
         sleep 10
       done
       [ "$(gh run view "$ciid" --json status,conclusion -q '.status + " " + .conclusion')" = "completed success" ] || { echo "release: ci run $ciid for $sha has not completed with success" >&2; exit 1; }
