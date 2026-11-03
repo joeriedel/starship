@@ -138,14 +138,18 @@ func shellFor(dir, command string, env []string, limit time.Duration) (string, e
 		}
 	}
 	c.Dir, c.Env = dir, env
-	finish := func() error { return nil }
+	started, finish := func() {}, func() error { return nil }
 	if limit > 0 {
-		finish = killTreeOnCancel(c, cancel)
+		started, finish = killTreeOnCancel(c, cancel)
 		c.WaitDelay = killWaitDelay
 	}
 	var out bytes.Buffer
 	c.Stdout, c.Stderr = &out, &out
-	err := c.Run()
+	err := c.Start()
+	if err == nil {
+		started()
+		err = c.Wait()
+	}
 	sigErr := finish()
 	switch {
 	case sigErr != nil:

@@ -13,8 +13,9 @@ import (
 	"syscall"
 )
 
-// killTreeOnCancel puts the command in its own process group and kills the whole group when its context ends or ensign is sent SIGINT, SIGTERM or SIGHUP. The returned finish func must be called after the command ends; if a signal was caught it re-raises it to ensign with the default action and returns an error.
-func killTreeOnCancel(c *exec.Cmd, cancel context.CancelFunc) func() error {
+// killTreeOnCancel puts the command in its own process group and kills the whole group when its context ends or ensign is sent SIGINT, SIGTERM or SIGHUP. The returned started func is a no-op here. The returned finish func must be called after the command ends; if a signal was caught it re-raises it to ensign with the default action and returns an error.
+func killTreeOnCancel(c *exec.Cmd, cancel context.CancelFunc) (started func(), finish func() error) {
+	started = func() {}
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	c.Cancel = func() error {
 		err := syscall.Kill(-c.Process.Pid, syscall.SIGKILL)
@@ -34,7 +35,7 @@ func killTreeOnCancel(c *exec.Cmd, cancel context.CancelFunc) func() error {
 		}
 	}
 	if len(sigs) == 0 {
-		return func() error { return nil }
+		return started, func() error { return nil }
 	}
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, sigs...)
@@ -50,7 +51,7 @@ func killTreeOnCancel(c *exec.Cmd, cancel context.CancelFunc) func() error {
 		case <-done:
 		}
 	}()
-	return func() error {
+	return started, func() error {
 		signal.Stop(ch)
 		close(done)
 		wg.Wait()
