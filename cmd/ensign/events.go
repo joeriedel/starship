@@ -385,7 +385,7 @@ func insertProgress(doc, entry string) string {
 func appendHistory(f, task, entry string) error {
 	data, err := os.ReadFile(f)
 	if os.IsNotExist(err) {
-		return os.WriteFile(f, []byte(historyHeading(task)+entry+"\n"), 0o644)
+		return writeFile(f, historyHeading(task)+entry+"\n")
 	}
 	if err != nil {
 		return err
