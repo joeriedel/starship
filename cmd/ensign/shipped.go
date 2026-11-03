@@ -13,15 +13,17 @@ import (
 )
 
 // shippedSettings holds the parts of a project.yaml that are compared between the code's
-// shipped copy and the bridge's, decoded generically so formatting and comments don't count.
+// shipped copy and the bridge's (bindings, pipelines, extensions, rules), decoded generically
+// so formatting and comments don't count.
 type shippedSettings struct {
 	Bindings  map[string]any
 	Pipelines map[string]any
 	Use       []string
+	Rules     []string
 }
 
 const reviewedHeader = `# The shipped settings (the code's .starship/project.yaml) last reviewed for this project.
-# Items here stay quiet in the drift report that 'ensign task open' prints.
+# Its bindings, pipelines, extensions and rules stay quiet in the drift report that 'ensign task open' prints.
 # 'ensign project reviewed' writes this file; commit it.
 `
 
@@ -38,23 +40,48 @@ func readSettings(path string) (s shippedSettings, ok bool, err error) {
 	if err != nil {
 		return s, false, err
 	}
-	var raw struct {
-		Bindings  map[string]any `yaml:"bindings"`
-		Pipelines map[string]any `yaml:"pipelines"`
-		Use       []string       `yaml:"use"`
-	}
+	var raw settingsBlock
 	if err := yamlUnmarshal(data, &raw); err != nil {
 		return s, true, fmt.Errorf("%s: %v", path, err)
 	}
-	bindings, err := roundTrip(raw.Bindings)
-	if err != nil {
-		return s, true, fmt.Errorf("%s: %v", path, err)
+	s, err = decodeSettings(path, raw)
+	return s, true, err
+}
+
+// bindingsOf decodes a bindings node with keys normalised as Config.addBindings does:
+// one leading @ is dropped and a later key replaces an earlier one.
+func bindingsOf(n *yaml.Node) (map[string]any, error) {
+	if n.Kind == yaml.AliasNode {
+		n = n.Alias
 	}
-	pipelines, err := roundTrip(raw.Pipelines)
-	if err != nil {
-		return s, true, fmt.Errorf("%s: %v", path, err)
+	if n.Kind == 0 || n.Tag == "!!null" {
+		return nil, nil
 	}
-	return shippedSettings{bindings, pipelines, raw.Use}, true, nil
+	if n.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("line %d: bindings must be a mapping", n.Line)
+	}
+	m := map[string]any{}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		var v any
+		if err := n.Content[i+1].Decode(&v); err != nil {
+			return nil, err
+		}
+		m[strings.TrimPrefix(n.Content[i].Value, "@")] = v
+	}
+	return roundTrip(m)
+}
+
+// rulesOf decodes a rules node with the same normalisation as Config.addRules.
+func rulesOf(path string, n *yaml.Node) ([]string, error) {
+	c := &Config{}
+	if err := c.addRules(n, path); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range c.Rules {
+		out = append(out, r.Text)
+	}
+	return out, nil
 }
 
 // roundTrip marshals and re-decodes m so values compare the way the reviewed record
@@ -108,26 +135,31 @@ func driftOf(kind string, shipped, bridge, reviewed map[string]any) []string {
 	return lines
 }
 
-// decodeSettings turns the generic bindings/pipelines/use of one settings block into shippedSettings.
-func decodeSettings(path string, bindings, pipelines map[string]any, use []string) (shippedSettings, error) {
-	b, err := roundTrip(bindings)
+// decodeSettings turns the generic bindings/pipelines/use/rules of one settings block into shippedSettings.
+func decodeSettings(path string, blk settingsBlock) (shippedSettings, error) {
+	b, err := bindingsOf(&blk.Bindings)
 	if err != nil {
 		return shippedSettings{}, fmt.Errorf("%s: %v", path, err)
 	}
-	p, err := roundTrip(pipelines)
+	p, err := roundTrip(blk.Pipelines)
 	if err != nil {
 		return shippedSettings{}, fmt.Errorf("%s: %v", path, err)
 	}
-	return shippedSettings{b, p, use}, nil
+	r, err := rulesOf(path, &blk.Rules)
+	if err != nil {
+		return shippedSettings{}, err
+	}
+	return shippedSettings{b, p, blk.Use, r}, nil
 }
 
 type settingsBlock struct {
-	Bindings  map[string]any `yaml:"bindings"`
+	Bindings  yaml.Node      `yaml:"bindings"`
 	Pipelines map[string]any `yaml:"pipelines"`
 	Use       []string       `yaml:"use"`
+	Rules     yaml.Node      `yaml:"rules"`
 }
 
-// effectiveSettings is what the bridge holds for a location: the project's settings with the location's bindings laid over the project's, as sideBindings does at run time (the location's layer comes after the project's, so it wins).
+// effectiveSettings is what the bridge holds for a location: the project's settings with the location's bindings laid over the project's, as sideBindings does at run time (the location's layer comes after the project's, so it wins), and the location's rules added to the project's.
 func effectiveSettings(bridge, project, location string) (shippedSettings, error) {
 	file := filepath.Join(bridge, "projects", project, "project.yaml")
 	mine, _, err := readSettings(file)
@@ -136,7 +168,8 @@ func effectiveSettings(bridge, project, location string) (shippedSettings, error
 	}
 	var pf struct {
 		Locations map[string]struct {
-			Bindings map[string]any `yaml:"bindings"`
+			Bindings yaml.Node `yaml:"bindings"`
+			Rules    yaml.Node `yaml:"rules"`
 		} `yaml:"locations"`
 	}
 	if err := readYAML(file, &pf); err != nil {
@@ -146,9 +179,13 @@ func effectiveSettings(bridge, project, location string) (shippedSettings, error
 	if !ok {
 		return mine, fmt.Errorf("project %s has no location %s", project, location)
 	}
-	override, err := roundTrip(loc.Bindings)
+	override, err := bindingsOf(&loc.Bindings)
 	if err != nil {
 		return mine, fmt.Errorf("%s: %v", file, err)
+	}
+	locRules, err := rulesOf(file, &loc.Rules)
+	if err != nil {
+		return mine, err
 	}
 	merged := map[string]any{}
 	for k, v := range mine.Bindings {
@@ -158,6 +195,11 @@ func effectiveSettings(bridge, project, location string) (shippedSettings, error
 		merged[k] = v
 	}
 	mine.Bindings = merged
+	for _, r := range locRules {
+		if !containsName(mine.Rules, r) {
+			mine.Rules = append(mine.Rules, r)
+		}
+	}
 	return mine, nil
 }
 
@@ -182,7 +224,7 @@ func readReviewed(bridge, project, location string) (shippedSettings, error) {
 		return shippedSettings{}, fmt.Errorf("%s: %v", path, err)
 	}
 	e := raw.Locations[location]
-	return decodeSettings(path, e.Bindings, e.Pipelines, e.Use)
+	return decodeSettings(path, e)
 }
 
 // shippedDrift lists what the code's shipped settings have that the bridge's copy lacks
@@ -211,6 +253,11 @@ func shippedDrift(bridge, project, ws, location string) ([]string, error) {
 	for _, u := range shipped.Use {
 		if !containsName(mine.Use, u) && !containsName(reviewed.Use, u) {
 			lines = append(lines, fmt.Sprintf("extension %s: not in the bridge's copy", u))
+		}
+	}
+	for _, r := range shipped.Rules {
+		if !containsName(mine.Rules, r) && !containsName(reviewed.Rules, r) {
+			lines = append(lines, fmt.Sprintf("rule %q: not in the bridge's copy", r))
 		}
 	}
 	return lines, nil
@@ -255,6 +302,9 @@ func settingsRecord(s shippedSettings) map[string]any {
 	}
 	if len(s.Use) > 0 {
 		rec["use"] = s.Use
+	}
+	if len(s.Rules) > 0 {
+		rec["rules"] = s.Rules
 	}
 	return rec
 }

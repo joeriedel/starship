@@ -145,7 +145,7 @@ const locShippedServer = `bindings:
   test:  { command: "./test.sh" }
 `
 
-// openLocShipped sets each location's shipped file and opens a task with both locations.
+// openLocShipped opens the named task; locShipped sets a location's shipped file.
 func openLocShipped(t *testing.T, w *world, task string) string {
 	t.Helper()
 	var out bytes.Buffer
@@ -224,5 +224,167 @@ func TestShippedLocationReviewedWithoutFlagRecordsAll(t *testing.T) {
 	}
 	if err := cmdProject([]string{"reviewed", "supernova", "--location", "nope"}, &out); err == nil {
 		t.Error("an unknown location should fail")
+	}
+}
+
+func TestShippedRulesMissingFromBridgeAreReported(t *testing.T) {
+	bridge := bridgeSettings + "rules:\n  - Keep the hull sealed.\n  - Log every burn.\n"
+	shipped := bridgeSettings + "rules:\n  - \"  Keep the hull sealed.  \"\n  - Log every burn.\n  - Log every burn.\n  - |-\n    Never vent\n    the cargo bay.\n"
+	w, _ := shippedWorld(t, bridge, shipped)
+	got := openShipped(t, w)
+	if want := `rule "Never vent\nthe cargo bay.": not in the bridge's copy`; !strings.Contains(got, want) {
+		t.Errorf("missing %q:\n%s", want, got)
+	}
+	if strings.Contains(got, "hull") || strings.Contains(got, "burn") {
+		t.Errorf("rules the bridge has should be quiet:\n%s", got)
+	}
+	// A rule only the bridge has is quiet.
+	ws, _ := workspaceFor(w.bridge, "supernova", "auth-refactor")
+	write(t, filepath.Join(ws, ".starship/project.yaml"), bridgeSettings+"rules:\n  - Log every burn.\n")
+	if got := openShipped(t, w); strings.Contains(got, "shipped") {
+		t.Errorf("a bridge-only rule should be quiet:\n%s", got)
+	}
+}
+
+func TestShippedMalformedRulesCannotCompare(t *testing.T) {
+	w, _ := shippedWorld(t, bridgeSettings, bridgeSettings+"rules: not-a-list\n")
+	if got := openShipped(t, w); !strings.Contains(got, "shipped    can't compare:") || !strings.Contains(got, "rules must be a list of strings") {
+		t.Errorf("malformed rules should say so:\n%s", got)
+	}
+}
+
+func TestShippedRulesReviewed(t *testing.T) {
+	shipped := bridgeSettings + "rules:\n  - Keep the hull sealed.\n"
+	w, ws := shippedWorld(t, bridgeSettings, shipped)
+	want := `rule "Keep the hull sealed.": not in the bridge's copy`
+	if got := openShipped(t, w); !strings.Contains(got, want) {
+		t.Fatalf("missing %q:\n%s", want, got)
+	}
+	if err := cmdProject([]string{"reviewed", "supernova/auth-refactor"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := openShipped(t, w); strings.Contains(got, "shipped") {
+		t.Errorf("a reviewed rule should be quiet:\n%s", got)
+	}
+	write(t, filepath.Join(ws, ".starship/project.yaml"), shipped+"  - Log every burn.\n")
+	got := openShipped(t, w)
+	if !strings.Contains(got, `rule "Log every burn."`) || strings.Contains(got, "hull") {
+		t.Errorf("only the new rule should be reported:\n%s", got)
+	}
+	rec := filepath.Join(w.bridge, "projects/supernova/shipped-reviewed.yaml")
+	write(t, rec, "bindings:\n  build: { command: ./build.sh }\n")
+	if got := openShipped(t, w); !strings.Contains(got, want) {
+		t.Errorf("a record without rules reviews none:\n%s", got)
+	}
+}
+
+const rulesLocationsProject = `platforms: [linux]
+rules:
+  - Keep the hull sealed.
+locations:
+  client:
+    rules:
+      - Log every burn.
+  server:
+`
+
+func TestShippedRulesPerLocation(t *testing.T) {
+	w := locationsWorld(t)
+	write(t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"), rulesLocationsProject)
+	task := locTask(t, w, "both", "client,server")
+	shipped := "rules:\n  - Keep the hull sealed.\n  - Log every burn.\n"
+	locShipped(t, w, "client", shipped)
+	locShipped(t, w, "server", shipped)
+	got := openLocShipped(t, w, task)
+	if !strings.Contains(got, `rule "Log every burn.": not in the bridge's copy`) || strings.Count(got, "Log every burn.") != 1 {
+		t.Errorf("the client's rule should be reported once, for server:\n%s", got)
+	}
+	if strings.Contains(got, "hull") || strings.Contains(got, "location client: the code's") || !strings.Contains(got, "--location server") {
+		t.Errorf("only server drifts, and the project's rule is quiet:\n%s", got)
+	}
+	if err := cmdProject([]string{"reviewed", "supernova", "--location", "server"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := openLocShipped(t, w, task); strings.Contains(got, "shipped") {
+		t.Errorf("server's review should silence it:\n%s", got)
+	}
+	write(t, reviewedFile(w.bridge, "supernova"), "")
+	if got := openLocShipped(t, w, task); !strings.Contains(got, "--location server") {
+		t.Errorf("an empty record reviews nothing:\n%s", got)
+	}
+	if err := cmdProject([]string{"reviewed", "supernova"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := openLocShipped(t, w, task); strings.Contains(got, "shipped") {
+		t.Errorf("reviewed without --location records every location's rules:\n%s", got)
+	}
+}
+
+func TestShippedBindingKeysNormalise(t *testing.T) {
+	w := locationsWorld(t)
+	project := strings.Replace(locationsProject, `test: { command: "./client-test.sh" }`, `"@build": { command: "./client-build.sh" }`, 1)
+	write(t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"), project)
+	task := locTask(t, w, "both", "client,server")
+	client := "bindings:\n  build: { command: ./client-build.sh }\n  test: { command: ./test.sh }\n"
+	locShipped(t, w, "client", client)
+	locShipped(t, w, "server", locShippedServer)
+	if got := openLocShipped(t, w, task); strings.Contains(got, "shipped") {
+		t.Errorf("a @build overlay should lay over build:\n%s", got)
+	}
+	locShipped(t, w, "client", strings.Replace(client, "./client-build.sh", "./other.sh", 1))
+	if got := openLocShipped(t, w, task); !strings.Contains(got, "binding build: changed") {
+		t.Errorf("a real difference should report:\n%s", got)
+	}
+}
+
+func TestShippedBindingKeysAtSignInFiles(t *testing.T) {
+	at := func(body string) string { return "bindings:\n" + body }
+	w, ws := shippedWorld(t, bridgeSettings, at("  \"@build\": { command: ./build.sh }\n  test: { command: ./test.sh }\n"))
+	if got := openShipped(t, w); strings.Contains(got, "shipped") {
+		t.Errorf("shipped @build should match bridge build:\n%s", got)
+	}
+	// Reviewed @build silences a shipped build.
+	write(t, filepath.Join(ws, ".starship/project.yaml"), at("  build: { command: ./new.sh }\n"))
+	write(t, filepath.Join(w.bridge, "projects/supernova/shipped-reviewed.yaml"), at("  \"@build\": { command: ./new.sh }\n"))
+	if got := openShipped(t, w); strings.Contains(got, "shipped") {
+		t.Errorf("reviewed @build should silence build:\n%s", got)
+	}
+	// With both keys the later wins.
+	os.Remove(filepath.Join(w.bridge, "projects/supernova/shipped-reviewed.yaml"))
+	write(t, filepath.Join(ws, ".starship/project.yaml"), at("  build: { command: ./old.sh }\n  \"@build\": { command: ./build.sh }\n"))
+	if got := openShipped(t, w); strings.Contains(got, "binding build") {
+		t.Errorf("the later key should win:\n%s", got)
+	}
+	write(t, filepath.Join(ws, ".starship/project.yaml"), at("  \"@build\": { command: ./old.sh }\n  build: { command: ./build.sh }\n"))
+	if got := openShipped(t, w); strings.Contains(got, "binding build") {
+		t.Errorf("the later key should win:\n%s", got)
+	}
+	write(t, filepath.Join(ws, ".starship/project.yaml"), at("  build: { command: ./build.sh }\n  \"@build\": { command: ./old.sh }\n"))
+	if got := openShipped(t, w); !strings.Contains(got, "binding build: changed") {
+		t.Errorf("the later key should win:\n%s", got)
+	}
+}
+
+func TestShippedNonMappingBindingsCannotCompare(t *testing.T) {
+	for _, body := range []string{"bindings: not-a-map\n", "bindings: [a, b]\n"} {
+		w, _ := shippedWorld(t, bridgeSettings, body)
+		if got := openShipped(t, w); !strings.Contains(got, "shipped    can't compare:") || !strings.Contains(got, "bindings must be a mapping") {
+			t.Errorf("%q should say it can't compare:\n%s", body, got)
+		}
+		if err := cmdProject([]string{"reviewed", "supernova/auth-refactor"}, &bytes.Buffer{}); err == nil {
+			t.Errorf("project reviewed should fail on %q", body)
+		}
+	}
+}
+
+func TestShippedBindingsAliasComparesByValue(t *testing.T) {
+	shipped := "x-common: &common\n  build: { command: ./build.sh }\n  test: { command: ./test.sh }\nbindings: *common\n"
+	w, ws := shippedWorld(t, bridgeSettings, shipped)
+	if got := openShipped(t, w); strings.Contains(got, "shipped") {
+		t.Errorf("an aliased binding set that matches should be quiet:\n%s", got)
+	}
+	write(t, filepath.Join(ws, ".starship/project.yaml"), strings.Replace(shipped, "./test.sh", "./other.sh", 1))
+	if got := openShipped(t, w); !strings.Contains(got, "binding test: changed") {
+		t.Errorf("an aliased binding that differs should report:\n%s", got)
 	}
 }

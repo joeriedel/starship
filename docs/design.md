@@ -488,7 +488,7 @@ silently replaced.
 
 Each layer has one config file, and they all share the same shape: `bridge.yaml` for the
 bridge, `projects/<p>/project.yaml` for a project, and the frontmatter of `task.md` for a
-task. Pipeline operations go under `pipelines.<name>.ops`, next to the layer's bindings. `bridge.yaml` alone also takes `session-edit`, a list of extra folders the session agent may edit (relative entries are taken from the bridge folder; code folders never go there):
+task. The one exception is `rules:`, which the task layer does not take (see below). Pipeline operations go under `pipelines.<name>.ops`, next to the layer's bindings. `bridge.yaml` alone also takes `session-edit`, a list of extra folders the session agent may edit (relative entries are taken from the bridge folder; code folders never go there):
 
 ```yaml
 # projects/supernova/project.yaml (a task.md frontmatter block looks the same)
@@ -510,9 +510,14 @@ bindings:
   build: { command: "./build.sh --fast" }
   test:  { not-applicable: "proto-only repo, no suite" }
 
+rules:
+  - Never touch the vault.
+
 events:
   stage.after:test: [{ observe: scripts/post-summary.sh }]
 ```
+
+`rules` is a list of strings, accepted in the bridge, extension, project and location layers. Their union in layer order, duplicates dropped, is appended to every work item under `## Project rules` and shown in the run summary with each rule's source. The task layer is the exception to the shared shape: a task's frontmatter `rules:` is ignored, and task-specific rules go in the task's Scope.
 
 A task's frontmatter also names its `pipeline` (default `coding`) and its `workspace`.
 New pipelines are files in a `pipelines/` directory — the control plane's, or an extension's.
@@ -686,7 +691,11 @@ budgets
   test   1   from task:projects/supernova/tasks/auth-refactor/task.md:7
 bindings
   @build    ./build.sh   from project:projects/supernova/project.yaml:2
+rules
+  Never touch the vault.   from project:projects/supernova/project.yaml:5
 ```
+
+The summary ends with the `bindings` section and, when there are any rules, a `rules` section; a rule's source is `<layer>:<path>:<line>`, or `extension:<name>:<line>` for an extension's rule (for example `extension:house:3`), and a location's is `location:<path>#<location>:<line>`.
 
 The snapshot's hash is recorded in the state file. A config change mid-run does not
 affect that run.

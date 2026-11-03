@@ -143,6 +143,9 @@ bindings:
   build: { command: "./build.sh --fast" }
   test:  { command: "./test.sh" }
 
+rules:                                   # standing rules, added to every work item
+  - Never touch the vault.
+
 pipelines:
   coding:
     ops:
@@ -152,6 +155,8 @@ pipelines:
 events:
   stage.after:test: [{ observe: scripts/post-summary.sh }]
 ```
+
+`rules:` is a list of strings in `bridge.yaml`, an extension, a project or a location. Together, without duplicates, they are appended to every work item under `## Project rules`, and the run summary shows each rule with where it came from. A task's own frontmatter `rules:` is ignored; put task-specific rules in the task's Scope.
 
 Three extensions ship in the box:
 
