@@ -22,3 +22,5 @@ When the project declares locations:
 - A release step takes `--location <name>`: `ensign sequence release <project> <version> --location <name>`. Its `@release` is the project's overridden by that location's, and it runs in that location's folder. Without `--location` the project's only location is used; with several, the step is refused.
 
 Drop pending steps with `ensign sequence drop <n>... --reason <why>` only when the user asks; it keeps the rest running, and dropping a run step drops its task's publish step.
+
+- `ensign sequence` shows the open sequences; `ensign sequence --all` shows every sequence in the session, finished ones included.

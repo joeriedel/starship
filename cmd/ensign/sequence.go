@@ -227,10 +227,21 @@ func (sf *seqFile) add(st *seqStep) {
 	seq.Steps = append(seq.Steps, st)
 }
 
-func (sf *seqFile) listing(bridge string) string {
+// isOpen reports that a sequence still matters to the session: it has unfinished steps and is either approved or the one awaiting go.
+func (sf *seqFile) isOpen(seq *sequence) bool {
+	return len(seq.Steps) > 0 && !seq.Closed && seq.unfinished() && (seq.Approved || seq == sf.openSeq())
+}
+
+// listing renders the open sequences only, so hook messages stay small however many sequences a session has run.
+func (sf *seqFile) listing(bridge string) string { return sf.render(bridge, false) }
+
+// listingAll renders every sequence, finished ones included.
+func (sf *seqFile) listingAll(bridge string) string { return sf.render(bridge, true) }
+
+func (sf *seqFile) render(bridge string, all bool) string {
 	var b strings.Builder
 	for _, seq := range sf.Sequences {
-		if len(seq.Steps) == 0 {
+		if len(seq.Steps) == 0 || (!all && !sf.isOpen(seq)) {
 			continue
 		}
 		state := "approved"
@@ -1109,11 +1120,20 @@ func cmdSequence(args []string, out io.Writer) error {
 		return err
 	}
 	deliverTopic(bridge, "sequence", out)
-	if len(args) == 0 {
+	if len(args) == 0 || (len(args) == 1 && args[0] == "--all") {
+		all := len(args) == 1
 		return withSeq(bridge, session, func(sf *seqFile) error {
 			sf.reconcile(bridge)
-			if l := sf.listing(bridge); l != "" {
+			if all {
+				if l := sf.listingAll(bridge); l != "" {
+					fmt.Fprint(out, l)
+				} else {
+					fmt.Fprintln(out, "no sequence in this session")
+				}
+			} else if l := sf.listing(bridge); l != "" {
 				fmt.Fprint(out, l)
+			} else if sf.listingAll(bridge) != "" {
+				fmt.Fprintln(out, "no open sequence; `ensign sequence --all` lists every sequence in this session")
 			} else {
 				fmt.Fprintln(out, "no sequence in this session")
 			}
@@ -1221,6 +1241,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			runs []string
 		}
 		var paused []pausedStep
+		var haltedN int
 		err = withSeq(bridge, session, func(sf *seqFile) error {
 			var cur *sequence
 			for _, seq := range sf.Sequences {
@@ -1239,6 +1260,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				reason = "halted"
 			}
 			cur.Halted, cur.Reason = true, reason
+			haltedN = cur.N
 			sf.reconcile(bridge)
 			for _, st := range cur.Steps {
 				switch {
@@ -1294,7 +1316,10 @@ func cmdSequence(args []string, out io.Writer) error {
 			if text != "" {
 				fmt.Fprintln(out, text)
 			} else {
-				fmt.Fprint(out, sf.listing(bridge))
+				fmt.Fprintf(out, "sequence %d halted: %s\n", haltedN, reason)
+				if l := sf.listing(bridge); l != "" {
+					fmt.Fprint(out, "\n"+l)
+				}
 			}
 			return err
 		})

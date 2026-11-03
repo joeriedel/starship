@@ -257,7 +257,7 @@ func TestSequenceDoStepWaitsForDoneOrFail(t *testing.T) {
 	w.wantStatus("done", "active")
 	w.mustSeq("fail", "2", "--reason", "no way to tell")
 	w.wantStatus("done", "failed")
-	if out := w.mustSeq(); !strings.Contains(out, "halted") {
+	if out := w.mustSeq("--all"); !strings.Contains(out, "halted") {
 		t.Errorf("a failed do step halts a stop-mode sequence:\n%s", out)
 	}
 	if _, err := w.seq("fail", "2"); err == nil {
@@ -985,5 +985,63 @@ func TestSequenceHaltRetiresAnApprovedRunWhoseLeadWasNeverDispatched(t *testing.
 		if res := w.stopHook(); res["decision"] == "block" {
 			t.Fatalf("a halted sequence should not demand a dispatch: %s", dig(res, "reason"))
 		}
+	}
+}
+
+func TestSequenceHaltOfAnUnapprovedSequenceSaysWhatItHalted(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "tell the user about supernova")
+	out := w.mustSeq("halt", "--reason", "changed my mind")
+	if !strings.Contains(out, "sequence 1 halted: changed my mind") {
+		t.Errorf("halt should name the halted sequence and the reason:\n%q", out)
+	}
+}
+
+func TestSequenceListingShowsOnlyOpenSequences(t *testing.T) {
+	w := newWorld(t)
+	for i := 1; i <= 12; i++ {
+		w.mustSeq("do", "tell the user about supernova")
+		w.approve()
+		w.mustSeq("done", strconv.Itoa(i))
+	}
+	w.mustSeq("do", "next supernova chore")
+	ctx := w.goContext()
+	if !strings.Contains(ctx, "next supernova chore") {
+		t.Fatalf("the approval should list the new sequence:\n%s", ctx)
+	}
+	if strings.Contains(ctx, "sequence 1 (mode") || strings.Contains(ctx, "sequence 12 (mode") || len(ctx) > 5000 {
+		t.Fatalf("the approval should not list finished sequences (%d chars):\n%s", len(ctx), ctx)
+	}
+	stop := dig(w.stopHook(), "reason")
+	if !strings.Contains(stop, "waiting") || strings.Contains(stop, "sequence 1 (mode") || len(stop) > 5000 {
+		t.Fatalf("the Stop text should not list finished sequences (%d chars):\n%s", len(stop), stop)
+	}
+	if out := w.mustSeq(); strings.Contains(out, "sequence 1 (mode") || !strings.Contains(out, "next supernova chore") {
+		t.Fatalf("plain listing should show only the open sequence:\n%s", out)
+	}
+	if out := w.mustSeq("--all"); !strings.Contains(out, "sequence 1 (mode") || !strings.Contains(out, "sequence 12 (mode") {
+		t.Fatalf("--all should list every sequence:\n%s", out)
+	}
+}
+
+func TestSequenceListingNoneOpenPointsToAll(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "tell the user about supernova")
+	w.approve()
+	w.mustSeq("done", "1")
+	out := w.mustSeq()
+	if strings.Contains(out, "sequence 1 (mode") || !strings.Contains(out, "--all") {
+		t.Fatalf("expected a pointer to --all:\n%s", out)
+	}
+}
+
+func TestSequenceListingKeepsApprovedHalted(t *testing.T) {
+	sf := &seqFile{Sequences: []*sequence{
+		{N: 1, Mode: modeStop, Approved: true, Halted: true, Reason: "enough", Steps: []*seqStep{{N: 1, Kind: "do", Instruction: "first supernova chore", Status: "active"}}},
+		{N: 2, Mode: modeStop, Approved: true, Halted: true, Reason: "enough", Closed: true, Steps: []*seqStep{{N: 2, Kind: "do", Instruction: "old supernova chore", Status: "cancelled"}}},
+	}}
+	out := sf.listing("")
+	if !strings.Contains(out, "sequence 1 (mode") || !strings.Contains(out, "halted: enough") || strings.Contains(out, "sequence 2 (mode") {
+		t.Fatalf("an approved halted sequence with open steps should be listed, a closed one not:\n%s", out)
 	}
 }
