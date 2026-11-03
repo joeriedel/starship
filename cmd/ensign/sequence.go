@@ -128,14 +128,19 @@ func withSeq(bridge, session string, fn func(sf *seqFile) error) error {
 	}
 	defer l.Unlock()
 	sf := &seqFile{}
-	if err := readJSON(path, sf); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
+	existed := true
+	if err := readJSON(path, sf); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		existed = false
 	}
 	sf.normalize()
 	if err := fn(sf); err != nil {
 		return err
 	}
-	if len(sf.Sequences) == 0 {
+	// A file whose last sequence was discarded is rewritten empty; a session that never had one gets no file.
+	if len(sf.Sequences) == 0 && !existed {
 		return nil
 	}
 	return writeJSON(path, sf)
@@ -1418,15 +1423,16 @@ func cmdSequence(args []string, out io.Writer) error {
 		}
 		return withSeq(bridge, session, func(sf *seqFile) error {
 			sf.reconcile(bridge)
+			open := sf.openSeq()
 			drop := map[*seqStep]bool{}
 			for _, arg := range steps {
 				seq, st, err := sf.stepRef(arg)
 				switch {
 				case err != nil:
 					return err
-				case !seq.Approved || seq.Closed:
-					return fmt.Errorf("step %s is not in an approved, open sequence", st.ref())
-				case st.Status != "pending":
+				case seq.Closed || (!seq.Approved && seq != open):
+					return fmt.Errorf("step %s is in a closed or halted sequence; only steps of the sequence waiting for go or of an approved, open sequence can be dropped", st.ref())
+				case seq.Approved && st.Status != "pending":
 					return fmt.Errorf("step %s is %s; only pending steps can be dropped", st.ref(), st.Status)
 				}
 				drop[st] = true
@@ -1439,19 +1445,66 @@ func cmdSequence(args []string, out io.Writer) error {
 					}
 				}
 			}
+			removed, cancelled := 0, false
 			for _, seq := range sf.Sequences {
+				if seq == open {
+					kept := seq.Steps[:0:0]
+					for _, st := range seq.Steps {
+						if drop[st] {
+							cancelStep(bridge, st, "dropped", reason)
+							removed++
+						} else {
+							kept = append(kept, st)
+						}
+					}
+					seq.Steps = kept
+					continue
+				}
 				for _, st := range seq.Steps {
 					if drop[st] {
 						cancelStep(bridge, st, "cancelled", reason)
+						cancelled = true
 					}
 				}
 			}
-			text, err := sf.advance(bridge, session)
+			if open != nil && len(open.Steps) == 0 {
+				sf.Sequences = sf.Sequences[:len(sf.Sequences)-1]
+			}
+			sf.normalize()
+			var text string
+			var err error
+			if cancelled {
+				text, err = sf.advance(bridge, session)
+			}
 			if text == "" {
 				text = sf.listing(bridge)
 			}
+			if text == "" && removed > 0 {
+				text = "no steps are left waiting for go\n"
+			}
 			fmt.Fprint(out, text)
 			return err
+		})
+	case "discard":
+		reason, err := flagValue(rest, "--reason", "usage: ensign sequence discard [--reason <text>]")
+		if err != nil {
+			return err
+		}
+		if reason == "" {
+			reason = "discarded"
+		}
+		return withSeq(bridge, session, func(sf *seqFile) error {
+			seq := sf.openSeq()
+			if seq == nil {
+				return fmt.Errorf("there is no sequence waiting for go to discard; an approved sequence is stopped with ensign sequence halt")
+			}
+			sf.reconcile(bridge)
+			for _, st := range seq.Steps {
+				cancelStep(bridge, st, "discarded", reason)
+			}
+			sf.Sequences = sf.Sequences[:len(sf.Sequences)-1]
+			fmt.Fprintf(out, "%s discarded (%d steps removed)\n", seq.label(), len(seq.Steps))
+			return nil
 		})
 	case "accept":
 		if len(rest) != 1 {
@@ -1583,7 +1636,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		})
 	}
-	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <seq>.<step> | do <instruction> | mode stop|keep-going | halt | drop <step>... [--reason <text>] | retry <step> --diagnosis <why> --state <what is left> | accept <step> | done <step> | fail <step> --reason <text>]; add steps with --name <text> to name a new sequence]")
+	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <seq>.<step> | do <instruction> | mode stop|keep-going | halt | discard | drop <step>... [--reason <text>] | retry <step> --diagnosis <why> --state <what is left> | accept <step> | done <step> | fail <step> --reason <text>]; add steps with --name <text> to name a new sequence]")
 }
 
 // retryRun queues a new run for a failed one, with the diagnosis in its work item.

@@ -971,6 +971,130 @@ func TestSequenceDropRefusesWhatIsNotPending(t *testing.T) {
 	w.wantStatus("done", "active")
 }
 
+func (w *world) wantRetired(ids ...string) {
+	w.t.Helper()
+	for _, id := range ids {
+		if r, err := readRun(w.bridge, id); err != nil || !r.State.terminal() {
+			w.t.Errorf("run %s should be retired: %v", id, err)
+		}
+	}
+}
+
+func TestSequenceDropRemovesStepsOfTheSequenceWaitingForGo(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.addTask("third")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	runs := w.stepRuns(2)
+	w.mustSeq("run", "supernova/third")
+	out := w.mustSeq("drop", "2")
+	if strings.Contains(out, "cancelled") || strings.Contains(out, "halted") || strings.Contains(out, "supernova/other") {
+		t.Errorf("the dropped step should be gone from the listing:\n%s", out)
+	}
+	w.wantRetired(runs...)
+	w.mustSeq("run", "supernova/other")
+	sf := readSeq(w.bridge, w.sid)
+	if len(sf.Sequences) != 1 || sf.Sequences[0].Halted || sf.Sequences[0].Closed {
+		t.Fatalf("want one open sequence: %+v", sf.Sequences)
+	}
+	var tasks []string
+	for i, st := range sf.Sequences[0].Steps {
+		if st.N != i+1 || st.Status != "pending" {
+			t.Errorf("step %d is numbered %d, %s", i+1, st.N, st.Status)
+		}
+		tasks = append(tasks, st.Task)
+	}
+	if got := strings.Join(tasks, ","); got != "supernova/auth-refactor,supernova/third,supernova/other" {
+		t.Errorf("steps %s", got)
+	}
+}
+
+func TestSequenceDropOfARunStepRemovesItsPublishStepBeforeGo(t *testing.T) {
+	w, _, _, _ := githubWorld(t, "success", localTest)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("publish", "supernova/other")
+	w.mustSeq("drop", "2")
+	if n := len(readSeq(w.bridge, w.sid).Sequences[0].Steps); n != 1 {
+		t.Errorf("%d steps left, want 1\n%s", n, sequenceListing(w.bridge, w.sid))
+	}
+	if _, err := w.seq("drop", "2"); err == nil {
+		t.Error("step 2 is gone")
+	}
+}
+
+func TestSequenceDropOfEveryStepRemovesTheSequence(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	runs := w.stepRuns(1)
+	w.mustSeq("drop", "1")
+	w.wantRetired(runs...)
+	if sf := readSeq(w.bridge, w.sid); len(sf.Sequences) != 0 {
+		t.Errorf("sequences left: %+v", sf.Sequences)
+	}
+	w.mustSeq("run", "supernova/auth-refactor")
+	if sf := readSeq(w.bridge, w.sid); len(sf.Sequences) != 1 || sf.Sequences[0].N != 1 || len(sf.Sequences[0].Steps) != 1 {
+		t.Errorf("want a fresh sequence 1 with one step: %+v", sf.Sequences)
+	}
+}
+
+func TestSequenceDiscardThenRebuild(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	runs := append(w.stepRuns(1), w.stepRuns(2)...)
+	if out := w.mustSeq("discard"); !strings.Contains(out, "discarded") {
+		t.Errorf("discard output %q", out)
+	}
+	w.wantRetired(runs...)
+	if sf := readSeq(w.bridge, w.sid); len(sf.Sequences) != 0 {
+		t.Fatalf("sequences left: %+v", sf.Sequences)
+	}
+	if !seqExists(w.bridge, w.sid) {
+		t.Error("the emptied file should have been rewritten, not left with the old content")
+	}
+	w.mustSeq("run", "supernova/other")
+	out := w.mustSeq("--all")
+	if strings.Contains(out, "halted") || strings.Contains(out, "auth-refactor") || !strings.Contains(out, "supernova/other") {
+		t.Errorf("the rebuilt listing:\n%s", out)
+	}
+	if sf := readSeq(w.bridge, w.sid); len(sf.Sequences) != 1 || len(sf.Sequences[0].Steps) != 1 {
+		t.Errorf("want one sequence of one step: %+v", sf.Sequences)
+	}
+}
+
+func TestSequenceDiscardNeedsASequenceWaitingForGo(t *testing.T) {
+	w := newWorld(t)
+	if _, err := w.seq("discard"); err == nil {
+		t.Error("discard with no sequence should fail")
+	}
+	if seqExists(w.bridge, w.sid) {
+		t.Error("discard must not create a sequence file")
+	}
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	if _, err := w.seq("discard"); err == nil || !strings.Contains(err.Error(), "halt") {
+		t.Errorf("an approved sequence can't be discarded: %v", err)
+	}
+	w.wantStatus("active")
+}
+
+func TestSequenceDropOfAnApprovedSequenceCancelsAndKeepsTheStep(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.approve()
+	w.mustSeq("drop", "2")
+	if n := len(readSeq(w.bridge, w.sid).Sequences[0].Steps); n != 2 {
+		t.Errorf("%d steps, an approved sequence keeps a dropped step", n)
+	}
+	w.wantStatus("active", "cancelled")
+}
+
 func TestSequenceHaltRetiresAnApprovedRunWhoseLeadWasNeverDispatched(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("run", "supernova/auth-refactor")

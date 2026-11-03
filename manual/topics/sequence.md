@@ -21,6 +21,8 @@ When the project declares locations:
 - Retry keeps the run's location. It keeps the sides only if the old run was narrowed; otherwise the retry takes the default sides.
 - A release step takes `--location <name>`: `ensign sequence release <project> <version> --location <name>`. Its `@release` is the project's overridden by that location's, and it runs in that location's folder. Without `--location` the project's only location is used; with several, the step is refused.
 
-Drop pending steps with `ensign sequence drop <seq>.<step>... --reason <why>` only when the user asks; it keeps the rest running, and dropping a run step drops its task's publish step.
+Drop pending steps of an approved sequence with `ensign sequence drop <seq>.<step>... --reason <why>` only when the user asks; it keeps the rest running, and dropping a run step drops its task's publish step.
+
+Before `go` the sequence is yours to rebuild: `ensign sequence drop <seq>.<step>...` removes steps of the sequence waiting for go (the rest renumber, and dropping a run step removes its task's publish step), and `ensign sequence discard` removes the whole sequence so the next step starts a fresh one. Use them to reorder or insert a step, for example to put a publish step between two runs of `supernova`: drop the later steps and add them again in the new order. `halt` is for stopping work that has begun, not for rebuilding.
 
 - `ensign sequence` shows the open sequences; `ensign sequence --all` shows every sequence in the session, finished ones included.

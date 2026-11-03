@@ -143,7 +143,7 @@ func usage() {
   ensign run <project>/<task> [--subtask <name>] [--start <stage>] [--sync] [--dependency <location>=<branch>] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
   ensign run retire <run>
-  ensign sequence [run <project>/<task> [run flags, e.g. --location <name> --sides <a,b>] | publish <project>/<task> | release <project> <version> [--location <name>] | do <instruction> | mode stop|keep-going | halt [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> [--note <text>] | fail <n> --reason <text>]
+  ensign sequence [run <project>/<task> [run flags, e.g. --location <name> --sides <a,b>] | publish <project>/<task> | release <project> <version> [--location <name>] | do <instruction> | mode stop|keep-going | halt [--reason <text>] | discard [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | done <n> [--note <text>] | fail <n> --reason <text>]
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] [--location <name>]
   ensign style report <project>
   ensign skill new <name> --description <text> | ensign skill discard <name>
