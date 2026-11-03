@@ -821,9 +821,94 @@ func releaseText(st *seqStep) string {
 		st.Task, st.Version, st.ref(), st.ref())
 }
 
-func decideText(st *seqStep) string {
-	return fmt.Sprintf("Its run failed: %s\nRetry once only for a diagnosed, small, fixable cause: `ensign sequence retry %s --diagnosis \"<why it failed>\" --state \"<what is left>\"`. Otherwise `ensign sequence accept %s`.",
+// skipWorkspaceNote is told with every skip offer and result: the failed run's uncommitted work stays on its task branch in its folder.
+const skipWorkspaceNote = "The failed run's uncommitted work stays in its workspace, and a later run in that folder won't start until it is committed or stashed."
+
+func decideText(sf *seqFile, seq *sequence, st *seqStep) string {
+	if seq.Mode == modeKeepGoing {
+		return fmt.Sprintf("Its run failed: %s\nRetry once only for a diagnosed, small, fixable cause: `ensign sequence retry %s --diagnosis \"<why it failed>\" --state \"<what is left>\"`. Otherwise `ensign sequence accept %s`.",
+			firstLine(st.Reason), st.ref(), st.ref())
+	}
+	text := fmt.Sprintf("Its run failed: %s\nRetry once only for a diagnosed, small, fixable cause: `ensign sequence retry %s --diagnosis \"<why it failed>\" --state \"<what is left>\"`. Otherwise `ensign sequence accept %s`, which ends the step as failed, halts the sequence and cancels every later step.",
 		firstLine(st.Reason), st.ref(), st.ref())
+	text += fmt.Sprintf("\nOnly if the user explicitly asks to carry on past this failure: `ensign sequence skip %s` ends the step as failed, cancels the task's publish step and carries on with the rest of the sequence. "+skipWorkspaceNote, st.ref())
+	if affected := skipAffectedText(skipAffected(sf, seq, st)); affected != "" {
+		text += "\n" + affected
+	}
+	return text
+}
+
+// namesTask reports whether text contains the task as a whole name, either <project>/<task> or the bare <task>, ignoring case.
+func namesTask(text, task string) bool {
+	text, task = strings.ToLower(text), strings.ToLower(task)
+	_, bare, _ := strings.Cut(task, "/")
+	isName := func(c byte) bool { return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' }
+	for _, name := range []string{task, bare} {
+		if name == "" {
+			continue
+		}
+		for from := 0; ; {
+			i := strings.Index(text[from:], name)
+			if i < 0 {
+				break
+			}
+			i += from
+			from = i + 1
+			end := i + len(name)
+			if i > 0 && isName(text[i-1]) {
+				continue
+			}
+			if name == bare && i > 0 && text[i-1] == '/' && !(strings.HasSuffix(text[:i-1], "task") && (i == 5 || !isName(text[i-6]))) {
+				continue
+			}
+			if end < len(text) && isName(text[end]) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// skipAffected lists the pending later steps that skipping a failed run step may leave without what they assume: release steps, do steps that name its task, and run steps of the same task, in its sequence after it and in every later open sequence (approved or not). Its own sequence's publish steps are cancelled, so they are not listed; a later sequence's are.
+func skipAffected(sf *seqFile, seq *sequence, failed *seqStep) []*seqStep {
+	var out []*seqStep
+	later := false
+	for _, s := range sf.Sequences {
+		if s == seq {
+			later = true
+		} else if !later || s.Closed || s.Halted {
+			continue
+		}
+		for _, st := range s.Steps {
+			if st.Status != "pending" || (s == seq && st.N <= failed.N) {
+				continue
+			}
+			if st.Kind == "release" || (st.Kind == "do" && namesTask(st.Instruction, failed.Task)) || (st.Kind == "run" && st.Task == failed.Task) || (st.Kind == "publish" && s != seq && st.Task == failed.Task) {
+				out = append(out, st)
+			}
+		}
+	}
+	return out
+}
+
+// skipAffectedText names the steps skipAffected found, one per line. It is empty when there are none.
+func skipAffectedText(list []*seqStep) string {
+	if len(list) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(list))
+	for _, st := range list {
+		what := st.Task
+		switch st.Kind {
+		case "release":
+			what = st.Task + " " + st.Version
+		case "do":
+			what = firstLine(st.Instruction)
+		}
+		lines = append(lines, fmt.Sprintf("  step %s, %s: %s", st.ref(), st.Kind, what))
+	}
+	return "These later steps may be affected, so check them:\n" + strings.Join(lines, "\n")
 }
 
 // startRuns starts the queued runs of a step's group, each in its own code folder. It returns what the session does next for each run it started, the first folder-busy error of a run that must wait for a later advance, and the first other error; a run that fails to start is retired.
@@ -1013,7 +1098,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 				var todo string
 				switch {
 				case st.deciding():
-					todo = decideText(st)
+					todo = decideText(sf, seq, st)
 				case st.Kind == "run" && st.holds():
 					if seq.Halted {
 						continue
@@ -1531,6 +1616,43 @@ func cmdSequence(args []string, out io.Writer) error {
 			fmt.Fprint(out, text)
 			return err
 		})
+	case "skip":
+		if len(rest) != 1 {
+			return errors.New("usage: ensign sequence skip <seq>.<step>")
+		}
+		return withSeq(bridge, session, func(sf *seqFile) error {
+			seq, st, err := sf.stepRef(rest[0])
+			if err != nil {
+				return err
+			}
+			switch {
+			case seq.Halted:
+				return fmt.Errorf("the sequence is halted; step %s can't be skipped", st.ref())
+			case st.Kind != "run":
+				return fmt.Errorf("step %s is a %s step; only run steps can be skipped, not publish, do or release steps", st.ref(), st.Kind)
+			case !st.deciding():
+				return fmt.Errorf("step %s is not waiting for a decision (it is %s)", st.ref(), st.Status)
+			case seq.Mode == modeKeepGoing:
+				return fmt.Errorf("sequence %d is in keep-going mode; `ensign sequence accept %s` already continues past a failure", seq.N, st.ref())
+			}
+			affected := skipAffectedText(skipAffected(sf, seq, st))
+			st.Status, st.Reason = "failed", "skipped by the user: "+st.Reason
+			for _, other := range seq.Steps {
+				if other.Kind == "publish" && other.Task == st.Task && other.Status == "pending" {
+					cancelStep(bridge, other, "cancelled", fmt.Sprintf("step %s was skipped", st.ref()))
+				}
+			}
+			text, err := sf.advance(bridge, session)
+			if text == "" {
+				text = sf.listing(bridge)
+			}
+			if affected != "" {
+				text = affected + "\n" + text
+			}
+			text = skipWorkspaceNote + "\n" + text
+			fmt.Fprint(out, text)
+			return err
+		})
 	case "retry":
 		usage := "usage: ensign sequence retry <seq>.<step> --diagnosis <why it failed> --state <what is left>"
 		if len(rest) < 1 {
@@ -1640,7 +1762,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			return err
 		})
 	}
-	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <seq>.<step> | do <instruction> | mode stop|keep-going | halt | discard | drop <step>... [--reason <text>] | retry <step> --diagnosis <why> --state <what is left> | accept <step> | done <step> | fail <step> --reason <text>]; add steps with --name <text> to name a new sequence]")
+	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <seq>.<step> | do <instruction> | mode stop|keep-going | halt | discard | drop <step>... [--reason <text>] | retry <step> --diagnosis <why> --state <what is left> | accept <step> | skip <step> | done <step> | fail <step> --reason <text>]; add steps with --name <text> to name a new sequence]")
 }
 
 // retryRun queues a new run for a failed one, with the diagnosis in its work item.

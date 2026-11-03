@@ -1536,3 +1536,165 @@ func TestSequenceHaltOfAPausedGroupKeepsARealFailure(t *testing.T) {
 		t.Errorf("listing should show the real failure %q:\n%s", real, l)
 	}
 }
+
+func TestSequenceSkipContinuesAndCancelsThePublishStep(t *testing.T) {
+	w, _, _, _ := githubWorld(t, "success", localTest)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("publish", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("decide", "pending", "pending")
+	out := w.mustSeq("skip", "1")
+	if !strings.Contains(out, skipWorkspaceNote) {
+		t.Errorf("skip should tell about the workspace even with nothing affected:\n%s", out)
+	}
+	w.wantStatus("failed", "cancelled", "active")
+	if sf := readSeq(w.bridge, w.sid); sf.Sequences[0].Halted {
+		t.Error("skip must not halt the sequence")
+	}
+	if !strings.Contains(out, "skipped by the user") {
+		t.Errorf("the listing should show the skip:\n%s", out)
+	}
+}
+
+func TestSequenceSkipRefusesWhatIsNotDeciding(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("do", "report")
+	w.approve()
+	for _, n := range []string{"1", "2", "3"} {
+		if _, err := w.seq("skip", n); err == nil {
+			t.Errorf("skip %s should be refused", n)
+		}
+	}
+	w.wantStatus("active", "pending", "pending")
+
+	k := newWorld(t)
+	k.mustSeq("run", "supernova/auth-refactor")
+	k.mustSeq("mode", "keep-going")
+	k.approve()
+	lead, _ := k.spawn("", "", "orchestrator")
+	k.failRun(lead)
+	k.wantStatus("decide")
+	if _, err := k.seq("skip", "1"); err == nil || !strings.Contains(err.Error(), "accept") {
+		t.Errorf("skip in keep-going should point to accept: %v", err)
+	}
+	k.wantStatus("decide")
+}
+
+func TestSequenceSkipNamesTheStepsItMayAffect(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.addTask("other")
+	w.addTask("auth-refactor-2")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("release", "supernova", "1.2.3")
+	w.mustSeq("do", "update the docs for supernova/auth-refactor")
+	w.mustSeq("do", "look at auth-refactor-2")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	res := w.stopHook()
+	reason, _ := res["reason"].(string)
+	check := func(where, text string) {
+		t.Helper()
+		for _, want := range []string{"step 1.2, release: supernova 1.2.3", "step 1.3, do: update the docs", "step 1.6, run: supernova/auth-refactor"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s should name %q:\n%s", where, want, text)
+			}
+		}
+		for _, bad := range []string{"1.4", "1.5", "supernova/other"} {
+			if strings.Contains(text, "step "+bad) || strings.Contains(text, bad+",") {
+				t.Errorf("%s should not name %s:\n%s", where, bad, text)
+			}
+		}
+	}
+	check("the Stop hook", reason)
+	check("skip", w.mustSeq("skip", "1"))
+}
+
+func TestSequenceSkipNamesStepsOfLaterSequences(t *testing.T) {
+	w, _, _, _ := githubWorld(t, "success", localTest)
+	path := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	base, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, strings.Replace(string(base), "bindings:\n", "bindings:\n  release: { command: \"true\" }\n", 1))
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("publish", "supernova/auth-refactor")
+	w.approve()
+	w.mustSeq("release", "supernova", "1.2.3", "--name", "later")
+	w.mustSeq("do", "update the docs for supernova/auth-refactor")
+	w.mustSeq("do", "look at other")
+	w.mustSeq("publish", "supernova/auth-refactor")
+	w.mustSeq("publish", "supernova/other")
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	reason, _ := w.stopHook()["reason"].(string)
+	check := func(where, text string) {
+		t.Helper()
+		if !strings.Contains(text, skipWorkspaceNote) {
+			t.Errorf("%s should carry the workspace note:\n%s", where, text)
+		}
+		for _, want := range []string{"step 2.1, release: supernova 1.2.3", "step 2.2, do: update the docs", "step 2.4, publish: supernova/auth-refactor"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s should name %q:\n%s", where, want, text)
+			}
+		}
+		for _, bad := range []string{"step 1.2", "step 2.3", "step 2.5"} {
+			if strings.Contains(text, bad) {
+				t.Errorf("%s should not name %s:\n%s", where, bad, text)
+			}
+		}
+	}
+	check("the Stop hook", reason)
+	check("skip", w.mustSeq("skip", "1.1"))
+}
+
+func TestNamesTask(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"fix supernova/auth-refactor now", true},
+		{"fix Auth-Refactor.", true},
+		{"auth-refactor-2", false},
+		{"pre-auth-refactor", false},
+		{"other/auth-refactor", false},
+		{"task/auth-refactor", true},
+		{"my-task/auth-refactor", false},
+		{"other/auth-refactor and auth-refactor", true},
+		{"supernova/auth-refactor-2", false},
+		{"unrelated", false},
+	}
+	for _, c := range cases {
+		if got := namesTask(c.text, "supernova/auth-refactor"); got != c.want {
+			t.Errorf("namesTask(%q) = %v, want %v", c.text, got, c.want)
+		}
+	}
+}
+
+func TestSequenceStopOffersSkipOnlyInStopMode(t *testing.T) {
+	for _, mode := range []string{"stop", "keep-going"} {
+		w := newWorld(t)
+		w.mustSeq("run", "supernova/auth-refactor")
+		w.mustSeq("mode", mode)
+		w.approve()
+		lead, _ := w.spawn("", "", "orchestrator")
+		w.failRun(lead)
+		reason, _ := w.stopHook()["reason"].(string)
+		if got := strings.Contains(reason, "sequence skip 1"); got != (mode == "stop") {
+			t.Errorf("%s mode: offers skip = %v:\n%s", mode, got, reason)
+		}
+		if got := strings.Contains(reason, skipWorkspaceNote); got != (mode == "stop") {
+			t.Errorf("%s mode: has the workspace note = %v:\n%s", mode, got, reason)
+		}
+	}
+}
