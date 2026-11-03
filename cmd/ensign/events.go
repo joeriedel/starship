@@ -231,10 +231,15 @@ func finishRun(r *RunFiles) {
 	}
 }
 
+// outsideRel reports whether a relative path from filepath.Rel or filepath.Clean leaves its base; a name that merely starts with dots, like ..notes.md, stays inside.
+func outsideRel(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // journalPath is a changed file as the journal lists it: relative to the workspace when it lies inside it, with forward slashes, so a reported path and git's name for the same file are one entry.
 func journalPath(ws, f string) string {
 	if filepath.IsAbs(f) {
-		if rel, err := filepath.Rel(ws, f); err == nil && !strings.HasPrefix(rel, "..") {
+		if rel, err := filepath.Rel(ws, f); err == nil && !outsideRel(rel) {
 			f = rel
 		}
 	}
@@ -266,13 +271,13 @@ func runEntry(r *RunFiles) string {
 	head := ""
 	if st.StartHead != "" {
 		head, _ = gitOut(ws, "rev-parse", "HEAD")
-		if changed, err := gitOut(ws, "diff", "--name-only", st.StartHead); err == nil {
-			for _, f := range strings.Fields(changed) {
+		if changed, err := gitZ(ws, "diff", "--name-only", "-z", st.StartHead); err == nil {
+			for _, f := range changed {
 				files[journalPath(ws, f)] = true
 			}
 		}
-		if untracked, err := gitOut(ws, "ls-files", "--others", "--exclude-standard"); err == nil {
-			for _, f := range strings.Fields(untracked) {
+		if untracked, err := gitZ(ws, "ls-files", "--others", "--exclude-standard", "-z"); err == nil {
+			for _, f := range untracked {
 				files[journalPath(ws, f)] = true
 			}
 		}

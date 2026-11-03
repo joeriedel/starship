@@ -968,3 +968,31 @@ func TestCatalogCommitPassSurfacesAGitStatusFailure(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestCatalogCommitPassCommitsADotDotNamedFile(t *testing.T) {
+	for _, absolute := range []bool{false, true} {
+		ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+		r := unitRun(t, ws)
+		write(t, filepath.Join(ws, "..notes.md"), "work\n")
+		reported := "..notes.md"
+		if absolute {
+			reported = filepath.Join(ws, "..notes.md")
+		}
+		d := &Dispatch{ID: "d1", Summary: "added notes", Fields: map[string][]string{"files": {reported}}}
+		if err := catalogCommitPass(r, d); err != nil {
+			t.Fatalf("absolute=%v: %v", absolute, err)
+		}
+		if got := runGit(t, ws, "show", "--name-only", "--format=", "HEAD"); got != "..notes.md" {
+			t.Errorf("absolute=%v: committed %q", absolute, got)
+		}
+	}
+}
+
+func TestCatalogCommitPassRefusesAPathOutsideTheWorkspace(t *testing.T) {
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	r := unitRun(t, ws)
+	d := &Dispatch{ID: "d1", Summary: "escaped", Fields: map[string][]string{"files": {filepath.Join("..", "outside.txt")}}}
+	if err := catalogCommitPass(r, d); err == nil || !strings.Contains(err.Error(), "is not a path inside the workspace") {
+		t.Fatalf("got %v", err)
+	}
+}

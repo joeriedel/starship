@@ -101,7 +101,7 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 				f = rel
 			}
 		}
-		if filepath.IsAbs(f) || strings.HasPrefix(filepath.Clean(f), "..") {
+		if filepath.IsAbs(f) || outsideRel(filepath.Clean(f)) {
 			return fmt.Errorf("reported file %q is not a path inside the workspace", f)
 		}
 		files = append(files, filepath.ToSlash(filepath.Clean(f)))
