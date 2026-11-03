@@ -130,6 +130,44 @@ func sawWholeManual(reply, token string) bool {
 	return true
 }
 
+// manualInTranscript decides from the session transcript whether the SessionStart output reached the session whole. When it is too large Claude Code records only a preview of it in the hook_additional_context record.
+func manualInTranscript(lines []string, token string) (ok bool, why string) {
+	var content strings.Builder
+	found := false
+	for _, line := range lines {
+		var rec struct {
+			Attachment struct {
+				Type      string   `json:"type"`
+				HookEvent string   `json:"hookEvent"`
+				Content   []string `json:"content"`
+			} `json:"attachment"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSuffix(line, "\r")), &rec) != nil {
+			continue
+		}
+		if a := rec.Attachment; a.Type == "hook_additional_context" && a.HookEvent == "SessionStart" {
+			found = true
+			content.WriteString(strings.Join(a.Content, "\n"))
+		}
+	}
+	text := content.String()
+	switch {
+	case !found:
+		return false, "no SessionStart context was recorded, so it was dropped"
+	case strings.Contains(text, "<persisted-output>"):
+		return false, "Claude Code saved the output to a file and showed the session only a preview"
+	case !sawWholeManual(text, token):
+		n := 0
+		for i := 1; i <= 10; i++ {
+			if strings.Contains(text, fmt.Sprintf("%d-%s", i, token)) {
+				n++
+			}
+		}
+		return false, fmt.Sprintf("the output was cut: %d of 10 markers found", n)
+	}
+	return true, ""
+}
+
 // leafToken is the leaf probe's reply. Finding it in the result of the orchestrator's own
 // Agent call proves the dispatch ran in the foreground.
 const leafToken = "SELFTEST-LEAF-RESULT"
@@ -157,15 +195,13 @@ func cmdSelftest(out io.Writer) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	events, result, _, err := runProbeSession(dir, `This is a self-test of this project's hooks, which the user asked for. `+
+	events, _, _, err := runProbeSession(dir, `This is a self-test of this project's hooks, which the user asked for. `+
 		`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". One of its steps is refused by a hook on purpose; `+
-		`that is expected, not an error. When it finishes: this project's SessionStart hook added a block to your context at startup, `+
-		`beginning with the line `+manualStart+`. Reply with only its lines that start with `+manualEnd+`, exactly as written, in order.`,
+		`that is expected, not an error.`,
 		"--allowedTools", "Agent,Bash", "--permission-mode", "auto")
 	if err != nil {
 		return err
 	}
-	session := struct{ Result string }{result}
 
 	// SubagentHandback ends every agent in auto mode, so the block has to be probed in a
 	// session that is not in auto mode.
@@ -230,9 +266,9 @@ func cmdSelftest(out io.Writer) error {
 		sessions[str(e, "session_id")] = true
 	}
 	askedBackground, foreground := backgroundProbe(events)
-	// The transcript keeps the whole output even when the model is shown only part of
-	// it, so the model itself has to repeat the markers.
-	manualArrived, manualLeaked := sawWholeManual(session.Result, token), false
+	// The transcript's hook_additional_context record holds what the session was shown, which is a preview when the output is too large. The model's own willingness to repeat the markers is not reliable.
+	manualArrived, manualWhy := manualInTranscript(transcriptLines(events), token)
+	manualLeaked := false
 	for _, e := range append(leafStops, orchStops...) {
 		t, _ := os.ReadFile(str(e, "agent_transcript_path"))
 		manualLeaked = manualLeaked || strings.Contains(string(t), manualStart)
@@ -249,7 +285,7 @@ func cmdSelftest(out io.Writer) error {
 		{"PreToolUse deny of a SubagentHandback keeps the agent working, and a corrected handback gets through", handbackRedoProbe(events)},
 		{"SubagentStop block makes the agent continue (stop_hook_active on the next stop)", stopContinues},
 		{"session_id is the same for the session and its agents", len(sessions) == 1},
-		{fmt.Sprintf("SessionStart output of %d bytes reaches the session whole", manualLimit), manualArrived},
+		{fmt.Sprintf("SessionStart output of %d bytes reaches the session whole (from the transcript)", manualLimit), manualArrived},
 		{"SessionStart output stays out of subagents", len(leafStops) > 0 && !manualLeaked},
 		{"PreToolUse sees a subagent's SubagentHandback call, with its message", len(handbacks) > 0},
 		{"SubagentStop background_tasks lists a background command, with the id PostToolUse saw", backgroundListed(events)},
@@ -276,7 +312,7 @@ func cmdSelftest(out io.Writer) error {
 		fmt.Fprintf(out, "  %s %s\n", mark, c.name)
 	}
 	if !manualArrived {
-		fmt.Fprintf(out, "  the session's reply, which should list every marker:\n%s\n", truncate(session.Result, 1500))
+		fmt.Fprintf(out, "  the session transcript is the evidence for the SessionStart output check: %s\n", manualWhy)
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d harness checks failed; starship's enforcement may not work on this Claude Code build", failed, len(checks))

@@ -3,7 +3,11 @@
 
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func stopEv(agentType, id string, extra map[string]any) map[string]any {
 	e := map[string]any{"hook_event_name": "SubagentStop", "agent_type": agentType, "agent_id": id, "agent_transcript_path": "/nonexistent"}
@@ -260,6 +264,37 @@ func TestAgentPathKept(t *testing.T) {
 	} {
 		if agentPathKept(c[0], c[1]) {
 			t.Errorf("%s should fail", name)
+		}
+	}
+}
+
+func TestManualInTranscript(t *testing.T) {
+	const token = "supernova"
+	ctx := func(content string) string {
+		b, _ := json.Marshal(map[string]any{"type": "attachment", "attachment": map[string]any{
+			"type": "hook_additional_context", "hookEvent": "SessionStart", "hookName": "SessionStart", "content": []string{content}}})
+		return string(b)
+	}
+	whole := probeManual(token)
+	success, _ := json.Marshal(map[string]any{"type": "attachment", "attachment": map[string]any{
+		"type": "hook_success", "hookEvent": "SessionStart", "stdout": whole}})
+	preview := "<persisted-output>\nOutput too large (19.4KB). Full output saved to: /home/u/supernova/tool-results/hook-1-additionalContext.txt\n\nPreview (first 2KB):\n" + whole[:2000]
+	tests := []struct {
+		name  string
+		lines []string
+		ok    bool
+		why   string
+	}{
+		{"whole", []string{"not json", ctx(whole)}, true, ""},
+		{"crlf", []string{ctx(whole) + "\r"}, true, ""},
+		{"persisted", []string{ctx(preview)}, false, "preview"},
+		{"cut", []string{ctx(whole[:len(whole)/2])}, false, "cut"},
+		{"dropped", []string{string(success)}, false, "dropped"},
+	}
+	for _, tt := range tests {
+		ok, why := manualInTranscript(tt.lines, token)
+		if ok != tt.ok || !strings.Contains(why, tt.why) {
+			t.Errorf("%s: got %v, %q; want %v, %q", tt.name, ok, why, tt.ok, tt.why)
 		}
 	}
 }

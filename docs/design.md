@@ -1445,7 +1445,7 @@ runs against Claude Code, except where listed below.
   prints `.starship/session.md` after the heartbeat; SessionStart fires only for the
   session, and again after a compaction. It removes the old import from an existing
   bridge's `CLAUDE.md` and commits that, unless the file has uncommitted edits.
-  `ensign selftest` checks the hook's output reaches the model whole and stays out of
+  `ensign selftest` checks from the session transcript that the hook's output reached the session whole, and that it stays out of
   subagents, and a unit test keeps the manual under the size it checks (8 KB, which covers the whole text).
 - **A `claude` started from inside another Claude Code session is a child session.**
   Its prompt reaches UserPromptSubmit with a `Claude` line in front, so `help` doesn't
