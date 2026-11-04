@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -457,6 +458,50 @@ func controlPlaneEdit(bridge string, in *HookInput) string {
 		}
 	}
 	return ""
+}
+
+// writesStateEdit refuses file-tool edits to a session's connector writes file and its lock and temp companions, so the session can't approve a write itself.
+func writesStateEdit(bridge string, in *HookInput, goos string) string {
+	p, _ := in.ToolInput["file_path"].(string)
+	if p == "" {
+		p, _ = in.ToolInput["notebook_path"].(string)
+	}
+	if p == "" {
+		return ""
+	}
+	if goos == "windows" && windowsAmbiguousPath(stripExtendedPrefix(p, goos)) {
+		return "on Windows, give the full `C:\\...` path of the file; this spelling (a stream, a drive-relative or a rooted path with no drive) can't be checked against the session's connector writes state."
+	}
+	target := foldPath(resolveEditTarget(p, in.Cwd, goos), goos)
+	dir := foldPath(resolveEditFolder(filepath.Join(bridge, ".starship", "sessions"), goos), goos)
+	if path.Dir(target) != dir {
+		return ""
+	}
+	name := path.Base(target)
+	for _, suffix := range []string{".writes", ".writes.lock", ".writes.tmp"} {
+		if strings.HasSuffix(name, suffix) {
+			return "this is the session's connector writes state, which is changed only through `ensign writes` and the user's go."
+		}
+	}
+	return ""
+}
+
+// windowsAmbiguousPath reports a Windows spelling the Go resolver can't be trusted on: a colon other than the drive's in `C:\` or `C:/` (a stream, `C:rel`, `\\.\C:\`) or a single leading slash (rooted, no drive). UNC paths and plain relative paths are not ambiguous. It is pure, so it runs on any host.
+func windowsAmbiguousPath(raw string) bool {
+	isSlash := func(c byte) bool { return c == '\\' || c == '/' }
+	if len(raw) > 0 && isSlash(raw[0]) && !(len(raw) > 1 && isSlash(raw[1])) {
+		return true
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != ':' {
+			continue
+		}
+		drive := i == 1 && len(raw) > 2 && isSlash(raw[2]) && (raw[0]|0x20 >= 'a' && raw[0]|0x20 <= 'z')
+		if !drive {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveExisting follows symlinks in the longest existing prefix of a path.

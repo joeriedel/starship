@@ -851,6 +851,11 @@ func cmdRun(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if !o.dry {
+		if err := writesPendingRefusal(bridge, os.Getenv("STARSHIP_SESSION")); err != nil {
+			return err
+		}
+	}
 	_, err = createRun(bridge, o, false, out)
 	return err
 }

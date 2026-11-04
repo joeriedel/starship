@@ -410,7 +410,7 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 		}
 		roles[name], sources[name] = data, f
 	}
-	if len(rules) > 0 {
+	if _, writesOn, _ := bf.connectorWrites(); len(rules) > 0 || writesOn {
 		for _, name := range sortedKeys(roles) {
 			if has, _, err := frontmatterMcpServers(sources[name], roles[name]); err != nil {
 				return nil, fmt.Errorf("%s: connector rules are declared, so a role's frontmatter must parse: %v", sources[name], err)

@@ -27,6 +27,9 @@ func isConnectorTool(name string) bool {
 
 // connectorRules is the bridge's connector declaration: role to the exact tools it may call. Nil means none is declared; a role with an empty list still declares.
 func (bf *BridgeFile) connectorRules() (map[string][]string, error) {
+	if _, _, err := bf.connectorWrites(); err != nil {
+		return nil, err
+	}
 	if len(bf.Connectors) == 0 {
 		return nil, nil
 	}
@@ -43,6 +46,32 @@ func (bf *BridgeFile) connectorRules() (map[string][]string, error) {
 	return bf.Connectors, nil
 }
 
+// connectorWrites is the bridge's connector_writes declaration: the exact tools the session may call after the user approves the call. on is true whenever the key is present, an empty list included.
+func (bf *BridgeFile) connectorWrites() (tools []string, on bool, err error) {
+	if bf.ConnectorWrites.Kind == 0 {
+		return nil, false, nil
+	}
+	if err := bf.ConnectorWrites.Decode(&tools); err != nil {
+		return nil, true, fmt.Errorf("bridge.yaml: connector_writes: must be a list of exact mcp__<server>__<tool> names: %v", err)
+	}
+	for _, tool := range tools {
+		if !connectorToolRe.MatchString(tool) {
+			return nil, true, fmt.Errorf("bridge.yaml: connector_writes: %q is not an exact mcp__<server>__<tool> name (no wildcards, and a whole server cannot be granted)", tool)
+		}
+		for _, role := range sortedKeys(bf.Connectors) {
+			if slices.Contains(bf.Connectors[role], tool) {
+				return nil, true, fmt.Errorf("bridge.yaml: connector_writes: %q is also listed under connectors: %s; a tool is either read by a role or written with the user's approval", tool, role)
+			}
+		}
+	}
+	return slices.Compact(slices.Sorted(slices.Values(tools))), true, nil
+}
+
+// settingsTools is every tool the settings must allow: the roles' declared tools and the approved writes, sorted and without duplicates.
+func settingsTools(rules map[string][]string, writes []string) []string {
+	return slices.Compact(slices.Sorted(slices.Values(append(connectorTools(rules), writes...))))
+}
+
 // connectorTools is every declared tool, sorted and without duplicates.
 func connectorTools(rules map[string][]string) []string {
 	var all []string
@@ -52,7 +81,7 @@ func connectorTools(rules map[string][]string) []string {
 	return slices.Compact(slices.Sorted(slices.Values(all)))
 }
 
-// connectorDecision decides a connector call (a tool named mcp__<server>__<tool>, or a built-in resource tool) from bridge.yaml alone. It returns nil to leave the call to the permission system, else the denial. It never touches a run.
+// connectorDecision decides a connector call (a tool named mcp__<server>__<tool>, or a built-in resource tool) from bridge.yaml, and with connector_writes declared from the session's approved writes (writeDecision). It returns nil to leave the call to the permission system, else the denial. It never touches a run.
 func connectorDecision(bridge string, in *HookInput) any {
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
@@ -62,14 +91,15 @@ func connectorDecision(bridge string, in *HookInput) any {
 	if err != nil {
 		return denial(fmt.Sprintf("%s is refused: %v", in.ToolName, err))
 	}
+	writes, writesOn, _ := bf.connectorWrites()
+	if writesOn {
+		return writeDecision(bridge, in, rules, writes)
+	}
 	if rules == nil {
 		return nil
 	}
 	if in.AgentID == "" {
-		if _, ok := rules["reader"]; !ok {
-			return denial(fmt.Sprintf("the session may not call %s; connector reads go through a role this bridge declares in bridge.yaml connectors", in.ToolName))
-		}
-		return denial(fmt.Sprintf("the session may not call %s; dispatch a reader with what to look for and work from its facts (ensign help edits, Connector tools)", in.ToolName))
+		return sessionReadDenial(rules, in.ToolName)
 	}
 	if slices.Contains(rules[in.AgentType], in.ToolName) {
 		return nil
@@ -103,7 +133,8 @@ func mcpServersRefusal(bridge string, in *HookInput) string {
 	if err != nil {
 		return ""
 	}
-	if rules, err := bf.connectorRules(); err != nil || rules == nil {
+	rules, err := bf.connectorRules()
+	if _, writesOn, _ := bf.connectorWrites(); err != nil || (rules == nil && !writesOn) {
 		return ""
 	}
 	files, _ := filepath.Glob(filepath.Join(bridge, ".claude", "agents", "*.md"))
@@ -186,7 +217,7 @@ func agentsSignature(bridge string) string {
 	return sig.String()
 }
 
-// missingConnectorSettings lists what a hand-edited settings.json lacks for the declaration to be enforced: the mcp__.*, ListMcpResourcesTool, ReadMcpResourceTool, and, when the reader is declared, Read and Grep matcher entries on the ensign PreToolUse hook and each declared tool in allow.
+// missingConnectorSettings lists what a hand-edited settings.json lacks for the declaration to be enforced: the mcp__.*, ListMcpResourcesTool, ReadMcpResourceTool, and, when the reader is declared, Read and Grep matcher entries on the ensign PreToolUse hook and each declared tool, connector_writes included, in allow.
 func missingConnectorSettings(data []byte, tools []string, reader bool) ([]string, error) {
 	var s struct {
 		Permissions struct {
@@ -237,7 +268,8 @@ func upgradeHookSettings(bridge string, bf *BridgeFile) error {
 	if err != nil {
 		return err
 	}
-	declared, tools := rules != nil, connectorTools(rules)
+	writes, writesOn, _ := bf.connectorWrites()
+	declared, tools := rules != nil || writesOn, settingsTools(rules, writes)
 	_, readerRule := rules["reader"]
 	f := filepath.Join(bridge, ".claude", "settings.json")
 	data, rerr := os.ReadFile(f)

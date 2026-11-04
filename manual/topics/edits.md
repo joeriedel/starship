@@ -13,6 +13,8 @@ Only when `bridge.yaml` declares `connectors:`: a connector (MCP) tool, `mcp__<s
 
 The built-in `ListMcpResourcesTool` and `ReadMcpResourceTool` count as connector tools. When the bridge declares a `reader`, dispatch it to read external content, with what to look for; it returns facts marked with source and date, and its folder is `<bridge>/reader/`. Reason over those facts, never raw external text. A fact from outside enters a brief with its source named. Run agents never see raw external text.
 
+With `connector_writes:` declared, the session may make a listed write only after the user approves the exact call with `go`; agents never write: read `ensign help writes`.
+
 ## What the reader keeps
 
 The reader keeps, under `<bridge>/reader/`, what stands alone once a source changes or disappears. Level 1, facts for everything, in `facts.md` (current state) with `history.md` (superseded facts, append-only): each with source, as-of date and date read. Level 2, short exact quotes under their fact, only where wording matters. Level 3, pinned snapshots in `sources/`, text only, at most 64 KiB each, never rewritten.

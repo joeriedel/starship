@@ -372,6 +372,8 @@ type BridgeFile struct {
 	KeepRuns *int `yaml:"keep-runs"`
 	// Connectors maps a role to the exact connector (MCP) tools it may call. Declaring any role turns enforcement on for the bridge.
 	Connectors map[string][]string `yaml:"connectors"`
+	// ConnectorWrites lists the exact connector tools the session may call once the user has approved the call with go. Its presence, even as an empty list, turns approved connector writes on; connectorWrites reads it.
+	ConnectorWrites yaml.Node `yaml:"connector_writes"`
 }
 
 func loadBridgeFile(bridge string) (*BridgeFile, error) {

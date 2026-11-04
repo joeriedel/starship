@@ -156,7 +156,7 @@ const staleGCAge = 5 * time.Minute
 // pidRecordAge is how old a <pid>.pid record must be before a sweep removes it. Age, not liveness, because a session idle past it loses only the link to its earlier id, which is how /clear behaved before the record existed.
 const pidRecordAge = 30 * 24 * time.Hour
 
-// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .topic-*, .lock, .sequence.lock and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
+// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .writes, .topic-*, .lock, .sequence.lock, .writes.lock and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
 const sessionFileAge = 30 * 24 * time.Hour
 
 // deadLink reports whether a session link names at least one run, none of the names is a path, and every named run's folder is gone. A link that is empty, unreadable or names a path is not dead. Links hold one run id per line.
@@ -194,7 +194,7 @@ func sessionOfFile(name string) (string, bool) {
 	if strings.HasSuffix(name, ".gc") {
 		return "", false
 	}
-	for _, suf := range []string{".task", ".pin", ".env", ".sequence"} {
+	for _, suf := range []string{".task", ".pin", ".env", ".sequence", ".writes"} {
 		if strings.HasSuffix(name, suf) {
 			return strings.TrimSuffix(name, suf), true
 		}
@@ -272,17 +272,17 @@ func sweepSessionFiles(bridge string, entries []os.DirEntry) {
 	})
 }
 
-// leftoverOfFile returns the session id a <id>.lock, <id>.sequence.lock or <id>.tmp file name belongs to. Names of the swept types, the bridge-wide .sweep.lock and files such as <id>.sequence.tmp (whose stem is itself a session file) are not leftovers.
+// leftoverOfFile returns the session id a <id>.lock, <id>.sequence.lock, <id>.writes.lock or <id>.tmp file name belongs to. Names of the swept types, the bridge-wide .sweep.lock and files such as <id>.sequence.tmp (whose stem is itself a session file) are not leftovers.
 func leftoverOfFile(name string) (string, bool) {
 	if _, ok := sessionOfFile(name); ok || name == ".sweep.lock" {
 		return "", false
 	}
-	for _, suf := range []string{".sequence.lock", ".lock", ".tmp"} {
+	for _, suf := range []string{".sequence.lock", ".writes.lock", ".lock", ".tmp"} {
 		id, found := strings.CutSuffix(name, suf)
 		if !found {
 			continue
 		}
-		if _, isSession := sessionOfFile(id); isSession && suf != ".sequence.lock" {
+		if _, isSession := sessionOfFile(id); isSession && suf != ".sequence.lock" && suf != ".writes.lock" {
 			return "", false
 		}
 		return id, id != ""
@@ -292,9 +292,9 @@ func leftoverOfFile(name string) (string, bool) {
 
 // sweptLeftovers is one session's lock and tmp files.
 type sweptLeftovers struct {
-	seqLock, lock, tmp bool
-	newest             time.Time
-	failed             bool
+	seqLock, writesLock, lock, tmp bool
+	newest                         time.Time
+	failed                         bool
 }
 
 // leftoverGroups finds the sessions with lock or tmp files in the snapshot and reads their ages. It runs before the swept files are renamed, because an entry's Info fails once its file is gone.
@@ -326,6 +326,8 @@ func leftoverGroups(entries []os.DirEntry) map[string]*sweptLeftovers {
 		switch {
 		case strings.HasSuffix(e.Name(), ".sequence.lock"):
 			g.seqLock = true
+		case strings.HasSuffix(e.Name(), ".writes.lock"):
+			g.writesLock = true
 		case strings.HasSuffix(e.Name(), ".lock"):
 			g.lock = true
 		default:
@@ -359,6 +361,9 @@ func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, listRunsOn
 		var paths []string
 		if g.seqLock {
 			paths = append(paths, filepath.Join(dir, id+".sequence.lock"))
+		}
+		if g.writesLock {
+			paths = append(paths, filepath.Join(dir, id+".writes.lock"))
 		}
 		if g.lock || g.tmp {
 			paths = append(paths, filepath.Join(dir, id+".lock"))
@@ -467,7 +472,7 @@ func settleSession(dir, id string, files, renamed []string) {
 	for _, name := range files {
 		stale = stale && !fresh(filepath.Join(dir, name))
 	}
-	for _, suf := range []string{"", ".task", ".pin", ".env", ".sequence"} {
+	for _, suf := range []string{"", ".task", ".pin", ".env", ".sequence", ".writes"} {
 		stale = stale && !fresh(filepath.Join(dir, id+suf))
 	}
 	for _, orig := range renamed {

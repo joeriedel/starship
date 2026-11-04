@@ -34,6 +34,9 @@ type HookInput struct {
 	StopHookActive      bool           `json:"stop_hook_active"`
 	Prompt              string         `json:"prompt"`
 
+	// rawToolInput is tool_input as received, set for connector calls so the input can be compared with its numbers intact.
+	rawToolInput json.RawMessage
+
 	// ToolResponse is a PostToolUse result: an object for most tools, but not guaranteed.
 	ToolResponse    any              `json:"tool_response"`
 	BackgroundTasks []BackgroundTask `json:"background_tasks"`

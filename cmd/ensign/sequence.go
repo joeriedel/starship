@@ -2212,6 +2212,9 @@ var errNameJoins = errors.New("--name can't be used here: the name is set by the
 
 // checkAddable refuses to add steps while the session has a plain run under way.
 func checkAddable(bridge, session, name string) error {
+	if err := writesPendingRefusal(bridge, session); err != nil {
+		return err
+	}
 	if name != "" && readSeq(bridge, session).openSeq() != nil {
 		return errNameJoins
 	}

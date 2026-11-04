@@ -104,6 +104,9 @@ func unpushed(bridge string) bool {
 
 // hookStop keeps a turn from ending with journal changes uncommitted or unpushed, or with a sequence step waiting.
 func hookStop(bridge string, in *HookInput) any {
+	if out := writesStop(bridge, in); out != nil {
+		return out
+	}
 	if out := journalStop(bridge, in); out != nil {
 		return out // a journal block spends none of the sequence's budget
 	}

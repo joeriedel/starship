@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -39,6 +41,8 @@ func main() {
 		err = cmdHelp(os.Args[2:], os.Stdout)
 	case "sequence":
 		err = cmdSequence(os.Args[2:], os.Stdout)
+	case "writes":
+		err = cmdWrites(os.Args[2:], os.Stdin, os.Stdout)
 	case "next":
 		err = cmdNext(os.Args[2:], os.Stdout)
 	case "dependency":
@@ -144,6 +148,7 @@ func usage() {
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
   ensign run retire <run>
   ensign sequence [run <project>/<task> [run flags, e.g. --location <name> --sides <a,b>] | publish <project>/<task> | release <project> <version> [--location <name>] | do <instruction> | mode stop|keep-going | halt [--reason <text>] | discard [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | skip <n> | done <n> [--note <text>] | fail <n> --reason <text>]
+  ensign writes [add --tool <name> (tool input as one JSON object on stdin) | drop <n>... | drop --all]
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] [--location <name>]
   ensign style report <project>
   ensign skill new <name> --description <text> | ensign skill discard <name>
@@ -161,9 +166,20 @@ func usage() {
 // Internal errors exit 2, which Claude Code treats as blocking: ensign fails closed.
 func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var in HookInput
-	if err := json.NewDecoder(stdin).Decode(&in); err != nil {
+	data, err := io.ReadAll(stdin)
+	if err == nil {
+		err = json.NewDecoder(bytes.NewReader(data)).Decode(&in)
+	}
+	if err != nil {
 		fmt.Fprintln(stderr, "starship: ensign could not read the hook input:", err)
 		return 2
+	}
+	if event == "PreToolUse" && isConnectorTool(in.ToolName) {
+		var raw struct {
+			ToolInput json.RawMessage `json:"tool_input"`
+		}
+		json.NewDecoder(bytes.NewReader(data)).Decode(&raw)
+		in.rawToolInput = raw.ToolInput
 	}
 	dir := os.Getenv("CLAUDE_PROJECT_DIR")
 	if dir == "" {
@@ -173,18 +189,27 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return 0 // outside a bridge, hook events are no-ops
 	}
+	var voided string
 	switch event {
 	case "SessionStart":
 		return hookSessionStart(&in, bridge, stdout, stderr)
 	case "UserPromptSubmit":
+		var writesText string
+		var handled bool
+		if voided, writesText, handled, err = promptWrites(bridge, &in); err != nil {
+			return failHook(&in, nil, err, stderr)
+		}
+		if handled {
+			json.NewEncoder(stdout).Encode(promptReply(voided, writesText))
+			return 0
+		}
 		if strings.TrimSpace(in.Prompt) == "go" {
 			text, ok, err := approveSequence(bridge, in.SessionID)
 			if err != nil {
 				return failHook(&in, nil, err, stderr)
 			}
 			if ok {
-				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
-					"hookEventName": "UserPromptSubmit", "additionalContext": "starship: " + text}})
+				json.NewEncoder(stdout).Encode(promptReply(voided, text))
 				return 0
 			}
 		}
@@ -216,6 +241,11 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		if in.ToolName != "Agent" && in.ToolName != "Task" && in.ToolName != "SubagentHandback" {
 			if why := controlPlaneEdit(bridge, &in); why != "" {
+				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
+					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}})
+				return 0
+			}
+			if why := writesStateEdit(bridge, &in, runtime.GOOS); why != "" {
 				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
 					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}})
 				return 0
@@ -258,6 +288,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return failHook(&in, nil, err, stderr)
 		}
 	} else if r == nil {
+		if event == "UserPromptSubmit" && voided != "" {
+			json.NewEncoder(stdout).Encode(contextNote(nil, voided))
+		}
 		role, _ := in.ToolInput["subagent_type"].(string)
 		if event == "PreToolUse" && in.AgentID != "" && stageRoleAnywhere(bridge, role) {
 			json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
@@ -321,6 +354,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			m["systemMessage"] = "starship: " + r.warn.Error()
 			out = m
 		}
+	}
+	if event == "UserPromptSubmit" && voided != "" {
+		out = contextNote(out, voided)
 	}
 	if out != nil {
 		if err := json.NewEncoder(stdout).Encode(out); err != nil {
@@ -443,13 +479,17 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	after, _ := os.ReadFile(settingsFile)
 	restart := connectorSignature(string(before)) != connectorSignature(string(after))
-	if rules, err := bf.connectorRules(); err == nil && rules != nil && agentsBefore != agentsSignature(bridge) {
+	_, writesDeclared, _ := bf.connectorWrites()
+	if rules, err := bf.connectorRules(); err == nil && (rules != nil || writesDeclared) && agentsBefore != agentsSignature(bridge) {
 		restart = true
 	}
 	removeOldExe(bridge)
 	fmt.Fprintf(&ctx, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
 	if restart {
 		fmt.Fprintln(&ctx, "starship: the connector settings in .claude/settings.json changed; claude must be restarted for them to apply")
+		if writesDeclared {
+			fmt.Fprintln(&ctx, "starship: until claude is restarted, connector writes are not guarded")
+		}
 	}
 	if carryErr != nil {
 		fmt.Fprintf(&ctx, "starship: could not carry the earlier session's runs over: %v\n", carryErr)
