@@ -581,6 +581,52 @@ func loadConfigAt(bridge, task, location string) (*Config, error) {
 	return loadTarget(bridge, Target{Task: task, Location: runLocation(bridge, task, location)})
 }
 
+// projectPipeline reads the project's pipeline: setting; none is the only value it may have. A file that can't be read has no setting; the callers report that themselves.
+func projectPipeline(projectFile string) (string, error) {
+	var pp struct {
+		Pipeline string `yaml:"pipeline"`
+	}
+	if readYAML(projectFile, &pp) != nil {
+		return "", nil
+	}
+	if pp.Pipeline != "" && pp.Pipeline != "none" {
+		return "", fmt.Errorf("%s: pipeline: %q is not allowed; the only value a project can set is none (tasks without code)", projectFile, pp.Pipeline)
+	}
+	return pp.Pipeline, nil
+}
+
+// taskHasNoCode reports whether a task is one without code (pipeline: none). The task's own pipeline: wins, then the project's. A task file that can't be read or parsed gives false, so the usual errors still come from the callers.
+func taskHasNoCode(bridge, project, task string) (bool, error) {
+	var tf struct {
+		Pipeline string `yaml:"pipeline"`
+	}
+	front, _, err := splitFrontmatter(filepath.Join(bridge, "projects", project, "tasks", task, "task.md"))
+	if err != nil || yaml.Unmarshal(append([]byte("\n"), front...), &tf) != nil {
+		return false, nil
+	}
+	if tf.Pipeline != "" {
+		return tf.Pipeline == "none", nil
+	}
+	pipeline, err := projectPipeline(filepath.Join(bridge, "projects", project, "project.yaml"))
+	return pipeline == "none", err
+}
+
+// refuseNoCode fails for a task <project>/<task> that has no code, so nothing runs, lands or publishes for it.
+func refuseNoCode(bridge, ref string) error {
+	parts := strings.Split(ref, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil
+	}
+	none, err := taskHasNoCode(bridge, parts[0], parts[1])
+	if err != nil {
+		return err
+	}
+	if none {
+		return fmt.Errorf("task %s has no pipeline, so it can't run: it is a task without code (pipeline: none)", ref)
+	}
+	return nil
+}
+
 // loadTarget merges the layers that apply to a target.
 func loadTarget(bridge string, t Target) (*Config, error) {
 	c := &Config{Bridge: bridge, Project: t.Project, Task: t.Task, Bindings: map[string]Binding{},
@@ -608,6 +654,9 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 			return nil, fmt.Errorf("task must be <project>/<task>, got %q", t.Task)
 		}
 		c.Project = parts[0]
+		if err := refuseNoCode(bridge, t.Task); err != nil {
+			return nil, err
+		}
 		if err := loadProject(); err != nil {
 			return nil, err
 		}
@@ -805,6 +854,9 @@ func (c *Config) projectLayer(bridge string) (layerEntry, error) {
 	c.locationRules = map[string]yaml.Node{}
 	for name, loc := range lr.Locations {
 		c.locationRules[name] = loc.Rules
+	}
+	if _, err := projectPipeline(projectFile); err != nil {
+		return layerEntry{}, fmt.Errorf("project %q: %v", c.Project, err)
 	}
 	c.Platforms = pf.Platforms
 	if pf.Journal.Commit == "off" {

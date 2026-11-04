@@ -581,10 +581,12 @@ const projectHeader = `# Project: %s
 # Where its code is differs per machine, so it is in this machine's machine.yaml.
 `
 
-const projectTemplate = projectHeader + `
+const projectPlatforms = `
 # The platforms the project supports; reviewers treat a failure on one of them as real.
 platforms: [%s]
+`
 
+const projectTail = `
 # Bindings say what each @name means here. Declare every binding the pipelines need,
 # or declare it not applicable with a reason; a missing one stops a run.
 bindings:
@@ -599,8 +601,19 @@ bindings:
 #       - append: { stage: review, dimensions: [concurrency] }
 `
 
+const projectTemplate = projectHeader + projectPlatforms + projectTail
+
+// noCodeProjectContent is the project file of a project whose tasks have no code by default; platforms are only written when given.
+func noCodeProjectContent(name string, platforms []string) string {
+	content := fmt.Sprintf(projectHeader, name) + "\n# Tasks in this project have no code unless they say pipeline: coding.\npipeline: none\n"
+	if len(platforms) > 0 {
+		content += fmt.Sprintf(projectPlatforms, strings.Join(platforms, ", "))
+	}
+	return content + projectTail
+}
+
 func cmdProject(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>] | ensign project reviewed <project>[/<task>] [--location <name>]")
+	usage := fmt.Errorf("usage: ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>] | ensign project new <name> --pipeline none [--workspace <path> | --locations <a,b>] [--platforms <list>] | ensign project reviewed <project>[/<task>] [--location <name>]")
 	if len(args) >= 2 && args[0] == "reviewed" {
 		switch {
 		case len(args) == 2:
@@ -613,7 +626,7 @@ func cmdProject(args []string, out io.Writer) error {
 	if len(args) < 4 || args[0] != "new" {
 		return usage
 	}
-	var workspace, platformList, locationList string
+	var workspace, platformList, locationList, pipeline string
 	for i := 2; i < len(args); i += 2 {
 		if i+1 >= len(args) {
 			return usage
@@ -625,11 +638,17 @@ func cmdProject(args []string, out io.Writer) error {
 			locationList = args[i+1]
 		case "--platforms":
 			platformList = args[i+1]
+		case "--pipeline":
+			pipeline = args[i+1]
 		default:
 			return usage
 		}
 	}
-	if (workspace == "") == (locationList == "") {
+	if pipeline != "" && pipeline != "none" {
+		return fmt.Errorf("--pipeline must be none (a project of tasks without code); a project without it is a code project")
+	}
+	noCode := pipeline == "none"
+	if workspace != "" && locationList != "" || (workspace == "" && locationList == "" && !noCode) {
 		return usage
 	}
 	var platforms []string
@@ -652,7 +671,17 @@ func cmdProject(args []string, out io.Writer) error {
 		return fmt.Errorf("project %s already exists", name)
 	}
 	if locationList != "" {
-		return newLocationsProject(bridge, name, p, locationList, platforms, platformList, out)
+		return newLocationsProject(bridge, name, p, locationList, platforms, platformList, noCode, out)
+	}
+	if workspace == "" {
+		if errs := platformProblems(platforms); len(errs) > 0 {
+			return fmt.Errorf("--platforms %q: %s", platformList, strings.Join(errs, "; "))
+		}
+		if err := writeFile(p, noCodeProjectContent(name, platforms)); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "created %s, a project of tasks without code\n", relTo(bridge, p))
+		return nil
 	}
 	dir, err := filepath.Abs(expandHome(workspace))
 	if err != nil {
@@ -668,20 +697,26 @@ func cmdProject(args []string, out io.Writer) error {
 	switch {
 	case len(platforms) > 0 && len(shippedPlatforms) > 0 && !sameSet(platforms, shippedPlatforms):
 		return fmt.Errorf("--platforms %s differs from the platforms in the code's own %s (%s); ask the user which is right", platformList, shippedProjectFile, strings.Join(shippedPlatforms, ","))
-	case len(platforms) == 0 && len(shippedPlatforms) == 0:
+	case len(platforms) == 0 && len(shippedPlatforms) == 0 && !noCode:
 		return fmt.Errorf("a project declares the platforms it supports: pass --platforms <list>, e.g. --platforms linux,macos,windows; ask the user, never guess")
 	}
 	if errs := platformProblems(platforms); len(errs) > 0 {
 		return fmt.Errorf("--platforms %q: %s", platformList, strings.Join(errs, "; "))
 	}
 	content := fmt.Sprintf(projectTemplate, name, strings.Join(platforms, ", "))
+	if noCode {
+		content = noCodeProjectContent(name, platforms)
+	}
 	if shipped != "" {
 		content = fmt.Sprintf(projectHeader, name) + "\n# From the code's own " + shippedProjectFile + ":\n\n" + shipped
-		if len(shippedPlatforms) == 0 {
-			if !strings.HasSuffix(content, "\n") {
-				content += "\n"
-			}
+		if !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		if len(shippedPlatforms) == 0 && len(platforms) > 0 {
 			content += fmt.Sprintf("platforms: [%s]\n", strings.Join(platforms, ", "))
+		}
+		if noCode {
+			content += "pipeline: none\n"
 		}
 	}
 	if err := writeFile(p, content); err != nil {
@@ -699,7 +734,7 @@ func cmdProject(args []string, out io.Writer) error {
 }
 
 // newLocationsProject writes a project that declares code locations in place of a workspace; each location's folder is recorded afterwards, per machine.
-func newLocationsProject(bridge, name, file, locationList string, platforms []string, platformList string, out io.Writer) error {
+func newLocationsProject(bridge, name, file, locationList string, platforms []string, platformList string, noCode bool, out io.Writer) error {
 	var names []string
 	for _, n := range strings.Split(locationList, ",") {
 		n = strings.TrimSpace(n)
@@ -711,13 +746,17 @@ func newLocationsProject(bridge, name, file, locationList string, platforms []st
 		}
 		names = append(names, n)
 	}
-	if len(platforms) == 0 {
+	if len(platforms) == 0 && !noCode {
 		return fmt.Errorf("a project declares the platforms it supports: pass --platforms <list>, e.g. --platforms linux,macos,windows; ask the user, never guess")
 	}
 	if errs := platformProblems(platforms); len(errs) > 0 {
 		return fmt.Errorf("--platforms %q: %s", platformList, strings.Join(errs, "; "))
 	}
-	content := fmt.Sprintf(projectTemplate, name, strings.Join(platforms, ", ")) + "\n# The code locations; each location's folder is recorded per machine.\nlocations:\n"
+	content := fmt.Sprintf(projectTemplate, name, strings.Join(platforms, ", "))
+	if noCode {
+		content = noCodeProjectContent(name, platforms)
+	}
+	content += "\n# The code locations; each location's folder is recorded per machine.\nlocations:\n"
 	for _, n := range names {
 		content += "  " + n + ": {}\n"
 	}
@@ -813,7 +852,7 @@ func cwdBridge() (string, error) {
 }
 
 const taskTemplate = `---
-pipeline: coding
+pipeline: %s
 %s---
 
 # %s
@@ -834,7 +873,7 @@ New.
 `
 
 func cmdTask(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign task new <project>/<task> [--workspace <path> | --locations <a,b>] [--branch <branch>] | ensign task open <project>/<task> | ensign task subtask <done|drop> <project>/<task> <name>")
+	usage := fmt.Errorf("usage: ensign task new <project>/<task> [--workspace <path> | --locations <a,b>] [--branch <branch>] [--pipeline <none|coding>] | ensign task open <project>/<task> | ensign task subtask <done|drop> <project>/<task> <name>")
 	if len(args) < 2 {
 		return usage
 	}
@@ -852,9 +891,11 @@ func cmdTask(args []string, out io.Writer) error {
 	taskDir := filepath.Join(bridge, "projects", parts[0], "tasks", parts[1])
 	switch args[0] {
 	case "new":
-		var ws, branch, locations string
+		var ws, branch, locations, pipeline string
 		for i := 2; i+1 < len(args); i += 2 {
 			switch args[i] {
+			case "--pipeline":
+				pipeline = args[i+1]
 			case "--workspace":
 				ws = args[i+1]
 			case "--locations":
@@ -871,6 +912,28 @@ func cmdTask(args []string, out io.Writer) error {
 		}
 		if _, err := os.Stat(filepath.Join(taskDir, "task.md")); err == nil {
 			return fmt.Errorf("task %s already exists", args[1])
+		}
+		if pipeline != "" && pipeline != "none" && pipeline != "coding" {
+			return fmt.Errorf("--pipeline must be none or coding, got %q", pipeline)
+		}
+		if pipeline == "" {
+			dflt, err := projectPipeline(pf)
+			if err != nil {
+				return err
+			}
+			pipeline = "coding"
+			if dflt == "none" {
+				pipeline = "none"
+			}
+		}
+		if pipeline == "none" {
+			for _, f := range []struct{ name, val string }{{"--workspace", ws}, {"--locations", locations}, {"--branch", branch}} {
+				if f.val != "" {
+					return fmt.Errorf("task %s has no pipeline (a task without code), so %s has no meaning", args[1], f.name)
+				}
+			}
+			content := fmt.Sprintf(taskTemplate, pipeline, "", parts[1])
+			return createTaskFiles(bridge, args[1], taskDir, content, out)
 		}
 		locs, err := loadLocations(bridge, parts[0])
 		if err != nil {
@@ -917,20 +980,26 @@ func cmdTask(args []string, out io.Writer) error {
 		if branch != "" {
 			vcs += fmt.Sprintf("vcs: { kind: git, branch: %s }\n", branch)
 		}
-		content := fmt.Sprintf(taskTemplate, vcs, parts[1])
-		if err := writeFile(filepath.Join(taskDir, "task.md"), content); err != nil {
-			return err
-		}
-		created := historyHeading(parts[1]) + "- " + time.Now().Format("2006-01-02") + ": created.\n"
-		if err := writeFile(filepath.Join(taskDir, "history.md"), created); err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "created %s; fill in its goal and scope\n", relTo(bridge, filepath.Join(taskDir, "task.md")))
-		return nil
+		content := fmt.Sprintf(taskTemplate, pipeline, vcs, parts[1])
+		return createTaskFiles(bridge, args[1], taskDir, content, out)
 	case "open":
 		return openTask(bridge, args[1], taskDir, out)
 	}
 	return usage
+}
+
+// createTaskFiles writes a new task's task.md and history.md.
+func createTaskFiles(bridge, task, taskDir, content string, out io.Writer) error {
+	name := filepath.Base(taskDir)
+	if err := writeFile(filepath.Join(taskDir, "task.md"), content); err != nil {
+		return err
+	}
+	created := historyHeading(name) + "- " + time.Now().Format("2006-01-02") + ": created.\n"
+	if err := writeFile(filepath.Join(taskDir, "history.md"), created); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "created %s; fill in its goal and scope\n", relTo(bridge, filepath.Join(taskDir, "task.md")))
+	return nil
 }
 
 // openTask checks a task's workspace and VCS state, records it as the session's task,
@@ -949,37 +1018,45 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 		fmt.Fprintf(out, "subtasks   %s\n", strings.TrimPrefix(p, "subtasks "))
 	}
 	project, name, _ := strings.Cut(task, "/")
-	if len(tf.Locations) > 0 {
-		for _, loc := range tf.Locations {
-			p, err := locationPathFor(bridge, project, loc)
-			switch {
-			case err != nil:
-				fmt.Fprintf(out, "location   %s: STOP: %v\n", loc, err)
-			default:
-				fmt.Fprintf(out, "location   %s: %s\n", loc, p)
-				fmt.Fprintln(out, "vcs        "+vcsState(p, tf.Vcs))
-			}
-		}
+	noCode, err := taskHasNoCode(bridge, project, name)
+	if err != nil {
+		return err
 	}
-	ws, err := workspaceFor(bridge, project, name)
-	switch {
-	case len(tf.Locations) > 0:
-		for _, loc := range tf.Locations {
-			if p, err := locationPathFor(bridge, project, loc); err == nil {
-				if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-					printShippedDrift(bridge, project, p, loc, out)
+	if noCode {
+		fmt.Fprintln(out, "pipeline   none: a task without code, so it has no workspace, no version control checks and no runs; its journal takes dated entries (ensign help journal)")
+	} else {
+		if len(tf.Locations) > 0 {
+			for _, loc := range tf.Locations {
+				p, err := locationPathFor(bridge, project, loc)
+				switch {
+				case err != nil:
+					fmt.Fprintf(out, "location   %s: STOP: %v\n", loc, err)
+				default:
+					fmt.Fprintf(out, "location   %s: %s\n", loc, p)
+					fmt.Fprintln(out, "vcs        "+vcsState(p, tf.Vcs))
 				}
 			}
 		}
-	case err != nil:
-		fmt.Fprintf(out, "workspace  STOP: %v\n", err)
-	default:
-		if fi, err := os.Stat(ws); err != nil || !fi.IsDir() {
-			fmt.Fprintf(out, "workspace  STOP: %s does not exist\n", ws)
-		} else {
-			fmt.Fprintf(out, "workspace  %s\n", ws)
-			fmt.Fprintln(out, "vcs        "+vcsState(ws, tf.Vcs))
-			printShippedDrift(bridge, project, ws, "", out)
+		ws, err := workspaceFor(bridge, project, name)
+		switch {
+		case len(tf.Locations) > 0:
+			for _, loc := range tf.Locations {
+				if p, err := locationPathFor(bridge, project, loc); err == nil {
+					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+						printShippedDrift(bridge, project, p, loc, out)
+					}
+				}
+			}
+		case err != nil:
+			fmt.Fprintf(out, "workspace  STOP: %v\n", err)
+		default:
+			if fi, err := os.Stat(ws); err != nil || !fi.IsDir() {
+				fmt.Fprintf(out, "workspace  STOP: %s does not exist\n", ws)
+			} else {
+				fmt.Fprintf(out, "workspace  %s\n", ws)
+				fmt.Fprintln(out, "vcs        "+vcsState(ws, tf.Vcs))
+				printShippedDrift(bridge, project, ws, "", out)
+			}
 		}
 	}
 	notes, err := projectNotes(bridge, project)

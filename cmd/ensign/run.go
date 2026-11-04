@@ -851,6 +851,9 @@ func cmdRun(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseNoCode(bridge, o.task); err != nil {
+		return err
+	}
 	if !o.dry {
 		if err := writesPendingRefusal(bridge, os.Getenv("STARSHIP_SESSION")); err != nil {
 			return err
@@ -912,6 +915,9 @@ func cmdRunRetire(args []string, out io.Writer) error {
 func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot, error) {
 	task, start, pipeline, project := o.task, o.start, o.pipeline, o.project
 	dry, sync, rebuild, staleOK := o.dry, o.sync, o.rebuild, o.staleOK
+	if err := refuseNoCode(bridge, task); err != nil {
+		return nil, err
+	}
 	pick, err := pickSubtask(bridge, o)
 	if err != nil {
 		return nil, err

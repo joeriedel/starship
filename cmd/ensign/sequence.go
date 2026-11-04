@@ -1676,6 +1676,9 @@ func cmdSequence(args []string, out io.Writer) error {
 		if o.subtask != "" {
 			return fmt.Errorf("a sequence step names a task, never a subtask; its run starts with the task's next pending subtask")
 		}
+		if err := refuseNoCode(bridge, o.task); err != nil {
+			return err
+		}
 		if err := checkAddable(bridge, session, name); err != nil {
 			return err
 		}

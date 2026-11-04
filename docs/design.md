@@ -497,7 +497,8 @@ task. The one exception is `rules:`, which the task layer does not take (see bel
 
 ```yaml
 # projects/supernova/project.yaml (a task.md frontmatter block looks the same)
-platforms: [linux, macos, windows]   # project.yaml only; required
+platforms: [linux, macos, windows]   # project.yaml only; required for code
+pipeline: none                       # project.yaml only; its tasks have no code by default
 pipelines:
   coding:
     ops:
@@ -526,7 +527,7 @@ events:
 
 `rules` is a list of strings, accepted in the bridge, extension, project and location layers. Their union in layer order, duplicates dropped, is appended to every work item under `## Project rules` and shown in the run summary with each rule's source. The task layer is the exception to the shared shape: a task's frontmatter `rules:` is ignored, and task-specific rules go in the task's Scope.
 
-A task's frontmatter also names its `pipeline` (default `coding`) and its `workspace`.
+A task's frontmatter also names its `pipeline` (default `coding`) and its `workspace`. `pipeline: none` marks a task without code: goal, status, decisions and history, but no workspace, locations, VCS checks or runs. A project's `pipeline: none` (the only value that key takes; anything else is refused) makes that the default for its tasks, and a task's own `pipeline:` wins. `platforms:` stays a code rule: a code task still fails validation at run time without them.
 New pipelines are files in a `pipelines/` directory — the control plane's, or an extension's.
 
 `append` adds to a list field; `set` on a list field replaces it explicitly.
@@ -1168,6 +1169,8 @@ while the details are fresh, is what makes the journal worth reading weeks later
 line guarantees no run is missing from it. Run directories, with every agent's full
 report, stay per machine and are not committed.
 
+A task without code has no runs, so no run lines or accounts; its `history.md` takes dated entries (`- YYYY-MM-DD: <what happened>`), committed like any other journal change.
+
 Journals live in the bridge, and a bridge is always git, so committing them doesn't
 depend on the project's VCS:
 
@@ -1339,6 +1342,8 @@ release's checksums.
 Product workspaces are not cloned by setup. Opening a task checks that its workspace
 exists and stops if not.
 
+A task with `pipeline: none` has no workspace, so opening it skips the check.
+
 ### 12.3 The restart
 
 The session that ran setup cannot switch over to the result: it started before the
@@ -1491,7 +1496,7 @@ runs against Claude Code, except where listed below.
 | `ensign update [<tag>]` | move the bridge to a newer release |
 | `ensign gc [<keep>]` | delete finished runs beyond the limit (default: the bridge's `keep-runs`) and empty the scratch folders of the rest |
 | `ensign link [--force]` | regenerate the bridge's role, skill and manual files |
-| `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path> \| --locations <a,b>]` / `ensign task open <p>/<t>` | scaffold and open; where the code is goes into this machine's `machine.yaml`, and a new task uses its project's unless given a different location |
+| `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path> \| --locations <a,b>]` / `ensign task open <p>/<t>` | scaffold and open; where the code is goes into this machine's `machine.yaml`, and a new task uses its project's unless given a different location. `project new --pipeline none` makes a project of tasks without code (workspace, locations and platforms optional); `task new --pipeline <none\|coding>` picks per task (default: the project's), and a no-code task refuses `--workspace`, `--locations` and `--branch`; `run`, `sequence run`, publishing and landing refuse a no-code task |
 | `ensign run <p>/<t> [--location <name>] [--subtask <name>] [--sides <a,b>] [--dependency <location>=<branch>] [--start <stage>] [--sync] [--dry-run]` | create a run for a task; `--subtask` names the subtask of a task with subtasks (default: the first pending); `--location` names the code location it edits, when the project has several; `--sides` narrows the locations it tests; `--dependency` names an unlanded branch of a location it depends on, applied with `@apply-dependency` |
 | `ensign dependency apply --side <location>` / `restore [--side <location>]` | for agent stages: apply a run's dependencies on a side before building and testing there, and restore the tree before finishing |
 | `ensign task subtask done\|drop <p>/<t> <name>` | mark a subtask of a task done or dropped |
