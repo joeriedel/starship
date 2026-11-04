@@ -815,7 +815,7 @@ func cmdRun(args []string, out io.Writer) error {
 	return err
 }
 
-// cmdRunRetire is `ensign run retire <run>`: it ends a live run of another session, whose session is gone, so the code folders it holds are free. The run's folder and the code folder are left as they are.
+// cmdRunRetire is `ensign run retire <run>`: it ends a live run of another session at the user's request, so the code folders it holds are free. The run's folder and the code folder are left as they are.
 func cmdRunRetire(args []string, out io.Writer) error {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
 		return errors.New("usage: ensign run retire <run>")
@@ -848,7 +848,7 @@ func cmdRunRetire(args []string, out io.Writer) error {
 	if !r.State.Approved {
 		works = nil
 	}
-	if err := markRetired(r, fmt.Sprintf("retired by session %s after its session %s ended", session, owner)); err != nil {
+	if err := markRetired(r, fmt.Sprintf("retired at the user's request by session %s", session)); err != nil {
 		return err
 	}
 	if owner != "" {
