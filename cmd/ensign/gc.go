@@ -156,7 +156,7 @@ const staleGCAge = 5 * time.Minute
 // pidRecordAge is how old a <pid>.pid record must be before a sweep removes it. Age, not liveness, because a session idle past it loses only the link to its earlier id, which is how /clear behaved before the record existed.
 const pidRecordAge = 30 * 24 * time.Hour
 
-// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence and .topic-* files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped, run.go:952, sequence.go:1111) and .env until its next run rebinds it.
+// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .topic-*, .lock, .sequence.lock and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
 const sessionFileAge = 30 * 24 * time.Hour
 
 // deadLink reports whether a session link names at least one run, none of the names is a path, and every named run's folder is gone. A link that is empty, unreadable or names a path is not dead. Links hold one run id per line.
@@ -205,8 +205,9 @@ func sessionOfFile(name string) (string, bool) {
 	return "", false
 }
 
-// sweepSessionFiles removes the per-session files of sessions untouched for sessionFileAge. A session's age is the newest mtime among its swept files and its link, because .pin is rewritten at every SessionStart while .task is not. A session with a live run or an open sequence keeps all its files. It must run before dead links are dropped, so a link still shows which runs a session owned.
+// sweepSessionFiles removes the per-session files of sessions untouched for sessionFileAge, then their lock and tmp files (see sweepLeftovers). A session's age is the newest mtime among its swept files and its link, because .pin is rewritten at every SessionStart while .task is not. A session with a live run or an open sequence keeps all its files. It must run before dead links are dropped, so a link still shows which runs a session owned.
 func sweepSessionFiles(bridge string, entries []os.DirEntry) {
+	leftovers := leftoverGroups(entries)
 	groups := map[string]*sweptSession{}
 	note := func(g *sweptSession, e os.DirEntry) {
 		info, err := e.Info()
@@ -262,6 +263,137 @@ func sweepSessionFiles(bridge string, entries []os.DirEntry) {
 			runs, listed = listRuns(bridge), true
 		}
 		sweepSession(bridge, id, g, runs)
+	}
+	sweepLeftovers(bridge, leftovers, func() []runInfo {
+		if !listed {
+			runs, listed = listRuns(bridge), true
+		}
+		return runs
+	})
+}
+
+// leftoverOfFile returns the session id a <id>.lock, <id>.sequence.lock or <id>.tmp file name belongs to. Names of the swept types, the bridge-wide .sweep.lock and files such as <id>.sequence.tmp (whose stem is itself a session file) are not leftovers.
+func leftoverOfFile(name string) (string, bool) {
+	if _, ok := sessionOfFile(name); ok || name == ".sweep.lock" {
+		return "", false
+	}
+	for _, suf := range []string{".sequence.lock", ".lock", ".tmp"} {
+		id, found := strings.CutSuffix(name, suf)
+		if !found {
+			continue
+		}
+		if _, isSession := sessionOfFile(id); isSession && suf != ".sequence.lock" {
+			return "", false
+		}
+		return id, id != ""
+	}
+	return "", false
+}
+
+// sweptLeftovers is one session's lock and tmp files.
+type sweptLeftovers struct {
+	seqLock, lock, tmp bool
+	newest             time.Time
+	failed             bool
+}
+
+// leftoverGroups finds the sessions with lock or tmp files in the snapshot and reads their ages. It runs before the swept files are renamed, because an entry's Info fails once its file is gone.
+func leftoverGroups(entries []os.DirEntry) map[string]*sweptLeftovers {
+	groups := map[string]*sweptLeftovers{}
+	note := func(g *sweptLeftovers, e os.DirEntry) {
+		info, err := e.Info()
+		if err != nil {
+			g.failed = true
+			return
+		}
+		if info.ModTime().After(g.newest) {
+			g.newest = info.ModTime()
+		}
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		id, ok := leftoverOfFile(e.Name())
+		if !ok {
+			continue
+		}
+		g := groups[id]
+		if g == nil {
+			g = &sweptLeftovers{}
+			groups[id] = g
+		}
+		switch {
+		case strings.HasSuffix(e.Name(), ".sequence.lock"):
+			g.seqLock = true
+		case strings.HasSuffix(e.Name(), ".lock"):
+			g.lock = true
+		default:
+			g.tmp = true
+		}
+		note(g, e)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		id, ok := sessionOfFile(e.Name())
+		if !ok {
+			id = e.Name()
+		}
+		if g := groups[id]; g != nil {
+			note(g, e)
+		}
+	}
+	return groups
+}
+
+// sweepLeftovers removes the <id>.lock, <id>.sequence.lock and <id>.tmp files of sessions whose newest file, link included, is older than sessionFileAge and that are not busy. A lock's own mtime is its creation time, so the session's other files and link show its use. Every lock is taken without blocking and the session is left for a later sweep if one is held; <id>.lock is also taken for a <id>.tmp, because its only writer holds it. A .sequence.lock is taken only if it exists.
+func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, listRunsOnce func() []runInfo) {
+	dir := filepath.Join(bridge, ".starship", "sessions")
+	for id, g := range groups {
+		if g.failed || time.Since(g.newest) <= sessionFileAge || sessionBusy(bridge, id, listRunsOnce()) {
+			continue
+		}
+		var locks []*flock.Flock
+		var paths []string
+		if g.seqLock {
+			paths = append(paths, filepath.Join(dir, id+".sequence.lock"))
+		}
+		if g.lock || g.tmp {
+			paths = append(paths, filepath.Join(dir, id+".lock"))
+		}
+		held := true
+		for _, path := range paths {
+			l := flock.New(path)
+			if ok, err := l.TryLock(); err != nil || !ok {
+				held = false
+				break
+			}
+			locks = append(locks, l)
+		}
+		if !held {
+			for _, l := range locks {
+				l.Unlock()
+			}
+			continue
+		}
+		if g.tmp {
+			os.Remove(filepath.Join(dir, id+".tmp"))
+		}
+		var left []string
+		for _, path := range paths {
+			if os.Remove(path) != nil {
+				left = append(left, path)
+			}
+		}
+		for _, l := range locks {
+			l.Unlock()
+		}
+		// Windows refuses to remove a file we still hold open, so those are retried once the locks are closed.
+		for _, path := range left {
+			os.Remove(path)
+		}
 	}
 }
 
@@ -348,7 +480,7 @@ func settleSession(dir, id string, files, renamed []string) {
 	}
 }
 
-// dropDeadLinks removes session links (the bare <session-id> files) whose run folders are all gone, and returns how many. It also removes <pid>.pid records older than pidRecordAge, and the per-session files of sessions idle past sessionFileAge (see sweepSessionFiles); those are not counted. Live links are only read. A link that looks dead is renamed to <id>.gc and judged again, so a concurrent rebind is restored rather than deleted. Only one sweeper runs at a time, under a non-blocking bridge-wide .sweep.lock (never removed); a call that can't take it skips the .gc removal and sweepSessionFiles and does the rest, so it never blocks. Lock order: .sweep.lock, then a session's .sequence.lock.
+// dropDeadLinks removes session links (the bare <session-id> files) whose run folders are all gone, and returns how many. It also removes <pid>.pid records older than pidRecordAge, and the per-session files, locks included, of sessions idle past sessionFileAge (see sweepSessionFiles); those are not counted. Live links are only read. A link that looks dead is renamed to <id>.gc and judged again, so a concurrent rebind is restored rather than deleted. Only one sweeper runs at a time, under a non-blocking bridge-wide .sweep.lock (never removed); a call that can't take it skips the .gc removal and sweepSessionFiles and does the rest, so it never blocks. Lock order: .sweep.lock, then a session's .sequence.lock, then its .lock.
 func dropDeadLinks(bridge string) int {
 	dir := filepath.Join(bridge, ".starship", "sessions")
 	entries, _ := os.ReadDir(dir)

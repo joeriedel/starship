@@ -315,7 +315,7 @@ func TestSessionFilesSweptByAge(t *testing.T) {
 		t.Error("a stale .task beside a fresh .pin must stay")
 	}
 	if !exists(seq+".lock") || !exists(filepath.Join(dir, "old.id.lock")) {
-		t.Error("lock files are not swept")
+		t.Error("fresh lock files stay")
 	}
 }
 
@@ -542,5 +542,158 @@ func TestSettleSessionJudgesTheWholeSession(t *testing.T) {
 	settleSession(dir, "s1", names(files), renamed)
 	if !noneExist(files) || !noGC(files) {
 		t.Error("a session that is still stale must be gone, with no .gc left")
+	}
+}
+
+func oldFile(t *testing.T, path string, age time.Duration) {
+	t.Helper()
+	write(t, path, "")
+	past := time.Now().Add(-age)
+	os.Chtimes(path, past, past)
+}
+
+func TestSessionLeftoversSweptWithOldSession(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	files := sessFiles(t, w, "old.id", oldAge, "")
+	var left []string
+	for _, n := range []string{"old.id.lock", "old.id.sequence.lock", "old.id.tmp"} {
+		oldFile(t, filepath.Join(dir, n), oldAge)
+		left = append(left, filepath.Join(dir, n))
+	}
+	dropDeadLinks(w.bridge)
+	if !noneExist(files) || !noneExist(left) {
+		t.Error("an old session's files, locks and tmp must all go")
+	}
+}
+
+func TestSessionLeftoversOrphansSwept(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	var left []string
+	for _, n := range []string{"a.lock", "b.sequence.lock", "c.tmp", "d.lock", "d.sequence.lock"} {
+		oldFile(t, filepath.Join(dir, n), oldAge)
+		left = append(left, filepath.Join(dir, n))
+	}
+	dropDeadLinks(w.bridge)
+	if !noneExist(left) {
+		t.Error("orphaned old locks and tmp must go")
+	}
+	if exists(filepath.Join(dir, "c.lock")) {
+		t.Error("a tmp without a lock must not leave a lock behind")
+	}
+}
+
+func TestSessionLeftoversKeptForYoungSession(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	oldFile(t, filepath.Join(dir, "a.lock"), oldAge)
+	oldFile(t, filepath.Join(dir, "a.sequence.lock"), oldAge)
+	oldFile(t, filepath.Join(dir, "a.tmp"), oldAge)
+	write(t, filepath.Join(dir, "a.task"), "x\n")
+	oldFile(t, filepath.Join(dir, "b.lock"), oldAge)
+	write(t, filepath.Join(dir, "b"), "20240101-000009-supernova\n")
+	dropDeadLinks(w.bridge)
+	for _, n := range []string{"a.lock", "a.sequence.lock", "a.tmp", "b.lock"} {
+		if !exists(filepath.Join(dir, n)) {
+			t.Errorf("%s must stay for a young session", n)
+		}
+	}
+}
+
+func TestSessionFreshLockDoesNotHoldBackFiles(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	files := sessFiles(t, w, "s1", oldAge, "")
+	write(t, filepath.Join(dir, "s1.lock"), "")
+	write(t, filepath.Join(dir, "s1.tmp"), "")
+	dropDeadLinks(w.bridge)
+	if !noneExist(files) {
+		t.Error("old session files must go despite a fresh lock")
+	}
+	if !exists(filepath.Join(dir, "s1.lock")) || !exists(filepath.Join(dir, "s1.tmp")) {
+		t.Error("a fresh lock and tmp must stay")
+	}
+}
+
+func TestSessionLeftoversKeptWhenBusy(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	fabricate(t, w, "20240101-000001-supernova", "running", true)
+	files := sessFiles(t, w, "s1", oldAge, "20240101-000001-supernova\n")
+	seq := seqPath(w.bridge, "s2")
+	writeJSON(seq, &seqFile{Sequences: []*sequence{{Steps: []*seqStep{{N: 1, Kind: "run", Run: "r", Status: "pending"}}}}})
+	oldFile(t, seq, oldAge)
+	var left []string
+	for _, id := range []string{"s1", "s2"} {
+		for _, n := range []string{".lock", ".sequence.lock", ".tmp"} {
+			oldFile(t, filepath.Join(dir, id+n), oldAge)
+			left = append(left, filepath.Join(dir, id+n))
+		}
+	}
+	dropDeadLinks(w.bridge)
+	if !allExist(left) || !allExist(files) {
+		t.Error("a busy session keeps its locks and tmp")
+	}
+}
+
+func TestSessionLeftoversKeptWhenLockHeld(t *testing.T) {
+	for _, held := range []string{"s1.lock", "s1.sequence.lock"} {
+		w := newWorld(t)
+		dir := filepath.Join(w.bridge, ".starship", "sessions")
+		var left []string
+		for _, n := range []string{"s1.lock", "s1.sequence.lock", "s1.tmp"} {
+			oldFile(t, filepath.Join(dir, n), oldAge)
+			left = append(left, filepath.Join(dir, n))
+		}
+		l := flock.New(filepath.Join(dir, held))
+		if err := l.Lock(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() { dropDeadLinks(w.bridge); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			l.Unlock()
+			t.Fatalf("gc blocked on %s", held)
+		}
+		l.Unlock()
+		if !allExist(left) {
+			t.Errorf("nothing may be removed while %s is held", held)
+		}
+	}
+}
+
+func TestSessionLeftoversCreateNoSequenceLock(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	oldFile(t, filepath.Join(dir, "s1.lock"), oldAge)
+	oldFile(t, filepath.Join(dir, "s2.tmp"), oldAge)
+	dropDeadLinks(w.bridge)
+	for _, n := range []string{"s1.sequence.lock", "s2.sequence.lock", "s2.lock"} {
+		if exists(filepath.Join(dir, n)) {
+			t.Errorf("%s must not exist", n)
+		}
+	}
+}
+
+func TestSessionLeftoversSparesSweepLockAndSessionTmp(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	keep := []string{".sweep.lock", "s1.sequence.tmp", "s1.task.tmp"}
+	for _, n := range keep {
+		oldFile(t, filepath.Join(dir, n), oldAge)
+	}
+	dropDeadLinks(w.bridge)
+	for _, n := range keep {
+		if !exists(filepath.Join(dir, n)) {
+			t.Errorf("%s must stay", n)
+		}
+	}
+	for _, n := range []string{"s1.sequence.lock", "s1.lock", "s1.sequence.sequence.lock"} {
+		if exists(filepath.Join(dir, n)) {
+			t.Errorf("%s must not be created", n)
+		}
 	}
 }
