@@ -195,6 +195,79 @@ func (s *sequence) label() string {
 // ref is how text outside a sequence's own listing names a step: <sequence>.<step>.
 func (s *seqStep) ref() string { return fmt.Sprintf("%d.%d", s.Seq, s.N) }
 
+// position says where a step stands in its sequence, such as "step 5 of 26".
+func (s *sequence) position(st *seqStep) string {
+	return fmt.Sprintf("step %d of %d", slices.Index(s.Steps, st)+1, len(s.Steps))
+}
+
+// outcomeLine says in one line how a step ended; it is the text of a failed or cancelled step in an advance and in a note, so the two agree.
+func (s *seqStep) outcomeLine(status, reason string) string {
+	what := s.Task
+	switch s.Kind {
+	case "do":
+		what = firstLine(strings.TrimSpace(s.Instruction))
+	case "release":
+		what += " " + s.Version
+	}
+	lead := fmt.Sprintf("step %s (%s %s) %s", s.ref(), s.Kind, what, status)
+	if reason == "" {
+		return lead + "."
+	}
+	return lead + ": " + reason
+}
+
+// outcomeKey is the start of an outcome line that identifies it: up to and including the colon, or the whole line when there is no reason.
+func (s *seqStep) outcomeKey(status, reason string) string {
+	line := s.outcomeLine(status, reason)
+	if reason == "" {
+		return line
+	}
+	return line[:len(line)-len(reason)-1]
+}
+
+// notes returns a line for each failed or cancelled step, in step order, and the key that identifies each.
+func (s *sequence) notes() (lines, keys []string) {
+	for _, st := range s.Steps {
+		if st.Status != "failed" && st.Status != "cancelled" {
+			continue
+		}
+		reason := firstLine(st.Reason)
+		lines = append(lines, st.outcomeLine(st.Status, reason))
+		keys = append(keys, st.outcomeKey(st.Status, reason))
+	}
+	return
+}
+
+// unreportedNotes is the sequence's notes without those a part already reports.
+func (s *sequence) unreportedNotes(parts []string) []string {
+	lines, keys := s.notes()
+	var out []string
+	for i, line := range lines {
+		if !slices.ContainsFunc(parts, func(p string) bool { return strings.HasPrefix(p, keys[i]) }) {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// held finds the step an advance dispatched or holds, walking the sequences as advanceParts does, except that a pending step that can't start yet is not held.
+func (sf *seqFile) held() (*sequence, *seqStep) {
+	for _, seq := range sf.Sequences {
+		if seq.Closed {
+			continue
+		}
+		if !seq.Approved && !seq.Halted {
+			break
+		}
+		for _, st := range seq.Steps {
+			if st.holds() || st.deciding() {
+				return seq, st
+			}
+		}
+	}
+	return nil, nil
+}
+
 // sequenceUnfinished reports whether the session has a step that has not finished.
 func sequenceUnfinished(bridge, session string) bool {
 	for _, seq := range readSeq(bridge, session).Sequences {
@@ -342,7 +415,7 @@ func (sf *seqFile) isOpen(seq *sequence) bool {
 	return len(seq.Steps) > 0 && !seq.Closed && seq.unfinished() && (seq.Approved || seq == sf.openSeq())
 }
 
-// listing renders the open sequences only, so hook messages stay small however many sequences a session has run.
+// listing renders the open sequences only, so it stays short however many sequences a session has run.
 func (sf *seqFile) listing(bridge string) string { return sf.render(bridge, false) }
 
 // listingAll renders every sequence, finished ones included.
@@ -759,16 +832,25 @@ func retireIf(bridge, id, reason string, states ...string) bool {
 	return markRetired(r, reason) == nil
 }
 
-// advance starts the next step if none is under way. It returns what the session should be told, or "" when nothing changed.
+// advance starts the next step if none is under way. It returns what the session should be told, followed by the listing, or "" when nothing changed.
 func (sf *seqFile) advance(bridge, session string) (string, error) {
+	text, err := sf.advanceText(bridge, session)
+	if text != "" {
+		text += "\n\n" + sf.listing(bridge)
+	}
+	return text, err
+}
+
+// advanceText is advance without the listing.
+func (sf *seqFile) advanceText(bridge, session string) (string, error) {
+	parts, err := sf.advanceParts(bridge, session)
+	return strings.Join(parts, "\n"), err
+}
+
+// advanceParts does the advancing and returns what the session should be told, one entry per piece; a piece can span lines.
+func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 	sf.reconcile(bridge)
 	var parts []string
-	finish := func() string {
-		if len(parts) == 0 {
-			return ""
-		}
-		return strings.Join(parts, "\n") + "\n\n" + sf.listing(bridge)
-	}
 	for _, seq := range sf.Sequences {
 		if seq.Closed {
 			continue
@@ -790,7 +872,7 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 				}
 			}
 			if seq.holding() {
-				return finish(), nil
+				return parts, nil
 			}
 			st := seq.nextPending()
 			if st == nil {
@@ -831,37 +913,38 @@ func (sf *seqFile) advance(bridge, session string) (string, error) {
 				case err != nil:
 					st.Status, st.Reason = "failed", err.Error()
 					sf.failed(bridge, seq, st)
+					parts = append(parts, st.outcomeLine("failed", err.Error()))
 					continue
 				default:
 					st.Status, st.Reason = "active", ""
 				}
-				return finish(), nil
+				return parts, nil
 			case "publish":
 				if sk := sf.skippedBefore(bridge, seq, st); sk != nil {
 					cancelStep(bridge, st, "cancelled", fmt.Sprintf("step %s was skipped", sk.ref()))
-					parts = append(parts, fmt.Sprintf("step %s (publish %s) cancelled: step %s was skipped", st.ref(), st.Task, sk.ref()))
+					parts = append(parts, st.outcomeLine("cancelled", fmt.Sprintf("step %s was skipped", sk.ref())))
 					continue
 				}
 				out, err := runPublish(bridge, seq, st)
 				if err != nil {
 					st.Status, st.Reason = "failed", err.Error()
 					sf.failed(bridge, seq, st)
-					parts = append(parts, fmt.Sprintf("step %s (publish %s) failed: %v", st.ref(), st.Task, err))
+					parts = append(parts, st.outcomeLine("failed", err.Error()))
 					continue
 				}
 				st.Status, st.Reason = "done", out
 			case "do":
 				st.Status = "active"
 				parts = append(parts, fmt.Sprintf("step %s: %s", st.ref(), doText(st)))
-				return finish(), nil
+				return parts, nil
 			case "release":
 				st.Status = "active"
 				parts = append(parts, fmt.Sprintf("step %s: %s", st.ref(), releaseText(st)))
-				return finish(), nil
+				return parts, nil
 			}
 		}
 	}
-	return finish(), nil
+	return parts, nil
 }
 
 // skippedBefore returns the latest skipped run step of the publish's task, before the publish step in any sequence, that ran in the location the publish will act in; it is nil when the publish may go ahead. When that location can't be resolved, any skipped step of the task counts and the clear check looks at the locations of its runs. A successful run of the task in the location that finished after the step was skipped clears the skip, whether it came from a sequence or from a plain `ensign run`. Run ids are stamped at creation and a retry is created after the steps queued behind it, so only finish times against SkippedAt say what came after; a step skipped before SkippedAt existed has none, and its skip stands.
@@ -1220,12 +1303,21 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 			return nil
 		}
 		ok, seq.Approved = true, true
-		text = fmt.Sprintf("%s approved (%d steps). ", seq.label(), len(seq.Steps))
-		adv, err := sf.advance(bridge, session)
-		if adv == "" {
-			adv = "It starts when the step in progress finishes.\n\n" + sf.listing(bridge)
+		text = fmt.Sprintf("%s approved (%d steps).", seq.label(), len(seq.Steps))
+		parts, err := sf.advanceParts(bridge, session)
+		heldSeq, held := sf.held()
+		if len(parts) > 0 {
+			text += " " + strings.Join(parts, "\n")
+		} else if held != nil {
+			text += " It starts when the step in progress finishes."
 		}
-		text += adv + "\n\nSequence rules: `ensign help sequence`."
+		if held != nil {
+			text += fmt.Sprintf("\n\nNow at step %s (%s).", held.ref(), heldSeq.position(held))
+			for _, n := range heldSeq.unreportedNotes(parts) {
+				text += "\n" + n
+			}
+		}
+		text += "\n\nSequence rules: `ensign help sequence`."
 		return err
 	})
 	return
@@ -1255,10 +1347,10 @@ func sequenceStop(bridge string, in *HookInput) any {
 	}
 	var out any
 	withSeq(bridge, in.SessionID, func(sf *seqFile) error {
-		adv, advErr := sf.advance(bridge, in.SessionID)
+		adv, advErr := sf.advanceParts(bridge, in.SessionID)
 		var advNote string
 		if advErr != nil {
-			advNote = "\n\nThe sequence could not advance: " + advErr.Error()
+			advNote = "The sequence could not advance: " + advErr.Error()
 		}
 		for _, seq := range sf.Sequences {
 			for _, st := range seq.Steps {
@@ -1303,16 +1395,13 @@ func sequenceStop(bridge string, in *HookInput) any {
 				}
 				*blocks++
 				// adv repeats this step's lead, wait or work text, which todo already carries.
-				tail := adv
-				for _, p := range []string{fmt.Sprintf("step %s: ", st.ref()), fmt.Sprintf("step %s can't start yet", st.ref())} {
-					if strings.HasPrefix(adv, p) || strings.Contains(adv, "\n"+p) {
-						tail = ""
-					}
-				}
-				if tail == "" {
-					tail = sf.listing(bridge)
-				}
-				out = block(fmt.Sprintf("sequence step %s is waiting for you.\n\n%s\n\n%s%s\n\nSequence rules: `ensign help sequence`.", st.ref(), todo, tail, advNote))
+				own := []string{fmt.Sprintf("step %s: ", st.ref()), fmt.Sprintf("step %s can't start yet", st.ref())}
+				kept := slices.DeleteFunc(slices.Clone(adv), func(p string) bool {
+					return slices.ContainsFunc(own, func(o string) bool { return strings.HasPrefix(p, o) })
+				})
+				msg := []string{fmt.Sprintf("sequence step %s is waiting for you (%s).", st.ref(), seq.position(st)), todo, strings.Join(kept, "\n"), strings.Join(seq.unreportedNotes(kept), "\n"), advNote, "Sequence rules: `ensign help sequence`."}
+				msg = slices.DeleteFunc(msg, func(b string) bool { return strings.TrimSpace(b) == "" })
+				out = block(strings.Join(msg, "\n\n"))
 				return nil
 			}
 		}

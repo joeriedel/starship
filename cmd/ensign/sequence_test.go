@@ -2472,3 +2472,255 @@ func TestSequenceKeepGoingDecideTextLeavesOutTheTasksOwnSteps(t *testing.T) {
 		}
 	}
 }
+
+func TestSequenceStopMessageCarriesOnlyTheStepAndItsPosition(t *testing.T) {
+	// The step the hook repeats through advance's text.
+	w := newWorld(t)
+	for _, what := range []string{"first supernova chore", "second supernova chore", "third supernova chore"} {
+		w.mustSeq("do", what)
+	}
+	w.approve()
+	w.mustSeq("done", "1.1")
+	reason := dig(w.stopHook(), "reason")
+	if !strings.Contains(reason, "second supernova chore") || strings.Count(reason, "step 2 of 3") != 1 || strings.Contains(reason, "sequence 1 (mode") {
+		t.Fatalf("the Stop message should carry step 2 of 3 and no listing:\n%s", reason)
+	}
+	if strings.Contains(reason, "\n\n\n") {
+		t.Errorf("the Stop message has a stray blank line:\n%q", reason)
+	}
+
+	// The step is started by the Stop hook's own advance, which repeats its text.
+	w2 := newWorld(t)
+	for _, what := range []string{"first supernova chore", "second supernova chore", "third supernova chore"} {
+		w2.mustSeq("do", what)
+	}
+	w2.approve()
+	err := withSeq(w2.bridge, w2.sid, func(sf *seqFile) error {
+		sf.Sequences[0].Steps[0].Status = "done"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason = dig(w2.stopHook(), "reason")
+	if n := strings.Count(reason, "second supernova chore"); n != 1 {
+		t.Errorf("the step text should appear once, got %d:\n%s", n, reason)
+	}
+	if strings.Count(reason, "step 2 of 3") != 1 || strings.Contains(reason, "sequence 1 (mode") || strings.Contains(reason, "\n\n\n") {
+		t.Fatalf("the Stop message should carry step 2 of 3, no listing, no stray blank line:\n%q", reason)
+	}
+}
+
+func TestSequenceGoMessageCarriesOnlyThePosition(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "first supernova chore")
+	w.mustSeq("do", "second supernova chore")
+	ctx := w.goContext()
+	if !strings.Contains(ctx, "first supernova chore") || strings.Count(ctx, "step 1 of 2") != 1 || strings.Contains(ctx, "sequence 1 (mode") {
+		t.Fatalf("go should start step 1 of 2 and not list the sequence:\n%s", ctx)
+	}
+
+	// The first sequence still holds its step, so approving the second only queues it.
+	w.mustSeq("do", "third supernova chore")
+	w.mustSeq("do", "fourth supernova chore")
+	ctx = w.goContext()
+	if !strings.Contains(ctx, "approved (2 steps)") || strings.Count(ctx, "step 1 of 2") != 1 || strings.Contains(ctx, "sequence 2 (mode") || strings.Contains(ctx, "\n\n\n") {
+		t.Fatalf("go should name the position of the queued sequence and not list it:\n%q", ctx)
+	}
+}
+
+func TestSequenceListingStaysWhereItIsKept(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "first supernova chore")
+	out := w.mustSeq("do", "second supernova chore")
+	if !strings.Contains(out, "type go to approve the sequence") {
+		t.Fatalf("adding should list the sequence:\n%s", out)
+	}
+	w.approve()
+	if out := w.mustSeq(); !strings.Contains(out, "sequence 1 (mode") {
+		t.Fatalf("the bare command should list the sequence:\n%s", out)
+	}
+	if out := w.mustSeq("done", "1.1"); !strings.Contains(out, "sequence 1 (mode") {
+		t.Fatalf("done should still list the sequence:\n%s", out)
+	}
+}
+
+func TestSequenceStopMessageNotesAFailedPublishFromTheDiscardedAdvance(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.mustSeq("do", "tell the supernova user")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	other := filepath.Join(t.TempDir(), "other")
+	runGit(t, ".", "clone", "-q", remote, other)
+	write(t, filepath.Join(other, "news.txt"), "meanwhile\n")
+	runGit(t, other, "add", "news.txt")
+	runGit(t, other, "commit", "-q", "-m", "meanwhile")
+	runGit(t, other, "push", "-q", "origin", "main")
+	w.runStage()
+	w.wantStatus("done", "failed", "active")
+	for i := 0; i < 2; i++ {
+		reason := dig(w.stopHook(), "reason")
+		if !strings.Contains(reason, "tell the supernova user") || strings.Count(reason, "step 3 of 3") != 1 || strings.Contains(reason, "sequence 1 (mode") || strings.Contains(reason, "\n\n\n") {
+			t.Fatalf("stop %d should carry the do step and its position, no listing:\n%q", i+1, reason)
+		}
+		if n := strings.Count(reason, "step 1.2 (publish "+task+") failed: "); n != 1 {
+			t.Fatalf("stop %d should note the failed publish once, got %d:\n%s", i+1, n, reason)
+		}
+	}
+}
+
+func TestSequenceStopThatAdvancesReportsAFailedPublishOnce(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.mustSeq("do", "last supernova chore")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	other := filepath.Join(t.TempDir(), "other")
+	runGit(t, ".", "clone", "-q", remote, other)
+	write(t, filepath.Join(other, "news.txt"), "meanwhile\n")
+	runGit(t, other, "add", "news.txt")
+	runGit(t, other, "commit", "-q", "-m", "meanwhile")
+	runGit(t, other, "push", "-q", "origin", "main")
+	w.runStage()
+	w.wantStatus("done", "failed", "active")
+	// Put the publish back so the Stop's own advance is what runs it and fails.
+	err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		steps := sf.Sequences[0].Steps
+		steps[1].Status, steps[1].Reason = "pending", ""
+		steps[2].Status = "pending"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := dig(w.stopHook(), "reason")
+	w.wantStatus("done", "failed", "active")
+	if n := strings.Count(reason, "step 1.2 (publish "+task+") failed: "); n != 1 {
+		t.Errorf("the failure should appear once, got %d:\n%s", n, reason)
+	}
+	if n := strings.Count(reason, "last supernova chore"); n != 1 {
+		t.Errorf("the do step should appear once, got %d:\n%s", n, reason)
+	}
+	if strings.Contains(reason, "\n\n\n") || strings.Contains(reason, "sequence 1 (mode") {
+		t.Errorf("stray blank line or listing:\n%q", reason)
+	}
+}
+
+func TestSequenceStopGivesASucceededPublishNoNote(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.mustSeq("do", "last supernova chore")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	if why, _ := w.runStage(); !strings.Contains(why, "Outcome: pass") {
+		t.Fatalf("the run should pass: %s", why)
+	}
+	w.wantStatus("done", "done", "active")
+	reason := dig(w.stopHook(), "reason")
+	if !strings.Contains(reason, "last supernova chore") {
+		t.Errorf("the stop should carry the do step:\n%s", reason)
+	}
+	if strings.Contains(reason, "(publish ") || strings.Contains(reason, "step 1.2") {
+		t.Errorf("a succeeded publish should get no note:\n%s", reason)
+	}
+}
+
+func TestSequenceApprovalNamesNoPositionWhileTheFirstStepWaitsOnAFolder(t *testing.T) {
+	w := groupWorld(t, "01-client")
+	w.mustSeq("run", "supernova/t")
+	ids := w.stepRuns(1)
+	run, err := openRun(w.bridge, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := run.Snap.Workspace
+	run.close()
+	var out bytes.Buffer
+	snap, err := createRun(w.bridge, runOpts{task: "supernova/t"}, true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.Workspace, snap.Sides = folder, nil
+	if err := writeJSON(filepath.Join(runsDir(w.bridge), snap.Run, "pipeline.json"), snap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := startRun(w.bridge, "other-session", snap.Task, snap.Run); err != nil {
+		t.Fatal(err)
+	}
+	ctx := w.goContext()
+	if !strings.Contains(ctx, "can't start yet") || strings.Contains(ctx, "Now at") {
+		t.Fatalf("go should say the step can't start yet and name no position:\n%s", ctx)
+	}
+}
+
+func TestSequenceStopNotesACancelledStepAndNotADoneOne(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "first supernova chore")
+	w.mustSeq("do", "second\nsupernova chore")
+	w.mustSeq("do", "third supernova chore")
+	w.approve()
+	err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		steps := sf.Sequences[0].Steps
+		steps[0].Status, steps[0].Reason = "done", "fine"
+		steps[1].Status, steps[1].Reason = "cancelled", "nothing left\nto do"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := dig(w.stopHook(), "reason")
+	if !strings.Contains(reason, "step 1.2 (do second) cancelled: nothing left\n") || strings.Contains(reason, "to do") || strings.Contains(reason, "step 1.1 (") {
+		t.Errorf("only the cancelled step should be noted, on one line:\n%s", reason)
+	}
+}
+
+func TestSequenceGoReportsARunThatCannotStart(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("do", "report on the supernova")
+	w.mustSeq("mode", "keep-going")
+	if !retireIf(w.bridge, w.step(1).Run, "gone", "pending") {
+		t.Fatal("the queued run should retire")
+	}
+	ctx := w.goContext()
+	if n := strings.Count(ctx, "step 1.1 (run supernova/auth-refactor) failed: "); n != 1 {
+		t.Errorf("the failure should be reported once, got %d:\n%s", n, ctx)
+	}
+	if strings.Count(ctx, "report on the supernova") != 1 || !strings.Contains(ctx, "Now at step 1.2 (step 2 of 2).") {
+		t.Errorf("go should dispatch the do step with its position:\n%s", ctx)
+	}
+}
+
+func TestSequenceGoNamesTheHeldStepOfTheOlderSequence(t *testing.T) {
+	w := newWorld(t)
+	for _, what := range []string{"first supernova chore", "second supernova chore", "third supernova chore"} {
+		w.mustSeq("do", what)
+	}
+	w.approve()
+	w.mustSeq("done", "1.1")
+	w.mustSeq("do", "later supernova chore")
+	ctx := w.goContext()
+	if !strings.Contains(ctx, "Now at step 1.2 (step 2 of 3).") || strings.Contains(ctx, "step 1 of 1") {
+		t.Errorf("go should name the held step of the first sequence:\n%s", ctx)
+	}
+
+	w2 := newWorld(t)
+	w2.mustSeq("run", "supernova/auth-refactor")
+	w2.mustSeq("mode", "keep-going")
+	retireIf(w2.bridge, w2.step(1).Run, "gone", "pending")
+	if ctx := w2.goContext(); strings.Contains(ctx, "Now at") || !strings.Contains(ctx, "failed: ") {
+		t.Errorf("go with no held step should print the failure and no position:\n%s", ctx)
+	}
+}

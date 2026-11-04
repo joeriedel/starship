@@ -231,8 +231,11 @@ func TestWaitingHoldsDoNotSpendTheLeadPromptsAllowance(t *testing.T) {
 	if res["decision"] != "block" || strings.Contains(reason, "waiting: ") || !strings.Contains(reason, ids[0]) {
 		t.Fatalf("the started step should hold the turn with its lead prompt: %v", res)
 	}
-	if n := strings.Count(reason, "sequence 1 (mode"); n != 1 {
-		t.Errorf("the listing should appear once, got %d: %s", n, reason)
+	if strings.Contains(reason, "sequence 1 (mode") {
+		t.Errorf("the listing should be absent: %s", reason)
+	}
+	if n := strings.Count(reason, "step 1 of 1"); n != 1 {
+		t.Errorf("the position line should appear once, got %d: %s", n, reason)
 	}
 	if n := strings.Count(reason, "[starship run="+ids[0]+" lead]"); n != 1 {
 		t.Errorf("the lead spawn tag should appear once, got %d: %s", n, reason)
