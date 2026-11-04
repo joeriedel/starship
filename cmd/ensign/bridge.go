@@ -99,11 +99,11 @@ func hookSettingsWith(preTimeout, stopTimeout int) string {
 	return hookSettingsConn(preTimeout, stopTimeout, false, nil)
 }
 
-// hookSettingsConn is the generated settings.json. A timeout of 0 leaves that hook without one, as older ensigns wrote it; SessionStart upgrades those forms. Declared connectors add the mcp__ and resource-tool matchers and allow the tools, sorted and without duplicates.
+// hookSettingsConn is the generated settings.json. A timeout of 0 leaves that hook without one, as older ensigns wrote it; SessionStart upgrades those forms. Declared connectors add the mcp__, resource-tool, Read and Grep matchers and allow the tools, sorted and without duplicates.
 func hookSettingsConn(preTimeout, stopTimeout int, declared bool, tools []string) string {
 	matcher, allow := "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback", `"Bash(ensign:*)"`
 	if declared {
-		matcher += "|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool"
+		matcher += "|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep"
 		sorted := slices.Compact(slices.Sorted(slices.Values(tools)))
 		for _, t := range sorted {
 			allow += fmt.Sprintf(", %q", t)

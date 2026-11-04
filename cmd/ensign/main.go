@@ -202,6 +202,12 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			}
 			return 0
 		}
+		if in.ToolName == "Read" || in.ToolName == "Grep" {
+			if d := readGuard(bridge, &in); d != nil {
+				json.NewEncoder(stdout).Encode(d)
+			}
+			return 0
+		}
 		if in.ToolName == "Agent" || in.ToolName == "Task" {
 			if why := mcpServersRefusal(bridge, &in); why != "" {
 				json.NewEncoder(stdout).Encode(denial(why))

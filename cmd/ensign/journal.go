@@ -23,16 +23,20 @@ func isGit(dir string) bool {
 	return err == nil
 }
 
-// journalChanges lists changed files under projects/, skills/ and notes/, leaving out
-// projects that turned journal commits off.
+// journalChanges lists changed files under projects/, skills/ and notes/, and under reader/ when bridge.yaml declares the reader, leaving out projects that turned journal commits off. Under notes/ and reader/ only Markdown files without a hidden segment count.
 func journalChanges(bridge string) ([]string, error) {
-	toks, err := gitZ(bridge, "status", "--porcelain", "-z", "--untracked-files=all", "--", "projects", "skills", "notes")
+	paths := []string{"projects", "skills", "notes"}
+	// An unreadable or invalid bridge.yaml leaves reader/ out, as if undeclared; the invalid declaration is reported where it is used.
+	if declared, err := readerDeclared(bridge); err == nil && declared {
+		paths = append(paths, "reader")
+	}
+	toks, err := gitZ(bridge, append([]string{"status", "--porcelain", "-z", "--untracked-files=all", "--"}, paths...)...)
 	if err != nil {
 		return nil, fmt.Errorf("git status: %v", err)
 	}
 	var out []string
 	add := func(path string, renamed bool) {
-		if !renamed && strings.HasPrefix(path, "notes/") && !isNoteFile(path) {
+		if !renamed && (strings.HasPrefix(path, "notes/") || strings.HasPrefix(path, "reader/")) && !isNoteFile(path) {
 			return
 		}
 		if p, ok := strings.CutPrefix(path, "projects/"); ok {
@@ -48,7 +52,7 @@ func journalChanges(bridge string) ([]string, error) {
 		if len(t) < 4 {
 			continue
 		}
-		// A rename lists both sides; both are committed so the old path is removed, and a note on either side keeps both.
+		// A rename lists both sides; both are committed so the old path is removed, and a Markdown file on either side keeps both.
 		if strings.ContainsAny(t[:2], "RC") && i+1 < len(toks) {
 			keep := isNoteFile(t[3:]) || isNoteFile(toks[i+1])
 			add(t[3:], keep)

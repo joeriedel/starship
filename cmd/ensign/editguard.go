@@ -24,6 +24,9 @@ func editGuard(bridge string, in *HookInput) (reason, warning string, err error)
 	if target == "" {
 		return "", "", nil
 	}
+	if why := snapshotGuard(bridge, in, target, runtime.GOOS); why != "" {
+		return why, "", nil
+	}
 	if in.AgentID != "" && in.AgentType == "reader" {
 		bf, err := loadBridgeFile(bridge)
 		var rules map[string][]string

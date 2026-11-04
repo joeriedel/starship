@@ -131,9 +131,10 @@ func mcpServersRefusal(bridge string, in *HookInput) string {
 }
 
 const (
-	// connectorMatcher is what a declaration adds to the PreToolUse matcher; connectorMatcherOld is what earlier ensigns added.
-	connectorMatcher    = `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool"`
-	connectorMatcherOld = `|mcp__.*"`
+	// connectorMatcher is what a declaration adds to the PreToolUse matcher; connectorMatcherPrev and connectorMatcherOld are what earlier ensigns added.
+	connectorMatcher     = `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep"`
+	connectorMatcherPrev = `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool"`
+	connectorMatcherOld  = `|mcp__.*"`
 )
 
 var (
@@ -143,10 +144,11 @@ var (
 
 // withoutConnectors is settings with the connector parts removed, to compare against the forms ensign has written.
 func withoutConnectors(settings string) string {
-	if strings.Contains(settings, connectorMatcher) {
-		settings = strings.Replace(settings, connectorMatcher, `"`, 1)
-	} else {
-		settings = strings.Replace(settings, connectorMatcherOld, `"`, 1)
+	for _, m := range []string{connectorMatcher, connectorMatcherPrev, connectorMatcherOld} {
+		if strings.Contains(settings, m) {
+			settings = strings.Replace(settings, m, `"`, 1)
+			break
+		}
 	}
 	return connectorAllowRe.ReplaceAllString(settings, "")
 }
@@ -154,7 +156,7 @@ func withoutConnectors(settings string) string {
 // ensignShaped reports whether the connector parts of settings have the shape ensign writes: none at all, or the matcher with any mcp__ tools sorted and without duplicates directly after Bash(ensign:*).
 func ensignShaped(settings string) bool {
 	tools := connectorToolStrRe.FindAllString(settings, -1)
-	if !strings.Contains(settings, connectorMatcher) && !strings.Contains(settings, connectorMatcherOld) {
+	if !strings.Contains(settings, connectorMatcher) && !strings.Contains(settings, connectorMatcherPrev) && !strings.Contains(settings, connectorMatcherOld) {
 		return len(tools) == 0
 	}
 	if !slices.IsSorted(tools) || len(slices.Compact(slices.Clone(tools))) != len(tools) {
@@ -165,7 +167,7 @@ func ensignShaped(settings string) bool {
 
 // connectorSignature is what a settings file carries for connectors.
 func connectorSignature(settings string) string {
-	return fmt.Sprint(strings.Contains(settings, connectorMatcher), strings.Contains(settings, connectorMatcherOld), connectorToolStrRe.FindAllString(settings, -1))
+	return fmt.Sprint(strings.Contains(settings, connectorMatcher), strings.Contains(settings, connectorMatcherPrev), strings.Contains(settings, connectorMatcherOld), connectorToolStrRe.FindAllString(settings, -1))
 }
 
 // agentsSignature is the connector-relevant state of a bridge's role definitions: which files there are and each one's frontmatter tools: value. Other edits to a role's prompt are not part of it.
@@ -184,8 +186,8 @@ func agentsSignature(bridge string) string {
 	return sig.String()
 }
 
-// missingConnectorSettings lists what a hand-edited settings.json lacks for the declaration to be enforced: the mcp__.*, ListMcpResourcesTool and ReadMcpResourceTool matcher entries on the ensign PreToolUse hook and each declared tool in allow.
-func missingConnectorSettings(data []byte, tools []string) ([]string, error) {
+// missingConnectorSettings lists what a hand-edited settings.json lacks for the declaration to be enforced: the mcp__.*, ListMcpResourcesTool, ReadMcpResourceTool, and, when the reader is declared, Read and Grep matcher entries on the ensign PreToolUse hook and each declared tool in allow.
+func missingConnectorSettings(data []byte, tools []string, reader bool) ([]string, error) {
 	var s struct {
 		Permissions struct {
 			Allow []string `json:"allow"`
@@ -203,7 +205,11 @@ func missingConnectorSettings(data []byte, tools []string) ([]string, error) {
 		return nil, err
 	}
 	var missing []string
-	for _, entry := range []string{"mcp__.*", listResourcesTool, readResourceTool} {
+	entries := []string{"mcp__.*", listResourcesTool, readResourceTool}
+	if reader {
+		entries = append(entries, "Read", "Grep")
+	}
+	for _, entry := range entries {
 		matched := false
 		for _, e := range s.Hooks.PreToolUse {
 			if !slices.Contains(strings.Split(e.Matcher, "|"), entry) {
@@ -232,6 +238,7 @@ func upgradeHookSettings(bridge string, bf *BridgeFile) error {
 		return err
 	}
 	declared, tools := rules != nil, connectorTools(rules)
+	_, readerRule := rules["reader"]
 	f := filepath.Join(bridge, ".claude", "settings.json")
 	data, rerr := os.ReadFile(f)
 	if rerr != nil {
@@ -258,12 +265,18 @@ func upgradeHookSettings(bridge string, bf *BridgeFile) error {
 		if !declared {
 			return nil
 		}
-		missing, err := missingConnectorSettings(data, tools)
+		missing, err := missingConnectorSettings(data, tools, readerRule)
 		if err != nil {
 			return fmt.Errorf("connector rules are declared but %s can't be read: %v", f, err)
 		}
 		if len(missing) > 0 {
-			return fmt.Errorf("connector rules are declared but %s was edited by hand and lacks %s; connector calls would not be checked", f, strings.Join(missing, ", "))
+			what := "connector calls would not be checked"
+			if !slices.ContainsFunc(missing, func(m string) bool {
+				return !strings.HasPrefix(m, `the "Read" `) && !strings.HasPrefix(m, `the "Grep" `)
+			}) {
+				what = "reads of reader/sources/ would not be checked"
+			}
+			return fmt.Errorf("connector rules are declared but %s was edited by hand and lacks %s; %s", f, strings.Join(missing, ", "), what)
 		}
 		return nil
 	}

@@ -67,6 +67,18 @@ func TestReaderRoleRules(t *testing.T) {
 		`(?i)understood without the source`,
 		`(?i)don't paste raw content`,
 		`(?i)write only under your own folder, .<bridge>/reader/.`,
+		`(?i)level 1, facts`,
+		`(?i)level 2, short exact quotes`,
+		`(?i)level 3, pinned snapshots`,
+		`(?i)<bridge>/reader/sources/. holds pinned snapshots`,
+		`(?i)as-of date`,
+		`(?i)moves to .history\.md., dated, with its replacement`,
+		`(?i)keep and report both`,
+		`(?i)no attachments: record that an attachment existed, by name, as a fact`,
+		`(?i)email: facts when you read it, plus quotes and snapshots`,
+		`(?i)wiki: the page, the version, the date read and a summary`,
+		`(?i)tickets: the link, the state changes and the decisions`,
+		`(?i)slack: facts and the message link, with short quotes`,
 	} {
 		if !regexp.MustCompile(re).MatchString(doc) {
 			t.Errorf("roles/reader.md does not match %q", re)

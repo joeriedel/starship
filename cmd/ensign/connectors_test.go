@@ -148,7 +148,7 @@ func TestConnectorSettingsGeneration(t *testing.T) {
 		t.Fatal("undeclared settings must be exactly hookSettings()")
 	}
 	s := hookSettingsFor(true, []string{"mcp__b__z", "mcp__a__y", "mcp__b__z"})
-	if !strings.Contains(s, `"matcher": "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool"`) {
+	if !strings.Contains(s, `"matcher": "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep"`) {
 		t.Fatalf("matcher missing:\n%s", s)
 	}
 	if !strings.Contains(s, `"allow": ["Bash(ensign:*)", "mcp__a__y", "mcp__b__z"]`) {
@@ -195,7 +195,7 @@ func TestConnectorSettingsUpgrade(t *testing.T) {
 	if err := upgradeHookSettings(b, rules("mcp__a__x")); err == nil || !strings.Contains(err.Error(), "mcp__.*") || !strings.Contains(err.Error(), "mcp__a__x") {
 		t.Fatalf("a hand-edited file without the matcher and tool should be reported: %v", err)
 	}
-	complete := strings.Replace(edited, "SubagentHandback", "SubagentHandback|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool", 1)
+	complete := strings.Replace(edited, "SubagentHandback", "SubagentHandback|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep", 1)
 	complete = strings.Replace(complete, `"Bash(make:*)"`, `"Bash(make:*)", "mcp__a__x"`, 1)
 	write(t, f, complete)
 	step("hand-edited, declared and complete", rules("mcp__a__x"), complete)
@@ -558,7 +558,7 @@ func TestResourceToolsValidationAndSettings(t *testing.T) {
 		}
 	}
 	s := hookSettingsFor(true, connectorTools(ok.Connectors))
-	if !strings.Contains(s, `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool"`) || !strings.Contains(s, `"allow": ["Bash(ensign:*)", "ListMcpResourcesTool", "ReadMcpResourceTool", "`+supernovaRead+`"]`) {
+	if !strings.Contains(s, `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep"`) || !strings.Contains(s, `"allow": ["Bash(ensign:*)", "ListMcpResourcesTool", "ReadMcpResourceTool", "`+supernovaRead+`"]`) {
 		t.Fatalf("matcher and allow list:\n%s", s)
 	}
 	if hookSettingsFor(false, []string{"ListMcpResourcesTool"}) != hookSettings() || strings.Contains(hookSettings(), "Mcp") {
@@ -574,7 +574,7 @@ func TestResourceToolsUpgradeFromOlderMatcher(t *testing.T) {
 	f := filepath.Join(b, ".claude", "settings.json")
 	bf := &BridgeFile{Connectors: map[string][]string{"reader": {supernovaRead}}}
 	want := hookSettingsFor(true, []string{supernovaRead})
-	older := strings.Replace(want, "|ListMcpResourcesTool|ReadMcpResourceTool", "", 1)
+	older := strings.Replace(want, "|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep", "", 1)
 	write(t, f, older)
 	if connectorSignature(older) == connectorSignature(want) {
 		t.Fatal("the older matcher must differ in signature, so the restart notice shows")
@@ -591,7 +591,7 @@ func TestResourceToolsUpgradeFromOlderMatcher(t *testing.T) {
 		t.Fatal("moving a tool between roles must not change the settings signature")
 	}
 
-	edited := strings.Replace(hookSettings(), "SubagentHandback", "SubagentHandback|mcp__.*|ReadMcpResourceTool", 1)
+	edited := strings.Replace(hookSettings(), "SubagentHandback", "SubagentHandback|mcp__.*|ReadMcpResourceTool|Read|Grep", 1)
 	edited = strings.Replace(edited, `"Bash(ensign:*)"`, `"Bash(ensign:*)", "`+supernovaRead+`"`, 1)
 	write(t, f, edited)
 	err := upgradeHookSettings(b, bf)
@@ -606,7 +606,7 @@ func TestResourceToolsSessionStartRestartNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := filepath.Join(w.bridge, ".claude", "settings.json")
-	older := strings.Replace(hookSettingsFor(true, []string{supernovaRead}), "|ListMcpResourcesTool|ReadMcpResourceTool", "", 1)
+	older := strings.Replace(hookSettingsFor(true, []string{supernovaRead}), "|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep", "", 1)
 	write(t, f, older)
 	res, _ := w.hook("SessionStart", map[string]any{"source": "startup"})
 	if show := dig(res, "systemMessage"); strings.Contains(show, "not ready") || !strings.Contains(show, "restart claude") {
@@ -758,5 +758,31 @@ func TestRoleDefinitionChangesNeedRestartNotice(t *testing.T) {
 	write(t, filepath.Join(w.bridge, "roles", "scout.md"), strings.Replace(scoutRole("scout", "tools: Read, Grep\n", "\n"), "Body.", "A different body.", 1))
 	if notice() {
 		t.Error("a prompt edit must not trigger the notice")
+	}
+}
+
+func TestReadGrepRequiredOnlyForReader(t *testing.T) {
+	// The Bash(make:*) entry makes this a form ensign never wrote, so upgradeHookSettings checks it rather than rewriting it.
+	edited := strings.Replace(hookSettings(), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)", "mcp__a__x"`, 1)
+	edited = strings.Replace(edited, "SubagentHandback", "SubagentHandback|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool", 1)
+
+	b := t.TempDir()
+	f := filepath.Join(b, ".claude", "settings.json")
+	write(t, f, edited)
+	analyst := &BridgeFile{Connectors: map[string][]string{"analyst": {"mcp__a__x"}}}
+	if err := upgradeHookSettings(b, analyst); err != nil {
+		t.Fatalf("Read and Grep are not needed without a reader: %v", err)
+	}
+	if got, err := os.ReadFile(f); err != nil || string(got) != edited {
+		t.Fatalf("a hand-edited file must be left alone: %v", err)
+	}
+
+	b = t.TempDir()
+	f = filepath.Join(b, ".claude", "settings.json")
+	write(t, f, edited)
+	reader := &BridgeFile{Connectors: map[string][]string{"reader": {"mcp__a__x"}}}
+	err := upgradeHookSettings(b, reader)
+	if err == nil || !strings.Contains(err.Error(), `"Read" matcher`) || !strings.Contains(err.Error(), `"Grep" matcher`) || !strings.Contains(err.Error(), "reads of reader/sources/ would not be checked") || strings.Contains(err.Error(), "connector calls would not") {
+		t.Fatalf("a reader declaration lacking Read and Grep should be reported for sources: %v", err)
 	}
 }
