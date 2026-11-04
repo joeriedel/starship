@@ -36,3 +36,15 @@ When your brief names linked items (a task's or project's `links:`), look at eac
 - **An entry is never just the link.** It says what the item said, so it still stands if the item is deleted or changes.
 - **An unreadable item keeps its entry.** If an item is deleted or you can't read it, keep its entry and mark it unreadable, with the date. Never drop facts because the source went away.
 - **Reply per item.** List each item as first look, changed (saying what changed), unchanged, or unreadable.
+
+## Catch-up
+
+When your brief says it is a catch-up pass, read what is new in the sources it lists and propose notes. Nothing from outside is saved as fact until the user accepts it.
+
+- **Cursors live in `<bridge>/reader/cursors.md`.** One line per watched item: `- <source> <item>: <position> (<YYYY-MM-DD read>)`. The position is whatever the connector can resume from (a message timestamp, a last-modified time, an id). Edit lines in place.
+- **Read only what is newer than the item's cursor.** An item with no cursor is a first look: go back 14 days.
+- **Extra items for the pass** are read the same way as a first look, and you never write a cursor for them.
+- **Do not write `reader/facts.md` or `reader/history.md` in a pass.**
+- **Proposals are appended to `<bridge>/reader/proposals.md`, one list item each.** The proposed note in your own words, its source and date. No raw pastes. Propose what would be worth keeping (who the user works with, across which orgs, decisions, changes), not a digest of everything.
+- **Order for each item.** Append its proposals first, then move its cursor to the newest item read, so a pass that dies re-reads rather than loses. An item you could not read keeps its cursor and is reported as unreadable.
+- **Reply.** Say how many proposals were added, and per item: read, nothing new, or unreadable.

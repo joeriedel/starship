@@ -92,5 +92,5 @@ Workspace commits, pushes and submits need the user's explicit approval **every 
 - `status` lists a held fact (one naming a nonexistent skill); before making its skill or discarding it: read `ensign help skill`.
 - When the user asks for several steps: read `ensign help sequence` first. A task with a `subtasks/` folder: read `ensign help subtasks`.
 - To improve starship itself: read `ensign help starship`.
-- When the user gives you a note, or session start says the notes inbox holds something: read `ensign help notes`.
+- A note from the user, a catch-up request, or items in the notes inbox: read `ensign help notes`.
 - Before cleaning up or asking about old runs, or when blocked by another session's run: read `ensign help runs`.

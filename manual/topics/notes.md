@@ -1,6 +1,6 @@
 # Notes
 
-The bridge keeps general context above any project in plain Markdown under `notes/`. Session start lists the files; read one when it bears on the request. Nothing here exists until used, and nothing reads external sources.
+The bridge keeps general context above any project in plain Markdown under `notes/`. Session start lists the files; read one when it bears on the request. Nothing here exists until used, and nothing reads external sources except a catch-up pass the user asks for (`ensign help catch-up`).
 
 ## Where things go
 
