@@ -196,6 +196,18 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 0
 		}
 	case "PreToolUse":
+		if strings.HasPrefix(in.ToolName, "mcp__") {
+			if d := connectorDecision(bridge, &in); d != nil {
+				json.NewEncoder(stdout).Encode(d)
+			}
+			return 0
+		}
+		if in.ToolName == "Agent" || in.ToolName == "Task" {
+			if why := mcpServersRefusal(bridge, &in); why != "" {
+				json.NewEncoder(stdout).Encode(denial(why))
+				return 0
+			}
+		}
 		if in.ToolName != "Agent" && in.ToolName != "Task" && in.ToolName != "SubagentHandback" {
 			if why := controlPlaneEdit(bridge, &in); why != "" {
 				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
@@ -382,6 +394,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			clearTopicMarkers(bridge, in.SessionID)
 		}
 	}
+	// A running claude keeps the settings it started with, so the file is read before the sync can change it.
+	settingsFile := filepath.Join(bridge, ".claude", "settings.json")
+	before, _ := os.ReadFile(settingsFile)
 	// Hand edits to notes/ are committed first: a dirty tracked file would stop the sync. A compaction happens mid-session, when the session's own filing may be half done.
 	synced := false
 	if in.Source != "compact" {
@@ -410,9 +425,22 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if note := splitHistory(bridge); note != "" {
 		fmt.Fprintln(&ctx, note)
 	}
-	upgradeHookSettings(bridge)
+	// The sync may have pulled a changed bridge.yaml, which the settings must follow.
+	if bf, err = loadBridgeFile(bridge); err != nil {
+		return reply("Starship is not ready in this bridge. Ask Claude to set it up.",
+			fmt.Sprintf("starship: this bridge is not ready: %v", err))
+	}
+	if err := upgradeHookSettings(bridge, bf); err != nil {
+		return reply("Starship is not ready in this bridge. Ask Claude to set it up.",
+			fmt.Sprintf("starship: this bridge is not ready: %v", err))
+	}
+	after, _ := os.ReadFile(settingsFile)
+	restart := connectorSignature(string(before)) != connectorSignature(string(after))
 	removeOldExe(bridge)
 	fmt.Fprintf(&ctx, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
+	if restart {
+		fmt.Fprintln(&ctx, "starship: the connector settings in .claude/settings.json changed; claude must be restarted for them to apply")
+	}
 	if carryErr != nil {
 		fmt.Fprintf(&ctx, "starship: could not carry the earlier session's runs over: %v\n", carryErr)
 	}
@@ -445,6 +473,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		}
 	}
 	show := "Starship ready · bridge " + filepath.Base(bridge)
+	if restart {
+		show += " · connector settings changed: restart claude for them to apply"
+	}
 	if version != "" && version != "dev" {
 		show += " · " + version
 	}
@@ -470,27 +501,6 @@ func beforeHandback(settings string) string {
 	j := strings.Index(settings[i:], "\n")
 	settings = settings[:i] + settings[i+j+1:]
 	return strings.Replace(settings, "|SubagentHandback", "", 1)
-}
-
-// upgradeHookSettings brings a bridge's settings.json up to date (a timeout on the
-// PreToolUse and SubagentStop hooks, the PostToolUse hook, SubagentHandback) when it is exactly what an
-// older ensign wrote, and commits that. A settings file someone has edited is left alone.
-func upgradeHookSettings(bridge string) {
-	f := filepath.Join(bridge, ".claude", "settings.json")
-	data, err := os.ReadFile(f)
-	if err != nil {
-		return
-	}
-	older := false
-	for _, form := range []string{hookSettingsWith(0, 0), hookSettingsWith(hookTimeout, 0)} {
-		older = older || string(data) == form || string(data) == beforeHandback(form)
-	}
-	if !older {
-		return
-	}
-	if os.WriteFile(f, []byte(hookSettings()), 0o644) == nil && isGit(bridge) {
-		git(bridge, "commit", "-q", "-m", "Update the starship hook settings", "--", ".claude/settings.json")
-	}
 }
 
 // addGitattributes gives an existing bridge the .gitattributes that init writes, so its text files are LF on every machine, and commits just that file; committed blobs are not rewritten. Tracked files with uncommitted changes defer it to the next session. A non-blocking lock on .starship/gitattributes.lock keeps concurrent sessions from racing; a session that cannot take it skips. A .gitattributes that an interrupted attempt left untracked or staged, not in HEAD and holding exactly the expected content, is committed in place; any other .gitattributes is left alone. On a failure it removes and unstages the file unless HEAD has it, so the next session retries.

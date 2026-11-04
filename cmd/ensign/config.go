@@ -370,6 +370,8 @@ type BridgeFile struct {
 	SessionEdit []string `yaml:"session-edit"`
 	// KeepRuns is how many finished runs the bridge keeps in all; unset means defaultKeepRuns.
 	KeepRuns *int `yaml:"keep-runs"`
+	// Connectors maps a role to the exact connector (MCP) tools it may call. Declaring any role turns enforcement on for the bridge.
+	Connectors map[string][]string `yaml:"connectors"`
 }
 
 func loadBridgeFile(bridge string) (*BridgeFile, error) {
@@ -513,6 +515,10 @@ func splitFrontmatter(path string) (front, body []byte, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	return splitFrontmatterData(path, data)
+}
+
+func splitFrontmatterData(path string, data []byte) (front, body []byte, err error) {
 	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	if !bytes.HasPrefix(data, []byte("---\n")) {
 		return nil, nil, fmt.Errorf("%s: no YAML frontmatter", path)

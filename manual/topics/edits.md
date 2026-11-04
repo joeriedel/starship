@@ -6,3 +6,7 @@ A hook refuses Edit, Write and NotebookEdit outside the caller's folders; keep s
 - Run coder, style reviewer: code folders, scratch, temp.
 - Run documentation stage: the `@docs` paths, scratch, temp.
 - Others: temp, scratch.
+
+## Connector tools
+
+Only when `bridge.yaml` declares `connectors:`: a connector (MCP) tool, `mcp__<server>__<tool>`, is refused for the session, and for a role unless `connectors:` lists that exact tool for it. A refusal names the tool and role; carry on without the call. A role whose definition sets `mcpServers` can't be dispatched. A declaration applies from the next session start.

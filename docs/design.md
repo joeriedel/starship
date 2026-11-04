@@ -533,6 +533,16 @@ New pipelines are files in a `pipelines/` directory — the control plane's, or 
 
 `bridge.yaml` alone also takes `keep-runs`, how many finished runs (status `success` or `error`) the bridge keeps in all; the default is 500, and 0 keeps none. Runs are stored per bridge, so there is no project or task setting. Runs that are pending, running or waiting for the user are never deleted. SessionStart deletes the oldest finished runs beyond the limit, at most 50 per start, drops session links whose runs are all gone, and says how many runs it cleaned up; `ensign gc [<keep>]` does the same on request, with no cap. The cleanup also removes the `<session-id>.task`, `.pin`, `.env`, `.sequence` and `.topic-*` files of sessions untouched for 30 days (the newest file of the session, link included, sets its age), unless the session has a run that has not finished or an open sequence, or its sequence lock is held. It also removes the session's `.lock`, `.sequence.lock` and `.tmp` files once the session is that idle and not busy, unless one of the locks is held. A run empties its `scratch/` folder when it finishes (success or error), and the cleanup empties the scratch folders of the finished runs it keeps; runs an open sequence step still needs are left alone.
 
+`bridge.yaml` alone also takes `connectors:`, per-role rules for connector (MCP) tools: a map of role name to a list of exact tool names, each `mcp__<server>__<tool>`.
+
+```yaml
+connectors:
+  reader:
+    - mcp__supernova_mail__read_message
+```
+
+A bridge that declares nothing behaves as if the key did not exist. Declaring at least one role (a role with an empty list included, which grants nothing) turns enforcement on (§7). A wildcard, a bare `mcp__<server>`, which would grant a whole server, and any entry for `coder` are errors. The declaration applies from the next session start, when SessionStart writes the matching `.claude/settings.json` (§11.3).
+
 ### 5.4 Parallel stages
 
 Review is the one stage that fans out. A stage with `parallel` dispatches one agent per
@@ -852,6 +862,12 @@ finished: success" — and the budgets used. The lead runs it at the start and a
 stage. In live runs a haiku orchestrator followed it reliably, including when its work
 item told it to skip stages.
 
+**PreToolUse (connector calls)**
+
+While `connectors:` is declared (§5.3), a call whose tool name starts with `mcp__` is decided from `bridge.yaml` alone, before the control-plane rule, the edit guard and any run lookup, and never touches a run. The session (a call with no `agent_id`, even when the session was started with an agent) is denied: connector reads go through a declared role. A subagent is allowed, with no output so the permission system still applies, only when its `agent_type` is a declared role listing exactly that tool name; the match is exact and case-sensitive. A bridge.yaml that cannot be read or declares invalidly denies every connector call. The hook does not read `mcp_server`, whose name can differ from the one in the tool name. Undeclared, the hook exits 0 with no output.
+
+A role whose frontmatter sets `mcpServers` bypasses its `tools:` line, so while rules are declared `link` refuses such a role from any source, and a dispatch of one (matched by its frontmatter `name` as well as its file name in `.claude/agents/`, run or no run, session or subagent caller) is denied. A definition that cannot be parsed is treated as refused.
+
 ### 7.1 Verified harness behaviour
 
 Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator → leaf):
@@ -879,6 +895,16 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | UserPromptSubmit `additionalContext` reaches the session | yes; the session dispatched the lead as instructed on `go` |
 | A full coding run, enforced only by hooks (sonnet session, haiku roles) | yes; four live scenarios, including a test failure that looped back and refused spawns |
 | Subagents load relevant Claude Code skills on demand (the mechanism delivery no longer uses; agents with a `tools:` list have no Skill tool) | yes; 10 of 10 subagent runs and 6 of 6 session runs loaded the matching skill and followed it (favourable conditions; see §4.4) |
+
+Connector calls, probed on Claude Code 2.1.318:
+
+| Behaviour | Result |
+|---|---|
+| PreToolUse fires for connector calls | yes, with `tool_name` `mcp__<server>__<tool>` and `mcp_server {name, source}`; the matcher must cover `mcp__.*`. `mcp_server.name` can differ from the name in the tool (`claude.ai Google Drive` against `mcp__claude_ai_Google_Drive__…`), so only `tool_name` is matched |
+| Who is the caller | the session's call has no `agent_id` or `agent_type`; a subagent's carries its own, and a nested agent reports its own role with no parent field |
+| A hook deny | keeps the call from the server for both; the caller gets `is_error` and carries on |
+| Frontmatter `mcpServers: [<server>]` in a role definition | bypasses `tools:` |
+| A connector call outside auto mode | refused unless the tool is allowed, so declared tools are in `permissions.allow` |
 
 SubagentStop identifies the role but not the stage, which is why dispatches are tagged.
 Harness behaviour changes between builds, so the probe belongs in this repo as a
@@ -1258,6 +1284,8 @@ different releases never share a binary. The SessionStart hook puts `.starship/b
 the PATH of the session's own shell (through `CLAUDE_ENV_FILE`), so the session runs
 plain `ensign …`. A bridge that follows a local control plane (development) gets a copy
 of the `ensign` that ran `link`. Outside a bridge, hook events are no-ops.
+
+**Connector settings.** `init` writes `settings.json` without connector parts. While `connectors:` is declared, the PreToolUse matcher gains `|mcp__.*` and `permissions.allow` lists the declared tools, sorted and without duplicates, after `Bash(ensign:*)`. SessionStart keeps the file in step: a file that equals a form ensign wrote once the connector parts are removed, and whose connector parts have the shape ensign writes (none, or the matcher with any `mcp__` tools sorted and deduplicated directly after `Bash(ensign:*)`), is rewritten and committed when a declaration is added, changed or removed (removing returns exactly the base form), and the session is told claude must be restarted for the change to apply; a change that arrived by the sync gets the same note, because SessionStart compares the connector parts of the file before the sync with those after. Line endings are compared as LF, so a CRLF copy is rewritten the same way, except that an undeclared CRLF file with no connector parts is left alone. A hand-edited file, including one with `mcp__` allow entries but no matcher, is left alone; but if rules are declared and it lacks the matcher on the ensign PreToolUse hook or a declared tool in `allow`, connector calls would go unchecked, so SessionStart reports starship as not ready and names what is missing. An invalid declaration is not ready either.
 
 ### 11.4 Portability rules
 

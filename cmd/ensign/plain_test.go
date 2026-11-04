@@ -166,13 +166,13 @@ func TestHookSettingsUpgrade(t *testing.T) {
 		"PreToolUse timeout, before SubagentHandback": beforeHandback(hookSettingsWith(hookTimeout, 0)),
 	} {
 		write(t, f, old)
-		upgradeHookSettings(b)
+		_ = upgradeHookSettings(b, &BridgeFile{})
 		if data, _ := os.ReadFile(f); string(data) != hookSettings() {
 			t.Fatalf("settings with %s should be upgraded", name)
 		}
 	}
 	write(t, f, strings.Replace(hookSettingsWith(0, 0), "ensign:*", "ensign:*\", \"Bash(make:*)", 1))
-	upgradeHookSettings(b)
+	_ = upgradeHookSettings(b, &BridgeFile{})
 	if data, _ := os.ReadFile(f); strings.Contains(string(data), "timeout") {
 		t.Fatal("an edited settings file must be left alone")
 	}

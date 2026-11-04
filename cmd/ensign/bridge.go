@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -89,8 +90,25 @@ machine.yaml
 
 func hookSettings() string { return hookSettingsWith(hookTimeout, hookTimeout) }
 
-// hookSettingsWith is the generated settings.json. A timeout of 0 leaves that hook without one, as older ensigns wrote it; SessionStart upgrades those forms.
+// hookSettingsFor is the settings.json for a bridge's connector declaration. Declared is separate from the tools because a role with no tools still turns the matcher on.
+func hookSettingsFor(declared bool, tools []string) string {
+	return hookSettingsConn(hookTimeout, hookTimeout, declared, tools)
+}
+
 func hookSettingsWith(preTimeout, stopTimeout int) string {
+	return hookSettingsConn(preTimeout, stopTimeout, false, nil)
+}
+
+// hookSettingsConn is the generated settings.json. A timeout of 0 leaves that hook without one, as older ensigns wrote it; SessionStart upgrades those forms. Declared connectors add the mcp__ matcher and allow the tools, sorted and without duplicates.
+func hookSettingsConn(preTimeout, stopTimeout int, declared bool, tools []string) string {
+	matcher, allow := "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback", `"Bash(ensign:*)"`
+	if declared {
+		matcher += "|mcp__.*"
+		sorted := slices.Compact(slices.Sorted(slices.Values(tools)))
+		for _, t := range sorted {
+			allow += fmt.Sprintf(", %q", t)
+		}
+	}
 	hook := func(ev string, timeout int) string {
 		if timeout > 0 {
 			return fmt.Sprintf(`{"type": "command", "command": %q, "timeout": %d}`, bridgeEnsign+" hook "+ev, timeout)
@@ -103,12 +121,12 @@ func hookSettingsWith(preTimeout, stopTimeout int) string {
 	}
 	return `{
   "permissions": {
-    "allow": ["Bash(ensign:*)"]
+    "allow": [` + allow + `]
   },
   "hooks": {
     "SessionStart":     ` + cmd("SessionStart") + `,
     "UserPromptSubmit": ` + cmd("UserPromptSubmit") + `,
-    "PreToolUse":       [{"matcher": "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback", "hooks": [` + pre + `]}],
+    "PreToolUse":       [{"matcher": "` + matcher + `", "hooks": [` + pre + `]}],
     "PostToolUse":      [{"matcher": "Agent|Task|Bash", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", bridgeEnsign+" hook PostToolUse") + `}]}],
     "SubagentStop":     [{"hooks": [` + hook("SubagentStop", stopTimeout) + `]}],
     "Stop":             ` + cmd("Stop") + `
@@ -295,14 +313,20 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 		files[".starship/topics/"+filepath.Base(f)] = data
 	}
 
+	rules, err := bf.connectorRules()
+	if err != nil {
+		return nil, err
+	}
 	roles := map[string][]byte{}
+	sources := map[string]string{}
 	cpRoles, _ := filepath.Glob(filepath.Join(cp, "roles", "*.md"))
 	for _, f := range cpRoles {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			return nil, err
 		}
-		roles[strings.TrimSuffix(filepath.Base(f), ".md")] = data
+		name := strings.TrimSuffix(filepath.Base(f), ".md")
+		roles[name], sources[name] = data, f
 	}
 	var bridgeRoles []string
 	for _, d := range append([]string{filepath.Join(bridge, "roles")}, extensionRoleDirs(bridge, cp)...) {
@@ -321,7 +345,16 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 				return nil, fmt.Errorf("%s: a role named %q already exists; declare `replaces: %s` to replace it", f, name, name)
 			}
 		}
-		roles[name] = data
+		roles[name], sources[name] = data, f
+	}
+	if len(rules) > 0 {
+		for _, name := range sortedKeys(roles) {
+			if has, _, err := frontmatterMcpServers(sources[name], roles[name]); err != nil {
+				return nil, fmt.Errorf("%s: connector rules are declared, so a role's frontmatter must parse: %v", sources[name], err)
+			} else if has {
+				return nil, fmt.Errorf("%s: role %q sets mcpServers, which bypasses the connector rules in bridge.yaml; remove it", sources[name], name)
+			}
+		}
 	}
 	for name, data := range roles {
 		if o, ok := bf.Roles[name]; ok && o.Model != "" {
