@@ -187,6 +187,8 @@ type RunFiles struct {
 	State *State
 	lock  *flock.Flock
 	warn  error // The session's setup file could not be written; the run is bound and the hook proceeds.
+	// The open rebounded the run, so it has state to save.
+	rebound bool
 }
 
 // openRun locks and loads one run. A run whose folder is gone gives an error matching fs.ErrNotExist.
@@ -437,6 +439,7 @@ func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 	r.State.log("rebound", "", "", fmt.Sprintf("session %s -> %s, found through agent %s", r.State.Session, in.SessionID, in.AgentID))
 	r.State.Session = in.SessionID
 	r.warn = bindErr
+	r.rebound = true
 	return r, nil
 }
 

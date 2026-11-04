@@ -452,6 +452,76 @@ func TestEditGuardSavesTheRebind(t *testing.T) {
 	}
 }
 
+func TestEditGuardWritesNothingWithoutARebind(t *testing.T) {
+	for _, refused := range []bool{false, true} {
+		w, lead, run, allowed := agentOnNewSession(t)
+		if res := editHook(w, lead, filepath.Join(allowed, "x.txt")); res != nil {
+			t.Fatalf("first edit: %v", res)
+		}
+		statePath := filepath.Join(runsDir(w.bridge), run, "state.json")
+		before, err := os.Stat(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeBytes, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(allowed, "y.txt")
+		if refused {
+			target = filepath.Join(t.TempDir(), "y.txt")
+		}
+		res := editHook(w, lead, target)
+		if got := dig(res, "hookSpecificOutput", "permissionDecision") == "deny"; got != refused {
+			t.Fatalf("refused %v: %v", refused, res)
+		}
+		after, err := os.Stat(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		afterBytes, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !os.SameFile(before, after) || !bytes.Equal(beforeBytes, afterBytes) {
+			t.Errorf("refused %v: the edit rewrote state.json", refused)
+		}
+	}
+}
+
+func TestEditGuardWarnsWhenTheRebindSaveFails(t *testing.T) {
+	for _, refused := range []bool{false, true} {
+		w, lead, run, allowed := agentOnNewSession(t)
+		if err := os.Mkdir(filepath.Join(runsDir(w.bridge), run, "state.json.tmp"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(allowed, "x.txt")
+		if refused {
+			target = filepath.Join(t.TempDir(), "x.txt")
+		}
+		res := editHook(w, lead, target)
+		if msg := dig(res, "systemMessage"); !strings.HasPrefix(msg, "starship: ") || !strings.Contains(msg, "could not be saved") {
+			t.Fatalf("refused %v: the reply should carry the warning: %v", refused, res)
+		}
+		if got := dig(res, "hookSpecificOutput", "permissionDecision") == "deny"; got != refused {
+			t.Errorf("refused %v: %v", refused, res)
+		}
+	}
+}
+
+func TestEditGuardCarriesBothWarnings(t *testing.T) {
+	w, lead, run, allowed := agentOnNewSession(t)
+	path := blockSetupFile(t, w.bridge, "s2")
+	if err := os.Mkdir(filepath.Join(runsDir(w.bridge), run, "state.json.tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := editHook(w, lead, filepath.Join(allowed, "x.txt"))
+	msg := dig(res, "systemMessage")
+	if !strings.Contains(msg, path) || !strings.Contains(msg, "could not be saved") {
+		t.Fatalf("the reply should carry both warnings: %v", res)
+	}
+}
+
 func TestEditGuardWarnsWhenTheSetupFileFails(t *testing.T) {
 	w, lead, run, allowed := agentOnNewSession(t)
 	path := blockSetupFile(t, w.bridge, "s2")

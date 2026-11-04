@@ -758,6 +758,8 @@ behind a holder; the rest, `help <topic>` included, take no lock.
 
 After the control-plane rule, the edit guard resolves the target path (relative paths against the call's `cwd`, symlinks followed, case folded on Windows and macOS) and allows it only inside the caller's folders (§2.1). The session's list does not depend on the run, so it opens none. An agent's run is found as for the other hooks; a lookup error stops the call like any other hook error. A denial names the folders and says shell writes are held to the same limit.
 
+The guard saves the run only when it rebinds it, and a failed save warns rather than stopping the edit.
+
 **PreToolUse (Agent tool)**
 
 1. Identify the caller: `agent_id` maps to a dispatched stage; no `agent_id` is the

@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// editGuard refuses an Edit, Write or NotebookEdit outside the folders the calling agent may edit. It returns the reason, or "" to allow, and the warning from binding the run, if any. The error means the run could not be looked up or saved.
+// editGuard refuses an Edit, Write or NotebookEdit outside the folders the calling agent may edit. It returns the reason, or "" to allow, and the warning from binding the run, if any. The error means the run could not be looked up; a failed save of the rebind is a warning.
 func editGuard(bridge string, in *HookInput) (reason, warning string, err error) {
 	if in.ToolName != "Edit" && in.ToolName != "Write" && in.ToolName != "NotebookEdit" {
 		return "", "", nil
@@ -39,8 +39,15 @@ func editGuard(bridge string, in *HookInput) (reason, warning string, err error)
 			if r.warn != nil {
 				warning = r.warn.Error()
 			}
-			if err := r.save(); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return "", "", err
+			if r.rebound {
+				if err := r.save(); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					msg := "the run's rebind to this session could not be saved: " + err.Error()
+					if warning != "" {
+						warning += "; " + msg
+					} else {
+						warning = msg
+					}
+				}
 			}
 			if d := callerDispatch(r, in); d != nil {
 				scratch := filepath.Join(r.Dir, "scratch")
