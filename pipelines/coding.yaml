@@ -3,7 +3,7 @@
 
 pipeline: coding
 version: 1
-summary: Implement a scoped change through code, review, style and test, looping until it builds and passes.
+summary: Implement a scoped change through code, review, style, test and documentation, looping until it builds and passes.
 requires-bindings: [build, test]
 budgets: { coder-loop: 3, test: 3 }
 free-roles: [explorer]
@@ -12,6 +12,9 @@ help:
   - say: "\"pull the other machine's changes and make sure they build and pass\""
     does: sync the workspace, test it, and fix anything that fails
     run: ensign run <project>/<task> --sync --start test
+  - say: "\"update the docs for this task's work\""
+    does: runs the documentation pass by itself and tests nothing, so the task needs --start test before it is published
+    run: ensign run <project>/<task> --start docs
 
 stages:
   - id: run

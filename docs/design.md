@@ -135,7 +135,7 @@ release (a tag), then each bridge updates
   fast-forward, and removes the task branch; if the default branch moved meanwhile it
   refuses and nothing is pushed. Either one refuses unless the task branch still holds
   exactly the commit that passed, with nothing uncommitted on it, and a new run of the
-  task has to pass again first. A started run also removes the marker at once, before `@sync` and run.start, so a run that dies early leaves none; and both refuse when a run of the task in that location failed after its last pass, or none passed (a run cancelled, dropped, discarded, skipped, withdrawn or replaced before it started is ignored; end times are compared to the second, then by run id), which covers a marker that survives a run that failed before starting.
+  task has to pass again first. The marker is recorded only by a run whose test stage passed; a `--start docs` run commits its docs pass but records none. A started run also removes the marker at once, before `@sync` and run.start, so a run that dies early leaves none; and both refuse when a run of the task in that location failed after its last pass, or none passed (a run cancelled, dropped, discarded, skipped, withdrawn or replaced before it started is ignored; end times are compared to the second, then by run id), which covers a marker that survives a run that failed before starting.
 - **What keeps project knowledge out is structural.** The bridge holds everything about
   its projects and starship never reads a bridge, so nothing crosses on its own. What
   remains is an agent with project context writing a detail into a role or doc. The
@@ -158,7 +158,7 @@ Three kinds, kept separate:
 | Kind | Answers | Example |
 |---|---|---|
 | **binding** | what does X mean here? | `@build` → `go build ./...` |
-| **pipeline** | what runs, in what order? | code ⇄ review → style → test |
+| **pipeline** | what runs, in what order? | code ⇄ review → style → test → docs |
 | **event** | what else happens when Y occurs? | after `test`, post a summary |
 
 Every layer may supply all three.
@@ -201,6 +201,7 @@ Conventional names, reused before new ones are invented:
 | `@diff` | the current change set |
 | `@style` | style rules beyond the linter, written by people |
 | `@done` | this project's definition of finished |
+| `@docs` | the workspace-relative files or folders the documentation stage may change; paths or not-applicable only, and with none declared the stage is skipped |
 | `@release` | release the project; receives the version in `VERSION` and runs in the project's workspace, with no time limit |
 
 ### 4.2 Events
@@ -438,9 +439,17 @@ stages:
       - id: test
         role: tester
         outcomes:
-          pass:  { finish: success }
+          pass:  next
           fail:  { goto: code, spend: test, reset: coder-loop }
           error: { error: test-error }
+      - id: docs
+        role: documentation
+        report-fields: [files]
+        outcomes:
+          updated:   { finish: success }
+          unchanged: { finish: success }
+          blocked:   { error: blocked }
+        skip: { unless-binding: docs, outcome: unchanged }
 
 on-exhausted:                         # run-wide, beside budgets
   coder-loop: { error: "budget:coder-loop" }
@@ -470,11 +479,12 @@ ensign run <task> --sync --start test
 
 - `--sync` runs `@sync` as a `require` handler at `run.start`, before anything else, so
   a `git-catalog` base is recorded after the pull.
-- `--start <stage>` begins at that stage; budgets start full.
+- `--start <stage>` begins at that stage; budgets start full. It is refused for a stage that would be skipped, such as `docs` when no `@docs` is declared or `documentation: off` is set.
 
 This covers "commits came in from another machine — pull them and make sure they compile
 and pass": the coding pipeline started at `test`. `pass` ends the run as `success`;
 `fail`, including a failed compile, goes back to `code` and the normal loop fixes it.
+`ensign run <task> --start docs` runs the documentation stage by itself and tests nothing, so a github-pr task needs `--start test` before it is published.
 
 ### 5.3 Extending a pipeline
 
@@ -504,6 +514,8 @@ use: [git-catalog]
 bindings:
   build: { command: "./build.sh --fast" }
   test:  { not-applicable: "proto-only repo, no suite" }
+
+documentation: off                   # project or task; the documentation stage is on unless a layer says off, and a later layer wins
 
 rules:
   - Never touch the vault.
@@ -699,9 +711,9 @@ affect that run.
 
 #### Sequences
 
-A sequence is an ordered list of steps in one session that the user approves with a single `go`; the session then works through it unattended. A step is a `run` (a run created queued: it belongs to the session but is not bound to it, replaces no waiting run, and does not count as a live run), a `publish` (the publish operation an extension declares, `ensign github-pr merge` for github-pr, carried out in process), a `do` (an instruction the session carries out and reports with `ensign sequence done`) or a `release` (`ensign sequence release <project> <version>`: the project's `@release` binding (resolved through the usual layers), run with `VERSION` set; the project must have one, and the version is fixed when the step is added). Steps are kept in `sessions/<session-id>.sequence`, changed under its lock. A step added after `go` goes into a new sequence that needs its own `go`.
+A sequence is an ordered list of steps in one session that the user approves with a single `go`; the session then works through it unattended. A step is a `run` (a run created queued: it belongs to the session but is not bound to it, replaces no waiting run, and does not count as a live run), a `publish` (the publish operation an extension declares, `ensign github-pr merge` for github-pr, carried out in process), a `do` (an instruction the session carries out and reports with `ensign sequence done`) or a `release` (`ensign sequence release <project> <version>`: the project's `@release` binding (resolved through the usual layers), run with `VERSION` set; the project must have one, and the version is fixed when the step is added). A release step takes `--location <name>`: its `@release` is the project's overridden by that location's and it runs in that location's folder; without the flag the project's only location is used, with several the step is refused, a project with no locations refuses the flag, and the name is validated when the step is added. Steps are kept in `sessions/<session-id>.sequence`, changed under its lock. A step added after `go` goes into a new sequence that needs its own `go`.
 
-After `go`, and each time a run ends, `ensign sequence done|fail` is called or a paused run resumes, the next pending step starts: a run is bound, approved and handed to the session like a plain `go`; a publish is carried out at once. Only one step is under way at a time, and the Stop hook holds the turn open (three times per step) while a run's lead has not been dispatched or a `do` or `release` step is active. A `do` step does not hold it while the session has a background task in flight (the Stop input's `background_tasks` is not empty). A release is never run inside a hook: when it is next the step goes active and the Stop hook tells the session to start `ensign sequence release-run <seq>.<step>` as a background command; the step is marked started, so the hook stops holding the turn, and the command's completion wakes the session. A release that fails is a plain failure (`stop` halts; `keep-going` also skips the later steps of that project and its tasks), and release steps cannot be retried. On a failure the default mode `stop` halts the sequence and cancels the rest; `keep-going` skips the later steps of the same task and carries on with the others. When a run step's run fails, the step waits (status `decide`) and the Stop hook holds the turn once per failed attempt, since the session has then been told, and again in the continuing session if the sequence moves to it: every failed attempt waits, with no cap on retries, and the session takes it to the user, never retrying on its own, offering exactly retry, skip and halt in that order. Retry is `ensign sequence retry <seq>.<step> --diagnosis <why> --state <what is left>`; halt is `ensign sequence accept <seq>.<step>` in stop mode, which applies the failure rules above (in keep-going, `accept` is skip and `ensign sequence halt` is halt); skip is `ensign sequence skip <seq>.<step>` (stop mode only, refused once the sequence is halted or for a step that is not waiting): the step ends as failed with its reason prefixed `skipped by the user`, the pending publish steps of its task are cancelled, the sequence is not halted and the next step starts. Skip lists the later release steps, `do` steps naming the task and run steps of the same task as possibly affected, in its own sequence and in every later sequence that is not closed or halted (approved or not), where it also lists the task's pending publish steps, since skip cancels only its own sequence's. Run steps of other tasks aren't flagged because each starts from master; the offer and the skip output (keep-going's `accept` prints it too) instead read the folders of the failed runs and name their branch and changed paths (or that they are clean), since a later run in a folder with uncommitted changes won't start until they are committed or stashed. A publish step that comes after a skipped run step of its task, in any sequence, is cancelled when reached unless a later run of that task in that location passed after the skip (a plain `ensign run` counts; a skip recorded before the step stored its time always stands); this is checked in the sequence because a stale `.tested` marker can still match the branch head (the merge also refuses when a run of the task in that location failed after its last pass). A sequence that closes with skipped steps says so. A later group of a subtask step does not run after a skip, as after an accept. A retry queues a new run of the same task with the task's current Goal and Scope, the first run's project rules and a `## Current state` section, on the same task branch with its uncommitted changes kept, and starts it through the sequence's approval; a step can be retried any number of times, each attempt waiting for the user, and only run steps can be retried. `ensign sequence halt` cancels what has not started and any step waiting for a decision. A plain `ensign run` is refused while a sequence has unfinished steps; a plain run waiting for `go` when the first step is added becomes the first step.
+After `go`, and each time a run ends, `ensign sequence done|fail` is called or a paused run resumes, the next pending step starts: a run is bound, approved and handed to the session like a plain `go`; a publish is carried out at once. Only one step is under way at a time, and the Stop hook holds the turn open (three times per step) while a run's lead has not been dispatched or a `do` or `release` step is active. A `do` step does not hold it while the session has a background task in flight (the Stop input's `background_tasks` is not empty). A release is never run inside a hook: when it is next the step goes active and the Stop hook tells the session to start `ensign sequence release-run <seq>.<step>` as a background command; the step is marked started, so the hook stops holding the turn, and the command's completion wakes the session. A release that fails is a plain failure (`stop` halts; `keep-going` also skips the later steps of that project and its tasks), and release steps cannot be retried. On a failure the default mode `stop` halts the sequence and cancels the rest; `keep-going` skips the later steps of the same task and carries on with the others. When a run step's run fails, the step waits (status `decide`) and the Stop hook holds the turn once per failed attempt, since the session has then been told, and again in the continuing session if the sequence moves to it: every failed attempt waits, with no cap on retries, and the session takes it to the user, never retrying on its own, offering exactly retry, skip and halt in that order. The message to the user is a full brief every time (`decideBriefText`): what failed and why in plain words, the state of the work, what each of retry, skip and halt would do, and every decision a retry needs with each option spelled out and a recommendation, never referring to an option by letter or to an earlier message. This applies to run steps; a failed release is a plain failure and can't be retried. Retry is `ensign sequence retry <seq>.<step> --diagnosis <why> --state <what is left>`; halt is `ensign sequence accept <seq>.<step>` in stop mode, which applies the failure rules above (in keep-going, `accept` is skip and `ensign sequence halt` is halt); skip is `ensign sequence skip <seq>.<step>` (stop mode only, refused once the sequence is halted or for a step that is not waiting): the step ends as failed with its reason prefixed `skipped by the user`, the pending publish steps of its task are cancelled, the sequence is not halted and the next step starts. Skip lists the later release steps, `do` steps naming the task and run steps of the same task as possibly affected, in its own sequence and in every later sequence that is not closed or halted (approved or not), where it also lists the task's pending publish steps, since skip cancels only its own sequence's. Run steps of other tasks aren't flagged because each starts from master; the offer and the skip output (keep-going's `accept` prints it too) instead read the folders of the failed runs and name their branch and changed paths (or that they are clean), since a later run in a folder with uncommitted changes won't start until they are committed or stashed. A publish step that comes after a skipped run step of its task, in any sequence, is cancelled when reached unless a later run of that task in that location passed after the skip (a plain `ensign run` counts; a skip recorded before the step stored its time always stands); this is checked in the sequence because a stale `.tested` marker can still match the branch head (the merge also refuses when a run of the task in that location failed after its last pass). A sequence that closes with skipped steps says so. A later group of a subtask step does not run after a skip, as after an accept. A retry queues a new run of the same task with the task's current Goal and Scope, the first run's project rules and a `## Current state` section, on the same task branch with its uncommitted changes kept, and starts it through the sequence's approval; a step can be retried any number of times, each attempt waiting for the user, and only run steps can be retried. `ensign sequence halt` cancels what has not started and any step waiting for a decision. A plain `ensign run` is refused while a sequence has unfinished steps; a plain run waiting for `go` when the first step is added becomes the first step.
 
 A sequence has a number and may have a name, set with `--name` on the step that starts it and shown beside the number; the number stays its identity. Steps are numbered from 1 within their sequence and named `<seq>.<step>` outside that sequence's own listing; a command takes a plain `<step>` only while one sequence is open (not finished, and either approved or waiting for `go`). A sequence file written when steps were numbered across the session is renumbered on read.
 
@@ -855,7 +867,7 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | SessionStart stdout reaches the model whole, and only the session | yes; the model repeated ten markers spread through 9 KB and 60 KB blocks, and no subagent transcript contained any of it |
 | The project `CLAUDE.md`, with its imports, reaches subagents | yes; every agent in a live run carried the session manual while it was imported there |
 | `SubagentHandback` reaches PreToolUse with the report as `tool_input.message`; the later SubagentStop's `last_assistant_message` is only closing text | yes (2.1.314) |
-| SubagentStop's `background_tasks` lists in-flight tasks (`id`, `type`, `status`, `command`, `agent_type`), scoped to the parent session with no owner | yes (2.1.314); a background Bash id comes from PostToolUse `tool_response.backgroundTaskId`, a background agent's from `tool_response.agentId` |
+| SubagentStop's `background_tasks` lists in-flight tasks (`id`, `type`, `status`, `command`, `agent_type`; the hooks docs also list `description`, `server`/`tool` (only on `monitor` and MCP tasks) and `name` (only on `workflow` tasks), and ensign reads only the five in `BackgroundTask`), scoped to the parent session with no owner | yes (2.1.314); a background Bash id comes from PostToolUse `tool_response.backgroundTaskId`, a background agent's from `tool_response.agentId` |
 | Stop carries `background_tasks` too, one entry per in-flight task (same fields); empty when none | yes (2.1.317), for one observation only: a background Bash id from PostToolUse `tool_response.backgroundTaskId` is listed in a Stop that fires while the command runs. The field set and "empty when none" are documented, not probed |
 | A missing hook command blocks anything | no; non-blocking error, tool calls proceed |
 | PreToolUse `allow` lifts a permission `ask` rule | no (tested headless); the ask still applies |
@@ -1000,6 +1012,7 @@ contradicts `@style`.
 | `style-generator` | reads one source; proposes the rules it supports, with evidence | that source |
 | `curator` (§4.5) | the only writer of the guide | the guide, this run's proposals, sources' trust, `@style` |
 | `coder` | — | the guide's active entries |
+| `documentation` | checks the project's `@docs` paths against what the run changed and updates them; changes only those paths | the task's record and the changed files |
 
 ### 9.3 Learning from the style pass
 
@@ -1334,7 +1347,7 @@ So there are two defences:
   spawn, no workspace change, no commit. This is a model-level rule, not a guarantee; it
   turns a silent failure into a visible one.
 
-  The rule is for the session agent only. Subagents never see the `STARSHIP-READY` line, so the rule tells them to ignore it rather than conclude that starship is broken. Bridges made before the rule was scoped get the new wording at SessionStart: `updateHeartbeat` runs beside `dropSessionImport`, which removes the manual's import that older versions of `ensign init` left in `CLAUDE.md`. `updateHeartbeat` looks for the old heartbeat paragraph in the bridge's `CLAUDE.md` (also in its CRLF form, which it keeps) and replaces it with the session-only one. It commits just that file with the message "Scope the heartbeat rule to the session agent". It leaves the file alone if it lacks the old paragraph, or if git shows uncommitted edits to it. `dropSessionImport` leaves a `CLAUDE.md` with uncommitted edits alone in the same way.
+  The rule is for the session agent only. Subagents never see the `STARSHIP-READY` line, so the rule tells them to ignore it rather than conclude that starship is broken. Bridges made before the rule was scoped get the new wording at SessionStart: `updateHeartbeat` runs beside `dropSessionImport`, which removes the manual's import that older versions of `ensign init` left in `CLAUDE.md`. `updateHeartbeat` looks for the old heartbeat paragraph in the bridge's `CLAUDE.md` (also in its CRLF form, which it keeps) and replaces it with the session-only one. It commits just that file with the message "Scope the heartbeat rule to the session agent". It leaves the file alone if it lacks the old paragraph, or if git shows uncommitted edits to it. `dropSessionImport` leaves a `CLAUDE.md` with uncommitted edits alone in the same way. In a bridge that is not a git repo (no `<bridge>/.git`, `isGit`) there is no uncommitted-edits check and no commit: both rewrite `CLAUDE.md` in place.
 - **`ensign` fails closed, and its errors end the run** (§6.1). Any internal error — a crash, a corrupt state file, an
   unreadable snapshot — exits 2 with the reason, so the action is blocked rather than let
   through. (A Go panic already exits 2.) One exception: when a stop arrives with

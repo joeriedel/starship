@@ -307,6 +307,11 @@ func githubReady(r *RunFiles) error {
 	if err != nil {
 		return err
 	}
+	if !testPassed(r) {
+		r.State.note(fmt.Sprintf("The task branch %s is at %s. No test ran in this run, so the branch is not recorded as tested: `ensign run %s --start test` records it before it is published",
+			branch, short(sha), r.Snap.Task))
+		return nil
+	}
 	f := testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)
 	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
 		return err
@@ -318,6 +323,20 @@ func githubReady(r *RunFiles) error {
 	r.State.note(fmt.Sprintf("The tested work is committed on %s (%s). Nothing has been opened yet: the user can ask for a pull request, or for it to go straight to %s",
 		branch, short(sha), orDefault(base)))
 	return nil
+}
+
+// testPassed reports whether the run's latest test outcome was a pass. A pipeline with no test stage counts as passed. It reads the history, which keeps every outcome for agent and plain stages alike; a dispatch's Outcome is blanked on some paths.
+func testPassed(r *RunFiles) bool {
+	if s, _, _ := r.Snap.Pipeline.find("test"); s == nil {
+		return true
+	}
+	passed := false
+	for _, h := range r.State.History {
+		if h.Kind == "outcome" && h.Stage == "test" {
+			passed = strings.HasPrefix(h.Detail, "pass ")
+		}
+	}
+	return passed
 }
 
 func orDefault(b string) string {

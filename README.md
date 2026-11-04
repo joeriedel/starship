@@ -59,7 +59,7 @@ A task lives in a project and points at a workspace, which is your code repo in 
 
 `ensign` is the binary that does the bookkeeping. Claude Code calls it from its hooks, so it sees each agent dispatch and each report.
 
-The agents are role definitions in [`roles/`](roles): an orchestrator that leads a run, a coder, reviewers, a style reviewer, a tester, an explorer for reading code, a style generator that proposes style rules, and a curator that maintains skills and style guides. Each role file sets the agent's job and its Claude model.
+The agents are role definitions in [`roles/`](roles): an orchestrator that leads a run, a coder, reviewers, a style reviewer, a tester, a documentation writer, an explorer for reading code, a style generator that proposes style rules, and a curator that maintains skills and style guides. Each role file sets the agent's job and its Claude model.
 
 ## How a run works
 
@@ -68,13 +68,13 @@ The session agent plans the work with you and doesn't edit code itself. When you
 A pipeline is a YAML file. The default one, [`pipelines/coding.yaml`](pipelines/coding.yaml), defines this loop:
 
 ```
-code -> review -> style -> test -> success
+code -> review -> style -> test -> docs -> success
   ^        |                 |
   +--------+  findings       |
   +--------------------------+  fail
 ```
 
-Each stage declares its outcomes and where each one goes. A review with findings returns to code, and a failed test returns to code. Two budgets bound the loop: `coder-loop` counts passes through the code stage and `test` counts test cycles, each 3 by default. A run that exhausts a budget ends in an error instead of retrying.
+Each stage declares its outcomes and where each one goes. A review with findings returns to code, and a failed test returns to code. The docs stage updates the files a project declares in `@docs` and is skipped when it declares none. Two budgets bound the loop: `coder-loop` counts passes through the code stage and `test` counts test cycles, each 3 by default. A run that exhausts a budget ends in an error instead of retrying.
 
 Test results come from the project's `@test` command. If the binding is marked `plain`, `ensign` runs the command itself and uses the exit code, with no tester agent involved. Otherwise a tester agent runs the suite and reports.
 

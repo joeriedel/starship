@@ -221,6 +221,102 @@ func TestStartDocs(t *testing.T) {
 	}
 }
 
+func TestStartDocsRefusedWhenOff(t *testing.T) {
+	w := newWorld(t)
+	w.docsBinding(`{ paths: [docs] }`)
+	w.project("documentation: off\n")
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out strings.Builder
+	if err := cmdRun([]string{"supernova/auth-refactor", "--start", "docs"}, &out); err == nil || !strings.Contains(err.Error(), "would be skipped") {
+		t.Fatalf("--start docs with documentation off should be refused: %v", err)
+	}
+}
+
+func TestHelpListsStartDocs(t *testing.T) {
+	w := newWorld(t)
+	for _, e := range extraHelp(w.bridge)["Doing the work"] {
+		if e.Run == "ensign run <project>/<task> --start docs" {
+			return
+		}
+	}
+	t.Error("the help lacks the --start docs entry")
+}
+
+// markerSha reads the tested commit recorded for the fixture task, or "" when there is none.
+func (w *world) markerSha() string {
+	data, _ := os.ReadFile(testedFile(w.bridge, "supernova/auth-refactor", ""))
+	return strings.TrimSpace(string(data))
+}
+
+func TestGithubPRDocsOnlyRunRecordsNoTestedCommit(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	w.docsBinding(`{ paths: [docs] }`)
+	lead := w.startLead("--start", "docs")
+	write(t, filepath.Join(ws, "lib.txt"), "two\n")
+	runGit(t, ws, "commit", "-qam", "never tested")
+	w.docsWith(lead, "updated", "docs/a.md", func() { write(t, filepath.Join(ws, "docs", "a.md"), "doc\n") })
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if sha := w.markerSha(); sha != "" {
+		t.Errorf("a run that never tested must record no tested commit, got %s", sha)
+	}
+	if !w.hasNote("No test ran in this run") || !w.hasNote("--start test") {
+		t.Errorf("the note should say nothing was tested and how to record it: %v", w.state().Notes)
+	}
+	if _, _, _, err := tested(w.bridge, "supernova/auth-refactor", ""); err == nil {
+		t.Error("tested() should refuse a branch no run tested")
+	}
+}
+
+func TestGithubPRFailedThenPassedTestRecordsHead(t *testing.T) {
+	w, ws, _, gh := githubWorld(t, "failure", ciTest)
+	w.docsBinding(`{ paths: [docs] }`)
+	lead := w.startLead()
+	w.codeChange(lead, ws)
+	if why, _ := w.runStage(); !strings.Contains(why, "Outcome: fail") {
+		t.Fatalf("the first test should fail: %s", why)
+	}
+	gh.conclusion = "success"
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatalf("coder refused: %s", why)
+	}
+	write(t, filepath.Join(ws, "lib.txt"), "three\n")
+	w.stop(coder, "coder", report("compiled"), false)
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+	if why, _ := w.runStage(); !strings.Contains(why, "Outcome: pass") {
+		t.Fatalf("the retried test should pass: %s", why)
+	}
+	w.docsWith(lead, "updated", "docs/a.md", func() { write(t, filepath.Join(ws, "docs", "a.md"), "doc\n") })
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if got, head := w.markerSha(), runGit(t, ws, "rev-parse", "HEAD"); got != head {
+		t.Errorf("the marker should hold HEAD %s, got %q", head, got)
+	}
+}
+
+func TestGithubPRStartTestRecordsHead(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	w.startLead("--start", "test")
+	write(t, filepath.Join(ws, "lib.txt"), "two\n")
+	runGit(t, ws, "commit", "-qam", "untested so far")
+	if why, _ := w.runStage(); !strings.Contains(why, "Outcome: pass") {
+		t.Fatalf("the test should pass: %s", why)
+	}
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if got, head := w.markerSha(), runGit(t, ws, "rev-parse", "HEAD"); got != head {
+		t.Errorf("the marker should hold HEAD %s, got %q", head, got)
+	}
+}
+
 func TestDocumentationEditGuard(t *testing.T) {
 	w, _ := newGuardWorld(t)
 	w.docsBinding(`{ paths: [docs, README.md] }`)

@@ -4,7 +4,11 @@ Then fill its bindings (`@build`, `@test`, …): read the code, propose commands
 
 If the test stage needs services, add `@services-up` (start them) and `@services-down` (stop them), per location when the project has locations. `@services-up` returns only once the services are ready: when the start returns early, write the readiness wait into the command; anything that must happen before the start, such as resetting data, goes into the same command in the order the project needs, e.g. `./services.sh reset && ./services.sh up && ./services.sh wait`. There are no separate readiness or reset bindings. Both run in the location's workspace, in the test stage only, and have no cross-location form; each may set `timeout:`. In a plain stage ensign runs every side's up before `@build`, then `@test`, then every side's down in reverse, whatever the outcome; a failing up or down makes the stage `error` (not `fail`), and a signal received meanwhile waits for the downs. If a `run-stage` dies, recording the stage as `error` also runs the downs. A services binding with guidance but no command makes the stage need a tester, who runs them by hand. A project with neither binding is unchanged.
 
+`@docs` lists the workspace-relative files or folders the documentation stage may change. It takes paths or not-applicable, never a command (`docs: { paths: [docs, README.md] }`). With none declared the stage is skipped.
+
 `platforms:` is required in `project.yaml`: the platforms the project supports, which reviewers treat as real failure targets. `project new` takes `--platforms linux,macos,windows` unless the code ships them. Example: `platforms: [linux, macos, windows]`.
+
+`documentation: off` in `project.yaml` or a task's frontmatter turns the documentation stage off; a later layer wins, and `on` turns it back on.
 
 `rules:` lists standing run rules, one string per rule, under `bridge.yaml`, an extension, `project.yaml` or a location (`rules: ["Never touch the vault."]` for project `supernova`). They merge in layer order with duplicates dropped, skip the task's frontmatter, and reach every run's work item under `## Project rules` (a retry keeps the original run's) and the run summary with their source. Task-specific rules go in the task's Scope.
 
