@@ -229,11 +229,18 @@ type Binding struct {
 	Source  string        `json:"source"`
 }
 
-// parseBinding resolves platform variants for this machine.
+// parseBinding resolves platform variants for this machine. An alias is followed wherever a value is read.
 func parseBinding(n *yaml.Node, source string) (Binding, error) {
 	b := Binding{Source: source}
+	if n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
 	if n.Kind != yaml.MappingNode {
 		return b, fmt.Errorf("%s: a binding must be a mapping (command, guidance, not-applicable, or per-platform)", source)
+	}
+	// Decoding into any descends the whole binding, so yaml refuses a cycle anywhere in it, including under another platform's key.
+	if _, err := decodeAny(n); err != nil {
+		return b, fmt.Errorf("%s: %v", source, err)
 	}
 	var m map[string]yaml.Node
 	if err := n.Decode(&m); err != nil {
@@ -243,6 +250,9 @@ func parseBinding(n *yaml.Node, source string) (Binding, error) {
 		return parseBinding(&v, source)
 	}
 	for k, v := range m {
+		if v.Kind == yaml.AliasNode {
+			v = *v.Alias
+		}
 		switch k {
 		case "command":
 			b.Command = v.Value
@@ -431,46 +441,49 @@ func readYAML(path string, out any) error {
 	return nil
 }
 
-// addBindings sets the bindings a layer or extension declares, replacing earlier ones. An alias is followed to its mapping and applied like a plain one; an absent or null value declares none; any other non-mapping is refused, naming file and line, as the drift report does.
+// addBindings sets the bindings a layer or extension declares, replacing earlier ones. An alias is followed to its mapping and applied like a plain one, and merge keys are expanded; an absent or null value declares none; any other non-mapping, a bad merge value or a cycle is refused, naming file and line, as the drift report does. Both paths read the names through bindingEntries.
 func (c *Config) addBindings(n *yaml.Node, label, file string) error {
-	n, err := bindingsMapping(n)
+	entries, err := bindingEntries(n)
 	if err != nil {
 		return fmt.Errorf("%s: %v", file, err)
 	}
-	if n == nil {
-		return nil
-	}
-	for i := 0; i < len(n.Content); i += 2 {
-		key := strings.TrimPrefix(n.Content[i].Value, "@")
-		b, err := parseBinding(n.Content[i+1], fmt.Sprintf("%s:%d", label, n.Content[i].Line))
+	for _, e := range entries {
+		b, err := parseBinding(e.val, fmt.Sprintf("%s:%d", label, e.key.Line))
 		if err != nil {
 			return err
 		}
-		c.Bindings[key] = b
+		c.Bindings[e.name] = b
 	}
 	return nil
 }
 
-// addRules adds the rules a layer or extension declares, dropping any already present.
+// addRules adds the rules a layer or extension declares, dropping any already present. An alias is followed for the whole value and for each item; a rule's source is the line of its item as written.
 func (c *Config) addRules(n *yaml.Node, label string) error {
+	if n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
 	if n.Kind == 0 || n.Tag == "!!null" {
 		return nil
 	}
 	if n.Kind != yaml.SequenceNode {
 		return fmt.Errorf("%s:%d: rules must be a list of strings", label, n.Line)
 	}
-	for _, item := range n.Content {
+	for _, written := range n.Content {
+		item := written
+		if item.Kind == yaml.AliasNode {
+			item = item.Alias
+		}
 		if item.Tag == "!!null" {
 			continue
 		}
 		if item.Kind != yaml.ScalarNode {
-			return fmt.Errorf("%s:%d: a rule must be a string", label, item.Line)
+			return fmt.Errorf("%s:%d: a rule must be a string", label, written.Line)
 		}
 		text := strings.TrimSpace(item.Value)
 		if text == "" || slices.ContainsFunc(c.Rules, func(r Rule) bool { return r.Text == text }) {
 			continue
 		}
-		c.Rules = append(c.Rules, Rule{Text: text, Source: fmt.Sprintf("%s:%d", label, item.Line)})
+		c.Rules = append(c.Rules, Rule{Text: text, Source: fmt.Sprintf("%s:%d", label, written.Line)})
 	}
 	return nil
 }

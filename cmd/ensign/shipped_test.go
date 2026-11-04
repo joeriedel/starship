@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const bridgeSettings = `platforms: [linux]
@@ -390,9 +393,9 @@ func TestShippedBindingsAliasComparesByValue(t *testing.T) {
 }
 
 // loadBindings writes the bridge's project.yaml and loads the auth-refactor task's config.
-func loadBindings(t *testing.T, w *world, project string) (*Config, error) {
+func loadBindings(t *testing.T, w *world, body string) (*Config, error) {
 	t.Helper()
-	write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"), "platforms: [linux]\n"+project)
+	write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"), "platforms: [linux]\n"+body)
 	return loadConfig(w.bridge, "supernova/auth-refactor")
 }
 
@@ -472,5 +475,209 @@ func TestTaskNonMappingBindingsNameTrueLine(t *testing.T) {
 	}
 	if b := c.Bindings["deploy"]; !strings.Contains(b.Source, "task.md:4") {
 		t.Errorf("task binding source should carry its true line: %+v", b)
+	}
+}
+
+// reportBindings is what the drift report reads from a shipped file's bindings.
+func reportBindings(t *testing.T, body string) (map[string]any, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "project.yaml")
+	write(t, path, body)
+	s, _, err := readSettings(path)
+	return s.Bindings, err
+}
+
+func reportCommand(m map[string]any, name string) string {
+	b, _ := m[name].(map[string]any)
+	s, _ := b["command"].(string)
+	return s
+}
+
+func TestBindingsValueAliasOnBothPaths(t *testing.T) {
+	body := "x-b: &b { command: ./b.sh }\nbindings:\n  build: *b\n  deploy:\n    " + runtime.GOOS + ": *b\n"
+	c, err := loadBindings(t, newWorld(t), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Bindings["build"].Command != "./b.sh" || c.Bindings["deploy"].Command != "./b.sh" {
+		t.Errorf("run: %+v %+v", c.Bindings["build"], c.Bindings["deploy"])
+	}
+	m, err := reportBindings(t, body)
+	if err != nil || reportCommand(m, "build") != "./b.sh" {
+		t.Errorf("report: %v %v", m, err)
+	}
+	_, err = loadBindings(t, newWorld(t), "x-s: &s plain\nbindings:\n  build: *s\n")
+	if err == nil || !strings.Contains(err.Error(), "a binding must be a mapping") {
+		t.Errorf("alias to a scalar should be refused: %v", err)
+	}
+}
+
+func TestBindingsFieldAliasUsesValue(t *testing.T) {
+	body := "x-c: &c ./c.sh\nx-g: &g look at it\nx-n: &n only on paper\nx-t: &t 5m\nbindings:\n  build: { command: *c, timeout: *t, plain: true }\n  review: { guidance: *g }\n  deploy: { not-applicable: *n }\n"
+	c, err := loadBindings(t, newWorld(t), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := c.Bindings["build"]
+	if b.Command != "./c.sh" || b.Timeout != 5*time.Minute || c.Bindings["review"].Guidance != "look at it" || c.Bindings["deploy"].NotApplicable != "only on paper" {
+		t.Errorf("field aliases: %+v %+v %+v", b, c.Bindings["review"], c.Bindings["deploy"])
+	}
+	m, err := reportBindings(t, body)
+	if err != nil || reportCommand(m, "build") != "./c.sh" {
+		t.Errorf("report: %v %v", m, err)
+	}
+}
+
+// mergeCases are bindings written with merge keys and the command each name should end up with, on a run and in the report.
+var mergeCases = []struct {
+	name, body string
+	want       map[string]string
+}{
+	{"alias", "x-m: &m\n  build: { command: ./m-build.sh }\n  test: { command: ./m-test.sh }\nbindings:\n  <<: *m\n", map[string]string{"build": "./m-build.sh", "test": "./m-test.sh"}},
+	{"list-earlier-wins", "x-a: &a\n  build: { command: ./a.sh }\nx-b: &b\n  build: { command: ./b.sh }\n  test: { command: ./b-test.sh }\nbindings:\n  <<: [*a, *b]\n", map[string]string{"build": "./a.sh", "test": "./b-test.sh"}},
+	{"inline", "bindings:\n  <<: { build: { command: ./i.sh } }\n", map[string]string{"build": "./i.sh"}},
+	{"explicit-beats-merged-before", "x-m: &m\n  build: { command: ./m.sh }\nbindings:\n  build: { command: ./own.sh }\n  <<: *m\n", map[string]string{"build": "./own.sh"}},
+	{"explicit-beats-merged-after", "x-m: &m\n  build: { command: ./m.sh }\nbindings:\n  <<: *m\n  build: { command: ./own.sh }\n", map[string]string{"build": "./own.sh"}},
+	{"explicit-at-beats-merged", "x-m: &m\n  build: { command: ./m.sh }\nbindings:\n  <<: *m\n  \"@build\": { command: ./own.sh }\n", map[string]string{"build": "./own.sh"}},
+	{"anchor-with-own-merge", "x-base: &base\n  test: { command: ./base-test.sh }\n  build: { command: ./base.sh }\nx-m: &m\n  <<: *base\n  build: { command: ./m.sh }\nbindings:\n  <<: *m\n", map[string]string{"build": "./m.sh", "test": "./base-test.sh"}},
+	{"at-collapse", "bindings:\n  build: { command: ./one.sh }\n  \"@build\": { command: ./two.sh }\n  test: { command: ./t.sh }\n", map[string]string{"build": "./two.sh", "test": "./t.sh"}},
+}
+
+func TestBindingsMergeKeysOnBothPaths(t *testing.T) {
+	for _, tc := range mergeCases {
+		c, err := loadBindings(t, newWorld(t), tc.body)
+		if err != nil {
+			t.Errorf("%s: run: %v", tc.name, err)
+			continue
+		}
+		m, err := reportBindings(t, tc.body)
+		if err != nil {
+			t.Errorf("%s: report: %v", tc.name, err)
+			continue
+		}
+		if _, ok := c.Bindings["<<"]; ok {
+			t.Errorf("%s: run has a << binding", tc.name)
+		}
+		if _, ok := m["<<"]; ok {
+			t.Errorf("%s: report has a << binding", tc.name)
+		}
+		for name, want := range tc.want {
+			if got := c.Bindings[name].Command; got != want {
+				t.Errorf("%s: run %s = %q, want %q", tc.name, name, got, want)
+			}
+			if got := reportCommand(m, name); got != want {
+				t.Errorf("%s: report %s = %q, want %q", tc.name, name, got, want)
+			}
+		}
+		if len(m) != len(tc.want) {
+			t.Errorf("%s: report has %v", tc.name, m)
+		}
+	}
+}
+
+func TestBindingsMergedSourceIsTrueLine(t *testing.T) {
+	c, err := loadBindings(t, newWorld(t), "x-m: &m\n  build: { command: ./m.sh }\nbindings:\n  <<: *m\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := c.Bindings["build"]; !strings.Contains(b.Source, "project.yaml:3") {
+		t.Errorf("merged source should be the line of build in the file: %+v", b)
+	}
+}
+
+func TestBindingsBadMergeValueIsRefused(t *testing.T) {
+	for _, body := range []string{
+		"bindings:\n  <<: plain\n",
+		"x-s: &s plain\nbindings:\n  <<: *s\n",
+		"x-m: &m { build: { command: ./m.sh } }\nbindings:\n  <<: [*m, plain]\n",
+	} {
+		_, err := loadBindings(t, newWorld(t), body)
+		if err == nil || !strings.Contains(err.Error(), "project.yaml") || !strings.Contains(err.Error(), "line ") {
+			t.Errorf("%q: run should refuse naming file and line: %v", body, err)
+		}
+		if _, err := reportBindings(t, body); err == nil || !strings.Contains(err.Error(), "line ") {
+			t.Errorf("%q: report should refuse naming a line: %v", body, err)
+		}
+	}
+}
+
+func TestBindingsCyclesAreRefused(t *testing.T) {
+	otherPlatform := "linux"
+	if runtime.GOOS == "linux" {
+		otherPlatform = "windows"
+	}
+	for _, body := range []string{
+		"bindings: &x\n  <<: *x\n",
+		"bindings:\n  build: &x\n    " + runtime.GOOS + ": *x\n",
+		"bindings:\n  build: &x\n    " + runtime.GOOS + ":\n      <<: *x\n",
+		"bindings:\n  build: &x\n    command: *x\n",
+		"bindings:\n  build: &x\n    guidance: *x\n",
+		"bindings:\n  build: &x\n    not-applicable: *x\n",
+		"bindings:\n  build: &x\n    " + runtime.GOOS + ": { command: ./b.sh }\n    " + otherPlatform + ": *x\n",
+	} {
+		_, err := loadBindings(t, newWorld(t), body)
+		if err == nil || !strings.Contains(err.Error(), "project.yaml:") {
+			t.Errorf("%q: run should refuse naming the file: %v", body, err)
+		}
+		if _, err := reportBindings(t, body); err == nil {
+			t.Errorf("%q: report should refuse", body)
+		}
+	}
+}
+
+func TestBindingsUnhashableMergeKeyIsRefused(t *testing.T) {
+	body := "bindings:\n  build:\n    1: y\n    <<:\n      ? {a: b}\n      : c\n"
+	_, err := loadBindings(t, newWorld(t), body)
+	if err == nil || !strings.Contains(err.Error(), "project.yaml:") {
+		t.Errorf("run should refuse naming the file: %v", err)
+	}
+	if _, err := reportBindings(t, body); err == nil {
+		t.Error("report should refuse")
+	}
+}
+
+func TestRulesAliasesAreFollowed(t *testing.T) {
+	c, err := loadBindings(t, newWorld(t), "x-r: &r\n  - keep it small\nrules: *r\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(c.Rules, func(r Rule) bool { return r.Text == "keep it small" }) {
+		t.Errorf("rules: *r: %+v", c.Rules)
+	}
+	c, err = loadBindings(t, newWorld(t), "x-s: &s keep it kind\nx-n: &n ~\nrules:\n  - *s\n  - *n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(c.Rules, func(r Rule) bool { return r.Text == "keep it kind" })
+	if i < 0 || !strings.Contains(c.Rules[i].Source, "project.yaml:5") {
+		t.Errorf("rules item alias: %+v", c.Rules)
+	}
+	if _, err = loadBindings(t, newWorld(t), "x-n: &n ~\nrules: *n\n"); err != nil {
+		t.Errorf("rules aliased to null should load: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "project.yaml")
+	write(t, path, "x-s: &s keep it kind\nrules:\n  - *s\n")
+	s, _, err := readSettings(path)
+	if err != nil || len(s.Rules) != 1 || s.Rules[0] != "keep it kind" {
+		t.Errorf("report rules: %v %v", s.Rules, err)
+	}
+	_, err = loadBindings(t, newWorld(t), "x-m: &m { a: b }\nrules:\n  - *m\n")
+	if err == nil || !strings.Contains(err.Error(), "a rule must be a string") {
+		t.Errorf("alias to a mapping should be refused: %v", err)
+	}
+}
+
+func TestShippedTaskFrontmatterErrorNamesTrueLine(t *testing.T) {
+	w, _ := shippedWorld(t, bridgeSettings+"locations:\n  api: {}\n", "")
+	taskFile := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md")
+	write(t, taskFile, "---\npipeline: coding\nlocations: [a\n---\nbody\n")
+	_, err := loadConfig(w.bridge, "supernova/auth-refactor")
+	if err == nil {
+		t.Fatal("run should fail")
+	}
+	want := strings.Fields(err.Error()[strings.Index(err.Error(), "line "):])[1]
+	err = cmdProject([]string{"reviewed", "supernova/auth-refactor"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "line "+want) {
+		t.Errorf("reviewed should name the same line as a run (%q): %v", want, err)
 	}
 }

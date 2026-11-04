@@ -56,7 +56,7 @@ func readSettings(path string) (s shippedSettings, ok bool, err error) {
 	return s, true, err
 }
 
-// bindingsMapping resolves a bindings node for use: an alias is followed one level, an absent or null value (an alias to null included) gives nil, and any other non-mapping is an error. Config.addBindings and bindingsOf both use it, so run time and the drift report agree.
+// bindingsMapping resolves a bindings node for use: an alias is followed one level, an absent or null value (an alias to null included) gives nil, and any other non-mapping is an error. bindingEntries is the one place that reads what is inside it, so run time and the drift report agree.
 func bindingsMapping(n *yaml.Node) (*yaml.Node, error) {
 	if n.Kind == yaml.AliasNode {
 		n = n.Alias
@@ -70,20 +70,99 @@ func bindingsMapping(n *yaml.Node) (*yaml.Node, error) {
 	return n, nil
 }
 
-// bindingsOf decodes a bindings node with keys normalised as Config.addBindings does:
-// one leading @ is dropped and a later key replaces an earlier one.
-func bindingsOf(n *yaml.Node) (map[string]any, error) {
+// bindingEntry is one named binding: its key node (for the line) and its value node, which may be an alias.
+type bindingEntry struct {
+	name string
+	key  *yaml.Node
+	val  *yaml.Node
+}
+
+// bindingEntries lists the bindings a bindings node declares, with merge keys expanded and names normalised: one leading @ is dropped, a later explicit key replaces an earlier one, an explicit key beats a merged one wherever it sits, and an earlier source in a merge list beats a later one. The order of the result is not significant. A cyclic merge is an error.
+func bindingEntries(n *yaml.Node) ([]bindingEntry, error) {
 	n, err := bindingsMapping(n)
 	if err != nil || n == nil {
 		return nil, err
 	}
-	m := map[string]any{}
+	return expandBindings(n, map[*yaml.Node]bool{})
+}
+
+func expandBindings(n *yaml.Node, active map[*yaml.Node]bool) ([]bindingEntry, error) {
+	if active[n] {
+		return nil, fmt.Errorf("line %d: bindings merge contains itself", n.Line)
+	}
+	active[n] = true
+	defer delete(active, n)
+	var out []bindingEntry
+	at := map[string]int{}
+	var merges []*yaml.Node
 	for i := 0; i+1 < len(n.Content); i += 2 {
-		var v any
-		if err := n.Content[i+1].Decode(&v); err != nil {
+		k, v := n.Content[i], n.Content[i+1]
+		if k.Kind == yaml.ScalarNode && k.Tag == "!!merge" {
+			merges = append(merges, v)
+			continue
+		}
+		e := bindingEntry{strings.TrimPrefix(k.Value, "@"), k, v}
+		if j, ok := at[e.name]; ok {
+			out[j] = e
+			continue
+		}
+		at[e.name] = len(out)
+		out = append(out, e)
+	}
+	for _, m := range merges {
+		if m.Kind == yaml.AliasNode {
+			m = m.Alias
+		}
+		sources := []*yaml.Node{m}
+		if m.Kind == yaml.SequenceNode {
+			sources = m.Content
+		}
+		for _, src := range sources {
+			if src.Kind == yaml.AliasNode {
+				src = src.Alias
+			}
+			if src.Kind != yaml.MappingNode {
+				return nil, fmt.Errorf("line %d: a merge key needs a mapping or a list of mappings", src.Line)
+			}
+			merged, err := expandBindings(src, active)
+			if err != nil {
+				return nil, err
+			}
+			for _, e := range merged {
+				if _, ok := at[e.name]; !ok {
+					at[e.name] = len(out)
+					out = append(out, e)
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// decodeAny decodes a node into any. yaml.v3 re-panics some malformed mappings (an unhashable merge key under a non-string key) rather than returning an error, so a panic from the decode becomes one.
+func decodeAny(n *yaml.Node) (v any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			v, err = nil, fmt.Errorf("malformed mapping: %v", r)
+		}
+	}()
+	err = n.Decode(&v)
+	return v, err
+}
+
+// bindingsOf decodes a bindings node with names normalised as Config.addBindings does, through bindingEntries.
+func bindingsOf(n *yaml.Node) (map[string]any, error) {
+	entries, err := bindingEntries(n)
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]any{}
+	for _, e := range entries {
+		v, err := decodeAny(e.val)
+		if err != nil {
 			return nil, err
 		}
-		m[strings.TrimPrefix(n.Content[i].Value, "@")] = v
+		m[e.name] = v
 	}
 	return roundTrip(m)
 }
@@ -376,7 +455,7 @@ func cmdProjectReviewed(arg, onlyLocation string, out io.Writer) error {
 			return err
 		}
 		var tf TaskFile
-		if err := yamlUnmarshal(front, &tf); err != nil {
+		if err := yamlUnmarshal(append([]byte("\n"), front...), &tf); err != nil {
 			return err
 		}
 		if len(tf.Locations) > 0 {
