@@ -1,137 +1,119 @@
 # Starship
 
-> **Claude:** to set up a starship bridge, follow [`SETUP.md`](SETUP.md). Don't clone
-> this repository into the user's folder.
+> **Claude:** to set up a starship bridge, follow [`SETUP.md`](SETUP.md). Don't clone this repository into the user's folder.
 
-**A customizable control-plane for Claude Code**
+A customizable control plane for Claude Code.
 
-Starship is a control plane for Claude Code. You keep talking to Claude the way you
-already do, but each piece of work runs as a task. It's planned before anything changes,
-carried out by separate agents that write, review, tidy and test the code, and written
-down as it goes.
+Starship adds tasks and pipelines on top of Claude Code. You still talk to Claude in a normal session, but code changes happen inside a pipeline run: a sequence of stages where separate agents write, review, tidy and test the change. A small Go binary, `ensign`, runs from Claude Code's hooks and checks each step against the pipeline definition, so the order of work doesn't depend on an agent following a prompt.
 
-What that gets you:
-
-- **The full history of every task.** Weeks later, when an issue turns up in something
-  you shipped, the task is still there: what was asked for, the plan, each decision and
-  why, every review finding and what was done about it, the test runs, and a commit for
-  each pass. Keeping a record like that by hand is something nobody actually manages.
-  Starship keeps it without being asked.
-- **Changes that were checked before you see them.** Code is reviewed by agents that
-  didn't write it, and only counts as done once it builds and the full test suite has run
-  and passed. Hooks enforce this, so no agent can skip it.
-- **Pick up where you left off, anywhere.** Tasks and their journals live in a git repo of
-  your own, so a new session tomorrow, or a different machine, carries on with nothing
-  lost.
-- **It learns your codebase.** Style corrections become a per-project guide, and facts
-  agents discover become skills, so later runs need less correcting.
+Each task keeps a journal in a git repo you own, so you can read back what happened on it or continue it from another machine.
 
 ## Getting started
 
-Starship needs nothing but **Claude Code and git**, on Linux, Windows or macOS. There's
-nothing else to install or build; Claude sets everything up.
+You need Claude Code and git, on Linux, Windows or macOS. Claude handles the rest of the setup.
 
-**1. Make a bridge.** A bridge is a folder, and a git repo of your own, where starship
-keeps your projects and tasks. Make an empty folder, start `claude` in it, and ask:
+### 1. Make a bridge
+
+A bridge is a folder, and a git repo of your own, where starship keeps your projects and tasks. Make an empty folder, start `claude` in it, and ask:
 
 ```
 > make a starship bridge here, following https://github.com/joeriedel/starship/blob/master/SETUP.md
 ```
 
-When it's done, restart `claude` in the same folder. To use the bridge on other machines
-too, push it to a private repo; on another machine, clone it and start `claude` in it.
+When it finishes, restart `claude` in the same folder. To use the bridge on other machines, push it to a private repo, then clone it on the other machine and start `claude` there.
 
-**2. Add a project.** Tell Claude about a codebase you work on:
+### 2. Add a project
 
-```
-> add a project called foobar, its code is in ~/projects/foobar
-```
-
-Claude reads the code and suggests how the project builds and runs its tests, for you to
-confirm. If you don't say where the code is, it asks.
-
-**3. Start a task and describe the work.**
+Tell Claude about a codebase you work on:
 
 ```
-> new task fix-login in foobar
+> add a project called supernova, its code is in ~/projects/supernova
+```
+
+Claude reads the code, suggests how the project builds and runs its tests, and asks you to confirm. If you don't say where the code is, it asks.
+
+### 3. Start a task and describe the work
+
+```
+> new task fix-login in supernova
 > logins fail when the password has a trailing space; fix it and add a test
 ```
 
-A task works in the project's code unless you name a different location, such as a
-second checkout.
+The task uses the project's code unless you name a different location, such as a second checkout.
 
-Claude reads the code and comes back with a plan. Type `go` to start the run. A coder
-makes the change, reviewers who didn't write it check it, a style pass tidies it, and a
-tester runs the full suite; anything they find goes back to the coder. You get a report
-when it's done: what changed, every finding and what was decided about it.
+Claude reads the code and replies with a plan. Type `go` to start the run. When the run ends you get a report of what changed, what each stage found, and what the lead decided about it.
 
-**4. Come back to it any time.** `open foobar / fix-login` picks the task up where it left
-off, in a new session or on another machine. Type `help` to see everything you can ask
-for, and `status` for where things stand.
+### 4. Come back to it later
 
-## The cast
+`open supernova / fix-login` reopens the task in a new session or on another machine. `help` lists what you can ask for, and `status` shows where things stand.
 
-**The starship** is this repo, the control plane. It holds the roles, the pipelines and
-the rules. It knows nothing about any of your projects, which is deliberate: it's public,
-it's shared, and it can be improved from anywhere.
+## Layout
 
-**A bridge** is where you stand and give orders. You keep one for each part of your life,
-such as `~/bridges/work` and `~/bridges/home`. A bridge is a git repo of your own, hosted
-wherever that part of your life requires. It holds your projects, your tasks and their
-journals, your project-specific skills, and anything else that must never leave it. Your
-work bridge stays on work infrastructure, and nothing in it reaches the others.
+The starship is this repo: the control plane. It holds the roles, pipelines and rules. It contains nothing about your projects.
 
-**Projects and tasks** live in the bridge. A project fills in what the pipeline's named
-steps mean there: `@build` and `@test` are placeholders, and the project says which
-command each one runs. It also says which review dimensions matter. A task points at a
-workspace (your actual code repo, in any version control) and keeps the journal.
-Starship never writes its own files into your code; the only thing that lands there is
-the change itself.
+A bridge is your own git repo, hosted wherever you like. It holds your projects, your tasks and their journals, and your project-specific skills. You can keep several, such as `~/bridges/work` and `~/bridges/home`, and they share nothing with each other.
 
-**The ensign** is `ensign`, a small binary that does the paperwork. It's wired into
-Claude Code's hooks, so it sees every agent dispatched and every report filed. It
-enforces the pipeline in code, so the rules hold no matter what an agent says.
+A project lives in a bridge and fills in what the pipeline's named steps mean there: `@build` and `@test` are placeholders, and the project sets the command for each. It also picks its review dimensions.
 
-**The crew** are role definitions: an **orchestrator** that leads a run, plus a coder,
-reviewers, a style reviewer, a tester, an explorer for reading code, and a curator that
-keeps skills and style guides tidy. Each has a narrow job and a Claude model sized to it.
+A task lives in a project and points at a workspace, which is your code repo in any version control. The task's journal stays in the bridge. Starship doesn't write its own files into the workspace, so the only thing that lands there is the change.
 
-## How it works
+`ensign` is the binary that does the bookkeeping. Claude Code calls it from its hooks, so it sees each agent dispatch and each report.
 
-- **The agents bring judgement; the ensign brings the clipboard.** The process lives in
-  config and is enforced by hooks, not by instructions in a prompt.
-- **Every run starts from a plan.** Claude follows a session manual: understand first,
-  plan, never edit the code directly. Code changes only happen inside a run.
-- **Only `go` starts a run.** Not "yes" or "sounds good": a hook checks for
-  the exact word before anything happens.
-- **Runs are small state machines.** A pipeline is a YAML file. Code goes to review;
-  findings go back to code; a failed test goes back to code; budgets stop it looping
-  forever. Success means it compiled and the
-  tests actually ran and passed.
-- **Agents can't cut corners.** If one tries to skip a stage, the dispatch is refused. A
-  report missing its outcome gets sent back to be redone. An orchestrator that tries to
-  stop early is told the run isn't finished.
-- **Edits stay in their folders.** A hook refuses any Edit, Write or NotebookEdit outside the folders the agent may edit: the session gets the bridge, each coder its run's code and scratch folders, everyone else temp and their run's scratch folder.
-- **Memory lives in files.** Task journals are committed and pushed in the bridge,
-  so any session on any machine can pick the work up.
-- **Some words don't need the model.** `help`, `status` and `go` are answered by a hook without
-  calling the model at all. `help` tells you what you can ask for in the bridge you're
-  in, in plain language.
+The agents are role definitions in [`roles/`](roles): an orchestrator that leads a run, a coder, reviewers, a style reviewer, a tester, an explorer for reading code, a style generator that proposes style rules, and a curator that maintains skills and style guides. Each role file sets the agent's job and its Claude model.
 
-## Make it yours
+## How a run works
 
-You customise starship without forking it. Whatever is specific to you goes in your
-bridge, project or task, never in the control plane. There's one config file at each
-level, and each level can add to or override the one above it.
+The session agent plans the work with you and doesn't edit code itself. When you type `go`, a UserPromptSubmit hook checks that the message is exactly that word and marks the pending run as approved. "Yes" or "sounds good" won't start it. The session then dispatches the orchestrator, which leads the run.
+
+A pipeline is a YAML file. The default one, [`pipelines/coding.yaml`](pipelines/coding.yaml), defines this loop:
+
+```
+code -> review -> style -> test -> success
+  ^        |                 |
+  +--------+  findings       |
+  +--------------------------+  fail
+```
+
+Each stage declares its outcomes and where each one goes. A review with findings returns to code, and a failed test returns to code. Two budgets bound the loop: `coder-loop` counts passes through the code stage and `test` counts test cycles, each 3 by default. A run that exhausts a budget ends in an error instead of retrying.
+
+Test results come from the project's `@test` command. If the binding is marked `plain`, `ensign` runs the command itself and uses the exit code, with no tester agent involved. Otherwise a tester agent runs the suite and reports.
+
+## What the hooks enforce
+
+A PreToolUse hook checks each agent dispatch against the pipeline, and refuses one that's out of order or that arrives before `go`.
+
+When an agent finishes, a SubagentStop hook reads its report. If the outcome is missing or isn't one the stage declares, the hook sends the agent back to fix it. An orchestrator that tries to hand back early gets refused until the pipeline has finished.
+
+The same PreToolUse hook checks every Edit, Write and NotebookEdit against the folders the caller may edit. The session gets the bridge, coders and style reviewers get their run's code and scratch folders, and other agents get temp and their run's scratch folder. This check doesn't cover shell commands, so a Bash write isn't blocked.
+
+`help` and `status` never reach the model. The UserPromptSubmit hook answers them directly and stops the turn.
+
+## Task records
+
+Each task has two files in the bridge. `task.md` holds the current state: goal, scope, status, outstanding work and decisions. `history.md` is append-only, with an account of each run. `ensign` adds a line of facts when a run ends, the session writes the account under it, and a hook stops the session ending a turn with uncommitted journal changes.
+
+Because the journal is plain files in git, a new session or another machine picks up the task by reading them.
+
+## Skills and style
+
+Agents can report facts as they work, such as "this build needs a clean after switching branches". The facts wait in the bridge until you say "curate the skills", which runs a pipeline where a curator folds them into the matching skills. A fact for a skill that doesn't exist yet stays on hold until you create the skill or discard it.
+
+A skill reaches agents in one of two ways. An `inject` skill goes into the brief of every stage whose role it lists. An `on-demand` skill exposes only its description, and the agent loads the body if it decides it needs it.
+
+Per-project style guides need the `style-learning` extension, described below.
+
+## Customization
+
+You customize starship from your bridge, project or task, without forking the control plane. Each level has one config file, and each can add to or override the level above it.
 
 | You want to | Use |
 |---|---|
-| say what `@build` or `@test` means for a project | **bindings** |
-| add a review dimension, insert a stage, drop one, change budgets | **pipeline ops** |
-| run something at a point in a run: before code, after test, on success | **events** |
-| teach agents your project's conventions | **skills** |
-| invent a whole new process | **pipelines** |
-| package all of the above to reuse | **extensions** |
+| say what `@build` or `@test` means for a project | bindings |
+| add a review dimension, insert a stage, drop one, change budgets | pipeline ops |
+| run something at a point in a run: before code, after test, on success | events |
+| teach agents your project's conventions | skills |
+| define a new process | pipelines |
+| package any of the above for reuse | extensions |
 
 ```yaml
 # projects/supernova/project.yaml
@@ -158,32 +140,17 @@ events:
 
 `rules:` is a list of strings in `bridge.yaml`, an extension, a project or a location. Together, without duplicates, they are appended to every work item under `## Project rules`, and the run summary shows each rule with where it came from. A task's own frontmatter `rules:` is ignored; put task-specific rules in the task's Scope.
 
-Three extensions ship in the box:
+Three extensions ship with starship, and a project turns each one on through `use:`:
 
-- **[`git-catalog`](extensions/git-catalog)** commits each coder pass, so the
-  orchestrator can see how the work evolved. It squashes everything into one commit when
-  you say so.
-- **[`style-learning`](extensions/style-learning)** turns what the style pass finds into
-  a per-project style guide. The coder reads it on later runs, so the same style
-  issues don't keep coming up. You can seed it with style docs or exemplar code.
-- **[`github-pr`](extensions/github-pr)** works each task on its own branch. The tests
-  can be your own or the repository's CI. Once a task passes, you ask for a pull request
-  on GitHub, or for it to go straight to the main branch.
+- [`git-catalog`](extensions/git-catalog) commits each coder pass and squashes the commits into one when you ask.
+- [`style-learning`](extensions/style-learning) records what the style pass finds in a per-project style guide and adds the guide's active rules to the coder's brief. You can seed it with style docs or example code.
+- [`github-pr`](extensions/github-pr) gives each task its own branch and can use your own tests or the repository's CI. After a task passes, you ask for a pull request or for it to go straight to the main branch.
 
-A repository can also ship its own project settings in `.starship/project.yaml`. Adding
-it as a project then needs nothing filled in. Starship ships one, so you can improve
-starship from your own bridge: say "improve starship", and each change becomes a task on
-its own branch, with CI as its tests, ready for a pull request when you ask.
-
-Agents also report facts they discover along the way ("this build needs a clean after
-switching branches"), and a curator folds them into skills. Over time the crew stops
-rediscovering the same things.
+A repository can also ship its own project settings in `.starship/project.yaml`, so adding it as a project needs nothing filled in. Starship ships one. To work on starship from your own bridge, say "improve starship": each change becomes a task on its own branch, with CI as its tests.
 
 ## Further reading
 
-[`docs/design.md`](docs/design.md) has the full design: layers, pipelines, the hook
-driver, the customization points, what has been verified against Claude Code, and what is
-still open.
+[`docs/design.md`](docs/design.md) covers the full design: layers, pipelines, the hook driver, customization points, what has been tested against Claude Code, and what's still open.
 
 ## License
 
