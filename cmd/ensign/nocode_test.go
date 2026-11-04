@@ -10,7 +10,7 @@ import (
 
 const noCodeRefusal = "has no pipeline, so it can't run: it is a task without code (pipeline: none)"
 
-// noCodeWorld is a world with no folder recorded on this machine, and a task per frontmatter pipeline line.
+// noCodeWorld is a world with no folder recorded on this machine, with the project's pipeline line set to projectLine when it is not empty.
 func noCodeWorld(t *testing.T, projectLine string) *world {
 	t.Helper()
 	w := newWorld(t)
@@ -61,27 +61,32 @@ func TestNoCodeResolution(t *testing.T) {
 	if got, err := taskHasNoCode(w.bridge, "supernova", "missing"); got || err != nil {
 		t.Errorf("a missing task is not a no-code task: %v %v", got, err)
 	}
-	w = noCodeWorld(t, "pipeline: none")
-	if got, err := taskHasNoCode(w.bridge, "supernova", "missing"); got || err != nil {
-		t.Errorf("a missing task in a default-none project is not a no-code task: %v %v", got, err)
-	}
-	write(t, filepath.Join(w.bridge, "projects/supernova/tasks/broken/task.md"), "---\npipeline: coding\n\n## Goal\n")
-	if got, err := taskHasNoCode(w.bridge, "supernova", "broken"); got || err != nil {
-		t.Errorf("a broken task in a default-none project is not a no-code task: %v %v", got, err)
-	}
-	var out bytes.Buffer
-	w.enter()
-	for _, ref := range []string{"supernova/missing", "supernova/broken"} {
-		if err := cmdRun([]string{ref}, &out); err == nil || strings.Contains(err.Error(), noCodeRefusal) {
-			t.Errorf("run %s should give the usual error: %v", ref, err)
+	t.Run("default-none project", func(t *testing.T) {
+		w := noCodeWorld(t, "pipeline: none")
+		if got, err := taskHasNoCode(w.bridge, "supernova", "missing"); got || err != nil {
+			t.Errorf("a missing task in a default-none project is not a no-code task: %v %v", got, err)
 		}
-	}
-	w = noCodeWorld(t, "pipeline: coding")
-	w.frontTask("t", "documentation: on\n")
-	w.enter()
-	if err := cmdTask([]string{"open", "supernova/t"}, &out); err == nil || !strings.Contains(err.Error(), "only value") {
-		t.Errorf("an invalid project value should be refused when the project loads: %v", err)
-	}
+		write(t, filepath.Join(w.bridge, "projects/supernova/tasks/broken/task.md"), "---\npipeline: coding\n\n## Goal\n")
+		if got, err := taskHasNoCode(w.bridge, "supernova", "broken"); got || err != nil {
+			t.Errorf("a broken task in a default-none project is not a no-code task: %v %v", got, err)
+		}
+		var out bytes.Buffer
+		w.enter()
+		for _, ref := range []string{"supernova/missing", "supernova/broken"} {
+			if err := cmdRun([]string{ref}, &out); err == nil || strings.Contains(err.Error(), noCodeRefusal) {
+				t.Errorf("run %s should give the usual error: %v", ref, err)
+			}
+		}
+	})
+	t.Run("invalid project value", func(t *testing.T) {
+		var out bytes.Buffer
+		w := noCodeWorld(t, "pipeline: coding")
+		w.frontTask("t", "documentation: on\n")
+		w.enter()
+		if err := cmdTask([]string{"open", "supernova/t"}, &out); err == nil || !strings.Contains(err.Error(), "only value") {
+			t.Errorf("an invalid project value should be refused when the project loads: %v", err)
+		}
+	})
 }
 
 func TestNoCodeOpen(t *testing.T) {
