@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -247,15 +249,62 @@ func TestSessionStartPointsAtRequestsTopic(t *testing.T) {
 	}
 }
 
+// The notes commitNotes returns and the sync note can both reach the context; the worst of them is added to a full session start.
+func TestSessionStartFitsBudgetWithWorstNotes(t *testing.T) {
+	needGit(t)
+	w := linkedWorld(t)
+	journalFixture(t, w)
+	write(t, filepath.Join(w.bridge, "notes", "log", "2026-11.md"), "x\n")
+	for i := 0; i < 40; i++ {
+		write(t, filepath.Join(w.bridge, "notes", fmt.Sprintf("topic-%02d.md", i)), "x\n")
+	}
+	write(t, filepath.Join(w.bridge, "notes", "inbox.md"), "call Ada\n")
+	ctx := w.startWithNotes("clear", strings.Repeat("Prefer small commits and explain each one.\n", 400))
+	for _, want := range []string{"too long to reprint", "and ", " more", "unsorted notes"} {
+		if !strings.Contains(ctx, want) {
+			t.Fatalf("the worst case should hold %q:\n%s", want, ctx)
+		}
+	}
+	committed := fmt.Sprintf(notesCommittedFmt, math.MaxInt) + "\n"
+	statusRead := fmt.Sprintf(syncStatusFmt, "exit status 255") + "\n"
+	syncWorst := max(len(syncLocalChangesNote)+1, len(syncDivergedNote)+1, len(statusRead))
+	// A push that fails returns synced, so main skips syncBridge and no sync note follows notesPushFailed.
+	worst := max(len(notesCommitFailed)+1+syncWorst, len(committed)+syncWorst, len(committed)+len(notesPushFailed))
+	size := len(ctx) - len(fmt.Sprintf(notesCommittedFmt, 42)+"\n") + worst
+	if len(w.bridge) < 200 {
+		size += (200 - len(w.bridge)) * strings.Count(ctx, w.bridge)
+	}
+	t.Logf("padded size %d, limit %d", size, manualLimit)
+	if size >= manualLimit {
+		t.Errorf("worst case session start text is %d characters with a 200-character bridge path; the budget is %d", size, manualLimit)
+	}
+}
+
 // Claude Code cuts additionalContext at 10,000 characters; the bridge path is repeated in the text, so the budget is checked as if the path were 200 characters long.
 func TestSessionStartFitsBudgetWithLongBridgePath(t *testing.T) {
 	for _, c := range []struct{ name, source, notes string }{
 		{"startup", "startup", ""},
+		{"full notes block", "startup", ""},
 		{"notes too long to reprint", "compact", strings.Repeat("Prefer small commits and explain each one.\n", 400)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			w := linkedWorld(t)
+			if c.name == "full notes block" {
+				needGit(t)
+				journalFixture(t, w)
+				for i := 0; i < 40; i++ {
+					write(t, filepath.Join(w.bridge, "notes", fmt.Sprintf("topic-%02d-with-a-long-name.md", i)), "x\n")
+				}
+				write(t, filepath.Join(w.bridge, "notes", "inbox.md"), "call Ada\n")
+			}
 			ctx := w.startWithNotes(c.source, c.notes)
+			if c.name == "full notes block" {
+				for _, want := range []string{"and ", " more", "unsorted notes", "committed hand edits"} {
+					if !strings.Contains(ctx, want) {
+						t.Fatalf("the worst case should hold %q:\n%s", want, ctx)
+					}
+				}
+			}
 			size := len(ctx)
 			if len(w.bridge) < 200 {
 				size += (200 - len(w.bridge)) * strings.Count(ctx, w.bridge)

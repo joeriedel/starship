@@ -828,6 +828,8 @@ agents outside the run are ignored, and the hook prints nothing. `SubagentStop`'
 
 Records the session's id for its commands (§5.5) and prints the heartbeat (§12.5).
 
+Before it syncs the bridge from its remote, it commits Markdown files without a hidden path segment, changed by hand under `notes/` (§11.3), by name, except after a compaction, which happens mid-session. It skips when another session holds the lock, HEAD is detached or files are unmerged. When the bridge has a remote and no other tracked file is dirty, it then rebases and pushes in place of the fast-forward, so a remote edit to the inbox still arrives; a failure becomes a note in the context. For every source it prints a capped index of the notes by file name, and a line when `notes/inbox.md` holds something.
+
 After a compaction or clear, which replace the context, it also reprints the session's recorded task's `project.md`, or one line pointing at `ensign task open` when that would push the context over the limit; startup has nothing to lose and resume keeps the transcript.
 
 **UserPromptSubmit**
@@ -1143,6 +1145,7 @@ depend on the project's VCS:
 - **Off:** the project declares `journal: { commit: off, reason: "<why>" }`. The Stop
   hook then skips journal checks for that project. Turning it off needs a reason, like a
   `not-applicable` binding.
+- Notes under `notes/` (§11.3) are journal files too: the Stop hook blocks on uncommitted ones, and `ensign journal commit` covers them. `projects/` filtering and `journal: off` do not apply to them.
 - The agent commits through `ensign journal commit -m "<message>" <files>`, which stages,
   commits and pushes in one step. Deletions and both sides of a rename are committed too. The push rebases onto the remote with `--autostash`, so unrelated uncommitted changes in the bridge do not block it; if the pull fails with no conflicted files, the error carries git's own message. The push refuses while unmerged files remain from an earlier conflict. If re-applying the autostash conflicts, the push still goes out and the error says so: files with conflict markers are left as plain modifications with the stash kept, and files the pushed version deleted are removed from the bridge (so they are not committed back) with their changes kept in the stash.
 
@@ -1206,7 +1209,13 @@ SHA256SUMS
   .claude/agents/                generated from the pinned clone (gitignored)
   CLAUDE.md                      setup steps, the session-only heartbeat rule; no imports
   machine.yaml                   where this machine keeps each project's code (gitignored)
+  notes/                         general context above any project, plain Markdown, created on first use
+    profile.md people.md         roles, goals and project involvement; people
+    log/YYYY-MM.md               the monthly log, dated entries
+    inbox.md                     unsorted notes, editable from anywhere; the session sorts it
 ```
+
+Nothing creates `notes/` up front. The session reads its files on demand from an index printed at session start; run agents never see it.
 
 **Pinning.** `bridge.yaml` names a release tag. The pinned clone is a shallow fetch of
 exactly that tag; a bridge needs no history. Every run snapshot records the tag.
@@ -1340,7 +1349,7 @@ So there are two defences:
 - **A heartbeat at session start.** SessionStart replies with JSON. Its
   `additionalContext` holds `STARSHIP-READY ensign <version> bridge <tag>`, followed by
   the session manual, which appear in the session's context (§7.1). Claude Code cuts
-  `additionalContext` over 10,000 characters to a preview, so a test keeps the heading, the manual and its pointers, with a 200-character bridge path, under 8,000 characters (`manualLimit`, `cmd/ensign/selftest.go`); project notes reprinted after a compaction or clear are bounded only by `sessionContextLimit` (10,000).
+  `additionalContext` over 10,000 characters to a preview, so a test keeps the heading, the manual and its pointers, with a 200-character bridge path, and the capped notes index, inbox line and commit note, under 8,000 characters (`manualLimit`, `cmd/ensign/selftest.go`); project notes reprinted after a compaction or clear are bounded only by `sessionContextLimit` (10,000).
   Its `systemMessage` shows the user one line at startup, "Starship ready · bridge
   <name> · <release>", without calling the model. The bridge's `CLAUDE.md`: **if that line is absent, or starship hooks report
   errors, say so plainly and do nothing except help fix it** — no pipeline, no agent

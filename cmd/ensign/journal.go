@@ -23,15 +23,18 @@ func isGit(dir string) bool {
 	return err == nil
 }
 
-// journalChanges lists changed files under projects/ and skills/, leaving out
+// journalChanges lists changed files under projects/, skills/ and notes/, leaving out
 // projects that turned journal commits off.
 func journalChanges(bridge string) ([]string, error) {
-	toks, err := gitZ(bridge, "status", "--porcelain", "-z", "--untracked-files=all", "--", "projects", "skills")
+	toks, err := gitZ(bridge, "status", "--porcelain", "-z", "--untracked-files=all", "--", "projects", "skills", "notes")
 	if err != nil {
 		return nil, fmt.Errorf("git status: %v", err)
 	}
 	var out []string
-	add := func(path string) {
+	add := func(path string, renamed bool) {
+		if !renamed && strings.HasPrefix(path, "notes/") && !isNoteFile(path) {
+			return
+		}
 		if p, ok := strings.CutPrefix(path, "projects/"); ok {
 			project, _, _ := strings.Cut(p, "/")
 			if journalOff(bridge, project) {
@@ -45,12 +48,15 @@ func journalChanges(bridge string) ([]string, error) {
 		if len(t) < 4 {
 			continue
 		}
-		add(t[3:])
-		// A rename lists both sides; both are committed so the old path is removed.
+		// A rename lists both sides; both are committed so the old path is removed, and a note on either side keeps both.
 		if strings.ContainsAny(t[:2], "RC") && i+1 < len(toks) {
+			keep := isNoteFile(t[3:]) || isNoteFile(toks[i+1])
+			add(t[3:], keep)
 			i++
-			add(toks[i])
+			add(toks[i], keep)
+			continue
 		}
+		add(t[3:], false)
 	}
 	return out, nil
 }
@@ -366,6 +372,10 @@ func remoteHas(dir, remote, branch string) bool {
 	return err == nil && out != ""
 }
 
+const syncLocalChangesNote = "starship: the bridge has local changes, so it was not updated from its remote."
+const syncDivergedNote = "starship: the bridge could not fast-forward from its remote (it has diverged); resolve with a rebase."
+const syncStatusFmt = "starship: the bridge's status could not be read (%v), so it was not updated from its remote."
+
 // syncBridge fast-forwards a clean bridge from its remote at session start.
 func syncBridge(bridge string) string {
 	if !isGit(bridge) || remoteName(bridge) == "" {
@@ -373,17 +383,17 @@ func syncBridge(bridge string) string {
 	}
 	status, err := gitOut(bridge, "status", "--porcelain", "--untracked-files=no")
 	if err != nil {
-		return fmt.Sprintf("starship: the bridge's status could not be read (%v), so it was not updated from its remote.", err)
+		return fmt.Sprintf(syncStatusFmt, err)
 	}
 	if status != "" {
-		return "starship: the bridge has local changes, so it was not updated from its remote."
+		return syncLocalChangesNote
 	}
 	branch, err := gitOut(bridge, "symbolic-ref", "--short", "HEAD")
 	if err != nil || !remoteHas(bridge, remoteName(bridge), branch) {
 		return ""
 	}
 	if err := git(bridge, "pull", "-q", "--ff-only", remoteName(bridge), branch); err != nil {
-		return "starship: the bridge could not fast-forward from its remote (it has diverged); resolve with a rebase."
+		return syncDivergedNote
 	}
 	return ""
 }

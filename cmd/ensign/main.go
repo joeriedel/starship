@@ -382,8 +382,18 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			clearTopicMarkers(bridge, in.SessionID)
 		}
 	}
-	if note := syncBridge(bridge); note != "" {
-		fmt.Fprintln(&ctx, note)
+	// Hand edits to notes/ are committed first: a dirty tracked file would stop the sync. A compaction happens mid-session, when the session's own filing may be half done.
+	synced := false
+	if in.Source != "compact" {
+		var note string
+		if note, synced = commitNotes(bridge); note != "" {
+			fmt.Fprintln(&ctx, note)
+		}
+	}
+	if !synced {
+		if note := syncBridge(bridge); note != "" {
+			fmt.Fprintln(&ctx, note)
+		}
 	}
 	if note := migrateWorkspaces(bridge); note != "" {
 		fmt.Fprintln(&ctx, note)
@@ -421,6 +431,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if requestCommands(bridge) != "" {
 		fmt.Fprint(&ctx, "\nTo carry out a request like squashing commits or curating skills: read `ensign help requests` for the requests this bridge answers and the command for each.\n")
 	}
+	ctx.WriteString(notesContext(bridge))
 	// A compaction or clear replaces the context, so the task's project notes, which
 	// task open printed into it, are printed again.
 	if task := sessionTask(bridge, in.SessionID); in.SessionID != "" && task != "" && (in.Source == "compact" || in.Source == "clear") {
