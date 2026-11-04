@@ -698,17 +698,38 @@ func cancelStep(bridge string, st *seqStep, status, reason string) {
 	}
 }
 
+// unstarted reports whether a run is queued, or approved with its lead never dispatched.
+func unstarted(st *State) bool {
+	return st.Status == "pending" || (st.Status == "running" && st.Approved && !st.Started && len(st.Dispatches) == 0)
+}
+
 // retireUnstarted retires a run that is queued, or approved with its lead never dispatched. It reports whether it did.
 func retireUnstarted(bridge, id, reason string) bool {
 	r, err := openRun(bridge, id)
 	if err != nil {
 		return false
 	}
-	if st := r.State; st.Status != "pending" && !(st.Status == "running" && st.Approved && !st.Started && len(st.Dispatches) == 0) {
+	if !unstarted(r.State) {
 		r.close()
 		return false
 	}
 	return markRetired(r, reason) == nil
+}
+
+// retireForHalt retires a run halt collected: an unstarted one, or one that asks the user when paused is set. A run in any other state, or whose folder is gone, is left alone with no error; the error is for a run that should have been retired and could not be.
+func retireForHalt(bridge, id, reason string, paused bool) error {
+	r, err := openRun(bridge, id)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !unstarted(r.State) && !(paused && r.State.Status == "ask-user") {
+		r.close()
+		return nil
+	}
+	return markRetired(r, reason)
 }
 
 // retireIf makes a run terminal, but only if it is still in one of the given states when its lock is held. It reports whether it did.
@@ -1426,8 +1447,8 @@ func cmdSequence(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		// A paused step's run may be held by a finishing hook, whose order is run then sequence; so its run is retired here between two holds of the sequence lock.
-		var pausedRuns []string
+		// A finishing hook holds a run's lock and then takes the sequence lock, so the runs of an active or paused step are retired between two holds of it, and "run ensign sequence halt again" is true for them; a pending step's unstarted runs are retired under the lock because no finishing hook holds a pending run's lock, and a decide step's runs are all over and may be held by a hook, so none is opened.
+		var pausedRuns, unstartedRuns []string
 		var halted string
 		err = withSeq(bridge, session, func(sf *seqFile) error {
 			var cur *sequence
@@ -1456,15 +1477,19 @@ func cmdSequence(args []string, out io.Writer) error {
 						pausedRuns = append(pausedRuns, ru.Run)
 					}
 				case st.Kind == "run" && st.Status == "active":
-					// A run still queued for a busy folder, or approved with no lead yet, never starts now.
-					all := true
+					// A run still queued for a busy folder, or approved with no lead yet, never starts now; the second hold's reconcile cancels the step once they are retired.
 					for _, ru := range st.runs() {
-						if !retireUnstarted(bridge, ru.Run, haltPrefix+reason) {
-							all = false
-						}
+						unstartedRuns = append(unstartedRuns, ru.Run)
 					}
-					if all {
-						st.Status, st.Reason = "cancelled", reason
+				case st.Kind == "run" && (st.Status == "pending" || st.deciding()):
+					wasPending := st.Status == "pending"
+					st.Status, st.Reason = "cancelled", reason
+					if wasPending {
+						for _, ru := range st.runs() {
+							if ru.Status == "" || ru.Status == "pending" {
+								retireUnstarted(bridge, ru.Run, haltPrefix+reason)
+							}
+						}
 					}
 				case st.Status == "pending" || st.deciding() || (st.Status == "active" && (st.Kind == "do" || (st.Kind == "release" && !st.Started))):
 					cancelStep(bridge, st, "cancelled", reason)
@@ -1478,10 +1503,18 @@ func cmdSequence(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
+		var retireErrs []error
 		for _, id := range pausedRuns {
-			retireIf(bridge, id, haltPrefix+reason, "pending", "ask-user")
+			if err := retireForHalt(bridge, id, haltPrefix+reason, true); err != nil {
+				retireErrs = append(retireErrs, fmt.Errorf("run %s could not be retired: %w", id, err))
+			}
 		}
-		return withSeq(bridge, session, func(sf *seqFile) error {
+		for _, id := range unstartedRuns {
+			if err := retireForHalt(bridge, id, haltPrefix+reason, false); err != nil {
+				retireErrs = append(retireErrs, fmt.Errorf("run %s could not be retired: %w", id, err))
+			}
+		}
+		err = withSeq(bridge, session, func(sf *seqFile) error {
 			text, err := sf.advance(bridge, session)
 			if text != "" {
 				fmt.Fprintln(out, text)
@@ -1493,6 +1526,11 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			return err
 		})
+		if len(retireErrs) > 0 {
+			err = errors.Join(append(retireErrs, err)...)
+			return fmt.Errorf("%w\nrun ensign sequence halt again to retire what is left", err)
+		}
+		return err
 	case "drop":
 		const dropUsage = "usage: ensign sequence drop <step>... [--reason <text>]"
 		var steps []string
@@ -1584,6 +1622,9 @@ func cmdSequence(args []string, out io.Writer) error {
 		}
 		return withSeq(bridge, session, func(sf *seqFile) error {
 			seq := sf.openSeq()
+			if n := len(sf.Sequences); seq == nil && n > 0 && sf.Sequences[n-1].Halted && sf.Sequences[n-1].unfinished() {
+				return fmt.Errorf("%s is already halted and closes when the step still active finishes", sf.Sequences[n-1].label())
+			}
 			if seq == nil {
 				return fmt.Errorf("there is no sequence waiting for go to discard; an approved sequence is stopped with ensign sequence halt")
 			}

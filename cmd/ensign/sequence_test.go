@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gofrs/flock"
 )
 
 // seq runs `ensign sequence …` as the world's session.
@@ -1697,4 +1700,182 @@ func TestSequenceStopOffersSkipOnlyInStopMode(t *testing.T) {
 			t.Errorf("%s mode: has the workspace note = %v:\n%s", mode, got, reason)
 		}
 	}
+}
+
+// haltWithRunLockHeld runs halt while the test holds the lock of a run, as a finishing hook does, and checks halt does not hold the sequence lock while it waits for that run. It returns once halt has finished.
+func (w *world) haltWithRunLockHeld(run string) {
+	w.t.Helper()
+	l := flock.New(filepath.Join(runsDir(w.bridge), run, "lock"))
+	if err := l.Lock(); err != nil {
+		w.t.Fatal(err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			l.Unlock()
+		}
+	}
+	defer release()
+	halted := make(chan error, 1)
+	go func() {
+		_, err := w.seq("halt", "--reason", "stop")
+		halted <- err
+	}()
+	saved := make(chan bool, 1)
+	go func() {
+		for {
+			var h bool
+			withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+				h = len(sf.Sequences) > 0 && sf.Sequences[0].Halted
+				return nil
+			})
+			if h {
+				saved <- true
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	select {
+	case <-saved:
+	case <-time.After(10 * time.Second):
+		release()
+		<-halted
+		w.t.Fatal("halt kept the sequence lock while waiting for a run lock")
+	}
+	release()
+	select {
+	case err := <-halted:
+		if err != nil {
+			w.t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		w.t.Fatal("halt did not finish after the run lock was released")
+	}
+}
+
+func TestSequenceHaltOfAnActiveRunStepTakesNoRunLockUnderTheSequenceLock(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	ids := w.stepRuns(1)
+	w.haltWithRunLockHeld(ids[0])
+	if st := w.runState(ids[0]); st.Status != "error" || st.Reason != "cancelled: stop" {
+		t.Errorf("the unstarted run should be retired: %s %q", st.Status, st.Reason)
+	}
+	w.wantStatus("cancelled")
+	if st := w.step(1); st.Reason != "stop" {
+		t.Errorf("reason %q", st.Reason)
+	}
+}
+
+func TestSequenceHaltOfADecidingRunStepTakesNoRunLockUnderTheSequenceLock(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	ids := w.stepRuns(1)
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("decide")
+	w.haltWithRunLockHeld(ids[0])
+	w.wantStatus("cancelled")
+	if st := w.step(1); st.Reason != "stop" {
+		t.Errorf("reason %q", st.Reason)
+	}
+}
+
+func TestSequenceHaltOfAPausedGroupRetiresAnApprovedRunWithNoLead(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	r, err := openRun(w.bridge, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status, r.State.Reason = "ask-user", "another cycle?"
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+	w.stopHook()
+	w.wantStatus("paused")
+	w.mustSeq("halt", "--reason", "stop")
+	for _, id := range ids {
+		if st := w.runState(id); st.Status != "error" || st.Reason != "cancelled: stop" {
+			t.Errorf("run %s: %s %q", id, st.Status, st.Reason)
+		}
+	}
+	w.wantStatus("cancelled")
+	if !readSeq(w.bridge, w.sid).Sequences[0].Closed {
+		t.Error("the sequence should be closed")
+	}
+}
+
+func TestSequenceDiscardOfAHaltedSequenceWithAStepStillActiveSaysSo(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	w.leadOf(ids[1])
+	w.mustSeq("halt")
+	w.wantStatus("active")
+	_, err := w.seq("discard")
+	if err == nil || !strings.Contains(err.Error(), readSeq(w.bridge, w.sid).Sequences[0].label()) || strings.Contains(err.Error(), "ensign sequence halt") {
+		t.Errorf("discard error: %v", err)
+	}
+}
+
+func TestSequenceHaltSaysSoWhenARunCouldNotBeRetired(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	w.leadOf(ids[1])
+	block := filepath.Join(runsDir(w.bridge), ids[0], "state.json.tmp")
+	if err := os.Mkdir(block, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := w.seq("halt", "--reason", "stop")
+	if err == nil || !strings.Contains(err.Error(), ids[0]) || !strings.Contains(err.Error(), "ensign sequence halt again") {
+		t.Fatalf("halt error: %v", err)
+	}
+	if strings.Contains(err.Error(), ids[1]) {
+		t.Errorf("the run with a lead was left alone and should not be named: %v", err)
+	}
+	if !readSeq(w.bridge, w.sid).Sequences[0].Halted {
+		t.Error("the sequence should still be saved halted")
+	}
+	if err := os.Remove(block); err != nil {
+		t.Fatal(err)
+	}
+	w.mustSeq("halt", "--reason", "stop")
+	if st := w.runState(ids[0]); st.Status != "error" || st.Reason != "cancelled: stop" {
+		t.Errorf("the run should be retired by the second halt: %s %q", st.Status, st.Reason)
+	}
+}
+
+func TestSequenceHaltOfARetriedPendingGroupStepRetiresOnlyTheFreshRun(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		st := sf.Sequences[0].Steps[0]
+		st.Status = "pending"
+		st.runs()[0].Status = "error"
+		st.runs()[1].Status = "pending"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.haltWithRunLockHeld(ids[0])
+	if st := w.runState(ids[1]); st.Status != "error" || st.Reason != "cancelled: stop" {
+		t.Errorf("the fresh run should be retired: %s %q", st.Status, st.Reason)
+	}
+	if st := w.runState(ids[0]); st.Reason == "cancelled: stop" {
+		t.Errorf("the kept run should not be touched: %s %q", st.Status, st.Reason)
+	}
+	w.wantStatus("cancelled")
 }
