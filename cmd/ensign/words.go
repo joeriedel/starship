@@ -32,11 +32,45 @@ func requestCommands(bridge string) string {
 			}
 		}
 	}
-	if len(lines) == 0 {
-		return ""
+	out := ""
+	if len(lines) > 0 {
+		out = "## Requests this bridge answers, and the command for each\n\n" +
+			"A command that starts a run needs the user's go, like any run.\n\n" + strings.Join(lines, "\n") + "\n"
 	}
-	return "## Requests this bridge answers, and the command for each\n\n" +
-		"A command that starts a run needs the user's go, like any run.\n\n" + strings.Join(lines, "\n") + "\n"
+	if broken := brokenExtensionLines(bridge); len(broken) > 0 {
+		if out != "" {
+			out += "\n"
+		}
+		out += "## Extensions whose requests may be missing from the help, because their file is broken\n\n- " + strings.Join(broken, "\n- ") + "\n"
+	}
+	return out
+}
+
+// brokenExtensionLines describes, one line each and sorted, the extensions whose file is broken: one that does not decode, or one that decodes without a name.
+func brokenExtensionLines(bridge string) []string {
+	bf, err := loadBridgeFile(bridge)
+	if err != nil {
+		return nil
+	}
+	cp, err := controlPlaneDir(bridge, bf)
+	if err != nil {
+		return nil
+	}
+	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	var out []string
+	_, broken := scanExtensions(bridge, cp)
+	for name, err := range broken {
+		out = append(out, oneLine(fmt.Sprintf("%s: %s", name, err)))
+	}
+	for _, dir := range extensionDirs(bridge, cp) {
+		file := filepath.Join(dir, "extension.yaml")
+		var x Extension
+		if readYAML(file, &x) == nil && x.Name == "" {
+			out = append(out, oneLine(fmt.Sprintf("%s: %s declares no name", filepath.Base(dir), file)))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 var fixedHelp = []struct {
@@ -233,6 +267,12 @@ func helpText(bridge, session string) string {
 			fmt.Fprintf(&b, "  %-44s %s\n", e.Say, e.Does)
 		}
 	}
+	if broken := brokenExtensionLines(bridge); len(broken) > 0 {
+		b.WriteString("\nExtensions whose requests may be missing from this help, because their file is broken\n")
+		for _, l := range broken {
+			b.WriteString("  " + l + "\n")
+		}
+	}
 	if projects := projectList(bridge); projects != "" {
 		b.WriteString("\nProjects: " + projects + "\n")
 	}
@@ -264,11 +304,8 @@ func extraHelp(bridge string) map[string][]HelpEntry {
 		}
 	}
 	for _, dir := range extensionDirs(bridge, cp) {
-		var x struct {
-			Name string      `yaml:"name"`
-			Help []HelpEntry `yaml:"help"`
-		}
-		if readYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && len(x.Help) > 0 {
+		var x Extension
+		if readYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && x.Name != "" && len(x.Help) > 0 {
 			group := strings.ToUpper(x.Name[:1]) + strings.ReplaceAll(x.Name[1:], "-", " ")
 			out[group] = append(out[group], x.Help...)
 		}

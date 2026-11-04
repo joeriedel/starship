@@ -1489,12 +1489,15 @@ func TestScanExtensionsRecoversDeclaredNameOfSyntaxBrokenFile(t *testing.T) {
 		}
 		return string(out)
 	}
+	noBOM := func(s string, little bool) string { return utf16Bytes(s, little)[2:] }
 	for name, body := range map[string]string{
 		"quoted with comment": "name: \"git-catalog\" # comment\nsummary: [a\n",
 		"crlf":                "name: git-catalog\r\nsummary: [a\r\n",
 		"utf-8 bom crlf":      "\xEF\xBB\xBFname: git-catalog\r\nsummary: [a\r\n",
 		"utf-16 le crlf":      utf16Bytes("name: git-catalog\r\nsummary: [a\r\n", true),
 		"utf-16 be":           utf16Bytes("name: git-catalog\nsummary: [a\n", false),
+		"utf-16 le no bom":    noBOM("name: git-catalog\nsummary: [a\n", true),
+		"utf-16 be no bom":    noBOM("name: git-catalog\nsummary: [a\n", false),
 	} {
 		bridge, cp := t.TempDir(), t.TempDir()
 		write(t, filepath.Join(bridge, "extensions", "my-catalog", "extension.yaml"), body)
@@ -1511,5 +1514,98 @@ func TestScanExtensionsSyntaxBrokenFileWithoutNameKeyedByFolder(t *testing.T) {
 	_, broken := scanExtensions(bridge, cp)
 	if broken["my-catalog"] == nil || len(broken) != 1 {
 		t.Errorf("broken = %v; want one entry keyed my-catalog", broken)
+	}
+}
+
+func TestHelpNamesBrokenExtensions(t *testing.T) {
+	ext := func(w *world, folder, body string) string {
+		p := filepath.Join(w.bridge, "extensions", folder, "extension.yaml")
+		write(t, p, body)
+		return p
+	}
+	const heading = "Requests this bridge answers"
+	both := func(w *world) (string, string) { return helpText(w.bridge, w.session), requestCommands(w.bridge) }
+
+	w := newWorld(t)
+	help, cmds := both(w)
+	if strings.Contains(help, "missing from this help") || strings.Contains(cmds, "missing from the help") {
+		t.Errorf("no broken extension, but a section appeared:\n%s\n%s", help, cmds)
+	}
+
+	file := ext(w, "supernova-feed", "name: supernova-feed\nsummary: [a\n")
+	help, cmds = both(w)
+	for _, got := range []string{help, cmds} {
+		if !strings.Contains(got, "supernova-feed: "+file) {
+			t.Errorf("want the broken extension named with its file %s:\n%s", file, got)
+		}
+	}
+	if !strings.Contains(cmds, heading) || strings.Index(help, "missing from this help") > strings.Index(help, "Projects:") {
+		t.Errorf("section misplaced:\n%s\n%s", help, cmds)
+	}
+
+	file = ext(w, "supernova-feed", "name: supernova-feed\nsummary: [a, b]\nhelp: 3\nrequires: {a: b}\n")
+	_, cmds = both(w)
+	found := false
+	for _, l := range strings.Split(cmds, "\n") {
+		if strings.HasPrefix(l, "- supernova-feed:") {
+			found = true
+			if !strings.Contains(l, file) {
+				t.Errorf("description lost its file: %q", l)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("type-error extension not named:\n%s", cmds)
+	}
+	if strings.Contains(cmds, "unmarshal errors:\n") {
+		t.Errorf("type error not flattened:\n%s", cmds)
+	}
+
+	w = newWorld(t)
+	file = ext(w, "supernova-nameless", "summary: x\nhelp:\n  - {say: look, does: looks, run: ls}\n")
+	help, cmds = both(w)
+	for _, got := range []string{help, cmds} {
+		if !strings.Contains(got, "supernova-nameless: "+file+" declares no name") {
+			t.Errorf("nameless extension not reported by folder:\n%s", got)
+		}
+	}
+
+	w = newWorld(t)
+	ext(w, "supernova-feed", "name: supernova-feed\nplatforms: linux\nhelp:\n  - {say: feed, does: feeds, run: ls}\n")
+	help, cmds = both(w)
+	if !strings.Contains(cmds, "- supernova-feed: ") || !strings.Contains(help, "supernova-feed: ") {
+		t.Errorf("type-error extension not named:\n%s\n%s", help, cmds)
+	}
+	if strings.Contains(help, "feeds") || strings.Contains(cmds, "- feed: `ls`") {
+		t.Errorf("extension that does not load still contributes help:\n%s\n%s", help, cmds)
+	}
+
+	w = newWorld(t)
+	file = ext(w, "supernova-nameless", "platforms: linux\n")
+	help, cmds = both(w)
+	for _, got := range []string{help, cmds} {
+		if n := strings.Count(got, "supernova-nameless: "); n != 1 {
+			t.Errorf("want one line for the nameless type-error file, got %d:\n%s", n, got)
+		}
+	}
+
+	w = newWorld(t)
+	cp := t.TempDir()
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+cp+"\n")
+	write(t, filepath.Join(cp, "extensions", "supernova-feed", "extension.yaml"), "name: supernova-feed\nsummary: [a\n")
+	if help, _ := both(w); !strings.Contains(help, "supernova-feed: ") {
+		t.Fatalf("broken control-plane extension not reported:\n%s", help)
+	}
+	ext(w, "supernova-feed-2", "name: supernova-feed\nsummary: ok\nhelp:\n  - {say: feed, does: feeds, run: ls}\n")
+	help, cmds = both(w)
+	if strings.Contains(help, "missing from this help") || strings.Contains(cmds, "missing from the help") {
+		t.Errorf("replaced extension still reported:\n%s\n%s", help, cmds)
+	}
+
+	write(t, filepath.Join(cp, "extensions", "supernova-feed", "extension.yaml"), "name: supernova-feed\nsummary: [a\n")
+	os.Remove(filepath.Join(w.bridge, "extensions", "supernova-feed-2", "extension.yaml"))
+	_, cmds = both(w)
+	if cmds == "" || strings.Contains(cmds, heading) {
+		t.Errorf("want the broken section alone:\n%s", cmds)
 	}
 }

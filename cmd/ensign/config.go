@@ -1488,7 +1488,7 @@ func scanExtensions(bridge, cp string) (map[string]*Extension, map[string]error)
 	return out, broken
 }
 
-// declaredName reads the name: line of a file that failed to decode as a whole, or "" when there is none or the file cannot be read. It accepts the BOMs and UTF-16 that yaml.v3 does, which Windows editors write.
+// declaredName reads the name: line of a file that failed to decode as a whole, or "" when there is none or the file cannot be read. It accepts a UTF-8 BOM and UTF-16, with or without a BOM, which Windows editors write.
 func declaredName(file string) string {
 	data, err := os.ReadFile(file)
 	if err != nil {
@@ -1506,16 +1506,26 @@ func declaredName(file string) string {
 	return ""
 }
 
-// normalizeYAMLBytes strips a UTF-8 BOM and decodes UTF-16 with a BOM to UTF-8; other input is returned unchanged.
+// normalizeYAMLBytes strips a UTF-8 BOM and decodes UTF-16 to UTF-8, found by its BOM or else by the YAML spec's first-two-bytes rule (`x 00` little-endian, `00 x` big-endian); other input is returned unchanged. It runs only on a file that already failed to decode, so a false positive can only change the key of an already-broken file.
 func normalizeYAMLBytes(data []byte) []byte {
 	if bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}) {
 		return data[3:]
 	}
-	if len(data) < 2 || !(data[0] == 0xFF && data[1] == 0xFE || data[0] == 0xFE && data[1] == 0xFF) {
+	if len(data) < 2 {
 		return data
 	}
-	little := data[0] == 0xFF
-	data = data[2:]
+	var little bool
+	switch {
+	case data[0] == 0xFF && data[1] == 0xFE:
+		little, data = true, data[2:]
+	case data[0] == 0xFE && data[1] == 0xFF:
+		data = data[2:]
+	case data[0] != 0 && data[1] == 0:
+		little = true
+	case data[0] == 0 && data[1] != 0:
+	default:
+		return data
+	}
 	units := make([]uint16, 0, len(data)/2)
 	for i := 0; i+1 < len(data); i += 2 {
 		if little {

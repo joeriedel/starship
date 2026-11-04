@@ -930,6 +930,8 @@ Where each part comes from:
 A pipeline or extension without help entries is a validation error: a missing description is
 caught, never guessed.
 
+An extension whose file is broken has no help entries to show, so help and `ensign help requests` name it, with its file and why, instead of leaving it out.
+
 `ensign help` in a terminal is separate: it documents the `ensign` commands, for whoever
 is developing or debugging starship itself.
 
