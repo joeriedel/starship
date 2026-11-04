@@ -2,11 +2,13 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -54,6 +56,10 @@ func editGuard(bridge string, in *HookInput) (reason, warning string, err error)
 				who = "this " + d.Role
 				if !d.Done && (d.Stage == "code" || d.Stage == "style") {
 					folders = append(append(runCodeFolders(r), scratch), folders...)
+				} else if !d.Done && d.Role == "documentation" {
+					docs := docsFolders(r)
+					who = "this documentation stage (only the @docs paths: " + strings.Join(docs, ", ") + ")"
+					folders = append(append(docs, scratch), folders...)
 				} else {
 					folders = append([]string{scratch}, folders...)
 				}
@@ -68,6 +74,157 @@ func editGuard(bridge string, in *HookInput) (reason, warning string, err error)
 	}
 	return "this edit was refused because " + target + " is outside the folders " + who + " may edit: " + strings.Join(folders, ", ") +
 		". The same limit applies to shell commands (redirection, sed -i, cp, git apply, scripts) that write files. Working around the guard is a failure, not a fix.", warning, nil
+}
+
+// docsFolders are the run's @docs paths, joined to its workspace.
+func docsFolders(r *RunFiles) []string {
+	var out []string
+	for _, p := range r.Snap.Bindings["docs"].Paths {
+		out = append(out, filepath.Join(r.Snap.Workspace, filepath.FromSlash(strings.ReplaceAll(p, `\`, "/"))))
+	}
+	return out
+}
+
+// gitDirtyPaths lists the paths git status reports as changed or untracked, relative to the repository root, including the original path of a rename or copy.
+func gitDirtyPaths(ws string) ([]string, error) {
+	toks, err := gitZ(ws, "status", "--porcelain", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, fmt.Errorf("git status: %v", err)
+	}
+	var out []string
+	for i := 0; i < len(toks); i++ {
+		t := toks[i]
+		if len(t) < 4 {
+			continue
+		}
+		out = append(out, t[3:])
+		if strings.ContainsAny(t[:2], "RC") && i+1 < len(toks) {
+			i++
+			out = append(out, toks[i])
+		}
+	}
+	return out, nil
+}
+
+// docsBaseline records each dirty path of the workspace with its content hash, taken when the documentation agent is spawned; nil if the workspace is not a git repository.
+func docsBaseline(r *RunFiles) (map[string]string, error) {
+	ws := r.Snap.Workspace
+	root, err := gitOut(ws, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, nil
+	}
+	dirty, err := gitDirtyPaths(ws)
+	if err != nil {
+		return nil, err
+	}
+	base := map[string]string{}
+	for _, p := range dirty {
+		base[p] = fileHash(root, p)
+	}
+	return base, nil
+}
+
+// docsChanged lists, relative to the repository root, the paths changed since the baseline (a dirty path not in it, or one whose content differs, a deleted file included), split into those inside the @docs paths and those outside. root is empty if the workspace is not a git repository.
+func docsChanged(r *RunFiles, base map[string]string) (root string, inside, outside []string, err error) {
+	ws := r.Snap.Workspace
+	root, rerr := gitOut(ws, "rev-parse", "--show-toplevel")
+	if rerr != nil {
+		return "", nil, nil, nil
+	}
+	dirty, err := gitDirtyPaths(ws)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	seen := map[string]bool{}
+	var paths []string
+	for _, p := range append(dirty, mapKeys(base)...) {
+		if !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+	var allowed []string
+	for _, f := range docsFolders(r) {
+		allowed = append(allowed, resolveEditFolder(f, runtime.GOOS))
+	}
+	for _, p := range paths {
+		if was, ok := base[p]; ok && was == fileHash(root, p) {
+			continue
+		}
+		resolved := resolveEditTarget(filepath.FromSlash(p), root, runtime.GOOS)
+		in := false
+		for _, a := range allowed {
+			if pathWithin(resolved, a, runtime.GOOS) {
+				in = true
+				break
+			}
+		}
+		if in {
+			inside = append(inside, p)
+		} else {
+			outside = append(outside, p)
+		}
+	}
+	return root, inside, outside, nil
+}
+
+func mapKeys(m map[string]string) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// lastDocsDispatch is the run's latest documentation dispatch, or nil.
+func lastDocsDispatch(r *RunFiles) *Dispatch {
+	for i := len(r.State.Dispatches) - 1; i >= 0; i-- {
+		if r.State.Dispatches[i].Role == "documentation" {
+			return r.State.Dispatches[i]
+		}
+	}
+	return nil
+}
+
+// commitDocsPaths adds the changed @docs paths to the index and commits just them; it does nothing when none differ from HEAD.
+func commitDocsPaths(root string, paths []string, noVerify bool, args ...string) error {
+	var present []string
+	for _, p := range paths {
+		abs := p
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(root, p)
+		}
+		if _, err := os.Lstat(abs); err != nil {
+			known, kerr := gitOut(root, "ls-files", "--", p)
+			if kerr != nil {
+				return fmt.Errorf("git ls-files: %v", kerr)
+			}
+			if known == "" {
+				continue
+			}
+		}
+		present = append(present, p)
+	}
+	paths = present
+	if len(paths) == 0 {
+		return nil
+	}
+	if err := git(root, append([]string{"add", "--"}, paths...)...); err != nil {
+		return err
+	}
+	staged, err := gitOut(root, append([]string{"diff", "--cached", "--name-only", "--"}, paths...)...)
+	if err != nil {
+		return fmt.Errorf("git diff --cached: %v", err)
+	}
+	if staged == "" {
+		return nil
+	}
+	commit := []string{"commit", "-q"}
+	if noVerify {
+		commit = append(commit, "--no-verify")
+	}
+	return git(root, append(append(append(commit, "--only"), args...), append([]string{"--"}, paths...)...)...)
 }
 
 // sessionEditFolders is what the session agent may edit: the bridge, temp, Claude Code's user config, and the folders bridge.yaml lists under session-edit.

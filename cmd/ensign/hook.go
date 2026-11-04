@@ -255,6 +255,14 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	} else if m.running(scope, s.ID) > 0 {
 		return deny(r, s.ID, m.expect(scope)), nil
 	}
+	if d.Role == "documentation" {
+		base, err := docsBaseline(r)
+		if err != nil {
+			m.fail("ensign", err.Error())
+			return deny(r, s.ID, "stage "+s.ID+" could not start: "+r.State.Reason), nil
+		}
+		d.DocsBase = base
+	}
 	r.State.Dispatches = append(r.State.Dispatches, d)
 	r.State.log("dispatch", s.ID, d.ID, role+" "+d.Dim)
 
@@ -493,6 +501,17 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 		}
 		outcome = join(s, got)
 	}
+	if d.Role == "documentation" {
+		_, _, stray, err := docsChanged(r, d.DocsBase)
+		if err != nil {
+			m.fail("ensign", err.Error())
+			return
+		}
+		if len(stray) > 0 {
+			m.fail("docs-scope", "the documentation stage changed files outside the @docs paths: "+strings.Join(stray, ", "))
+			return
+		}
+	}
 	if err := fire(r, "stage.after:"+s.ID, d); err != nil {
 		m.fail("handler", err.Error())
 		return
@@ -613,7 +632,7 @@ func parseReport(msg string, s *Stage) (outcome, summary string, fields map[stri
 		return "", "", nil, fmt.Sprintf("Your report's outcome %q is not one of this stage's outcomes.", outcome)
 	}
 	for _, f := range s.ReportFields {
-		if len(fields[f]) == 0 && !(f == "files" && outcome != "compiled" && outcome != "broken") {
+		if len(fields[f]) == 0 && !(f == "files" && outcome != "compiled" && outcome != "broken" && outcome != "updated") {
 			return "", "", nil, fmt.Sprintf("Your report has no %s line, which this stage requires.", f)
 		}
 	}
@@ -655,6 +674,8 @@ func bindingLine(k string, bd Binding, dir string) string {
 		return fmt.Sprintf("- @%s: `cd %s && %s`\n", k, shellQuote(dir), bd.Command)
 	case bd.Guidance != "":
 		return fmt.Sprintf("- @%s: %s\n", k, bd.Guidance)
+	case len(bd.Paths) > 0:
+		return fmt.Sprintf("- @%s: paths relative to %s: %s\n", k, shellQuote(dir), strings.Join(bd.Paths, ", "))
 	default:
 		return fmt.Sprintf("- @%s: not applicable (%s)\n", k, bd.NotApplicable)
 	}

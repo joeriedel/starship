@@ -17,6 +17,7 @@ pipelines:
 events:
   run.start:        [{ require: "ensign git-catalog record-base" }]
   stage.after:code: [{ require: "ensign git-catalog commit-pass" }]
+  stage.after:docs: [{ require: "ensign git-catalog commit-pass" }]
   stage.before:run: [{ augment: briefs/orchestrator.md }]
 
 # Squashing is not attached to any event by default. A project that wants each

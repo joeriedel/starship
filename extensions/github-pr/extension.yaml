@@ -49,4 +49,5 @@ bindings:
 events:
   run.start:          [{ require: "@branch" }]
   stage.before:test:  [{ require: "ensign github-pr commit" }]
+  stage.after:docs:   [{ require: "ensign github-pr commit-docs" }]
   run.finish:success: [{ require: "ensign github-pr ready" }]

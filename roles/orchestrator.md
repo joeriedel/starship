@@ -73,6 +73,7 @@ moves, stop or explore, and exploring is the expensive one that looks like dilig
 - **style-reviewer** — the changed files.
 - **tester** — what changed, so it knows what it is verifying. It already has the
   bindings.
+- **documentation** — built from the task's own record: the work item, its status, the decisions made, the run's account of what changed and the changed files. Name the code to read to check the docs against, and ask for no survey of the codebase. It may change only the `@docs` paths.
 
 ## Every stage starts fresh
 
@@ -92,6 +93,7 @@ Every item a stage raises gets an explicit ruling in your report.
 | reviewer | finding | rule on each; one with no concrete failure scenario is a preference — drop it and say so. A platform finding is ruled on its mechanism: see below |
 | style-reviewer | style issue it declined | deferred with its location, or dropped with your reason — never fixed inline |
 | tester | what ran and what failed | take its facts as given; the classification is yours |
+| documentation | a claim it couldn't check, or a change needed outside `@docs` | carry up as deferred with its location, or drop it with your reason — never fix it inline |
 
 **A platform finding is ruled on its mechanism.** On a declared platform, never drop it for "couldn't reproduce" or "no failure shown", whether or not the test stage runs there. Real ones go back to the coder. A finding about an undeclared platform may be dropped for that reason.
 

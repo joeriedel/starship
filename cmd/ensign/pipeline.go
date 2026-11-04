@@ -33,6 +33,24 @@ func (m *machine) enter(scope, id string) {
 		return
 	}
 	m.st.log("enter", id, "", m.budgetLine())
+	if why := skipReason(s, m.snap.Bindings, m.snap.Documentation); why != "" {
+		m.st.note("stage " + id + " skipped: " + why)
+		m.apply(scope, s, s.Skip.Outcome)
+	}
+}
+
+// skipReason says why a stage with a skip rule is not run, or "" if it runs.
+func skipReason(s *Stage, bindings map[string]Binding, documentation string) string {
+	if s.Skip == nil {
+		return ""
+	}
+	if s.Skip.UnlessBinding == "docs" && documentation == "off" {
+		return "documentation is turned off"
+	}
+	if len(bindings[s.Skip.UnlessBinding].Paths) == 0 {
+		return "no @" + s.Skip.UnlessBinding + " paths declared"
+	}
+	return ""
 }
 
 // limit is a budget's size, including anything added when an ask-user run resumed.

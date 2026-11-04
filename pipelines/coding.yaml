@@ -39,9 +39,17 @@ stages:
       - id: test
         role: tester
         outcomes:
-          pass:  { finish: success }
+          pass:  next
           fail:  { goto: code, spend: test, reset: coder-loop }
           error: { error: test-error }
+      - id: docs
+        role: documentation
+        report-fields: [files]
+        outcomes:
+          updated:   { finish: success }
+          unchanged: { finish: success }
+          blocked:   { error: blocked }
+        skip: { unless-binding: docs, outcome: unchanged }
 
 on-exhausted:
   coder-loop: { error: "budget:coder-loop" }

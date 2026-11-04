@@ -251,6 +251,23 @@ func githubCommit(r *RunFiles) error {
 	return git(ws, "commit", "-q", "-m", name)
 }
 
+// githubCommitDocs runs after the documentation stage: it commits only the @docs paths the stage changed, so earlier uncommitted work stays dirty and untested. Unlike githubCommit it does not run checkNoStrayFiles, which looks at the whole workspace rather than at what is staged.
+func githubCommitDocs(r *RunFiles) error {
+	if _, err := onTaskBranch(r); err != nil {
+		return err
+	}
+	var base map[string]string
+	if d := lastDocsDispatch(r); d != nil {
+		base = d.DocsBase
+	}
+	root, inside, _, err := docsChanged(r, base)
+	if err != nil {
+		return err
+	}
+	_, name, _ := strings.Cut(r.Snap.Task, "/")
+	return commitDocsPaths(root, inside, false, "-m", name)
+}
+
 // githubCI is a test stage that is the repository's CI: push the task branch and wait
 // for the checks on its commit. It commits nothing; uncommitted changes mean the commit
 // step didn't run.
@@ -543,6 +560,8 @@ func githubCommand(r *RunFiles, args []string, deadline time.Time) (string, erro
 		return "", githubBranch(r)
 	case "commit":
 		return "", githubCommit(r)
+	case "commit-docs":
+		return "", githubCommitDocs(r)
 	case "ci":
 		return githubCI(r, deadline)
 	case "ready":

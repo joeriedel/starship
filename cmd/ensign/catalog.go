@@ -91,6 +91,13 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 		return fmt.Errorf("commit-pass runs only after a stage")
 	}
 	ws := r.Snap.Workspace
+	if d.Role == "documentation" {
+		root, inside, _, err := docsChanged(r, d.DocsBase)
+		if err != nil {
+			return err
+		}
+		return commitDocsPaths(root, inside, true, "-m", "docs: "+truncate(d.Summary, 60), "-m", d.Summary)
+	}
 	if err := checkNoDependencyWiring(r); err != nil {
 		return err
 	}

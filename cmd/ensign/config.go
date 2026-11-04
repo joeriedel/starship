@@ -131,6 +131,12 @@ type Parallel struct {
 	Join string `yaml:"join" json:"join"`
 }
 
+// StageSkip says a stage is not run unless a binding declares paths; the stage then takes Outcome's transition.
+type StageSkip struct {
+	UnlessBinding string `yaml:"unless-binding" json:"unless_binding"`
+	Outcome       string `yaml:"outcome" json:"outcome"`
+}
+
 type Stage struct {
 	ID           string    `yaml:"id" json:"id"`
 	Role         string    `yaml:"role" json:"role"`
@@ -141,6 +147,8 @@ type Stage struct {
 	Dimensions   []string  `yaml:"dimensions" json:"dimensions,omitempty"`
 	Outcomes     Outcomes  `yaml:"outcomes" json:"outcomes,omitempty"`
 	ReportFields []string  `yaml:"report-fields" json:"report_fields,omitempty"`
+	// Skip takes the named outcome without a dispatch when the binding declares nothing.
+	Skip *StageSkip `yaml:"skip" json:"skip,omitempty"`
 	// Curates names the document this stage's agents rewrite: style or skill.
 	Curates string   `yaml:"curates" json:"curates,omitempty"`
 	Stages  []*Stage `yaml:"stages" json:"stages,omitempty"`
@@ -221,6 +229,8 @@ type Binding struct {
 	Command       string `json:"command,omitempty"`
 	Guidance      string `json:"guidance,omitempty"`
 	NotApplicable string `json:"not_applicable,omitempty"`
+	// Paths are workspace-relative files and folders, for a binding that names places rather than a command (@docs).
+	Paths []string `json:"paths,omitempty"`
 	// Plain says the command needs no judgement to run: ensign runs it and reads the exit
 	// code. On @test it means ensign runs the test stage itself, with no tester agent.
 	Plain bool `json:"plain,omitempty"`
@@ -260,6 +270,10 @@ func parseBinding(n *yaml.Node, source string) (Binding, error) {
 			b.Guidance = v.Value
 		case "not-applicable":
 			b.NotApplicable = v.Value
+		case "paths":
+			if err := v.Decode(&b.Paths); err != nil {
+				return b, fmt.Errorf("%s: paths must be a list of strings", source)
+			}
 		case "plain":
 			if err := v.Decode(&b.Plain); err != nil {
 				return b, fmt.Errorf("%s: plain must be true or false", source)
@@ -278,6 +292,9 @@ func parseBinding(n *yaml.Node, source string) (Binding, error) {
 	}
 	if b.Plain && b.Command == "" {
 		return b, fmt.Errorf("%s: a plain binding needs a command", source)
+	}
+	if len(b.Paths) > 0 && (b.Command != "" || b.Guidance != "") {
+		return b, fmt.Errorf("%s: a binding with paths cannot also have a command or guidance", source)
 	}
 	return b, nil
 }
@@ -304,6 +321,8 @@ type Layer struct {
 		Reason string `yaml:"reason"`
 	} `yaml:"journal"`
 	Platforms []string `yaml:"platforms"` // a project setting: read from project.yaml only
+	// Documentation is on or off: whether the pipeline's documentation stage runs. A later layer wins.
+	Documentation string `yaml:"documentation"`
 }
 
 // HandlerSpec is one handler as written: exactly one of require, observe or augment.
@@ -413,6 +432,7 @@ type Config struct {
 	Extensions    []string
 	Platforms     []string // the platforms the project declares, from project.yaml
 	JournalOff    string   // reason, when the project turned journal commits off
+	Documentation string   // "off" when a layer turned the documentation stage off; empty means on
 	Skills        []SkillDelivery
 	needs         map[string]string // binding -> what requires it, from extensions
 	problems      []string
@@ -679,6 +699,15 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 
 	extensions, broken := scanExtensions(bridge, c.ControlPlane)
 	for _, l := range layers {
+		switch l.layer.Documentation {
+		case "":
+		case "on":
+			c.Documentation = ""
+		case "off":
+			c.Documentation = "off"
+		default:
+			return nil, fmt.Errorf("%s: documentation must be on or off, not %q", l.label, l.layer.Documentation)
+		}
 		for _, use := range l.layer.Use {
 			b, err := c.enableExtension(l, use, extensions, broken)
 			if err != nil {
@@ -1228,6 +1257,25 @@ func platformProblems(platforms []string) []string {
 	return errs
 }
 
+// docsPathProblem says why a @docs path is not allowed, or "" if it is.
+func docsPathProblem(p string) string {
+	switch {
+	case strings.TrimSpace(p) == "":
+		return "is empty"
+	case strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) || (len(p) >= 2 && p[1] == ':'):
+		return "must be relative to the workspace"
+	}
+	for _, seg := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == ".." {
+			return "must not contain .."
+		}
+	}
+	if filepath.Clean(filepath.FromSlash(strings.ReplaceAll(p, `\`, "/"))) == "." {
+		return "would cover the whole workspace"
+	}
+	return ""
+}
+
 // validate checks everything a run depends on before it starts.
 func validate(c *Config) []string {
 	var errs []string
@@ -1269,6 +1317,16 @@ func validate(c *Config) []string {
 			add("skill %q: a skill name must be a single path element", sk.Name)
 		}
 	}
+	if b, ok := c.Bindings["docs"]; ok {
+		if b.Command != "" || b.Guidance != "" {
+			add("binding @docs must list paths or be not-applicable, not a command or guidance")
+		}
+		for _, d := range b.Paths {
+			if why := docsPathProblem(d); why != "" {
+				add("binding @docs: path %q %s", d, why)
+			}
+		}
+	}
 	for _, r := range p.FreeRoles {
 		if !c.roleExists(r) {
 			add("free role %q has no definition", r)
@@ -1292,6 +1350,14 @@ func validate(c *Config) []string {
 				add("%s: no role", at)
 			} else if !c.roleExists(s.Role) {
 				add("%s: role %q has no definition", at, s.Role)
+			}
+			if s.Skip != nil {
+				if s.Skip.UnlessBinding == "" {
+					add("%s: skip needs unless-binding", at)
+				}
+				if _, ok := s.Outcomes.find(s.Skip.Outcome); !ok {
+					add("%s: skip outcome %q is not one of the stage's outcomes", at, s.Skip.Outcome)
+				}
 			}
 			if s.Brief != "" {
 				if _, err := c.findFile(s.Brief); err != nil {

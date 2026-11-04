@@ -46,8 +46,10 @@ type Snapshot struct {
 	KnownSkills  []string             `json:"known_skills,omitempty"` // every skill name a fact may be filed under
 	Project      string               `json:"project,omitempty"`
 	Platforms    []string             `json:"platforms,omitempty"`
-	Extensions   []string             `json:"extensions,omitempty"`
-	Created      string               `json:"created"`
+	// Documentation is "off" when the documentation stage was turned off; older snapshots read empty, which is on.
+	Documentation string   `json:"documentation,omitempty"`
+	Extensions    []string `json:"extensions,omitempty"`
+	Created       string   `json:"created"`
 }
 
 type Dispatch struct {
@@ -71,6 +73,8 @@ type Dispatch struct {
 	StopsLeft *int   `json:"stops_left,omitempty"`
 	Handback  string `json:"handback,omitempty"` // the message of the agent's SubagentHandback call
 	Usage     *Usage `json:"usage,omitempty"`    // from the agent's transcript
+	// DocsBase is a documentation dispatch's dirty paths with content hashes, taken when it was spawned; state saved before it existed reads empty.
+	DocsBase map[string]string `json:"docs_base,omitempty"`
 }
 
 type ScopeState struct {
@@ -967,6 +971,8 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	if start != "" {
 		if s, _, _ := c.Pipeline.find(start); s == nil {
 			errs = append(errs, fmt.Sprintf("--start: no stage %q", start))
+		} else if why := skipReason(s, c.Bindings, c.Documentation); why != "" {
+			errs = append(errs, fmt.Sprintf("--start: stage %q would be skipped (%s), so the run would have nothing to do", start, why))
 		}
 	}
 	if sync {
@@ -1026,30 +1032,31 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		return nil, err
 	}
 	snap := &Snapshot{
-		Run:          id,
-		Task:         c.Task,
-		Bridge:       bridge,
-		ControlPlane: c.ControlPlane,
-		Workspace:    c.Workspace,
-		Location:     c.Location,
-		Subtask:      c.Subtask,
-		Sides:        c.Sides,
-		Narrowed:     c.Narrowed,
-		Cross:        c.Cross,
-		Dependencies: c.Dependencies,
-		WorkItem:     c.WorkItem,
-		Rules:        c.Rules,
-		Start:        start,
-		Pipeline:     c.Pipeline,
-		Bindings:     c.Bindings,
-		Briefs:       map[string]string{},
-		Events:       c.Events,
-		Extensions:   c.Extensions,
-		Skills:       c.Skills,
-		KnownSkills:  knownSkills(bridge, c.ControlPlane, c.Project),
-		Project:      c.Project,
-		Platforms:    c.Platforms,
-		Created:      time.Now().Format(time.RFC3339),
+		Run:           id,
+		Task:          c.Task,
+		Bridge:        bridge,
+		ControlPlane:  c.ControlPlane,
+		Workspace:     c.Workspace,
+		Location:      c.Location,
+		Subtask:       c.Subtask,
+		Sides:         c.Sides,
+		Narrowed:      c.Narrowed,
+		Cross:         c.Cross,
+		Dependencies:  c.Dependencies,
+		WorkItem:      c.WorkItem,
+		Rules:         c.Rules,
+		Start:         start,
+		Pipeline:      c.Pipeline,
+		Bindings:      c.Bindings,
+		Briefs:        map[string]string{},
+		Events:        c.Events,
+		Extensions:    c.Extensions,
+		Skills:        c.Skills,
+		KnownSkills:   knownSkills(bridge, c.ControlPlane, c.Project),
+		Project:       c.Project,
+		Platforms:     c.Platforms,
+		Documentation: c.Documentation,
+		Created:       time.Now().Format(time.RFC3339),
 	}
 	for _, hs := range snap.Events {
 		for i := range hs {
@@ -1283,6 +1290,8 @@ func printSummary(out io.Writer, c *Config, start string) {
 			v = "not applicable: " + b.NotApplicable
 		case b.Guidance != "":
 			v = "guidance: " + b.Guidance
+		case len(b.Paths) > 0:
+			v = "paths: " + strings.Join(b.Paths, ", ")
 		}
 		fmt.Fprintf(out, "  @%-8s %s   from %s\n", k, v, b.Source)
 	}
