@@ -529,7 +529,7 @@ func TestRetireIfLeavesAResumedRunAlone(t *testing.T) {
 	}
 }
 
-func TestSequenceFailedRunWaitsForADecisionAndStopHoldsTheTurn(t *testing.T) {
+func TestSequenceFailedRunWaitsForADecisionAndStopHoldsTheTurnOnce(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.mustSeq("do", "report")
@@ -545,11 +545,90 @@ func TestSequenceFailedRunWaitsForADecisionAndStopHoldsTheTurn(t *testing.T) {
 	if res["decision"] != "block" || !strings.Contains(reason, "sequence retry 1") || !strings.Contains(reason, "sequence accept 1") {
 		t.Fatalf("the Stop hook should hold the turn and name both commands: %v", res)
 	}
-	for i := 0; i < seqStopBudget; i++ {
-		w.stopHook()
+	for i := 0; i < 2; i++ {
+		if res := w.stopHook(); res["decision"] == "block" {
+			t.Errorf("stop %d: the session has been told, so the turn should end: %v", i+2, res)
+		}
+	}
+}
+
+func TestSequenceRetriedStepThatFailsAgainIsHeldOnceMore(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	if res := w.stopHook(); res["decision"] != "block" {
+		t.Fatalf("the first failure should be put to the session: %v", res)
+	}
+	w.retryStep("1")
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("decide")
+	if res := w.stopHook(); res["decision"] != "block" || !strings.Contains(dig(res, "reason"), "sequence retry 1") {
+		t.Fatalf("the second failure should be put to the session: %v", res)
 	}
 	if res := w.stopHook(); res["decision"] == "block" {
-		t.Errorf("the hold should run out: %v", res)
+		t.Errorf("the session has been told: %v", res)
+	}
+}
+
+func TestSequenceHoldsSpentWhileActiveDoNotCountForTheDecision(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	for i := 0; i < seqStopBudget; i++ {
+		if res := w.stopHook(); res["decision"] != "block" {
+			t.Fatalf("stop %d should hold for the undispatched lead: %v", i+1, res)
+		}
+	}
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("decide")
+	if res := w.stopHook(); res["decision"] != "block" || !strings.Contains(dig(res, "reason"), "sequence retry 1") {
+		t.Fatalf("the decision should be put to the session once: %v", res)
+	}
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Errorf("the session has been told: %v", res)
+	}
+}
+
+func TestSequenceCarriedDecisionIsPutToTheContinuingSession(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	if res := w.stopHook(); res["decision"] != "block" {
+		t.Fatalf("the old session should be told: %v", res)
+	}
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Fatalf("the old session has been told: %v", res)
+	}
+	write(t, w.session, `{"sessionId":"s1"}`+"\n")
+	carryOverSession(w.bridge, &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session}, "")
+	w.sid = "s2"
+	w.wantStatus("decide")
+	if res := w.stopHook(); res["decision"] != "block" || !strings.Contains(dig(res, "reason"), "sequence retry 1") {
+		t.Fatalf("the continuing session should be told: %v", res)
+	}
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Errorf("the continuing session has been told: %v", res)
+	}
+}
+
+func TestSequenceKeepGoingDecisionIsHeldOnce(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	if res := w.stopHook(); res["decision"] != "block" {
+		t.Fatalf("the decision should be put to the session: %v", res)
+	}
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Errorf("the session has been told: %v", res)
 	}
 }
 

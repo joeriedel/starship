@@ -25,7 +25,7 @@ import (
 const (
 	modeStop      = "stop"
 	modeKeepGoing = "keep-going"
-	// seqStopBudget is how many times the Stop hook holds a turn open for one waiting step.
+	// seqStopBudget is how many times the Stop hook holds a turn open for one waiting step. A step that is deciding is held once, because the session has then been told.
 	seqStopBudget = 3
 	// maxSeqName is the longest name a sequence may have, in characters.
 	maxSeqName = 60
@@ -48,7 +48,7 @@ type seqStep struct {
 	Headline    string    `json:"headline,omitempty"`
 	Status      string    `json:"status"` // pending, active, paused, decide, done, failed, skipped, cancelled
 	Reason      string    `json:"reason,omitempty"`
-	Blocks      int       `json:"blocks,omitempty"`      // stops held open for this step
+	Blocks      int       `json:"blocks,omitempty"`      // stops held open for this step; on a deciding step, nonzero once the session has been told
 	WaitBlocks  int       `json:"wait_blocks,omitempty"` // stops held open while this step waited for a busy folder
 	Prev        string    `json:"prev_run,omitempty"`    // the first run this step's latest retry replaces; set once the step has been retried
 	Retries     int       `json:"retries,omitempty"`     // how many times the current group has been retried; a file from before this field has Prev set and 0 here
@@ -600,6 +600,7 @@ func (sf *seqFile) reconcile(bridge string) {
 				st.Reason = reason
 				if !lost && !seq.Halted {
 					st.Status = "decide"
+					st.Blocks = 0
 					continue
 				}
 				st.Status = "failed"
@@ -1340,7 +1341,7 @@ func waitingText(st *seqStep) string {
 	return strings.Join(lines, "\n") + "\nIt starts by itself once that run has finished; this turn is held only a few times for it."
 }
 
-// sequenceStop holds a turn open while a step waits for the session to act on it. Each step gets seqStopBudget holds, as the sequence file's lock allows, then the turn may end.
+// sequenceStop holds a turn open while a step waits for the session to act on it. Each step gets seqStopBudget holds, as the sequence file's lock allows, then the turn may end. A deciding step is held once per failed attempt, because the session has then been told.
 func sequenceStop(bridge string, in *HookInput) any {
 	if !seqExists(bridge, in.SessionID) {
 		return nil
@@ -1357,7 +1358,9 @@ func sequenceStop(bridge string, in *HookInput) any {
 				var todo string
 				switch {
 				case st.deciding():
-					todo = decideText(bridge, sf, seq, st)
+					if st.Blocks == 0 {
+						todo = decideText(bridge, sf, seq, st)
+					}
 				case st.Kind == "run" && st.holds():
 					if seq.Halted {
 						continue
@@ -1427,6 +1430,9 @@ func carrySequence(bridge, old, session string) error {
 			for _, st := range seq.Steps {
 				if st.Kind != "run" || !st.open() {
 					continue
+				}
+				if st.deciding() {
+					st.Blocks = 0
 				}
 				for _, ru := range st.runs() {
 					if slices.Contains(bound, ru.Run) {
