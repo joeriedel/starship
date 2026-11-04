@@ -325,8 +325,11 @@ func retiredWithoutFault(st *State) bool {
 	return false
 }
 
-// endedAfterPass reports whether a failed run ended after the given pass, by the At of its last history entry; history is to the second, so a tie, a pass without a finish time or a run without a readable entry falls back on run-id order.
+// endedAfterPass reports whether a failed run ended after the given pass, by their finish times. Runs without a finish time (older ones), or with the very same one, fall back on the At of the failed run's last history entry; history is to the second, so a tie, a pass without a finish time or a run without a readable entry falls back on run-id order.
 func endedAfterPass(failed runInfo, pass runInfo) bool {
+	if f, p := failed.state.FinishedAt, pass.state.FinishedAt; f != 0 && p != 0 && f != p {
+		return f > p
+	}
 	if n := len(failed.state.History); n > 0 && pass.state.FinishedAt != 0 {
 		if t, err := time.Parse(time.RFC3339, failed.state.History[n-1].At); err == nil {
 			if sec, passSec := t.Unix(), time.Unix(0, pass.state.FinishedAt).Unix(); sec != passSec {
@@ -337,7 +340,7 @@ func endedAfterPass(failed runInfo, pass runInfo) bool {
 	return failed.id > pass.id
 }
 
-// latestRunPassed refuses when a run of the task in this location failed after the task's last pass (or when none passed), so a marker an earlier pass left behind cannot land failed work. A run retired without a history entry after the pass was created did no work and can slip past this.
+// latestRunPassed refuses when a run of the task in this location failed after the task's last pass (or when none passed), so a marker an earlier pass left behind cannot land failed work. An old run without a finish time, retired without a history entry after the pass was created, did no work and can slip past this.
 func latestRunPassed(bridge, task, location string) error {
 	var runs []runInfo
 	var pass *runInfo

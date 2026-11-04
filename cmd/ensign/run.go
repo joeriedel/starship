@@ -119,7 +119,7 @@ type State struct {
 	Transcript string         `json:"transcript,omitempty"`   // the session's transcript; agents' sit beside it
 	Notes      []string       `json:"notes,omitempty"`        // what handlers left for the report, e.g. a pull request
 	Finished   bool           `json:"finished,omitempty"`     // the end-of-run steps have run
-	FinishedAt int64          `json:"finished_at,omitempty"`  // unix nanoseconds when the run succeeded
+	FinishedAt int64          `json:"finished_at,omitempty"`  // unix nanoseconds when the run last ended, any outcome; check Status for a success
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 
@@ -536,6 +536,9 @@ func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
 // markRetired marks an open run as error and releases it. The lock is released before any
 // delete, since a folder with an open file cannot be removed on Windows.
 func markRetired(r *RunFiles, reason string) error {
+	if !r.State.terminal() {
+		r.State.FinishedAt = time.Now().UnixNano()
+	}
 	r.State.Status, r.State.Reason = "error", reason
 	err := r.save()
 	r.close()

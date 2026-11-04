@@ -2803,3 +2803,49 @@ func TestSequenceGoNamesTheHeldStepOfTheOlderSequence(t *testing.T) {
 		t.Errorf("go with no held step should print the failure and no position:\n%s", ctx)
 	}
 }
+
+func TestEveryTerminalOutcomeStampsWhenTheRunEnded(t *testing.T) {
+	w := newWorld(t)
+	for _, tr := range []Transition{{Error: "handler"}, {AskUser: "question"}, {Finish: "done"}} {
+		w.mustSeq("run", "supernova/auth-refactor", "--name", "stamp")
+		id := w.step(1).Run
+		r, err := openRun(w.bridge, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := time.Now().UnixNano()
+		(&machine{snap: r.Snap, st: r.State}).finish(tr, "why")
+		if r.State.FinishedAt < before {
+			t.Errorf("%+v: FinishedAt %d, want at least %d", tr, r.State.FinishedAt, before)
+		}
+		r.close()
+		w.mustSeq("halt")
+	}
+}
+
+func TestMarkRetiredStampsAnUnendedRunAndKeepsAnEndedOnesTime(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	id := w.step(1).Run
+	r, err := openRun(w.bridge, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := markRetired(r, "cancelled: x"); err != nil {
+		t.Fatal(err)
+	}
+	st := w.runState(id)
+	if st.FinishedAt == 0 {
+		t.Fatal("a retired run should record when it ended")
+	}
+	r, err = openRun(w.bridge, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := markRetired(r, "cancelled: again"); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.runState(id).FinishedAt; got != st.FinishedAt {
+		t.Errorf("a run that had ended kept no end time: %d, want %d", got, st.FinishedAt)
+	}
+}

@@ -224,3 +224,50 @@ func TestMergeTreatsAPassWithoutFinishTimeAsUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeDecidesByFinishTimesWithinASecond(t *testing.T) {
+	base := time.Now().Add(time.Hour).Truncate(time.Second)
+	passedAt := base.Add(500 * time.Millisecond)
+	for _, c := range []struct {
+		name     string
+		failedAt time.Time
+		stamped  bool
+		idFirst  bool
+		refuse   bool
+	}{
+		{"ended earlier in the pass's second, id after", base.Add(100 * time.Millisecond), true, false, false},
+		{"ended later in the pass's second, id before", base.Add(900 * time.Millisecond), true, true, true},
+		{"exact tie takes the id fallback", passedAt, true, false, true},
+		{"exact tie, id before", passedAt, true, true, false},
+		{"unstamped, a second earlier", base.Add(-time.Second), false, false, false},
+		{"unstamped, a second later", base.Add(time.Second), false, true, true},
+		{"unstamped, same second, id after", base, false, false, true},
+		{"unstamped, same second, id before", base, false, true, false},
+	} {
+		w, ws, remote, gh := githubWorld(t, "success", localTest)
+		w.passingRun(ws, gh)
+		r := w.runState(w.state().Run)
+		r.FinishedAt = passedAt.UnixNano()
+		writeJSON(filepath.Join(runsDir(w.bridge), r.Run, "state.json"), r)
+		mainBefore := remoteMain(t, remote)
+		var finished int64
+		if c.stamped {
+			finished = c.failedAt.UnixNano()
+		}
+		w.writeRun("1", "error", true, "tests failed", c.failedAt.UTC().Format(time.RFC3339), finished)
+		if c.idFirst {
+			runs := runsDir(w.bridge)
+			if err := os.Rename(filepath.Join(runs, "99999999-999991-extra"), filepath.Join(runs, "00000000-000000-extra")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if c.refuse {
+			w.wantRefused(remote, mainBefore)
+		} else {
+			w.wantLands(remote)
+		}
+		if t.Failed() {
+			t.Fatalf("case %q", c.name)
+		}
+	}
+}
