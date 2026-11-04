@@ -59,7 +59,7 @@ A task lives in a project and points at a workspace, which is your code repo in 
 
 `ensign` is the binary that does the bookkeeping. Claude Code calls it from its hooks, so it sees each agent dispatch and each report.
 
-The agents are role definitions in [`roles/`](roles): an orchestrator that leads a run, a coder, reviewers, a style reviewer, a tester, a documentation writer, an explorer for reading code, a style generator that proposes style rules, and a curator that maintains skills and style guides. Each role file sets the agent's job and its Claude model.
+The agents are role definitions in [`roles/`](roles): an orchestrator that leads a run, a coder, reviewers, a style reviewer, a tester, a documentation writer, an explorer for reading code, a reader for external content (present only when `bridge.yaml` declares it under `connectors:`), a style generator that proposes style rules, and a curator that maintains skills and style guides. Each role file sets the agent's job and its Claude model.
 
 ## How a run works
 

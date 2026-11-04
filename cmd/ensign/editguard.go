@@ -24,6 +24,23 @@ func editGuard(bridge string, in *HookInput) (reason, warning string, err error)
 	if target == "" {
 		return "", "", nil
 	}
+	if in.AgentID != "" && in.AgentType == "reader" {
+		bf, err := loadBridgeFile(bridge)
+		var rules map[string][]string
+		if err == nil {
+			rules, err = bf.connectorRules()
+		}
+		if err != nil {
+			return "this edit was refused because bridge.yaml can't be read or is invalid, so a reader's folder can't be checked: " + err.Error(), "", nil
+		}
+		if _, declared := rules["reader"]; declared {
+			folder := filepath.Join(bridge, "reader")
+			if pathWithin(resolveEditTarget(target, in.Cwd, runtime.GOOS), resolveEditFolder(folder, runtime.GOOS), runtime.GOOS) {
+				return "", "", nil
+			}
+			return "this edit was refused because " + target + " is outside " + folder + ", the only folder a reader may edit. Working around the guard is a failure, not a fix.", "", nil
+		}
+	}
 	var folders []string
 	var who string
 	if in.AgentID == "" {

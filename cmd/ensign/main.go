@@ -196,7 +196,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 0
 		}
 	case "PreToolUse":
-		if strings.HasPrefix(in.ToolName, "mcp__") {
+		if isConnectorTool(in.ToolName) {
 			if d := connectorDecision(bridge, &in); d != nil {
 				json.NewEncoder(stdout).Encode(d)
 			}
@@ -397,6 +397,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	// A running claude keeps the settings it started with, so the file is read before the sync can change it.
 	settingsFile := filepath.Join(bridge, ".claude", "settings.json")
 	before, _ := os.ReadFile(settingsFile)
+	agentsBefore := agentsSignature(bridge)
 	// Hand edits to notes/ are committed first: a dirty tracked file would stop the sync. A compaction happens mid-session, when the session's own filing may be half done.
 	synced := false
 	if in.Source != "compact" {
@@ -436,6 +437,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	after, _ := os.ReadFile(settingsFile)
 	restart := connectorSignature(string(before)) != connectorSignature(string(after))
+	if rules, err := bf.connectorRules(); err == nil && rules != nil && agentsBefore != agentsSignature(bridge) {
+		restart = true
+	}
 	removeOldExe(bridge)
 	fmt.Fprintf(&ctx, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
 	if restart {

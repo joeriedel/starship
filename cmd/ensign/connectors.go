@@ -14,6 +14,17 @@ import (
 
 var connectorToolRe = regexp.MustCompile(`^mcp__[A-Za-z0-9_.-]+__[A-Za-z0-9_.-]+$`)
 
+// Claude Code's built-in tools for reading MCP resources; they count as connector tools.
+const (
+	listResourcesTool = "ListMcpResourcesTool"
+	readResourceTool  = "ReadMcpResourceTool"
+)
+
+// isConnectorTool reports whether a tool is one connector rules decide: an mcp__ tool or a built-in resource tool.
+func isConnectorTool(name string) bool {
+	return strings.HasPrefix(name, "mcp__") || name == listResourcesTool || name == readResourceTool
+}
+
 // connectorRules is the bridge's connector declaration: role to the exact tools it may call. Nil means none is declared; a role with an empty list still declares.
 func (bf *BridgeFile) connectorRules() (map[string][]string, error) {
 	if len(bf.Connectors) == 0 {
@@ -24,8 +35,8 @@ func (bf *BridgeFile) connectorRules() (map[string][]string, error) {
 			return nil, fmt.Errorf("bridge.yaml: connectors: the coder role never gets connectors")
 		}
 		for _, tool := range bf.Connectors[role] {
-			if !connectorToolRe.MatchString(tool) {
-				return nil, fmt.Errorf("bridge.yaml: connectors: %s: %q is not an exact mcp__<server>__<tool> name (no wildcards, and a whole server cannot be granted)", role, tool)
+			if !connectorToolRe.MatchString(tool) && tool != listResourcesTool && tool != readResourceTool {
+				return nil, fmt.Errorf("bridge.yaml: connectors: %s: %q is not an exact mcp__<server>__<tool> name, or ListMcpResourcesTool or ReadMcpResourceTool (no wildcards, and a whole server cannot be granted)", role, tool)
 			}
 		}
 	}
@@ -41,7 +52,7 @@ func connectorTools(rules map[string][]string) []string {
 	return slices.Compact(slices.Sorted(slices.Values(all)))
 }
 
-// connectorDecision decides a connector call (a tool named mcp__<server>__<tool>) from bridge.yaml alone. It returns nil to leave the call to the permission system, else the denial. It never touches a run.
+// connectorDecision decides a connector call (a tool named mcp__<server>__<tool>, or a built-in resource tool) from bridge.yaml alone. It returns nil to leave the call to the permission system, else the denial. It never touches a run.
 func connectorDecision(bridge string, in *HookInput) any {
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
@@ -55,7 +66,10 @@ func connectorDecision(bridge string, in *HookInput) any {
 		return nil
 	}
 	if in.AgentID == "" {
-		return denial(fmt.Sprintf("the session may not call %s; connector reads go through a role this bridge declares in bridge.yaml connectors", in.ToolName))
+		if _, ok := rules["reader"]; !ok {
+			return denial(fmt.Sprintf("the session may not call %s; connector reads go through a role this bridge declares in bridge.yaml connectors", in.ToolName))
+		}
+		return denial(fmt.Sprintf("the session may not call %s; dispatch a reader with what to look for and work from its facts (ensign help edits, Connector tools)", in.ToolName))
 	}
 	if slices.Contains(rules[in.AgentType], in.ToolName) {
 		return nil
@@ -116,21 +130,31 @@ func mcpServersRefusal(bridge string, in *HookInput) string {
 	return ""
 }
 
+const (
+	// connectorMatcher is what a declaration adds to the PreToolUse matcher; connectorMatcherOld is what earlier ensigns added.
+	connectorMatcher    = `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool"`
+	connectorMatcherOld = `|mcp__.*"`
+)
+
 var (
-	connectorAllowRe   = regexp.MustCompile(`, "mcp__[^"]*"`)
-	connectorToolStrRe = regexp.MustCompile(`"mcp__[^"]*"`)
+	connectorAllowRe   = regexp.MustCompile(`, "(mcp__[^"]*|ListMcpResourcesTool|ReadMcpResourceTool)"`)
+	connectorToolStrRe = regexp.MustCompile(`"(mcp__[^"]*|ListMcpResourcesTool|ReadMcpResourceTool)"`)
 )
 
 // withoutConnectors is settings with the connector parts removed, to compare against the forms ensign has written.
 func withoutConnectors(settings string) string {
-	settings = strings.Replace(settings, `|mcp__.*"`, `"`, 1)
+	if strings.Contains(settings, connectorMatcher) {
+		settings = strings.Replace(settings, connectorMatcher, `"`, 1)
+	} else {
+		settings = strings.Replace(settings, connectorMatcherOld, `"`, 1)
+	}
 	return connectorAllowRe.ReplaceAllString(settings, "")
 }
 
 // ensignShaped reports whether the connector parts of settings have the shape ensign writes: none at all, or the matcher with any mcp__ tools sorted and without duplicates directly after Bash(ensign:*).
 func ensignShaped(settings string) bool {
 	tools := connectorToolStrRe.FindAllString(settings, -1)
-	if !strings.Contains(settings, `|mcp__.*"`) {
+	if !strings.Contains(settings, connectorMatcher) && !strings.Contains(settings, connectorMatcherOld) {
 		return len(tools) == 0
 	}
 	if !slices.IsSorted(tools) || len(slices.Compact(slices.Clone(tools))) != len(tools) {
@@ -141,10 +165,26 @@ func ensignShaped(settings string) bool {
 
 // connectorSignature is what a settings file carries for connectors.
 func connectorSignature(settings string) string {
-	return fmt.Sprint(strings.Contains(settings, `|mcp__.*"`), connectorToolStrRe.FindAllString(settings, -1))
+	return fmt.Sprint(strings.Contains(settings, connectorMatcher), strings.Contains(settings, connectorMatcherOld), connectorToolStrRe.FindAllString(settings, -1))
 }
 
-// missingConnectorSettings lists what a hand-edited settings.json lacks for the declaration to be enforced: the mcp__.* matcher on the ensign PreToolUse hook and each declared tool in allow.
+// agentsSignature is the connector-relevant state of a bridge's role definitions: which files there are and each one's frontmatter tools: value. Other edits to a role's prompt are not part of it.
+func agentsSignature(bridge string) string {
+	files, _ := filepath.Glob(filepath.Join(bridge, ".claude", "agents", "*.md"))
+	slices.Sort(files)
+	var sig strings.Builder
+	for _, f := range files {
+		data, _ := os.ReadFile(f)
+		tools := "-"
+		if m := frontmatterToolsLoc(data); m != nil {
+			tools = strings.TrimSpace(string(data[m[4]:m[5]]))
+		}
+		fmt.Fprintf(&sig, "%s\x00%s\x00", filepath.Base(f), tools)
+	}
+	return sig.String()
+}
+
+// missingConnectorSettings lists what a hand-edited settings.json lacks for the declaration to be enforced: the mcp__.*, ListMcpResourcesTool and ReadMcpResourceTool matcher entries on the ensign PreToolUse hook and each declared tool in allow.
 func missingConnectorSettings(data []byte, tools []string) ([]string, error) {
 	var s struct {
 		Permissions struct {
@@ -162,18 +202,20 @@ func missingConnectorSettings(data []byte, tools []string) ([]string, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, err
 	}
-	matched := false
-	for _, e := range s.Hooks.PreToolUse {
-		if !slices.Contains(strings.Split(e.Matcher, "|"), "mcp__.*") {
-			continue
-		}
-		for _, h := range e.Hooks {
-			matched = matched || strings.Contains(h.Command, " hook PreToolUse")
-		}
-	}
 	var missing []string
-	if !matched {
-		missing = append(missing, `the "mcp__.*" matcher on the ensign PreToolUse hook`)
+	for _, entry := range []string{"mcp__.*", listResourcesTool, readResourceTool} {
+		matched := false
+		for _, e := range s.Hooks.PreToolUse {
+			if !slices.Contains(strings.Split(e.Matcher, "|"), entry) {
+				continue
+			}
+			for _, h := range e.Hooks {
+				matched = matched || strings.Contains(h.Command, " hook PreToolUse")
+			}
+		}
+		if !matched {
+			missing = append(missing, fmt.Sprintf("the %q matcher on the ensign PreToolUse hook", entry))
+		}
 	}
 	for _, t := range tools {
 		if !slices.Contains(s.Permissions.Allow, t) {

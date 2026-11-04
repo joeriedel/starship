@@ -99,11 +99,11 @@ func hookSettingsWith(preTimeout, stopTimeout int) string {
 	return hookSettingsConn(preTimeout, stopTimeout, false, nil)
 }
 
-// hookSettingsConn is the generated settings.json. A timeout of 0 leaves that hook without one, as older ensigns wrote it; SessionStart upgrades those forms. Declared connectors add the mcp__ matcher and allow the tools, sorted and without duplicates.
+// hookSettingsConn is the generated settings.json. A timeout of 0 leaves that hook without one, as older ensigns wrote it; SessionStart upgrades those forms. Declared connectors add the mcp__ and resource-tool matchers and allow the tools, sorted and without duplicates.
 func hookSettingsConn(preTimeout, stopTimeout int, declared bool, tools []string) string {
 	matcher, allow := "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback", `"Bash(ensign:*)"`
 	if declared {
-		matcher += "|mcp__.*"
+		matcher += "|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool"
 		sorted := slices.Compact(slices.Sorted(slices.Values(tools)))
 		for _, t := range sorted {
 			allow += fmt.Sprintf(", %q", t)
@@ -286,6 +286,66 @@ const bridgeEnsign = `"$CLAUDE_PROJECT_DIR/.starship/bin/ensign"`
 // ensignFile is where a bridge keeps its own ensign, relative to the bridge.
 func ensignFile() string { return ".starship/bin/" + exeName() }
 
+var toolsLineRe = regexp.MustCompile(`(?m)^(tools:[ \t]*)(.*?)(\r?)$`)
+
+// frontmatterToolsLoc finds the tools: line inside a role file's frontmatter, as submatch indices into data; a body line is never found. It is nil when there is no frontmatter or no such line.
+func frontmatterToolsLoc(data []byte) []int {
+	if !bytes.HasPrefix(data, []byte("---\n")) && !bytes.HasPrefix(data, []byte("---\r\n")) {
+		return nil
+	}
+	nl := bytes.IndexByte(data, '\n')
+	end := bytes.Index(data[nl:], []byte("\n---"))
+	if end < 1 {
+		return nil
+	}
+	m := toolsLineRe.FindSubmatchIndex(data[nl+1 : nl+end])
+	if m == nil {
+		return nil
+	}
+	for i := range m {
+		m[i] += nl + 1
+	}
+	return m
+}
+
+// withDeclaredTools appends a role's declared connector tools, sorted and without duplicates, to the tools: line in its frontmatter. A role with no such line is left alone. The line must be a plain comma list on one line, since it is edited as text; label names the role in the error.
+func withDeclaredTools(label string, data []byte, declared []string) ([]byte, error) {
+	m := frontmatterToolsLoc(data)
+	if m == nil {
+		return data, nil
+	}
+	value := strings.TrimSpace(string(data[m[4]:m[5]]))
+	front, _, err := splitFrontmatterData(label, data)
+	if err != nil {
+		return nil, err
+	}
+	var fm struct {
+		Tools any `yaml:"tools"`
+	}
+	if err := yaml.Unmarshal(front, &fm); err != nil {
+		return nil, fmt.Errorf("%s: frontmatter: %v", label, err)
+	}
+	// YAML must read the line as the very string the text edit sees: quotes, comments, flow or block forms, continuation lines and null all read differently.
+	if parsed, ok := fm.Tools.(string); !ok || parsed != value || value == "" {
+		return nil, fmt.Errorf("%s: connectors are declared for this role, so its frontmatter tools: must be a plain comma-separated list on one line, like `tools: Read, Grep`, with no quotes, brackets, block list, comment or continuation line", label)
+	}
+	var have []string
+	for _, t := range strings.Split(value, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			have = append(have, t)
+		}
+	}
+	list := have
+	for _, t := range connectorTools(map[string][]string{"": declared}) {
+		if !slices.Contains(have, t) {
+			list = append(list, t)
+		}
+	}
+	out := append([]byte{}, data[:m[4]]...)
+	out = append(out, strings.Join(list, ", ")...)
+	return append(out, data[m[5]:]...), nil
+}
+
 // generatedFiles is everything link writes into a bridge, by path relative to it.
 func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte, error) {
 	files := map[string][]byte{}
@@ -326,6 +386,9 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 			return nil, err
 		}
 		name := strings.TrimSuffix(filepath.Base(f), ".md")
+		if _, declared := bf.Connectors[name]; name == "reader" && !declared {
+			continue
+		}
 		roles[name], sources[name] = data, f
 	}
 	var bridgeRoles []string
@@ -361,6 +424,17 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 			re := frontmatterField("model")
 			if re.Match(data) {
 				data = re.ReplaceAll(data, []byte("model: "+o.Model))
+			}
+		}
+		// The hook matches agent_type, which is the frontmatter name; the file name stands in when there is none.
+		key := name
+		if _, fmName, err := frontmatterMcpServers(sources[name], data); err == nil && fmName != "" {
+			key = fmName
+		}
+		if declared := rules[key]; len(declared) > 0 {
+			var err error
+			if data, err = withDeclaredTools(sources[name], data, declared); err != nil {
+				return nil, err
 			}
 		}
 		files[".claude/agents/"+name+".md"] = data
