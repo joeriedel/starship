@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -585,7 +586,7 @@ func TestSequenceRetryStartsWithoutGoAndCarriesTheState(t *testing.T) {
 		}
 	}
 	listing := w.mustSeq()
-	if !strings.Contains(listing, "attempt 2/2") || !strings.Contains(listing, "the fixture path was wrong") {
+	if !strings.Contains(listing, "attempt 2") || !strings.Contains(listing, "the fixture path was wrong") {
 		t.Errorf("the listing should show the attempt and diagnosis:\n%s", listing)
 	}
 }
@@ -600,6 +601,11 @@ func TestSequenceFailedRetryHaltsInStopMode(t *testing.T) {
 	w.retryStep("1")
 	lead, _ = w.spawn("", "", "orchestrator")
 	w.failRun(lead)
+	w.wantStatus("decide", "pending")
+	if sf := readSeq(w.bridge, w.sid); sf.Sequences[0].Halted {
+		t.Error("the sequence should wait for the user, not halt")
+	}
+	w.mustSeq("accept", "1")
 	w.wantStatus("failed", "cancelled")
 	if sf := readSeq(w.bridge, w.sid); !sf.Sequences[0].Halted {
 		t.Error("the sequence should be halted")
@@ -619,10 +625,12 @@ func TestSequenceFailedRetrySkipsTheTasksLaterStepsInKeepGoingMode(t *testing.T)
 	w.retryStep("1")
 	lead, _ = w.spawn("", "", "orchestrator")
 	w.failRun(lead)
+	w.wantStatus("decide", "pending", "pending")
+	w.mustSeq("accept", "1")
 	w.wantStatus("failed", "skipped", "active")
 }
 
-func TestSequenceSecondRetryAndBadRetriesAreRefused(t *testing.T) {
+func TestSequenceBadRetriesAreRefusedAndASecondRetryWorks(t *testing.T) {
 	w, _, _, _ := githubWorld(t, "success", localTest)
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.mustSeq("publish", "supernova/auth-refactor")
@@ -649,9 +657,21 @@ func TestSequenceSecondRetryAndBadRetriesAreRefused(t *testing.T) {
 	w.retryStep("1")
 	lead, _ = w.spawn("", "", "orchestrator")
 	w.failRun(lead)
-	_, err := w.seq("retry", "1", "--diagnosis", "again", "--state", "left")
-	if err == nil || !strings.Contains(err.Error(), "already retried") {
-		t.Errorf("a second retry should be refused: %v", err)
+	w.wantStatus("decide")
+	out := w.mustSeq("retry", "1", "--diagnosis", "again", "--state", "left")
+	if !strings.Contains(out, "attempt 3") {
+		t.Errorf("a second retry should be the third attempt:\n%s", out)
+	}
+	w.wantStatus("active")
+	r, err := readRun(w.bridge, w.step(1).Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(r.Snap.WorkItem, "## Current state"); n != 1 {
+		t.Errorf("the work item should have one retry section, has %d:\n%s", n, r.Snap.WorkItem)
+	}
+	if !strings.Contains(r.Snap.WorkItem, "again") || strings.Contains(r.Snap.WorkItem, "the fixture path was wrong") {
+		t.Errorf("the retry section should carry the latest state only:\n%s", r.Snap.WorkItem)
 	}
 }
 
@@ -1551,8 +1571,8 @@ func TestSequenceSkipContinuesAndCancelsThePublishStep(t *testing.T) {
 	w.failRun(lead)
 	w.wantStatus("decide", "pending", "pending")
 	out := w.mustSeq("skip", "1")
-	if !strings.Contains(out, skipWorkspaceNote) {
-		t.Errorf("skip should tell about the workspace even with nothing affected:\n%s", out)
+	if !strings.Contains(out, "has no uncommitted changes") {
+		t.Errorf("skip should tell the state of the workspace even with nothing affected:\n%s", out)
 	}
 	w.wantStatus("failed", "cancelled", "active")
 	if sf := readSeq(w.bridge, w.sid); sf.Sequences[0].Halted {
@@ -1643,10 +1663,10 @@ func TestSequenceSkipNamesStepsOfLaterSequences(t *testing.T) {
 	reason, _ := w.stopHook()["reason"].(string)
 	check := func(where, text string) {
 		t.Helper()
-		if !strings.Contains(text, skipWorkspaceNote) {
-			t.Errorf("%s should carry the workspace note:\n%s", where, text)
+		if !strings.Contains(text, "no uncommitted changes") {
+			t.Errorf("%s should carry the workspace state:\n%s", where, text)
 		}
-		for _, want := range []string{"step 2.1, release: supernova 1.2.3", "step 2.2, do: update the docs", "step 2.4, publish: supernova/auth-refactor"} {
+		for _, want := range []string{"step 2.1, release: supernova 1.2.3", "step 2.2, do: update the docs", "step 2.4, publish: supernova/auth-refactor (cancelled when reached, unless the task runs again and passes first in that location)"} {
 			if !strings.Contains(text, want) {
 				t.Errorf("%s should name %q:\n%s", where, want, text)
 			}
@@ -1696,8 +1716,8 @@ func TestSequenceStopOffersSkipOnlyInStopMode(t *testing.T) {
 		if got := strings.Contains(reason, "sequence skip 1"); got != (mode == "stop") {
 			t.Errorf("%s mode: offers skip = %v:\n%s", mode, got, reason)
 		}
-		if got := strings.Contains(reason, skipWorkspaceNote); got != (mode == "stop") {
-			t.Errorf("%s mode: has the workspace note = %v:\n%s", mode, got, reason)
+		if !strings.Contains(reason, "uncommitted") {
+			t.Errorf("%s mode: the workspace text is missing:\n%s", mode, reason)
 		}
 	}
 }
@@ -1878,4 +1898,577 @@ func TestSequenceHaltOfARetriedPendingGroupStepRetiresOnlyTheFreshRun(t *testing
 		t.Errorf("the kept run should not be touched: %s %q", st.Status, st.Reason)
 	}
 	w.wantStatus("cancelled")
+}
+
+func TestSequenceAttemptCountsFromTheStepsFields(t *testing.T) {
+	for _, c := range []struct {
+		st   seqStep
+		want int
+	}{{seqStep{}, 1}, {seqStep{Prev: "r1"}, 2}, {seqStep{Prev: "r2", Retries: 1}, 2}, {seqStep{Prev: "r3", Retries: 2}, 3}} {
+		if got := c.st.attempt(); got != c.want {
+			t.Errorf("%+v: attempt %d, want %d", c.st, got, c.want)
+		}
+	}
+}
+
+func TestSequenceEveryFailedAttemptWaitsForTheUser(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("do", "later")
+	w.approve()
+	var runs []string
+	for attempt := 1; attempt <= 4; attempt++ {
+		lead, _ := w.spawn("", "", "orchestrator")
+		runs = append(runs, w.step(1).Run)
+		w.failRun(lead)
+		w.wantStatus("decide", "pending")
+		if sf := readSeq(w.bridge, w.sid); sf.Sequences[0].Halted {
+			t.Fatalf("attempt %d halted the sequence", attempt)
+		}
+		if l := w.mustSeq(); !strings.Contains(l, fmt.Sprintf("(attempt %d", attempt)) {
+			t.Errorf("the listing should show attempt %d:\n%s", attempt, l)
+		}
+		if attempt < 4 {
+			w.retryStep("1")
+		}
+	}
+	for i := 1; i < len(runs); i++ {
+		if got := w.runState(runs[i]).RetryOf; got != runs[i-1] {
+			t.Errorf("run %d retries %q, want %q", i+1, got, runs[i-1])
+		}
+	}
+	if st := w.step(1); st.Retries != 3 {
+		t.Errorf("retries %d, want 3", st.Retries)
+	}
+}
+
+func TestSequenceSkipAndAcceptWorkAfterRetries(t *testing.T) {
+	for _, cmd := range []string{"skip", "accept"} {
+		w := newWorld(t)
+		w.mustSeq("run", "supernova/auth-refactor")
+		w.mustSeq("do", "later")
+		w.approve()
+		for i := 0; i < 2; i++ {
+			lead, _ := w.spawn("", "", "orchestrator")
+			w.failRun(lead)
+			w.retryStep("1")
+		}
+		lead, _ := w.spawn("", "", "orchestrator")
+		w.failRun(lead)
+		w.wantStatus("decide", "pending")
+		w.mustSeq(cmd, "1")
+		if cmd == "skip" {
+			w.wantStatus("failed", "active")
+			if !w.step(1).skipped() {
+				t.Error("the step should be skipped")
+			}
+		} else {
+			w.wantStatus("failed", "cancelled")
+			if w.step(1).skipped() {
+				t.Error("an accepted step is not skipped")
+			}
+		}
+	}
+}
+
+func TestSequenceDecideTextOffersRetrySkipHaltInOrder(t *testing.T) {
+	for _, mode := range []string{"stop", "keep-going"} {
+		w := newWorld(t)
+		w.mustSeq("run", "supernova/auth-refactor")
+		w.mustSeq("mode", mode)
+		w.approve()
+		lead, _ := w.spawn("", "", "orchestrator")
+		w.failRun(lead)
+		text, _ := w.stopHook()["reason"].(string)
+		var lines []string
+		for _, l := range strings.Split(text, "\n") {
+			if strings.HasPrefix(l, "- ") {
+				lines = append(lines, l)
+			}
+		}
+		if len(lines) != 3 || !strings.HasPrefix(lines[0], "- retry: `ensign sequence retry 1.1 --diagnosis") || !strings.HasPrefix(lines[1], "- skip: ") || !strings.HasPrefix(lines[2], "- halt: ") {
+			t.Fatalf("%s mode: want retry, skip, halt in that order:\n%s", mode, text)
+		}
+		wantSkip, wantHalt := "`ensign sequence skip 1.1`", "`ensign sequence accept 1.1`"
+		if mode == "keep-going" {
+			wantSkip, wantHalt = "`ensign sequence accept 1.1`", "`ensign sequence halt"
+		}
+		if !strings.Contains(lines[1], wantSkip) || !strings.Contains(lines[2], wantHalt) {
+			t.Errorf("%s mode: wrong commands:\n%s", mode, text)
+		}
+		bare := text
+		for {
+			i := strings.Index(bare, "`")
+			if i < 0 {
+				break
+			}
+			j := strings.Index(bare[i+1:], "`")
+			bare = bare[:i] + bare[i+1+j+1:]
+		}
+		if strings.Contains(bare, "accept") {
+			t.Errorf("%s mode: the word accept is said outside a command:\n%s", mode, text)
+		}
+	}
+}
+
+func TestSequenceKeepGoingHaltCancelsADecidingStep(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("do", "later")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("decide", "pending")
+	w.mustSeq("halt", "--reason", "enough")
+	w.wantStatus("cancelled", "cancelled")
+}
+
+func TestSkipWorkspaceTextNamesTheFoldersState(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	r, err := readRun(w.bridge, w.step(1).Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := r.Snap.Workspace
+
+	text := skipWorkspaceText(w.bridge, w.step(1))
+	if !strings.Contains(text, folder) || !strings.Contains(text, "has no uncommitted changes") || strings.Contains(text, "committed or stashed") {
+		t.Errorf("a clean folder:\n%s", text)
+	}
+
+	for i := 0; i < 12; i++ {
+		write(t, filepath.Join(ws, fmt.Sprintf("junk-%02d.txt", i)), "x\n")
+	}
+	text = skipWorkspaceText(w.bridge, w.step(1))
+	for _, want := range []string{folder, "task/auth-refactor", "junk-00.txt", "junk-09.txt", "and 2 more", "committed or stashed"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("a dirty folder should say %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "junk-10.txt") || strings.Contains(text, "failed run's") {
+		t.Errorf("the list is capped and doesn't claim whose work it is:\n%s", text)
+	}
+	if out := w.mustSeq("skip", "1"); !strings.Contains(out, "and 2 more") {
+		t.Errorf("skip should carry the warning:\n%s", out)
+	}
+}
+
+func TestSkipWorkspaceTextFallsBackWhenTheStateCantBeRead(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	if text := skipWorkspaceText(w.bridge, w.step(1)); !strings.Contains(text, skipWorkspaceUnknown) || !strings.Contains(text, "could not be read") {
+		t.Errorf("a folder that is not a git repository:\n%s", text)
+	}
+	os.Remove(filepath.Join(runsDir(w.bridge), w.step(1).Run, "state.json"))
+	if text := skipWorkspaceText(w.bridge, w.step(1)); text != skipWorkspaceUnknown {
+		t.Errorf("an unreadable run:\n%s", text)
+	}
+}
+
+// staleMarker writes the passing-run marker of the task as an earlier passing run left it, matching the task branch's head.
+func (w *world) staleMarker(ws string) {
+	w.t.Helper()
+	sha := runGit(w.t, ws, "rev-parse", "task/auth-refactor")
+	write(w.t, testedFile(w.bridge, "supernova/auth-refactor", ""), sha+"\n")
+}
+
+func TestSequencePublishOfASkippedTaskIsCancelledInALaterSequence(t *testing.T) {
+	task := "supernova/auth-refactor"
+	for _, queuedFirst := range []bool{true, false} {
+		w, ws, remote, _ := githubWorld(t, "success", localTest)
+		mainBefore := runGit(t, ".", "--git-dir", remote, "rev-parse", "main")
+		w.mustSeq("run", task)
+		w.approve()
+		if queuedFirst {
+			w.mustSeq("publish", task, "--name", "later")
+			w.approve()
+		}
+		lead, _ := w.spawn("", "", "orchestrator")
+		write(t, filepath.Join(ws, "lib.txt"), "two\n")
+		runGit(t, ws, "commit", "-q", "-am", "work")
+		w.failRun(lead)
+		w.staleMarker(ws)
+		runGit(t, ws, "checkout", "-q", "task/auth-refactor")
+		out := w.mustSeq("skip", "1.1")
+		if !queuedFirst {
+			w.mustSeq("publish", task)
+			out = w.goContext()
+		}
+		if !strings.Contains(out, "step 2.1 (publish supernova/auth-refactor) cancelled: step 1.1 was skipped") {
+			t.Errorf("queuedFirst=%v: the output should name the cancel:\n%s", queuedFirst, out)
+		}
+		w.wantStatus("failed", "cancelled")
+		if got := runGit(t, ".", "--git-dir", remote, "rev-parse", "main"); got != mainBefore {
+			t.Errorf("queuedFirst=%v: nothing may be pushed to main: %s", queuedFirst, got)
+		}
+		if sf := readSeq(w.bridge, w.sid); sf.Sequences[1].Halted {
+			t.Errorf("queuedFirst=%v: the cancel must not halt the later sequence", queuedFirst)
+		}
+	}
+}
+
+func TestSequencePublishOfASkippedTaskProceedsWhenTheTaskRanAgain(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.approve()
+	w.mustSeq("run", task, "--name", "again")
+	w.mustSeq("publish", task)
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.mustSeq("skip", "1.1")
+	w.approve()
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	if why, _ := w.runStage(); !strings.Contains(why, "Outcome: pass") {
+		t.Fatalf("the second run should pass: %s", why)
+	}
+	w.wantStatus("failed", "done", "done")
+	if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got != "two" {
+		t.Errorf("the publish should land the rerun's work, got %q", got)
+	}
+}
+
+func TestSequenceClosingSaysWhatWasSkipped(t *testing.T) {
+	for _, c := range []struct {
+		skips int
+		want  string
+	}{
+		{0, "sequence 1 finished."},
+		{1, "sequence 1 finished with a skipped step: step 1.1."},
+		{2, "sequence 1 finished with 2 skipped steps: 1.1, 1.2."},
+	} {
+		w := newWorld(t)
+		for i := 0; i < c.skips; i++ {
+			w.mustSeq("run", "supernova/auth-refactor")
+		}
+		w.mustSeq("do", "report")
+		w.approve()
+		for i := 0; i < c.skips; i++ {
+			lead, _ := w.spawn("", "", "orchestrator")
+			w.failRun(lead)
+			w.mustSeq("skip", fmt.Sprintf("1.%d", i+1))
+		}
+		out := w.mustSeq("done", strconv.Itoa(c.skips+1))
+		if !strings.Contains(out, c.want) {
+			t.Errorf("%d skips: want %q in\n%s", c.skips, c.want, out)
+		}
+	}
+}
+
+func TestSequenceKeepGoingAcceptIsASkipForLaterPublishes(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	mainBefore := runGit(t, ".", "--git-dir", remote, "rev-parse", "main")
+	w.mustSeq("run", task)
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	write(t, filepath.Join(ws, "lib.txt"), "two\n")
+	runGit(t, ws, "commit", "-q", "-am", "work")
+	w.failRun(lead)
+	w.staleMarker(ws)
+	runGit(t, ws, "checkout", "-q", "task/auth-refactor")
+	out := w.mustSeq("accept", "1")
+	if !strings.Contains(out, "sequence 1 finished with a skipped step: step 1.1.") {
+		t.Errorf("the close should name the skipped step:\n%s", out)
+	}
+	if r := w.step(1).Reason; !strings.HasPrefix(r, skipPrefix) {
+		t.Errorf("the accepted step's reason should carry the skip prefix: %q", r)
+	}
+	w.mustSeq("publish", task)
+	out = w.goContext()
+	if !strings.Contains(out, "step 2.1 (publish supernova/auth-refactor) cancelled: step 1.1 was skipped") {
+		t.Errorf("the later publish should be cancelled:\n%s", out)
+	}
+	if got := runGit(t, ".", "--git-dir", remote, "rev-parse", "main"); got != mainBefore {
+		t.Errorf("nothing may be pushed to main: %s", got)
+	}
+}
+
+func TestSequenceSkippedBeforeTracksLocationAndLaterRuns(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "skiploc", "client, server")
+	var out bytes.Buffer
+	newRun := func(loc, status string) string {
+		t.Helper()
+		time.Sleep(2 * time.Millisecond)
+		r, err := createRun(w.bridge, runOpts{task: task, location: loc}, true, &out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rf, err := readRun(w.bridge, r.Run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rf.State.Status = status
+		if status == "success" {
+			rf.State.FinishedAt = time.Now().UnixNano()
+		}
+		if err := rf.save(); err != nil {
+			t.Fatal(err)
+		}
+		return r.Run
+	}
+	step := func(n int, kind, status, reason string, runs ...string) *seqStep {
+		st := &seqStep{N: n, Kind: kind, Task: task, Status: status, Reason: reason}
+		var rs []*seqRun
+		for _, r := range runs {
+			rs = append(rs, &seqRun{Run: r})
+		}
+		st.setRuns(rs)
+		return st
+	}
+	skip := skipPrefix + "broken"
+	newRun("client", "success")
+	failed := newRun("client", "error")
+	skipped := step(1, "run", "failed", skip, failed)
+	skipped.SkippedAt = time.Now().UnixNano()
+	// The run step before the publish pins its location to the client.
+	pinned := newRun("client", "pending")
+	pub := step(2, "publish", "pending", "")
+	seq1 := &sequence{N: 1, Steps: []*seqStep{skipped}}
+	seq2 := &sequence{N: 2, Steps: []*seqStep{step(1, "run", "pending", "", pinned), pub}}
+	sf := &seqFile{Sequences: []*sequence{seq1, seq2}}
+
+	if got := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
+		t.Fatalf("a publish alone in a later sequence should see the skip in its location: %v", got)
+	}
+
+	cancelled := newRun("client", "error")
+	seq1.Steps = append(seq1.Steps, step(2, "run", "cancelled", "dropped", cancelled))
+	if got := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
+		t.Errorf("a cancelled later run step must not clear the skip: %v", got)
+	}
+
+	newRun("server", "success")
+	if got := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
+		t.Errorf("a passing run in another location must not clear the skip: %v", got)
+	}
+
+	newRun("client", "success")
+	if got := sf.skippedBefore(w.bridge, seq2, pub); got != nil {
+		t.Errorf("a plain passing run after the skip should clear it: %v", got)
+	}
+}
+
+func TestSequenceSkippedBeforeComparesEveryRunOfAGroup(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "skipgroup", "client, server")
+	var out bytes.Buffer
+	var runs []*seqRun
+	for _, loc := range []string{"client", "server"} {
+		r, err := createRun(w.bridge, runOpts{task: task, location: loc}, true, &out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rf, err := readRun(w.bridge, r.Run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rf.State.Status = "success"
+		rf.State.FinishedAt = time.Now().UnixNano()
+		if loc == "client" {
+			rf.State.Status = "error"
+		}
+		if err := rf.save(); err != nil {
+			t.Fatal(err)
+		}
+		runs = append(runs, &seqRun{Run: r.Run})
+	}
+	skipped := &seqStep{N: 1, Kind: "run", Task: task, Status: "failed", Reason: skipPrefix + "broken"}
+	skipped.setRuns(runs)
+	pub := &seqStep{N: 2, Kind: "publish", Task: task, Status: "pending"}
+	seq := &sequence{N: 1, Steps: []*seqStep{skipped, pub}}
+	sf := &seqFile{Sequences: []*sequence{seq}}
+	// The publish acts in the group's last run's location, the server; the skipped step has a run there, though its failed run was the client's.
+	if got := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
+		t.Errorf("a skipped group step with a run in the publish's location should stand: %v", got)
+	}
+}
+
+func TestSequenceSkippedBeforeWithoutAResolvableLocation(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "skipnoloc", "client, server")
+	var out bytes.Buffer
+	newRun := func(status string) {
+		t.Helper()
+		time.Sleep(2 * time.Millisecond)
+		r, err := createRun(w.bridge, runOpts{task: task, location: "client"}, true, &out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rf, err := readRun(w.bridge, r.Run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rf.State.Status = status
+		if status == "success" {
+			rf.State.FinishedAt = time.Now().UnixNano()
+		}
+		if err := rf.save(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newRun("error")
+	failed := listRuns(w.bridge)[0].id
+	skipped := &seqStep{N: 1, Kind: "run", Task: task, Status: "failed", Reason: skipPrefix + "broken", SkippedAt: time.Now().UnixNano()}
+	skipped.setRuns([]*seqRun{{Run: failed}})
+	pub := &seqStep{N: 1, Kind: "publish", Task: task, Status: "pending"}
+	seq1 := &sequence{N: 1, Steps: []*seqStep{skipped}}
+	seq2 := &sequence{N: 2, Steps: []*seqStep{pub}}
+	sf := &seqFile{Sequences: []*sequence{seq1, seq2}}
+	if _, err := loadConfigAt(w.bridge, task, ""); err == nil {
+		t.Fatal("the task has no success to follow and two locations; its location should not resolve")
+	}
+	if got := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
+		t.Errorf("the skip should apply when the location can't be resolved: %v", got)
+	}
+	newRun("success")
+	if got := sf.skippedBefore(w.bridge, seq2, pub); got != nil {
+		t.Errorf("a passing run after the skip should clear it: %v", got)
+	}
+}
+
+func TestSequenceSkippedBeforeAStandingSkipWithoutATime(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "skipold", "client")
+	var out bytes.Buffer
+	r, err := createRun(w.bridge, runOpts{task: task, location: "client"}, true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	ok, err := createRun(w.bridge, runOpts{task: task, location: "client"}, true, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf, err := readRun(w.bridge, ok.Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf.State.Status, rf.State.FinishedAt = "success", time.Now().UnixNano()
+	if err := rf.save(); err != nil {
+		t.Fatal(err)
+	}
+	skipped := &seqStep{N: 1, Kind: "run", Task: task, Status: "failed", Reason: skipPrefix + "broken"}
+	skipped.setRuns([]*seqRun{{Run: r.Run}})
+	pub := &seqStep{N: 2, Kind: "publish", Task: task, Status: "pending"}
+	seq := &sequence{N: 1, Steps: []*seqStep{skipped, pub}}
+	sf := &seqFile{Sequences: []*sequence{seq}}
+	if got := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
+		t.Errorf("a skip with no time stands: %v", got)
+	}
+}
+
+func TestSequencePublishRunsWhenTheTaskRanAfterARetriedThenSkippedStep(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.approve()
+	w.mustSeq("run", task, "--name", "again")
+	w.mustSeq("publish", task)
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.retryStep("1.1")
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.mustSeq("skip", "1.1")
+	w.approve()
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	if why, _ := w.runStage(); !strings.Contains(why, "Outcome: pass") {
+		t.Fatalf("the second sequence's run should pass: %s", why)
+	}
+	w.wantStatus("failed", "done", "done")
+	if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got != "two" {
+		t.Errorf("the publish should land the rerun's work, got %q", got)
+	}
+}
+
+func TestSequencePublishIsCancelledWhenTheRetrySucceededBeforeALaterSkip(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	mainBefore := runGit(t, ".", "--git-dir", remote, "rev-parse", "main")
+	w.mustSeq("run", task)
+	w.approve()
+	w.mustSeq("run", task, "--name", "second")
+	w.approve()
+	w.mustSeq("publish", task, "--name", "third")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.retryStep("1.1")
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	if why, _ := w.runStage(); !strings.Contains(why, "Outcome: pass") {
+		t.Fatalf("the retry should pass: %s", why)
+	}
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.mustSeq("skip", "2.1")
+	w.wantStatus("done", "failed", "cancelled")
+	if got := runGit(t, ".", "--git-dir", remote, "rev-parse", "main"); got != mainBefore {
+		t.Errorf("nothing may be pushed to main: %s", got)
+	}
+}
+
+func TestSequenceSkippedBeforeSurvivesADeletedRunFolder(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "skipgone", "client, server")
+	var out bytes.Buffer
+	newRun := func(loc string) string {
+		t.Helper()
+		r, err := createRun(w.bridge, runOpts{task: task, location: loc}, true, &out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Run
+	}
+	for _, recorded := range []bool{true, false} {
+		failed := newRun("client")
+		ru := &seqRun{Run: failed}
+		if recorded {
+			ru.Location = "client"
+		}
+		skipped := &seqStep{N: 1, Kind: "run", Task: task, Status: "failed", Reason: skipPrefix + "broken", SkippedAt: time.Now().UnixNano()}
+		skipped.setRuns([]*seqRun{ru})
+		pub := &seqStep{N: 2, Kind: "publish", Task: task, Status: "pending"}
+		seq := &sequence{N: 1, Steps: []*seqStep{skipped, pub}}
+		sf := &seqFile{Sequences: []*sequence{seq}}
+		if err := os.RemoveAll(filepath.Join(runsDir(w.bridge), failed)); err != nil {
+			t.Fatal(err)
+		}
+		if got := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
+			t.Errorf("recorded=%v: a skip must stand when its run folder is gone: %v", recorded, got)
+		}
+	}
+}
+
+func TestSequenceKeepGoingDecideTextLeavesOutTheTasksOwnSteps(t *testing.T) {
+	for _, mode := range []string{"stop", "keep-going"} {
+		w := releaseWorld(t, 0)
+		w.mustSeq("run", "supernova/auth-refactor")
+		w.mustSeq("run", "supernova/auth-refactor")
+		w.mustSeq("release", "supernova", "1.2.3")
+		w.mustSeq("mode", mode)
+		w.approve()
+		lead, _ := w.spawn("", "", "orchestrator")
+		w.failRun(lead)
+		text, _ := w.stopHook()["reason"].(string)
+		if !strings.Contains(text, "step 1.3, release") {
+			t.Errorf("%s mode: the release step should be listed:\n%s", mode, text)
+		}
+		if got := strings.Contains(text, "step 1.2, run"); got != (mode == "stop") {
+			t.Errorf("%s mode: own pending run step listed=%v:\n%s", mode, got, text)
+		}
+	}
 }
