@@ -1238,6 +1238,11 @@ func validate(c *Config) []string {
 			add("on-exhausted.%s must finish, error or ask-user", b)
 		}
 	}
+	for _, sk := range c.Skills {
+		if sk.Delivery == "on-demand" && sk.Name != filepath.Base(sk.Name) {
+			add("skill %q: a skill name must be a single path element", sk.Name)
+		}
+	}
 	for _, r := range p.FreeRoles {
 		if !c.roleExists(r) {
 			add("free role %q has no definition", r)

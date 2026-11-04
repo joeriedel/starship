@@ -167,6 +167,34 @@ func (c *Config) selectSkills(layers []layerEntry) error {
 	return nil
 }
 
+// onDemandPath is where a run keeps the full text of an on-demand skill.
+func onDemandPath(runDir, name string) string {
+	return filepath.Join(runDir, "skills", name+".md")
+}
+
+func onDemandDescription(sk SkillDelivery) string {
+	if sk.Description == "" {
+		return "Knowledge of " + sk.Name
+	}
+	return sk.Description
+}
+
+// writeOnDemandSkills puts each on-demand skill's full text in the run's folder, where the listing points.
+func writeOnDemandSkills(runDir string, skills []SkillDelivery) error {
+	for _, sk := range skills {
+		if sk.Delivery != "on-demand" {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Join(runDir, "skills"), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(onDemandPath(runDir, sk.Name), []byte(sk.Text+"\n"), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // skillSections is what a dispatch of role is told about this run's skills.
 func skillSections(r *RunFiles, role string) string {
 	var inject, onDemand []string
@@ -175,41 +203,16 @@ func skillSections(r *RunFiles, role string) string {
 			continue
 		}
 		if sk.Delivery == "on-demand" {
-			onDemand = append(onDemand, fmt.Sprintf("- `%s` — %s", sk.Name, sk.Description))
+			onDemand = append(onDemand, fmt.Sprintf("- `%s` — %s: %s", sk.Name, onDemandDescription(sk), onDemandPath(r.Dir, sk.Name)))
 			continue
 		}
 		inject = append(inject, "## Skill: "+sk.Name+"\n\n"+sk.Text)
 	}
 	out := strings.Join(inject, "\n\n")
 	if len(onDemand) > 0 {
-		out += "\n\n## Skills to load when relevant\n\n" + strings.Join(onDemand, "\n")
+		out += "\n\n## Skills to load when relevant\n\nRead a skill's file when it bears on your task.\n\n" + strings.Join(onDemand, "\n")
 	}
 	return strings.TrimSpace(out)
-}
-
-// onDemandSkills is what link writes into .claude/skills/ for on-demand skills.
-func onDemandSkills(bridge, cp string) map[string][]byte {
-	out := map[string][]byte{}
-	names := map[string]bool{}
-	for _, dir := range skillDirs(bridge, cp, "") {
-		found, _ := filepath.Glob(filepath.Join(dir, "*.md"))
-		for _, f := range found {
-			names[strings.TrimSuffix(filepath.Base(f), ".md")] = true
-		}
-	}
-	for _, name := range sortedStrings(names) {
-		sd, err := assembleSkill(bridge, cp, "", name)
-		if err != nil || sd.Delivery != "on-demand" {
-			continue
-		}
-		desc := sd.Description
-		if desc == "" {
-			desc = "Knowledge of " + name
-		}
-		out[".claude/skills/"+name+"/SKILL.md"] = []byte(fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n\n%s\n",
-			name, yamlScalar(desc), sd.Text))
-	}
-	return out
 }
 
 func yamlScalar(s string) string {

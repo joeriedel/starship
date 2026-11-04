@@ -1053,6 +1053,9 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	if err := os.Mkdir(filepath.Join(dir, "reports"), 0o755); err != nil {
 		return nil, err
 	}
+	if err := writeOnDemandSkills(dir, snap.Skills); err != nil {
+		return nil, err
+	}
 	if err := writeJSON(filepath.Join(dir, "pipeline.json"), snap); err != nil {
 		return nil, err
 	}

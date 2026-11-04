@@ -291,14 +291,9 @@ skills:
 - **`inject`** (default): the driver adds the skill as an augment at `stage.before` for
   each stage whose role is in the skill's role list. Guaranteed; costs the skill's full
   length on every such dispatch. For skills a role must not work without.
-- **`on-demand`**: the skill is exposed as a Claude Code skill. Only its description sits
-  in context; the agent loads the body when it judges it relevant. Cheaper for large
-  reference skills. The driver records which on-demand skills each stage actually loaded
-  (from the agent's transcript), so a skill that should have been loaded and wasn't shows
-  up in the run history and can be switched to `inject`.
+- **`on-demand`**: the listing in the agent's prompt gives the skill's description and the path of a file in the run's folder holding its full text (every layer, plus learned entries), and the agent Reads the file when it judges the skill relevant. Cheaper for large reference skills. ensign writes the files once, when the run is created.
 
-Probed on 2.1.312 (§7.1): subagents with a relevant on-demand skill loaded it in 10 of 10
-runs and followed it each time, as did the session agent in 6 of 6. Those conditions
+Probed on 2.1.312 (§7.1), for the Claude Code skill mechanism: subagents with a relevant skill loaded it in 10 of 10 runs and followed it each time, as did the session agent in 6 of 6. Delivery no longer uses that mechanism, because an agent with a `tools:` list has no Skill tool. Those conditions
 were favourable — two skills, descriptions that matched the task closely, rules the model
 could not have guessed. The risk grows with many skills, vague descriptions, and
 technology the model believes it already knows, which is why `inject` stays the default.
@@ -673,6 +668,7 @@ The run then waits for `go`. Until then the hooks refuse its lead dispatch.
     pipeline.json            the snapshot: resolved pipeline with sources, bindings,
                              workspace, work item, and every brief the run can use
     state.json               written only by the driver
+    skills/<name>.md         the full text of each on-demand skill, written when the run is created
     reports/<dispatch>.md    each stage's report: the agent's handback, else its final message; ensign writes a plain stage's report itself
     lock
 ```
@@ -868,7 +864,7 @@ Probed on Claude Code 2.1.312 with a three-level spawn (session → orchestrator
 | `session_id` is the same for the session and its agents | yes; identical in hook payloads from the session, an orchestrator and its agents |
 | UserPromptSubmit `additionalContext` reaches the session | yes; the session dispatched the lead as instructed on `go` |
 | A full coding run, enforced only by hooks (sonnet session, haiku roles) | yes; four live scenarios, including a test failure that looped back and refused spawns |
-| Subagents load relevant Claude Code skills on demand | yes; 10 of 10 subagent runs and 6 of 6 session runs loaded the matching skill and followed it (favourable conditions; see §4.4) |
+| Subagents load relevant Claude Code skills on demand (the mechanism delivery no longer uses; agents with a `tools:` list have no Skill tool) | yes; 10 of 10 subagent runs and 6 of 6 session runs loaded the matching skill and followed it (favourable conditions; see §4.4) |
 
 SubagentStop identifies the role but not the stage, which is why dispatches are tagged.
 Harness behaviour changes between builds, so the probe belongs in this repo as a
@@ -1193,7 +1189,6 @@ SHA256SUMS
   bridge.yaml                    control-plane: { remote: <url>, tag: v1.4.0 }
   .starship/control-plane/       the bridge's clone, checked out at the tag (gitignored)
   .claude/agents/                generated from the pinned clone (gitignored)
-  .claude/skills/                on-demand skills, generated likewise (gitignored)
   CLAUDE.md                      setup steps, the session-only heartbeat rule; no imports
   machine.yaml                   where this machine keeps each project's code (gitignored)
 ```
@@ -1209,7 +1204,7 @@ release (or the one named), refuses while any run in the bridge is active, then 
 so the bridge's history records every version it ran.
 
 **`ensign link`** makes the bridge match its pin: checks out the pinned tag and
-regenerates `.claude/agents/` and `.claude/skills/` from it plus the bridge's own
+regenerates `.claude/agents/` from it plus the bridge's own
 extensions. It runs from `ensign update`, from `ensign init`, and from a SessionStart hook
 that checks the generated files still match the pin (they won't after a fresh clone of
 the bridge). Rules:

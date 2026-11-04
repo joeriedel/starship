@@ -82,7 +82,6 @@ const bridgeGitignore = `# Generated per machine by ensign; never committed.
 .starship/
 machine.yaml
 .claude/agents/
-.claude/skills/
 .claude/settings.local.json
 `
 
@@ -331,9 +330,6 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 		}
 		files[".claude/agents/"+name+".md"] = data
 	}
-	for rel, data := range onDemandSkills(bridge, cp) {
-		files[rel] = data
-	}
 	return files, nil
 }
 
@@ -377,7 +373,13 @@ func link(bridge string, force bool, out io.Writer) error {
 	}
 	for rel := range old.Files {
 		if _, keep := want[rel]; !keep {
-			os.Remove(filepath.Join(bridge, filepath.FromSlash(rel)))
+			p := filepath.Join(bridge, filepath.FromSlash(rel))
+			os.Remove(p)
+			for d := filepath.Dir(p); d != bridge && strings.HasPrefix(d, bridge); d = filepath.Dir(d) {
+				if os.Remove(d) != nil {
+					break
+				}
+			}
 			changed++
 		}
 	}

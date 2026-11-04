@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,22 @@ import (
 func (w *world) promptOf(agent string) string {
 	data, _ := os.ReadFile(agentTranscript(w.session, agent))
 	return string(data)
+}
+
+// decodedPromptOf is the prompt the agent was given, with the transcript's JSON escaping undone.
+func (w *world) decodedPromptOf(agent string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(w.promptOf(agent), "\n") {
+		var rec struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil {
+			out.WriteString(rec.Message.Content)
+		}
+	}
+	return out.String()
 }
 
 func TestSkillsSelectionAndDelivery(t *testing.T) {
@@ -62,8 +79,10 @@ func TestSkillsSelectionAndDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := files[".claude/skills/big/SKILL.md"]; !ok {
-		t.Errorf("link should write on-demand skills into .claude/skills")
+	for rel := range files {
+		if strings.HasPrefix(rel, ".claude/skills/") {
+			t.Errorf("link should not generate %s", rel)
+		}
 	}
 }
 
@@ -358,5 +377,95 @@ func TestSessionIsToldRequestCommands(t *testing.T) {
 	}
 	if strings.Contains(helpText(w.bridge, w.session), "ensign") {
 		t.Errorf("help must not mention ensign")
+	}
+}
+
+func (w *world) onDemandFile(name string) string {
+	w.t.Helper()
+	found, _ := filepath.Glob(filepath.Join(w.bridge, ".starship", "runs", "*", "skills", name+".md"))
+	if len(found) != 1 {
+		w.t.Fatalf("expected one run file for %s, got %v", name, found)
+	}
+	return found[0]
+}
+
+func TestOnDemandSkillFile(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "skills/big.md"), "---\ndescription: A large reference\ndelivery: on-demand\ndefault-roles: [coder]\n---\nBridge text.\n")
+	write(t, filepath.Join(w.bridge, "projects/supernova/skills/big.md"), "Project text.\n")
+	write(t, filepath.Join(w.bridge, "projects/supernova/skills/plain.md"), "---\ndelivery: on-demand\ndefault-roles: [coder]\n---\nPlain body.\n")
+	w.project("skills: [big, plain]\n")
+	lead := w.startLead()
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	p := w.decodedPromptOf(coder)
+	path := w.onDemandFile("big")
+	if !strings.Contains(p, "`big`") || !strings.Contains(p, "A large reference") || !strings.Contains(p, path) {
+		t.Errorf("the coder's listing lacks the skill or its path %s", path)
+	}
+	if !strings.Contains(p, "Knowledge of plain") || !strings.Contains(p, w.onDemandFile("plain")) {
+		t.Errorf("a skill with no description should get the default")
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "Bridge text.") || !strings.Contains(string(data), "Project text.") || !strings.HasSuffix(string(data), "\n") {
+		t.Errorf("skill file: %q", data)
+	}
+	if strings.Contains(p, "Project text.") {
+		t.Errorf("the body should not be in the prompt")
+	}
+	w.stop(coder, "coder", "Done.\n\n```starship-report\noutcome: compiled\nsummary: ok\n```\n", false)
+	reviewer, reason := w.spawn(lead, "orchestrator", "reviewer")
+	if reviewer == "" {
+		t.Fatalf("the reviewer spawn was refused: %s", reason)
+	}
+	if strings.Contains(w.decodedPromptOf(reviewer), "`big`") {
+		t.Errorf("the reviewer is not listed this skill")
+	}
+}
+
+func TestOnDemandSkillNameMustBeOneElement(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "x.md"), "---\ndelivery: on-demand\n---\nText.\n")
+	w.project("skills: [\"../x\"]\n")
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	const want = "a skill name must be a single path element"
+	var out bytes.Buffer
+	err := cmdRun([]string{"supernova/auth-refactor", "--dry-run"}, &out)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("a dry run with skill ../x should report %q: %v\n%s", want, err, out.String())
+	}
+	out.Reset()
+	err = cmdRun([]string{"supernova/auth-refactor"}, &out)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("a run with skill ../x should fail with %q: %v\n%s", want, err, out.String())
+	}
+	entries, _ := os.ReadDir(filepath.Join(w.bridge, ".starship", "runs"))
+	if len(entries) != 0 {
+		t.Errorf("a refused run should leave no folder: %v", entries)
+	}
+}
+
+func TestLinkRemovesEmptyStaleSkillFolders(t *testing.T) {
+	w := linkedWorld(t)
+	stale := []byte("old\n")
+	write(t, filepath.Join(w.bridge, ".claude/skills/big/SKILL.md"), string(stale))
+	mine := filepath.Join(w.bridge, ".claude/skills/mine/SKILL.md")
+	write(t, mine, "mine\n")
+	manifestPath := filepath.Join(w.bridge, ".starship", "link.yaml")
+	var m linkManifest
+	readYAML(manifestPath, &m)
+	m.Files[".claude/skills/big/SKILL.md"] = sha(stale)
+	if err := writeYAML(manifestPath, m); err != nil {
+		t.Fatal(err)
+	}
+	if err := link(w.bridge, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(w.bridge, ".claude/skills/big")); !os.IsNotExist(err) {
+		t.Errorf("the stale folder should be gone: %v", err)
+	}
+	if _, err := os.Stat(mine); err != nil {
+		t.Errorf("a file outside the manifest must stay: %v", err)
 	}
 }
