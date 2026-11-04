@@ -533,7 +533,8 @@ func readRun(bridge, id string) (*RunFiles, error) {
 	if err := readJSON(filepath.Join(dir, "pipeline.json"), r.Snap); err != nil {
 		return nil, err
 	}
-	if err := readJSON(filepath.Join(dir, "state.json"), r.State); err != nil {
+	// pipeline.json was read, so the run exists; a missing state.json means a save is in flight.
+	if err := readExistingJSON(filepath.Join(dir, "state.json"), r.State); err != nil {
 		return nil, err
 	}
 	return r, nil

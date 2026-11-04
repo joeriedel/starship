@@ -733,10 +733,14 @@ func (r *RunFiles) save() error {
 func (r *RunFiles) close() { r.lock.Unlock() }
 
 func readJSON(path string, v any) error {
-	data, err := os.ReadFile(path)
+	data, err := readFileRetry(path)
 	if err != nil {
 		return err
 	}
+	return unmarshalFile(path, data, v)
+}
+
+func unmarshalFile(path string, data []byte, v any) error {
 	if err := json.Unmarshal(data, v); err != nil {
 		return fmt.Errorf("%s: %v", path, err)
 	}
@@ -753,7 +757,7 @@ func writeJSON(path string, v any) error {
 	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return renameRetry(tmp, path)
 }
 
 // runOpts is what `ensign run` and `ensign sequence run` accept.
