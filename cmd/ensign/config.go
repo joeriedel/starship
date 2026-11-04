@@ -919,25 +919,62 @@ func loadProjectBindings(bridge, project, location string) (*Config, error) {
 		c.Location = location
 		layers = append(layers, c.locationLayer(bridge))
 	}
-	extensions, broken := scanExtensions(bridge, c.ControlPlane)
+	if err := c.mergeLayers(layers); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// loadTaskEvents merges the layers that name a task's events and bindings with no pipeline, workspace or location: bridge, project, then the task. Extensions merge as in loadTarget.
+func loadTaskEvents(bridge, task string) (*Config, error) {
+	project, name, _ := strings.Cut(task, "/")
+	c := &Config{Bridge: bridge, Project: project, Task: task, Bindings: map[string]Binding{},
+		Events: map[string][]Handler{}, needs: map[string]string{}}
+	bl, err := c.bridgeLayer(bridge)
+	if err != nil {
+		return nil, err
+	}
+	pl, err := c.projectLayer(bridge)
+	if err != nil {
+		return nil, err
+	}
+	taskFile := filepath.Join(bridge, "projects", project, "tasks", name, "task.md")
+	front, _, err := splitFrontmatter(taskFile)
+	if err != nil {
+		return nil, fmt.Errorf("task %q: %v", task, err)
+	}
+	var tf TaskFile
+	if err := yaml.Unmarshal(append([]byte("\n"), front...), &tf); err != nil {
+		return nil, fmt.Errorf("%s: %v", taskFile, err)
+	}
+	if err := c.mergeLayers([]layerEntry{bl, pl, {"task:" + relTo(bridge, taskFile), taskFile, tf.Layer}}); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// mergeLayers adds each layer's extensions, events and bindings in order, an extension's before the layer that uses it.
+func (c *Config) mergeLayers(layers []layerEntry) error {
+	extensions, broken := scanExtensions(c.Bridge, c.ControlPlane)
 	for _, l := range layers {
 		for _, use := range l.layer.Use {
 			b, err := c.enableExtension(l, use, extensions, broken)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if b == nil {
 				continue
 			}
 			if err := c.mergeExtension(b, "extension:"+use); err != nil {
-				return nil, err
+				return err
 			}
 		}
+		c.addEvents(l.layer.Events, l.label, filepath.Dir(l.file))
 		if err := c.addBindings(&l.layer.Bindings, l.label, l.file); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return c, nil
+	return nil
 }
 
 // loadSides works out the run's affected sides: the edited location and every location that depends on it, or the narrower set asked for in want. Each side's bindings merge the layers the way the edited location's do, with that location's layer in place of the edited one's.
@@ -1511,6 +1548,9 @@ func validate(c *Config) []string {
 			add("event %q is not one starship fires (%s)", ev, hs[0].Source)
 		}
 		for _, h := range hs {
+			if msg := closeHandlerProblem(ev, h); msg != "" {
+				add("%s: %s", h.Source, msg)
+			}
 			if h.Kind == "augment" && !strings.HasPrefix(h.Text, "@") {
 				if _, err := os.Stat(filepath.Join(h.Dir, filepath.FromSlash(h.Text))); err != nil {
 					if _, err := c.findFile(h.Text); err != nil {
@@ -1524,10 +1564,27 @@ func validate(c *Config) []string {
 	return errs
 }
 
+// closeHandlerProblem says why a handler can't serve task.close, which has no run or workspace: it can't be a binding, an internal ensign command or a generated augment. It is empty for any other event.
+func closeHandlerProblem(ev string, h Handler) string {
+	if ev != "task.close" {
+		return ""
+	}
+	cmd := strings.TrimSpace(h.Command)
+	switch {
+	case strings.HasPrefix(cmd, "@"):
+		return "task.close can't run the binding " + cmd + ": it has no run or workspace"
+	case strings.HasPrefix(cmd, "ensign "):
+		return "task.close can't run the internal handler " + cmd + ": it has no run"
+	case h.Kind == "augment" && strings.HasPrefix(h.Text, "@"):
+		return "task.close can't use the generated augment " + h.Text + ": it has no run"
+	}
+	return ""
+}
+
 // validEvent reports whether starship fires this event for this pipeline.
 func validEvent(ev string, p *Pipeline) bool {
 	switch ev {
-	case "run.start", "run.finish:success", "run.finish:error", "run.finish:ask-user":
+	case "task.close", "run.start", "run.finish:success", "run.finish:error", "run.finish:ask-user":
 		return true
 	}
 	// Events on stages this pipeline doesn't have are inactive for it: a layer or extension

@@ -140,6 +140,8 @@ events:
 
 `rules:` is a list of strings in `bridge.yaml`, an extension, a project or a location. Together, without duplicates, they are appended to every work item under `## Project rules`, and the run summary shows each rule with where it came from. A task's own frontmatter `rules:` is ignored; put task-specific rules in the task's Scope.
 
+`task.close` fires when the session runs `ensign task close <project>/<task>`, for a task with or without code, and not inside a run. Its `require` handlers run first, in order, in the bridge root with `STARSHIP_BRIDGE`, `STARSHIP_PROJECT` and `STARSHIP_TASK` set; one that fails stops the close with nothing written, so it can be retried, and so does a handler that names none or more than one of `require`, `observe` and `augment`. Then the task is marked closed (`status: closed` in its frontmatter; a second close does nothing) and the `observe` handlers run, where a failure only warns, as does a failure to journal the close. `@binding` commands, `ensign …` handlers and generated `@name` augments are refused, since there is no run. To ask the session a question, use an `augment` file or a handler that prints the question: their text is shown after `Closed` and the session must deal with it in the same turn.
+
 Three extensions ship with starship, and a project turns each one on through `use:`:
 
 - [`git-catalog`](extensions/git-catalog) commits each coder pass and squashes the commits into one when you ask.

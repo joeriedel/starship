@@ -209,7 +209,7 @@ Conventional names, reused before new ones are invented:
 The initial set:
 
 ```
-session.open   task.open   plan.approved   run.start
+session.open   task.open   task.close   plan.approved   run.start
 stage.before:<id>   stage.after:<id>
 run.finish:success   run.finish:error   run.finish:ask-user
 commit.before   push.before
@@ -225,6 +225,8 @@ Handler kinds:
 
 **All events are fired by deterministic code** (§7), never by an agent. An event an
 agent forgets to fire is a silent skip, whatever the handler kind.
+
+`task.close` is fired by `ensign task close <p>/<t>`, outside any run, for tasks with and without code. `require` handlers run first, in order; one that fails ends the close with nothing written, so it can be retried; so does a handler with no single kind. Then the task is marked closed (`status: closed` in its frontmatter, which makes a second close a no-op) and `observe` handlers run; a failing one only warns, as does a failure to journal the close. Handlers run in the bridge root with `STARSHIP_BRIDGE`, `STARSHIP_PROJECT` and `STARSHIP_TASK`, and without `STARSHIP_RUN`, `STARSHIP_RUN_DIR` or `STARSHIP_WORKSPACE`. `@binding` commands, `ensign …` handlers and generated `@name` augments need a run and are refused. The output of handlers and the text of `augment` files are printed after `Closed <p>/<t>.` for the session to act on in the same turn: this is how an extension asks the session (and through it the user) a question.
 
 ### 4.3 Extensions
 
@@ -1516,6 +1518,7 @@ runs against Claude Code, except where listed below.
 | `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path> \| --locations <a,b>]` / `ensign task open <p>/<t>` | scaffold and open; where the code is goes into this machine's `machine.yaml`, and a new task uses its project's unless given a different location. `project new --pipeline none` makes a project of tasks without code (workspace, locations and platforms optional); `task new --pipeline <none\|coding>` picks per task (default: the project's), and a no-code task refuses `--workspace`, `--locations` and `--branch`; `task open` also lists the task's and project's `links:` (§5.3); `run`, `sequence run`, publishing and landing refuse a no-code task |
 | `ensign run <p>/<t> [--location <name>] [--subtask <name>] [--sides <a,b>] [--dependency <location>=<branch>] [--start <stage>] [--sync] [--dry-run]` | create a run for a task; `--subtask` names the subtask of a task with subtasks (default: the first pending); `--location` names the code location it edits, when the project has several; `--sides` narrows the locations it tests; `--dependency` names an unlanded branch of a location it depends on, applied with `@apply-dependency` |
 | `ensign dependency apply --side <location>` / `restore [--side <location>]` | for agent stages: apply a run's dependencies on a side before building and testing there, and restore the tree before finishing |
+| `ensign task close <p>/<t>` | close a task, with or without code: fire `task.close` (§4.2), set `status: closed` and `Done.` in `task.md`, and journal it; closing a closed task does nothing |
 | `ensign task subtask done\|drop <p>/<t> <name>` | mark a subtask of a task done or dropped |
 | `ensign run --pipeline <name> [--project <p>] [--location <name>] [--sides <a,b>] [--rebuild] [--dry-run]` | create a project- or bridge-wide run |
 | `ensign sequence` | list the session's sequences and their steps |

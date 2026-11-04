@@ -873,7 +873,7 @@ New.
 `
 
 func cmdTask(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign task new <project>/<task> [--workspace <path> | --locations <a,b>] [--branch <branch>] [--pipeline <none|coding>] | ensign task open <project>/<task> | ensign task subtask <done|drop> <project>/<task> <name>")
+	usage := fmt.Errorf("usage: ensign task new <project>/<task> [--workspace <path> | --locations <a,b>] [--branch <branch>] [--pipeline <none|coding>] | ensign task open <project>/<task> | ensign task close <project>/<task> | ensign task subtask <done|drop> <project>/<task> <name>")
 	if len(args) < 2 {
 		return usage
 	}
@@ -890,6 +890,11 @@ func cmdTask(args []string, out io.Writer) error {
 	}
 	taskDir := filepath.Join(bridge, "projects", parts[0], "tasks", parts[1])
 	switch args[0] {
+	case "close":
+		if len(args) != 2 {
+			return usage
+		}
+		return cmdTaskClose(bridge, args[1], out)
 	case "new":
 		var ws, branch, locations, pipeline string
 		for i := 2; i+1 < len(args); i += 2 {

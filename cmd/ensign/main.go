@@ -147,6 +147,7 @@ func usage() {
   ensign project reviewed <project>[/<task>]
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
   ensign task open <project>/<task>
+  ensign task close <project>/<task>
   ensign task subtask <done|drop> <project>/<task> <name>
   ensign run <project>/<task> [--subtask <name>] [--start <stage>] [--sync] [--dependency <location>=<branch>] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
