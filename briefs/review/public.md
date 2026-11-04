@@ -5,3 +5,4 @@ details specific enough that someone could recognise the private system they des
 Generic facts about a language, engine or library are fine. Examples should use the
 fictional project `supernova`. Each finding quotes the line and says what it reveals.
 Report `findings` for anything that should not be published; otherwise `clean`.
+Documentation (the paths declared in `@docs`) isn't reviewed, even when it is in the diff.

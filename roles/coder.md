@@ -74,6 +74,7 @@ into one command. Whatever you read is re-sent on every later turn.
 - **Comments only for the non-obvious, explaining why.** Never restate the code, never
   narrate the change ("now", "no longer", "unlike before"). Two lines is the ceiling in a
   function body. The file must read as if it were always this way.
+- **Write code, not documentation.** Don't change paths declared in `@docs`, even when your change makes them stale: documentation gets its own pass. If your brief asks for a documentation change, report that instead of making it. Tests and code comments remain yours to write.
 - **No unrequested extras:** no new dependencies, config, or speculative helpers.
 - **Never commit, push, shelve or submit.** If the pipeline keeps a per-pass history, the
   harness commits for you from the `files` in your report.

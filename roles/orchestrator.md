@@ -69,7 +69,7 @@ moves, stop or explore, and exploring is the expensive one that looks like dilig
   what has been established so far, marked *do not re-derive*.
 - **reviewer** — the change (files, and how to see the diff) and anything the coder
   flagged as a concern. Facts and locations, never your conclusions. One reviewer per
-  focus is dispatched in parallel; give each the same brief, and its focus is assigned.
+  focus is dispatched in parallel; give each the same brief, and its focus is assigned. The brief says documentation isn't reviewed, even when it is in the diff.
 - **style-reviewer** — the changed files.
 - **tester** — what changed, so it knows what it is verifying. It already has the
   bindings.
