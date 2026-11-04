@@ -563,7 +563,7 @@ func TestStartAtTest(t *testing.T) {
 	}
 	w.leaf(lead, "tester", "fail")
 	if st := w.state(); st.Scopes["run"].Stage != "code" || st.Spent["coder-loop"] != 1 {
-		t.Fatalf("after failing test: stage %s loop %d", st.Scopes["run"].Stage, st.Spent["coder-loop"])
+		t.Fatalf("after failing test: stage %s coder-loop %d", st.Scopes["run"].Stage, st.Spent["coder-loop"])
 	}
 }
 
