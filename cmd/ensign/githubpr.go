@@ -188,7 +188,7 @@ func githubUpdate(bridge, task, location string) (base, sha string, upToDate boo
 		return base, short(orig), true, nil
 	}
 	if out, err := exec.Command("git", "-C", ws, "rebase", "origin/"+base, want).CombinedOutput(); err != nil {
-		files, _ := gitOut(ws, "diff", "--name-only", "--diff-filter=U")
+		files, _ := gitZ(ws, "diff", "--name-only", "--diff-filter=U", "-z")
 		git(ws, "rebase", "--abort")
 		if cur != "" && cur != want {
 			git(ws, "switch", "-q", cur)
@@ -196,10 +196,10 @@ func githubUpdate(bridge, task, location string) (base, sha string, upToDate boo
 		if head, _ := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want); head != orig {
 			return "", "", false, fmt.Errorf("rebasing %s onto origin/%s failed and the branch could not be restored (was %s, now %s): %s", want, base, short(orig), short(head), strings.TrimSpace(string(out)))
 		}
-		if files == "" {
+		if len(files) == 0 {
 			return "", "", false, fmt.Errorf("rebasing %s onto origin/%s failed; the branch was left as it was: %s", want, base, strings.TrimSpace(string(out)))
 		}
-		return "", "", false, fmt.Errorf("rebasing %s onto origin/%s conflicts in: %s. The branch was left as it was", want, base, strings.Join(strings.Fields(files), ", "))
+		return "", "", false, fmt.Errorf("rebasing %s onto origin/%s conflicts in: %s. The branch was left as it was", want, base, joinFileNames(files))
 	}
 	if cur != "" && cur != want {
 		if err := git(ws, "switch", "-q", cur); err != nil {

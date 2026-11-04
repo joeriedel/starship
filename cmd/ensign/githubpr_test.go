@@ -345,3 +345,22 @@ func TestGithubPRUpdateConflict(t *testing.T) {
 		t.Errorf("the workspace should be on main, it is on %q", b)
 	}
 }
+
+func TestGithubPRUpdateConflictAwkwardNames(t *testing.T) {
+	for _, c := range []struct{ file, want string }{
+		{"old nova.txt", "old nova.txt"},
+		{"a,b.txt", `"a,b.txt"`},
+	} {
+		w, ws, remote, _ := githubWorld(t, "success", localTest)
+		write(t, filepath.Join(ws, c.file), "base\n")
+		runGit(t, ws, "add", c.file)
+		runGit(t, ws, "commit", "-qm", "base")
+		runGit(t, ws, "push", "-q", "origin", "main")
+		write(t, filepath.Join(ws, c.file), "mine\n") // staleBranch commits tracked changes on the task branch
+		staleBranch(t, ws, remote, c.file, "theirs\n")
+		_, err := w.land("update")
+		if want := "conflicts in: " + c.want + ". The branch was left as it was"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want it to contain %q", c.file, err, want)
+		}
+	}
+}

@@ -367,7 +367,7 @@ func ignoreMachineFile(bridge string) bool {
 // on every machine; anything else stays as it is.
 func workspaceRef(workspace, path string) string {
 	if workspace != "" {
-		if rel, err := filepath.Rel(filepath.FromSlash(workspace), filepath.FromSlash(path)); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if rel, err := filepath.Rel(filepath.FromSlash(workspace), filepath.FromSlash(path)); err == nil && !outsideRel(rel) {
 			if rel == "." {
 				return "$WORKSPACE"
 			}

@@ -12,8 +12,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gofrs/flock"
 )
@@ -236,6 +238,18 @@ func outsideRel(rel string) bool {
 	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// joinFileNames joins names with ", ", Go-quoting each one that contains a comma, a control character other than tab, or begins with a quote; the rest stay as they are. An entry that begins with a quote is therefore a quoted string, and no plain entry begins with one.
+func joinFileNames(names []string) string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = n
+		if strings.HasPrefix(n, `"`) || strings.ContainsFunc(n, func(r rune) bool { return r == ',' || (r != '\t' && unicode.IsControl(r)) }) {
+			out[i] = strconv.Quote(n)
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
 // journalPath is a changed file as the journal lists it: relative to the workspace when it lies inside it, with forward slashes, so a reported path and git's name for the same file are one entry.
 func journalPath(ws, f string) string {
 	if filepath.IsAbs(f) {
@@ -291,7 +305,7 @@ func runEntry(r *RunFiles) string {
 		line += fmt.Sprintf(" %d coder pass%s.", passes, map[bool]string{true: "", false: "es"}[passes == 1])
 	}
 	if len(files) > 0 {
-		line += " Changed: " + strings.Join(sortedStrings(files), ", ") + "."
+		line += " Changed: " + joinFileNames(sortedStrings(files)) + "."
 	}
 	if head != "" && head != st.StartHead {
 		line += fmt.Sprintf(" Commits: %s..%s.", short(st.StartHead), short(head))
