@@ -98,3 +98,23 @@ func TestReaderRoleRules(t *testing.T) {
 		t.Errorf("reader's frontmatter must have no Bash, Agent, web tools or mcpServers:\n%s", front)
 	}
 }
+
+func TestCuratorRoleCoversDocuments(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "roles", "curator.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, re := range []string{
+		`(?m)^name: curator$`,
+		`(?i)declared document`,
+		`(?i)rubric, which says what belongs in the\s+document and outranks the proposals`,
+		`(?i)conflicts with it is dropped, with the\s+reason in the ledger`,
+		`(?i)every existing id appears in the ledger`,
+		`merged-into <id>`,
+		`(?i)starship-ledger`,
+	} {
+		if !regexp.MustCompile(re).Match(data) {
+			t.Errorf("roles/curator.md does not match %q", re)
+		}
+	}
+}

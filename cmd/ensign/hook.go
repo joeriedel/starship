@@ -474,13 +474,21 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 	if d.Fields == nil {
 		d.Fields = map[string][]string{}
 	}
-	for k, v := range fields {
-		d.Fields[k] = v
+	// A private document's summary and fields can quote it. The report file below stays in the run folder, which is not tracked.
+	if s.Curates != "document" {
+		for k, v := range fields {
+			d.Fields[k] = v
+		}
 	}
-	d.Done, d.Outcome, d.Summary = true, outcome, summary
-	recordFacts(r, d)
+	d.Done, d.Outcome = true, outcome
+	detail := outcome
+	if s.Curates != "document" {
+		d.Summary = summary
+		recordFacts(r, d)
+		detail += ": " + summary
+	}
 	os.WriteFile(filepath.Join(r.Dir, "reports", d.ID+".md"), []byte(report), 0o644)
-	r.State.log("report", s.ID, d.ID, outcome+": "+summary)
+	r.State.log("report", s.ID, d.ID, detail)
 	if r.State.terminal() {
 		return
 	}
@@ -632,6 +640,9 @@ func parseReport(msg string, s *Stage) (outcome, summary string, fields map[stri
 		}
 	}
 	if _, ok := s.Outcomes.find(outcome); !ok {
+		if s.Curates == "document" {
+			return "", "", nil, "Your report's outcome is not one of this stage's outcomes."
+		}
 		return "", "", nil, fmt.Sprintf("Your report's outcome %q is not one of this stage's outcomes.", outcome)
 	}
 	for _, f := range s.ReportFields {
@@ -802,7 +813,7 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 		b.WriteString(platformsLine(r))
 	}
 	b.WriteString("\n## Your brief\n\n" + original + "\n\n## Report\n\n" + reportInstructions(s) + "\n")
-	if len(r.Snap.KnownSkills) > 0 {
+	if len(r.Snap.KnownSkills) > 0 && s.Curates != "document" {
 		b.WriteString("\nIf you had to establish a fact about a technology itself — true on any project using it, not just this one — " +
 			"add a line per fact to the report block: `fact: <skill> | <the fact> | <path:line or how you verified it>`. " +
 			"The skills are: " + strings.Join(r.Snap.KnownSkills, ", ") + ". " +

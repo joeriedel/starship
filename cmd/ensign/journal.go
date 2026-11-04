@@ -23,9 +23,9 @@ func isGit(dir string) bool {
 	return err == nil
 }
 
-// journalChanges lists changed files under projects/, skills/ and notes/, and under reader/ when bridge.yaml declares the reader, leaving out projects that turned journal commits off. Under notes/ and reader/ only Markdown files without a hidden segment count.
+// journalChanges lists changed files under projects/, skills/, notes/ and documents/, and under reader/ when bridge.yaml declares the reader, leaving out projects that turned journal commits off. Under notes/ and reader/ only Markdown files without a hidden segment count.
 func journalChanges(bridge string) ([]string, error) {
-	paths := []string{"projects", "skills", "notes"}
+	paths := []string{"projects", "skills", "notes", "documents"}
 	// An unreadable or invalid bridge.yaml leaves reader/ out, as if undeclared; the invalid declaration is reported where it is used.
 	if declared, err := readerDeclared(bridge); err == nil && declared {
 		paths = append(paths, "reader")

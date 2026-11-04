@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Joseph Riedel
+# Licensed under the MIT License. See LICENSE.
+
+pipeline: document-curate
+version: 1
+scope: bridge
+summary: Fold the proposals made for the bridge's declared documents into them.
+
+help:
+  - say: '"curate the documents"'
+    does: fold the proposals made for the bridge's declared documents into them
+    run: ensign run --pipeline document-curate
+
+stages:
+  - id: curate
+    role: curator
+    dispatched-by: session
+    brief: briefs/curate-document.md
+    curates: document
+    parallel: { over: pending-documents, join: all }
+    outcomes:
+      updated:   { finish: success }
+      unchanged: { finish: success }

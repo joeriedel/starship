@@ -319,10 +319,11 @@ as a fact about the technology alone.
 
 ### 4.5 The curator
 
-One `curator` role maintains every curated document: style guides (§9) and skills'
-learned entries (§4.4). A stage marks itself with `curates: style` or `curates: skill`,
-and its agents are the only writers of those documents. Each document type supplies a
-brief (`briefs/curate-style.md`, `briefs/curate-skill.md`); the pass and the checks are
+One `curator` role maintains every curated document: style guides (§9), skills'
+learned entries (§4.4) and declared documents (below). A stage marks itself with
+`curates: style`, `curates: skill` or `curates: document`, and its agents are the only
+writers of those documents. Each document type supplies a brief
+(`briefs/curate-style.md`, `briefs/curate-skill.md`, `briefs/curate-document.md`); the pass and the checks are
 the same for all of them. The curator's context is deliberately small — the document,
 the proposals, and anything that outranks them — so its attention goes to consistency.
 
@@ -360,6 +361,14 @@ stop with the reasons if it fails:
 - a candidate is promoted only on its second sighting (hits ≥ 2) or an authoritative
   source; an active entry never goes back to candidate;
 - the document fits in 150 lines.
+
+**Declared documents.** `bridge.yaml` may declare `documents:`, a map from a name (`^[a-z0-9][a-z0-9-]*$`) to `path` and, optionally, `rubric`, both relative to the bridge. A `path` ends in `.md` and lies under `notes/` or `projects/<project>/documents/`, the two places the journal commits and nothing else writes; neither path has a backslash, an empty segment, a segment starting with a dot or a `..`. A name is declared once, no two names share a path (compared without regard to case), and a rubric is another `.md` file than the document. `documents:` is parsed on its own, apart from `BridgeFile`, so a malformed key breaks nothing but the commands that use it; errors begin `bridge.yaml: documents: <name>: `. A document needs no template for a period: edit its `path`, or declare another name.
+
+A declared document is Markdown so `notes/` can carry it: a `# <name>` line, a note that the curator maintains it, and exactly one `starship-document` block holding the YAML above, with ids `D1`, `D2`, … and no authoritative sources. A missing file is an empty document, so a first curation works. A file with no block, two blocks or invalid YAML is an error and is never overwritten; a rewrite replaces only the block and keeps the rest of the file and its line endings. A block ends at the first line that is exactly three backticks, and YAML indents entry text, so text may hold such a line. The write goes through a temp file and a rename. The notes index at session start lists file names only, never contents.
+
+Proposals arrive from any place and time: `ensign document propose <name> <text> [--evidence <text>]` writes one YAML file, `documents/pending/<name>/<time>-<random>.yaml`, holding the text, the date and the evidence if given (a proposal without evidence is cited as `proposal:<date>`), written through a temp file under `.starship/tmp/` so a killed write leaves nothing to commit, and which the journal commits (§10.2) so it follows the user between machines. The name must be declared. `ensign run --pipeline document-curate` (`curates: document`, parallel over the declared documents with a pending file) gives the curator the document, the rubric if there is one (which says what belongs and outranks the proposals), its entries and the proposals. Before any dispatch the run fails, naming the document and the problem and never its content, if a selected document does not load or its rubric is missing. A pending folder for an undeclared name is skipped with a warning. When the curator stops, the files it was given are removed whether or not it changed anything; one that arrived since survives.
+
+A declared document may be private, so its content stays out of anything that is committed or printed: the `curated` log line carries the path and entry count, not the ledger; the dispatch stores no summary and logs only the outcome; no `fact:` is asked of the stage or recorded from it; a refusal sent back to the curator names ids, and quotes no YAML value; the brief tells the curator to give counts and ids only in its summary. `ensign document propose` prints the document's name, never the text. The run's `reports/<dispatch>.md` is left as written; it is in the run folder, which is not tracked.
 
 ### 4.6 Integrations
 
@@ -549,6 +558,8 @@ A bridge that declares nothing behaves as if the key did not exist. Declaring at
 `links:` is a separate key, on a task (in its frontmatter) and on a project (in `project.yaml`), not on `bridge.yaml`: a list of `kind` (`ticket`, `wiki`, `mail` or `slack`) and `ref` (a non-empty one-line identifier or URL that Go treats as opaque), with no other key. It is parsed on its own, not as part of the layer, so a malformed `links:` breaks nothing but its own listing. A task's links are its project's plus its own, a repeated kind and ref shown once; a missing `project.yaml` means no project links. `ensign task open` lists them on every path, a task without code included. When `bridge.yaml` declares the reader, it adds a line telling the session to dispatch the `reader` agent with the links before starting work and to report what changed; without the reader, or without links, it says nothing more. Invalid links, or a `bridge.yaml` that can't be read for the reader check, print a `STOP:` line naming the problem, and `task open` still succeeds and prints the task.
 
 **Declared sources and catch-up.** `bridge.yaml` may declare `sources:`, a map from a source name (`^[a-z0-9][a-z0-9-]*$`) to a `kind` (`mail`, `slack`, `calendar`, `ticket` or `wiki`) and a `watch` list of one or more unique, trimmed, one-line items (a channel, a person, a folder, a project). For `slack` an item is `#channel` (no whitespace) or `@person` (a DM, spaces allowed), never a pattern (`*`, `?`) or `@here`, `@channel`, `@everyone`, checked for `--also` items too; a Slack source also covers the threads the user is in or mentioned in, and the brief says so, so a pass never reads the whole workspace. A `calendar` item is a calendar's name, and the pass reads who met and across which orgs. `sources:` is parsed on its own, apart from `BridgeFile`, so a malformed `sources:` breaks nothing but `ensign catch-up`; errors begin `bridge.yaml: sources: ` and name the source. Nothing writes the key; the user edits it. `ensign catch-up [--also <source>=<item>]...` prints a brief and changes no file: it refuses when the reader is not declared or no sources are, lists each source (sorted by name) with its kind and watched items, and lists `--also` items (for a declared source, not already watched, repeats collapsed) as extras for this pass with no cursor. The session dispatches the reader with that brief; a connector call from the session is denied, so a pass goes through the reader. The reader's `## Catch-up` rules (`roles/reader.md`) own the files: `reader/cursors.md` (a line per watched item with a resumable position and the date read) and `reader/proposals.md` (proposed notes with source and date). Go parses neither; both are Markdown, so the journal commits them (§10.2) and the cursors follow the user between machines. A pass writes no fact: the session lists the proposals, the user says which to keep, and the session files those as notes. The `catch-up` help topic carries the session's side.
+
+**Declared documents.** `bridge.yaml` may also declare `documents:`, each a `path` and an optional `rubric` for the curator to maintain (§4.5), parsed on its own like `sources:`, with errors that begin `bridge.yaml: documents: `.
 
 For mail, the reader also appends a line per message read to `reader/mail-read.md` (source, folder, message id, received and read dates, sender, subject; never the body), so the session, which cannot call the reader's connectors, has a record to work from. A pass never changes mail or offers cleanup. Cleanup happens only when the user asks, through the `mail-cleanup` help topic: only recorded inbox mail, moved to the folder "archive" and never deleted, before registering a move the session has the reader check where each picked message is now, so mail that has since been filed or has gone is not moved; each move is a registered write that `go` approves (§7). Go enforces none of these rules and parses nothing in `reader/`; the session keeps them, and the move tool must be listed in `connector_writes:`.
 
@@ -1050,7 +1061,7 @@ contradicts `@style`.
 |---|---|---|
 | `style-reviewer` | fixes style in the change; reports the rule behind each correction | the whole guide, candidates included |
 | `style-generator` | reads one source; proposes the rules it supports, with evidence | that source |
-| `curator` (§4.5) | the only writer of the guide | the guide, this run's proposals, sources' trust, `@style` |
+| `curator` (§4.5) | the only writer of the guide (and of skills' learned entries and declared documents) | the guide, this run's proposals, sources' trust, `@style` |
 | `coder` | — | the guide's active entries |
 | `documentation` | checks the project's `@docs` paths against what the run changed and updates them; changes only those paths | the task's record and the changed files |
 

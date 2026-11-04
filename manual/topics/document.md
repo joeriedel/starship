@@ -1,0 +1,8 @@
+# Declared documents
+
+A declared document is a Markdown file the curator maintains, for example a private note under `notes/`. Its content can be private: a journal message, a report or a command's output names the document, never what it says.
+
+- **Declare** it in `bridge.yaml`: `documents:` maps a name (lower-case letters, digits, hyphens) to `path`, and optionally `rubric` (a `.md` file saying what belongs in it; it outranks proposals). `path` ends in `.md` and is under `notes/` or `projects/<project>/documents/`. For a new period, edit `path` or declare another name.
+- **Propose** with `ensign document propose <name> "<text>" --evidence "<where it came from>"`. It writes `documents/pending/<name>/<time>-<random>.yaml` and prints only the name. Commit with `ensign journal commit -m "<message that names the document, not its content>"`.
+- **Curate** when asked ("curate the documents"): `ensign run --pipeline document-curate`, then dispatch the curator as the run says. It folds the proposals into the file and removes them. The run fails before any dispatch, naming the document, if the file is hand-written Markdown without its one `starship-document` block, or the rubric is missing; add the block by hand, the curator never overwrites such a file.
+- **Never** copy entry or proposal text into a commit message, a run summary or a report. Say "curated <name>: 2 new, 1 dropped".

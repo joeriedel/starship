@@ -149,7 +149,7 @@ type Stage struct {
 	ReportFields []string  `yaml:"report-fields" json:"report_fields,omitempty"`
 	// Skip takes the named outcome without a dispatch when the binding declares nothing.
 	Skip *StageSkip `yaml:"skip" json:"skip,omitempty"`
-	// Curates names the document this stage's agents rewrite: style or skill.
+	// Curates names the document this stage's agents rewrite: style, skill or document.
 	Curates string   `yaml:"curates" json:"curates,omitempty"`
 	Stages  []*Stage `yaml:"stages" json:"stages,omitempty"`
 	Source  string   `yaml:"-" json:"source"`
@@ -1456,7 +1456,7 @@ func validate(c *Config) []string {
 							add("%s: dimension %q has no brief (briefs/review/%s.md)", at, d, d)
 						}
 					}
-				case "pending-skills", "unprocessed-sources":
+				case "pending-skills", "pending-documents", "unprocessed-sources":
 				default:
 					add("%s: parallel over %q is not supported", at, s.Parallel.Over)
 				}

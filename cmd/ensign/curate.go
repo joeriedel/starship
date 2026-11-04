@@ -239,12 +239,26 @@ func lastBlock(msg, name string) (string, bool) {
 	return all[len(all)-1][1], true
 }
 
+// lastFencedBlock is lastBlock for text whose YAML may hold a line of backticks: a block ends only at a line that is exactly three backticks.
+func lastFencedBlock(msg, name string) (string, bool) {
+	blocks, err := fencedBlocks(strings.Split(msg, "\n"), name)
+	if err != nil || len(blocks) == 0 {
+		return "", false
+	}
+	return blocks[len(blocks)-1].body, true
+}
+
 var sourceRef = regexp.MustCompile(`source:(\S+)`)
 
 const lineBudget = 150
 
 // validateCuration checks a curator's rewrite against the document it replaces.
 func validateCuration(prefix string, old, next Doc, ledger map[string]string, authoritative map[string]bool) []string {
+	return validateCurationAs(false, prefix, old, next, ledger, authoritative)
+}
+
+// validateCurationAs is validateCuration; when private, no refusal quotes anything but a well-formed entry id, because refusals reach the run's history.
+func validateCurationAs(private bool, prefix string, old, next Doc, ledger map[string]string, authoritative map[string]bool) []string {
 	var errs []string
 	add := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }
 	idRe := regexp.MustCompile(`^` + prefix + `(\d+)$`)
@@ -255,6 +269,12 @@ func validateCuration(prefix string, old, next Doc, ledger map[string]string, au
 		}
 		n, _ := strconv.Atoi(m[1])
 		return n
+	}
+	shown := func(id string) string {
+		if private && num(id) < 0 {
+			return "(a malformed id)"
+		}
+		return id
 	}
 	authoritativeEvidence := func(e Entry) bool {
 		for _, ev := range e.Evidence {
@@ -273,23 +293,27 @@ func validateCuration(prefix string, old, next Doc, ledger map[string]string, au
 	after := map[string]Entry{}
 	for _, e := range next.Entries {
 		if num(e.ID) < 0 {
-			add("entry id %q must look like %s12", e.ID, prefix)
+			if private {
+				add("an entry id must look like %s12", prefix)
+			} else {
+				add("entry id %q must look like %s12", e.ID, prefix)
+			}
 		}
 		if _, dup := after[e.ID]; dup {
-			add("entry %s appears twice", e.ID)
+			add("entry %s appears twice", shown(e.ID))
 		}
 		if e.Status != "active" && e.Status != "candidate" {
-			add("entry %s: status must be active or candidate", e.ID)
+			add("entry %s: status must be active or candidate", shown(e.ID))
 		}
 		if strings.TrimSpace(e.Text) == "" {
-			add("entry %s has no text", e.ID)
+			add("entry %s has no text", shown(e.ID))
 		}
 		after[e.ID] = e
 	}
 	for id, e := range before {
 		action, ok := ledger[id]
 		if !ok {
-			add("the ledger does not account for %s", id)
+			add("the ledger does not account for %s", shown(id))
 			continue
 		}
 		verb, rest, _ := strings.Cut(strings.TrimSpace(action), " ")
@@ -298,37 +322,37 @@ func validateCuration(prefix string, old, next Doc, ledger map[string]string, au
 		switch verb {
 		case "kept", "reworded":
 			if !kept {
-				add("%s is %s but missing from the document", id, verb)
+				add("%s is %s but missing from the document", shown(id), verb)
 			}
 		case "promoted":
 			n := after[id]
 			if !kept || e.Status != "candidate" || n.Status != "active" {
-				add("%s is promoted, so it must go from candidate to active", id)
+				add("%s is promoted, so it must go from candidate to active", shown(id))
 			} else if n.Hits < 2 && !authoritativeEvidence(n) {
-				add("%s is promoted on one sighting; a candidate needs a second sighting or an authoritative source", id)
+				add("%s is promoted on one sighting; a candidate needs a second sighting or an authoritative source", shown(id))
 			}
 		case "merged-into":
 			target := strings.TrimSpace(rest)
 			if kept {
-				add("%s is merged but still in the document", id)
+				add("%s is merged but still in the document", shown(id))
 			}
 			if _, ok := after[target]; !ok {
-				add("%s is merged into %s, which is not in the document", id, target)
+				add("%s is merged into %s, which is not in the document", shown(id), shown(target))
 			} else if num(target) > num(id) {
-				add("%s is merged into %s; a merge keeps the lower id", id, target)
+				add("%s is merged into %s; a merge keeps the lower id", shown(id), shown(target))
 			}
 		case "dropped":
 			if kept {
-				add("%s is dropped but still in the document", id)
+				add("%s is dropped but still in the document", shown(id))
 			}
 			if strings.Trim(rest, " -—:") == "" {
-				add("%s is dropped without a reason", id)
+				add("%s is dropped without a reason", shown(id))
 			}
 		default:
-			add("ledger entry for %s must be kept, reworded, promoted, merged-into <id> or dropped <reason>", id)
+			add("ledger entry for %s must be kept, reworded, promoted, merged-into <id> or dropped <reason>", shown(id))
 		}
 		if kept && e.Status == "active" && after[id].Status == "candidate" {
-			add("%s went from active back to candidate", id)
+			add("%s went from active back to candidate", shown(id))
 		}
 	}
 	for id, e := range after {
@@ -336,13 +360,13 @@ func validateCuration(prefix string, old, next Doc, ledger map[string]string, au
 			continue
 		}
 		if strings.TrimSpace(ledger[id]) != "new" {
-			add("%s is new, so the ledger must say new", id)
+			add("%s is new, so the ledger must say new", shown(id))
 		}
 		if len(e.Evidence) == 0 {
-			add("%s is new but has no evidence", id)
+			add("%s is new but has no evidence", shown(id))
 		}
 		if e.Status == "active" && !authoritativeEvidence(e) {
-			add("%s is new and active; a new entry starts as a candidate unless an authoritative source backs it", id)
+			add("%s is new and active; a new entry starts as a candidate unless an authoritative source backs it", shown(id))
 		}
 	}
 	if n := strings.Count(renderDoc(next, false), "\n"); n > lineBudget {
@@ -357,7 +381,14 @@ func validateCuration(prefix string, old, next Doc, ledger map[string]string, au
 func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 	var path, prefix string
 	authoritative := map[string]bool{}
+	private := s.Curates == "document"
 	switch s.Curates {
+	case "document":
+		decl, err := findDeclaredDocument(r.Snap.Bridge, d.Dim)
+		if err != nil {
+			return err.Error()
+		}
+		path, prefix = decl.file(r.Snap.Bridge), "D"
 	case "skill":
 		path, prefix = learnedSkillFile(r.Snap.Bridge, d.Dim), "K"
 	case "style":
@@ -367,33 +398,63 @@ func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 		return ""
 	}
 	if d.Outcome == "updated" {
-		docText, ok1 := lastBlock(msg, "starship-document")
-		ledgerText, ok2 := lastBlock(msg, "starship-ledger")
+		block := lastBlock
+		if private {
+			block = lastFencedBlock
+		}
+		docText, ok1 := block(msg, "starship-document")
+		ledgerText, ok2 := block(msg, "starship-ledger")
 		if !ok1 || !ok2 {
 			return "An updated document needs a starship-document block and a starship-ledger block."
 		}
+		// A YAML error can quote a value, so a private document's refusals do not carry it.
+		yamlProblem := func(err error) string {
+			if private {
+				return quietYAMLProblem(err)
+			}
+			return "is not valid YAML: " + err.Error()
+		}
 		var next Doc
 		if err := yaml.Unmarshal([]byte(docText), &next); err != nil {
-			return "The starship-document block is not valid YAML: " + err.Error()
+			return "The starship-document block " + yamlProblem(err)
 		}
 		ledger := map[string]string{}
 		if strings.TrimSpace(ledgerText) != "" {
 			if err := yaml.Unmarshal([]byte(ledgerText), &ledger); err != nil {
+				if private {
+					return "The starship-ledger block " + yamlProblem(err) + " (quote values containing colons)"
+				}
 				return "The starship-ledger block is not valid YAML (quote values containing colons): " + err.Error()
 			}
 		}
-		old, _ := loadDoc(path)
-		if errs := validateCuration(prefix, old, next, ledger, authoritative); len(errs) > 0 {
+		var old Doc
+		if private {
+			var err error
+			if old, err = loadDocumentFile(path); err != nil {
+				return "The document " + err.Error()
+			}
+		} else {
+			old, _ = loadDoc(path)
+		}
+		if errs := validateCurationAs(private, prefix, old, next, ledger, authoritative); len(errs) > 0 {
 			return "The rewrite was refused:\n- " + strings.Join(errs, "\n- ")
 		}
-		if err := writeYAML(path, next); err != nil {
-			return "Writing the document failed: " + err.Error()
+		if private {
+			if err := writeDocumentFile(r.Snap.Bridge, path, d.Dim, next); err != nil {
+				return "Writing the document failed: " + err.Error()
+			}
+			// A drop reason can quote an entry, so the ledger stays out of the log.
+			r.State.log("curated", s.ID, d.ID, fmt.Sprintf("%s: %d entries", relTo(r.Snap.Bridge, path), len(next.Entries)))
+		} else {
+			if err := writeYAML(path, next); err != nil {
+				return "Writing the document failed: " + err.Error()
+			}
+			r.State.log("curated", s.ID, d.ID, fmt.Sprintf("%s: %d entries; ledger %v", relTo(r.Snap.Bridge, path), len(next.Entries), ledger))
 		}
-		r.State.log("curated", s.ID, d.ID, fmt.Sprintf("%s: %d entries; ledger %v", relTo(r.Snap.Bridge, path), len(next.Entries), ledger))
 	}
 	// The inputs were considered either way.
 	switch s.Curates {
-	case "skill":
+	case "skill", "document":
 		for _, rel := range d.Fields["inputs"] {
 			os.Remove(filepath.Join(r.Snap.Bridge, filepath.FromSlash(rel)))
 		}

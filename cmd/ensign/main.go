@@ -81,6 +81,8 @@ func main() {
 		err = cmdStyle(os.Args[2:], os.Stdout)
 	case "skill":
 		err = cmdSkill(os.Args[2:], os.Stdout)
+	case "document":
+		err = cmdDocument(os.Args[2:], os.Stdout)
 	case "setup":
 		err = cmdSetup(os.Args[2:], os.Stdout)
 	case "gc":
@@ -154,6 +156,7 @@ func usage() {
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] [--location <name>]
   ensign style report <project>
   ensign skill new <name> --description <text> | ensign skill discard <name>
+  ensign document propose <name> <text> [--evidence <text>]
   ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]
   ensign journal commit -m <message> [files…] | ensign journal push
   ensign catch-up [--also <source>=<item>]...

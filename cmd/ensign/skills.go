@@ -362,6 +362,8 @@ func generatorItems(c *Config, over string, rebuild bool) ([]string, error) {
 			return nil, fmt.Errorf("no skill has pending facts to curate")
 		}
 		return out, nil
+	case "pending-documents":
+		return pendingDocuments(c.Bridge)
 	case "unprocessed-sources":
 		src := loadSources(c.Bridge, c.Project)
 		var out []string
@@ -399,6 +401,8 @@ func itemContext(r *RunFiles, s *Stage, item string, d *Dispatch) string {
 		cur, _ := os.ReadFile(learnedSkillFile(r.Snap.Bridge, item))
 		return fmt.Sprintf("## Skill: %s\n\n%s\n\n## Its learned entries now (K ids)\n\n```yaml\n%s```\n\n## Pending facts reported by agents\n\n```yaml\n%s\n```\n",
 			item, baseText, string(cur), strings.Join(facts, "\n---\n"))
+	case "pending-documents":
+		return documentContext(r.Snap.Bridge, item, d)
 	case "unprocessed-sources":
 		src := loadSources(r.Snap.Bridge, r.Snap.Project)
 		for _, s := range src.Sources {
