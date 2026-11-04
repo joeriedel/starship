@@ -2091,6 +2091,42 @@ func TestSequenceDecideTextOffersRetrySkipHaltInOrder(t *testing.T) {
 	}
 }
 
+func TestSequenceDecideTextRequiresAFullBriefEveryTime(t *testing.T) {
+	var briefs []string
+	for _, mode := range []string{"stop", "keep-going"} {
+		w := newWorld(t)
+		w.mustSeq("run", "supernova/auth-refactor")
+		w.mustSeq("mode", mode)
+		w.approve()
+		lead, _ := w.spawn("", "", "orchestrator")
+		w.failRun(lead)
+		text, _ := w.stopHook()["reason"].(string)
+		for _, want := range []string{
+			"full brief, every time, even if an earlier message already said the same thing",
+			"what failed and why, in plain words",
+			"what state the work is in",
+			"what each of retry, skip and halt would do",
+			"every decision a retry needs, with each option spelled out and a recommendation",
+			"Never refer to an option by letter or by pointing at an earlier message",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s mode: missing %q:\n%s", mode, want, text)
+			}
+		}
+		for _, l := range strings.Split(text, "\n") {
+			if strings.HasPrefix(l, "- ") && strings.Contains(l, "full brief") {
+				t.Errorf("%s mode: the brief must be a plain paragraph: %s", mode, l)
+			}
+			if strings.Contains(l, "full brief") {
+				briefs = append(briefs, l)
+			}
+		}
+	}
+	if len(briefs) != 2 || briefs[0] != briefs[1] {
+		t.Errorf("the brief differs between modes: %q", briefs)
+	}
+}
+
 func TestSequenceKeepGoingHaltCancelsADecidingStep(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("run", "supernova/auth-refactor")

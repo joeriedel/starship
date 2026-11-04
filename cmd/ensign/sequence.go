@@ -1071,10 +1071,14 @@ func skipWorkspaceText(bridge string, st *seqStep) string {
 	return strings.Join(lines, "\n")
 }
 
-// decideText tells the session to take a failed step to the user, who chooses retry, skip or halt; the commands behind those words differ by mode.
+// decideBriefText is the requirement on the session's message to the user, shared by both modes; the Stop hook repeats itself, so it asks for the whole brief every time.
+const decideBriefText = "Your message to the user must be a full brief, every time, even if an earlier message already said the same thing. It says: what failed and why, in plain words, not just the reason line above; what state the work is in; what each of retry, skip and halt would do; and every decision a retry needs, with each option spelled out and a recommendation. Never refer to an option by letter or by pointing at an earlier message, because this message repeats and earlier text scrolls away.\n"
+
+// decideText tells the session to take a failed step to the user, who chooses retry, skip or halt; the commands behind those words differ by mode. Both modes require the same full brief.
 func decideText(bridge string, sf *seqFile, seq *sequence, st *seqStep) string {
 	ref := st.ref()
 	text := fmt.Sprintf("Its run failed: %s\nTake this to the user now. Offer exactly three choices, in this order: retry, skip, halt. Do not act until the user chooses, and end your turn to wait for the answer.\n", firstLine(st.Reason))
+	text += decideBriefText
 	text += fmt.Sprintf("- retry: `ensign sequence retry %s --diagnosis \"<why it failed>\" --state \"<what is left>\"`; fill in the diagnosis and state after the user chooses retry.\n", ref)
 	if seq.Mode == modeKeepGoing {
 		text += fmt.Sprintf("- skip: `ensign sequence accept %s` ends the step as failed and skips that task's later steps; the rest of the sequence carries on.\n", ref)
