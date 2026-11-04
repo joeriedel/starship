@@ -438,7 +438,7 @@ func TestReaderRoleNamedReaderOnUndeclaredBridge(t *testing.T) {
 		}
 	}
 	w := connWorld(t, readerRules)
-	write(t, filepath.Join(w.bridge, "roles", "reader.md"), scoutRole("reader", "replaces: reader\n", "\n"))
+	write(t, filepath.Join(w.bridge, "roles", "reader.md"), scoutRole("reader", "tools: Read\nreplaces: reader\n", "\n"))
 	if got := string(w.generated()[".claude/agents/reader.md"]); !strings.Contains(got, "Body.") || !strings.Contains(got, supernovaRead) {
 		t.Errorf("a declared bridge's replacing reader keeps its body and gets the tools: %q", got)
 	}
