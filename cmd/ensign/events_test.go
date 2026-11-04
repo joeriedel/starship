@@ -119,3 +119,84 @@ func TestRunEntryQuotesNewlineName(t *testing.T) {
 		t.Errorf("entry contains a newline: %q", got)
 	}
 }
+
+// runEntryReported is runEntry for a run whose one dispatch reported these files in its report text.
+func runEntryReported(t *testing.T, ws, head, filesLine string) string {
+	t.Helper()
+	stage := &Stage{Outcomes: Outcomes{{Name: "compiled"}}}
+	_, _, fields, problem := parseReport("```starship-report\noutcome: compiled\nfiles: "+filesLine+"\n```", stage)
+	if problem != "" {
+		t.Fatal(problem)
+	}
+	r := &RunFiles{Snap: &Snapshot{Workspace: ws, Pipeline: &Pipeline{Name: "x"}}, State: &State{StartHead: head, Dispatches: []*Dispatch{{Role: "coder", Done: true, Fields: fields}}}}
+	return runEntry(r)
+}
+
+func TestRunEntryReportedCommaNameNotSplit(t *testing.T) {
+	needGit(t)
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	head := runGit(t, ws, "rev-parse", "HEAD")
+	write(t, filepath.Join(ws, "a,b.txt"), "c\n")
+	want := ` Changed: "a,b.txt".`
+	if got := runEntryReported(t, ws, head, "a,b.txt"); !strings.Contains(got, want) {
+		t.Errorf("got %q, want it to contain %q", got, want)
+	}
+}
+
+func TestRunEntryReportedDeletedFileStaysListed(t *testing.T) {
+	needGit(t)
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	write(t, filepath.Join(ws, "old.txt"), "a\n")
+	runGit(t, ws, "add", ".")
+	runGit(t, ws, "commit", "-q", "-m", "more")
+	head := runGit(t, ws, "rev-parse", "HEAD")
+	runGit(t, ws, "rm", "-q", "old.txt")
+	runGit(t, ws, "commit", "-q", "-m", "drop")
+	want := " Changed: old.txt."
+	if got := runEntryReported(t, ws, head, "old.txt"); !strings.Contains(got, want) {
+		t.Errorf("got %q, want it to contain %q", got, want)
+	}
+}
+
+func TestRunEntryReportedRenamedFileBothNamesStayListed(t *testing.T) {
+	needGit(t)
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	write(t, filepath.Join(ws, "nova.txt"), strings.Repeat("a star collapses under its own weight\n", 20))
+	runGit(t, ws, "add", ".")
+	runGit(t, ws, "commit", "-q", "-m", "more")
+	head := runGit(t, ws, "rev-parse", "HEAD")
+	runGit(t, ws, "mv", "nova.txt", "remnant.txt")
+	runGit(t, ws, "commit", "-q", "-m", "rename")
+	got := runEntryReported(t, ws, head, "nova.txt, remnant.txt")
+	for _, name := range []string{"nova.txt", "remnant.txt"} {
+		if !strings.Contains(got, name) {
+			t.Errorf("got %q, want it to contain %q", got, name)
+		}
+	}
+}
+
+func TestRunEntryReportedIgnoredFileStaysListed(t *testing.T) {
+	needGit(t)
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	write(t, filepath.Join(ws, ".gitignore"), "*.log\n")
+	runGit(t, ws, "add", ".")
+	runGit(t, ws, "commit", "-q", "-m", "ignore")
+	head := runGit(t, ws, "rev-parse", "HEAD")
+	write(t, filepath.Join(ws, "nova.log"), "a\n")
+	want := " Changed: nova.log."
+	if got := runEntryReported(t, ws, head, "nova.log"); !strings.Contains(got, want) {
+		t.Errorf("got %q, want it to contain %q", got, want)
+	}
+}
+
+func TestRunEntryReportedMissingNameKeptWithoutGit(t *testing.T) {
+	needGit(t)
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	want := " Changed: a, b.txt."
+	if got := runEntryReported(t, ws, "", "a,b.txt"); !strings.Contains(got, want) {
+		t.Errorf("no StartHead: got %q, want it to contain %q", got, want)
+	}
+	if got := runEntryReported(t, ws, "0123456789abcdef0123456789abcdef01234567", "a,b.txt"); !strings.Contains(got, want) {
+		t.Errorf("bad StartHead: got %q, want it to contain %q", got, want)
+	}
+}

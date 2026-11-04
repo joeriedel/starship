@@ -274,27 +274,40 @@ func runEntry(r *RunFiles) string {
 	passes := 0
 	ws := r.Snap.Workspace
 	files := map[string]bool{}
+	reported := map[string]bool{}
 	for _, d := range st.Dispatches {
 		if d.Role == "coder" && d.Done {
 			passes++
 		}
 		for _, f := range d.Fields["files"] {
-			files[journalPath(ws, f)] = true
+			reported[journalPath(ws, f)] = true
 		}
 	}
 	head := ""
+	gitAnswered := false
 	if st.StartHead != "" {
 		head, _ = gitOut(ws, "rev-parse", "HEAD")
-		if changed, err := gitZ(ws, "diff", "--name-only", "-z", st.StartHead); err == nil {
-			for _, f := range changed {
+		changed, err1 := gitZ(ws, "diff", "--name-only", "--no-renames", "-z", st.StartHead)
+		untracked, err2 := gitZ(ws, "ls-files", "--others", "--exclude-standard", "-z")
+		for _, list := range [][]string{changed, untracked} {
+			for _, f := range list {
 				files[journalPath(ws, f)] = true
 			}
 		}
-		if untracked, err := gitZ(ws, "ls-files", "--others", "--exclude-standard", "-z"); err == nil {
-			for _, f := range untracked {
-				files[journalPath(ws, f)] = true
+		gitAnswered = err1 == nil && err2 == nil
+	}
+	for f := range reported {
+		// The report splits file names at commas, so a name with a comma arrives as pieces that are not files. With git's answer in, keep a reported name only if git listed it or it exists; without git a deleted file can't be told from a piece.
+		if gitAnswered && !files[f] {
+			p := filepath.FromSlash(f)
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(ws, p)
+			}
+			if _, err := os.Lstat(p); err != nil {
+				continue
 			}
 		}
+		files[f] = true
 	}
 	which := ""
 	if r.Snap.Subtask != "" {
