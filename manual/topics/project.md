@@ -1,4 +1,4 @@
-# Creating a project
+# Projects and code locations
 
 Then fill its bindings (`@build`, `@test`, …): read the code, propose commands for the user to confirm. If the code ships `.starship/project.yaml`, `project new` copies it in; have the user confirm those, not derive new ones. If tests are one command and any services they need can be started and stopped by commands (`@services-up`, `@services-down`, below), propose `plain: true` on `@test` (ensign runs them, no tester agent).
 
@@ -12,7 +12,7 @@ If the test stage needs services, add `@services-up` (start them) and `@services
 
 For a project with locations, `task open` makes the same comparison for each of the task's locations whose folder is set on this machine, between that folder's `.starship/project.yaml` and the bridge's settings for the location (the project's bindings with the location's own bindings laid over them, as a run resolves them, and the project's rules plus the location's), and names the location in its report. `ensign project reviewed <project>[/<task>]` then records every such location (the task's, if a task is given) that ships a file, and `--location <name>` records just that one; each location has its own entry under `locations:` in `shipped-reviewed.yaml`, and recording one keeps the others.
 
-# Code locations
+## Code locations
 
 A project may keep its code in several repos (e.g. `client`, `server`, `models`). Declare them in `project.yaml`:
 
