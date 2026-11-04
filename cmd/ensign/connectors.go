@@ -98,14 +98,14 @@ func mcpServersRefusal(bridge string, in *HookInput) string {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			if stem == role {
-				return fmt.Sprintf("role %s can't be dispatched: its definition %s can't be read: %v", role, f, err)
+				return fmt.Sprintf("role %s can't be dispatched: %s can't be checked for mcpServers: %v", role, f, err)
 			}
 			continue
 		}
 		has, name, err := frontmatterMcpServers(f, data)
 		if err != nil {
 			if stem == role {
-				return fmt.Sprintf("role %s can't be dispatched while connector rules are declared: %v", role, err)
+				return fmt.Sprintf("role %s can't be dispatched: %s can't be checked for mcpServers: %v", role, f, err)
 			}
 			continue
 		}

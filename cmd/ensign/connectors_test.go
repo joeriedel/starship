@@ -188,14 +188,14 @@ func TestConnectorSettingsUpgrade(t *testing.T) {
 	write(t, f, hookSettingsWith(0, 0))
 	step("older form, declared", rules("mcp__a__x"), hookSettingsFor(true, []string{"mcp__a__x"}))
 
-	edited := strings.Replace(hookSettings(), "ensign:*", "ensign:*\", \"Bash(make:*)", 1)
+	edited := strings.Replace(hookSettings(), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
 	write(t, f, edited)
 	step("hand-edited, undeclared", &BridgeFile{}, edited)
 	if err := upgradeHookSettings(b, rules("mcp__a__x")); err == nil || !strings.Contains(err.Error(), "mcp__.*") || !strings.Contains(err.Error(), "mcp__a__x") {
 		t.Fatalf("a hand-edited file without the matcher and tool should be reported: %v", err)
 	}
 	complete := strings.Replace(edited, "SubagentHandback", "SubagentHandback|mcp__.*", 1)
-	complete = strings.Replace(complete, "Bash(make:*)", "Bash(make:*)\", \"mcp__a__x", 1)
+	complete = strings.Replace(complete, `"Bash(make:*)"`, `"Bash(make:*)", "mcp__a__x"`, 1)
 	write(t, f, complete)
 	step("hand-edited, declared and complete", rules("mcp__a__x"), complete)
 	if err := upgradeHookSettings(b, rules("mcp__a__x", "mcp__a__z")); err == nil || !strings.Contains(err.Error(), "mcp__a__z") {
@@ -291,7 +291,7 @@ func TestConnectorSessionStartNotReady(t *testing.T) {
 		}
 		return dig(res, "systemMessage"), dig(res, "hookSpecificOutput", "additionalContext")
 	}
-	edited := strings.Replace(hookSettings(), "ensign:*", "ensign:*\", \"Bash(make:*)", 1)
+	edited := strings.Replace(hookSettings(), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
 	write(t, f, edited)
 	if show, ctx := start(); !strings.Contains(show, "not ready") || strings.Contains(ctx, "STARSHIP-READY") || !strings.Contains(ctx, "mcp__supernova_mail__read_message") {
 		t.Fatalf("a hand-edited file that can't enforce the rules must be not ready: %q %q", show, ctx)
