@@ -31,6 +31,16 @@ type projectLocationsFile struct {
 	} `yaml:"cross-location"`
 }
 
+// refuseLocationPlatforms refuses the first location, in sorted order, that declares platforms: in any form, an empty one included. declared maps each location to its platforms node.
+func refuseLocationPlatforms(where string, declared map[string]yaml.Node) error {
+	for _, name := range sortedKeys(declared) {
+		if declared[name].Kind != 0 {
+			return fmt.Errorf("%s: location %q: platforms: are declared once for the project, at the top level of this file", where, name)
+		}
+	}
+	return nil
+}
+
 // loadLocations reads a project's locations and cross-location bindings from project.yaml. A project that declares none gets an empty Locations.
 func loadLocations(bridge, project string) (*Locations, error) {
 	file := filepath.Join(bridge, "projects", project, "project.yaml")
@@ -40,10 +50,12 @@ func loadLocations(bridge, project string) (*Locations, error) {
 	}
 	l := &Locations{deps: map[string][]string{}, bindings: map[string]yaml.Node{}, Cross: map[string]Binding{}}
 	label := relTo(bridge, file)
-	for _, name := range sortedKeys(pf.Locations) {
-		if pf.Locations[name].Platforms.Kind != 0 {
-			return nil, fmt.Errorf("%s: location %q: platforms: are declared once for the project, at the top level of this file", label, name)
-		}
+	declared := map[string]yaml.Node{}
+	for name, loc := range pf.Locations {
+		declared[name] = loc.Platforms
+	}
+	if err := refuseLocationPlatforms(label, declared); err != nil {
+		return nil, err
 	}
 	for name, loc := range pf.Locations {
 		if !validName(name) {

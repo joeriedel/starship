@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"gopkg.in/yaml.v3"
 )
@@ -658,10 +659,10 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 	}
 	c.Pipeline = p
 
-	extensions := availableExtensions(bridge, c.ControlPlane)
+	extensions, broken := scanExtensions(bridge, c.ControlPlane)
 	for _, l := range layers {
 		for _, use := range l.layer.Use {
-			b, err := c.enableExtension(l, use, extensions)
+			b, err := c.enableExtension(l, use, extensions, broken)
 			if err != nil {
 				return nil, err
 			}
@@ -758,15 +759,22 @@ func (c *Config) projectLayer(bridge string) (layerEntry, error) {
 }
 
 // enableExtension records that layer l uses an extension. It returns nil if an earlier layer already enabled it.
-func (c *Config) enableExtension(l layerEntry, use string, extensions map[string]*Extension) (*Extension, error) {
+func (c *Config) enableExtension(l layerEntry, use string, extensions map[string]*Extension, broken map[string]error) (*Extension, error) {
 	if contains(c.Extensions, use) {
 		return nil, nil
 	}
+	var file string
 	b, ok := extensions[use]
-	if !ok {
+	if berr, isBroken := broken[use]; isBroken {
+		file = berr.(*brokenExtension).file
+		if data, rerr := os.ReadFile(file); rerr != nil || !hasPlatformsKey(data) {
+			return nil, fmt.Errorf("%s: extension %q: %v", l.label, use, berr)
+		}
+	} else if !ok {
 		return nil, fmt.Errorf("%s: no extension %q", l.label, use)
+	} else {
+		file = filepath.Join(b.dir, "extension.yaml")
 	}
-	file := filepath.Join(b.dir, "extension.yaml")
 	if data, rerr := os.ReadFile(file); rerr == nil && hasPlatformsKey(data) {
 		project := c.Project
 		if project == "" {
@@ -804,10 +812,10 @@ func loadProjectBindings(bridge, project, location string) (*Config, error) {
 		c.Location = location
 		layers = append(layers, c.locationLayer(bridge))
 	}
-	extensions := availableExtensions(bridge, c.ControlPlane)
+	extensions, broken := scanExtensions(bridge, c.ControlPlane)
 	for _, l := range layers {
 		for _, use := range l.layer.Use {
-			b, err := c.enableExtension(l, use, extensions)
+			b, err := c.enableExtension(l, use, extensions, broken)
 			if err != nil {
 				return nil, err
 			}
@@ -1424,15 +1432,81 @@ func contains(list []string, s string) bool {
 // availableExtensions finds every extension: the control plane's extensions, then the bridge's,
 // which replace a control-plane extension of the same name.
 func availableExtensions(bridge, cp string) map[string]*Extension {
+	good, _ := scanExtensions(bridge, cp)
+	return good
+}
+
+// brokenExtension is an extension file that does not decode.
+type brokenExtension struct {
+	file string
+	err  error
+}
+
+func (e *brokenExtension) Error() string { return e.err.Error() }
+
+// scanExtensions is availableExtensions that also returns the extensions whose file does not decode, by the name they declare or, when none can be recovered, by their folder's name. A file that fails to decode has no name from the decode, so the name is recovered from its first column-0 name: line. A later extension of the same name, good or broken, decides the broken entry; the good map is as availableExtensions has always had it.
+func scanExtensions(bridge, cp string) (map[string]*Extension, map[string]error) {
 	out := map[string]*Extension{}
+	broken := map[string]error{}
 	for _, dir := range extensionDirs(bridge, cp) {
 		var b Extension
-		if readYAML(filepath.Join(dir, "extension.yaml"), &b) == nil && b.Name != "" {
+		err := readYAML(filepath.Join(dir, "extension.yaml"), &b)
+		switch {
+		case err == nil && b.Name != "":
 			b.dir = dir
 			out[b.Name] = &b
+			delete(broken, b.Name)
+		case err != nil:
+			name := b.Name
+			if name == "" {
+				name = declaredName(filepath.Join(dir, "extension.yaml"))
+			}
+			if name == "" {
+				name = filepath.Base(dir)
+			}
+			broken[name] = &brokenExtension{file: filepath.Join(dir, "extension.yaml"), err: err}
 		}
 	}
-	return out
+	return out, broken
+}
+
+// declaredName reads the name: line of a file that failed to decode as a whole, or "" when there is none or the file cannot be read. It accepts the BOMs and UTF-16 that yaml.v3 does, which Windows editors write.
+func declaredName(file string) string {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(normalizeYAMLBytes(data)), "\n") {
+		if strings.HasPrefix(line, "name:") {
+			var n struct{ Name string }
+			if yaml.Unmarshal([]byte(line), &n) != nil {
+				return ""
+			}
+			return n.Name
+		}
+	}
+	return ""
+}
+
+// normalizeYAMLBytes strips a UTF-8 BOM and decodes UTF-16 with a BOM to UTF-8; other input is returned unchanged.
+func normalizeYAMLBytes(data []byte) []byte {
+	if bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}) {
+		return data[3:]
+	}
+	if len(data) < 2 || !(data[0] == 0xFF && data[1] == 0xFE || data[0] == 0xFE && data[1] == 0xFF) {
+		return data
+	}
+	little := data[0] == 0xFF
+	data = data[2:]
+	units := make([]uint16, 0, len(data)/2)
+	for i := 0; i+1 < len(data); i += 2 {
+		if little {
+			units = append(units, uint16(data[i])|uint16(data[i+1])<<8)
+		} else {
+			units = append(units, uint16(data[i])<<8|uint16(data[i+1]))
+		}
+	}
+	return []byte(string(utf16.Decode(units)))
 }
 
 func extensionDirs(bridge, cp string) []string {

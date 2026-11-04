@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func needGit(t *testing.T) {
@@ -1360,5 +1361,155 @@ func TestConfigRefusesPlatformsInUsedExtension(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "projects/<project>/project.yaml") || !strings.Contains(err.Error(), ext) {
 			t.Errorf("bridge-scope use with platforms: %s should be refused: %v", value, err)
 		}
+	}
+}
+
+// useExtension makes the supernova project and the bridge use the named extension.
+func useExtension(t *testing.T, w *world, name string) {
+	t.Helper()
+	pf := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
+	data, _ := os.ReadFile(pf)
+	write(t, pf, string(data)+"\nuse: ["+name+"]\n")
+	bf := filepath.Join(w.bridge, "bridge.yaml")
+	bdata, _ := os.ReadFile(bf)
+	write(t, bf, string(bdata)+"\nuse: ["+name+"]\n")
+}
+
+// loadAllPaths runs the three load paths, each of which must apply the used extension.
+func loadAllPaths(w *world) map[string]error {
+	out := map[string]error{}
+	_, out["loadConfig"] = loadConfig(w.bridge, "supernova/auth-refactor")
+	_, out["loadProjectBindings"] = loadProjectBindings(w.bridge, "supernova", "")
+	_, out["loadTarget"] = loadTarget(w.bridge, Target{Pipeline: "skill-curate"})
+	return out
+}
+
+func TestConfigRefusesScalarPlatformsInUsedExtension(t *testing.T) {
+	w := newWorld(t)
+	ext := filepath.Join(w.bridge, "extensions", "house", "extension.yaml")
+	write(t, ext, "name: house\nplatforms: linux\n")
+	for path, err := range loadAllPaths(w) {
+		if err != nil {
+			t.Errorf("%s: an unused extension should not be refused: %v", path, err)
+		}
+	}
+	useExtension(t, w, "house")
+	for path, err := range loadAllPaths(w) {
+		if err == nil || !strings.Contains(err.Error(), "platforms: is a project setting") || !strings.Contains(err.Error(), ext) {
+			t.Errorf("%s: scalar platforms: in a used extension should be refused with the project-setting message: %v", path, err)
+		}
+	}
+}
+
+func TestConfigRefusesBrokenBridgeExtensionOverGoodControlPlaneOne(t *testing.T) {
+	w := newWorld(t)
+	ext := filepath.Join(w.bridge, "extensions", "git-catalog", "extension.yaml")
+	write(t, ext, "name: git-catalog\nplatforms: linux\n")
+	useExtension(t, w, "git-catalog")
+	for path, err := range loadAllPaths(w) {
+		if err == nil || !strings.Contains(err.Error(), "platforms: is a project setting") {
+			t.Errorf("%s: a broken bridge extension should be refused, not replaced by the control plane's: %v", path, err)
+		}
+	}
+}
+
+func TestConfigReportsDecodeErrorOfBrokenUsedExtension(t *testing.T) {
+	for name, body := range map[string]string{
+		"type error":   "name: house\nsummary: [a, b]\n",
+		"syntax error": "name: house\nsummary: [a\n",
+	} {
+		w := newWorld(t)
+		ext := filepath.Join(w.bridge, "extensions", "house", "extension.yaml")
+		write(t, ext, body)
+		for path, err := range loadAllPaths(w) {
+			if err != nil {
+				t.Errorf("%s, %s: an unused broken extension should not fail the load: %v", name, path, err)
+			}
+		}
+		useExtension(t, w, "house")
+		for path, err := range loadAllPaths(w) {
+			if err == nil || strings.Contains(err.Error(), "no extension") || !strings.Contains(err.Error(), ext) {
+				t.Errorf("%s, %s: want the decode error naming %s, not no extension: %v", name, path, ext, err)
+			}
+		}
+	}
+}
+
+func TestScanExtensionsControlPlaneBrokenBridgeGood(t *testing.T) {
+	bridge, cp := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(cp, "extensions", "house", "extension.yaml"), "name: house\nplatforms: linux\n")
+	write(t, filepath.Join(bridge, "extensions", "house", "extension.yaml"), "name: house\n")
+	good, broken := scanExtensions(bridge, cp)
+	if good["house"] == nil || good["house"].dir != filepath.Join(bridge, "extensions", "house") || len(broken) != 0 {
+		t.Errorf("a good bridge extension should replace a broken control-plane one: good=%v broken=%v", good, broken)
+	}
+	if got := availableExtensions(bridge, cp); got["house"] == nil {
+		t.Errorf("availableExtensions lost the good extension: %v", got)
+	}
+}
+
+func TestScanExtensionsBridgeBrokenControlPlaneGood(t *testing.T) {
+	bridge, cp := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(cp, "extensions", "house", "extension.yaml"), "name: house\n")
+	write(t, filepath.Join(bridge, "extensions", "house", "extension.yaml"), "name: house\nplatforms: linux\n")
+	write(t, filepath.Join(bridge, "extensions", "other", "extension.yaml"), "summary: [a\n")
+	good, broken := scanExtensions(bridge, cp)
+	if broken["house"] == nil || broken["other"] == nil {
+		t.Errorf("broken = %v; want house (by its name) and other (by its folder)", broken)
+	}
+	if got := availableExtensions(bridge, cp); got["house"] == nil || got["house"].dir != filepath.Join(cp, "extensions", "house") {
+		t.Errorf("availableExtensions should keep the control-plane entry: %v (good=%v)", got, good)
+	}
+}
+
+func TestConfigRefusesSyntaxBrokenExtensionDeclaringControlPlaneName(t *testing.T) {
+	w := newWorld(t)
+	ext := filepath.Join(w.bridge, "extensions", "my-catalog", "extension.yaml")
+	write(t, ext, "name: git-catalog\nsummary: [a\n")
+	useExtension(t, w, "git-catalog")
+	for path, err := range loadAllPaths(w) {
+		if err == nil || strings.Contains(err.Error(), "no extension") || !strings.Contains(err.Error(), ext) {
+			t.Errorf("%s: want the decode error naming %s, not the control plane's git-catalog: %v", path, ext, err)
+		}
+	}
+}
+
+func TestScanExtensionsRecoversDeclaredNameOfSyntaxBrokenFile(t *testing.T) {
+	utf16Bytes := func(s string, little bool) string {
+		out := []byte{0xFE, 0xFF}
+		if little {
+			out = []byte{0xFF, 0xFE}
+		}
+		for _, u := range utf16.Encode([]rune(s)) {
+			if little {
+				out = append(out, byte(u), byte(u>>8))
+			} else {
+				out = append(out, byte(u>>8), byte(u))
+			}
+		}
+		return string(out)
+	}
+	for name, body := range map[string]string{
+		"quoted with comment": "name: \"git-catalog\" # comment\nsummary: [a\n",
+		"crlf":                "name: git-catalog\r\nsummary: [a\r\n",
+		"utf-8 bom crlf":      "\xEF\xBB\xBFname: git-catalog\r\nsummary: [a\r\n",
+		"utf-16 le crlf":      utf16Bytes("name: git-catalog\r\nsummary: [a\r\n", true),
+		"utf-16 be":           utf16Bytes("name: git-catalog\nsummary: [a\n", false),
+	} {
+		bridge, cp := t.TempDir(), t.TempDir()
+		write(t, filepath.Join(bridge, "extensions", "my-catalog", "extension.yaml"), body)
+		_, broken := scanExtensions(bridge, cp)
+		if broken["git-catalog"] == nil || len(broken) != 1 {
+			t.Errorf("%s: broken = %v; want one entry keyed git-catalog", name, broken)
+		}
+	}
+}
+
+func TestScanExtensionsSyntaxBrokenFileWithoutNameKeyedByFolder(t *testing.T) {
+	bridge, cp := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(bridge, "extensions", "my-catalog", "extension.yaml"), "summary: [a\n")
+	_, broken := scanExtensions(bridge, cp)
+	if broken["my-catalog"] == nil || len(broken) != 1 {
+		t.Errorf("broken = %v; want one entry keyed my-catalog", broken)
 	}
 }

@@ -390,3 +390,77 @@ func TestShippedProjectDeclaresPlatforms(t *testing.T) {
 		t.Errorf("the shipped project should declare linux, macos and windows, got %q", got)
 	}
 }
+
+func TestProjectNewRefusesPlatformsInShippedLocation(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	b := newBridge(t)
+	var out bytes.Buffer
+	refused := func(name, shipped string) error {
+		t.Helper()
+		ws := t.TempDir()
+		write(t, filepath.Join(ws, ".starship", "project.yaml"), shipped)
+		err := cmdProject([]string{"new", name, "--workspace", ws, "--platforms", "linux"}, &out)
+		if _, serr := os.Stat(filepath.Join(b, "projects", name, "project.yaml")); serr == nil && err != nil {
+			t.Errorf("%s: a refused project should not be written", name)
+		}
+		return err
+	}
+	for i, value := range []string{"[linux]", "[]", "", "~"} {
+		err := refused(fmt.Sprintf("loc%d", i), "platforms: [linux]\nlocations:\n  api:\n    platforms: "+value+"\n")
+		if err == nil || !strings.Contains(err.Error(), `location "api": platforms: are declared once`) || !strings.Contains(err.Error(), shippedProjectFile) {
+			t.Errorf("platforms: %s in a shipped location should be refused: %v", value, err)
+		}
+	}
+
+	err := refused("sorted", "platforms: [linux]\nlocations:\n  web:\n    platforms: [linux]\n  api:\n    platforms: [linux]\n")
+	if err == nil || !strings.Contains(err.Error(), `location "api"`) {
+		t.Errorf("the first offending location in sorted order should be named: %v", err)
+	}
+
+	// A bad sibling field in one location must not hide platforms: in another.
+	err = refused("sibling", "platforms: [linux]\nlocations:\n  api:\n    depends-on: nope\n  web:\n    platforms: [linux]\n")
+	if err == nil || !strings.Contains(err.Error(), `location "web"`) {
+		t.Errorf("a bad sibling should not hide platforms: in another location: %v", err)
+	}
+
+	// Anything else wrong in locations is left to the load, as before.
+	for i, shipped := range []string{
+		"platforms: [linux]\nlocations:\n  api:\n    depends-on: nope\n",
+		"platforms: [linux]\nlocations: nope\n",
+		"platforms: [linux]\nlocations:\n  api: {}\n",
+	} {
+		if err := refused(fmt.Sprintf("ok%d", i), shipped); err != nil {
+			t.Errorf("%q should get through project new: %v", shipped, err)
+		}
+	}
+}
+
+func TestProjectNewRefusesShippedPlatformProblems(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	b := newBridge(t)
+	var out bytes.Buffer
+	for i, tc := range []struct {
+		shipped string
+		flag    []string
+		want    string
+	}{
+		{"platforms: [linux, Linux]\n", []string{"--platforms", "linux"}, "twice"},
+		{"platforms: [linux, Linux]\n", nil, "twice"},
+		{"platforms: [linux, \"\"]\n", nil, "empty"},
+	} {
+		name := fmt.Sprintf("dupe%d", i)
+		ws := t.TempDir()
+		write(t, filepath.Join(ws, ".starship", "project.yaml"), tc.shipped)
+		err := cmdProject(append([]string{"new", name, "--workspace", ws}, tc.flag...), &out)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "differs") {
+			t.Errorf("shipped %q with %v: want %q, not differs: %v", tc.shipped, tc.flag, tc.want, err)
+		}
+		if _, serr := os.Stat(filepath.Join(b, "projects", name, "project.yaml")); serr == nil {
+			t.Errorf("%s: a refused project should not be written", name)
+		}
+	}
+}

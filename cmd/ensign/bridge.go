@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // liveRuns lists the bridge's runs that have not finished.
@@ -660,6 +662,24 @@ func shippedProject(dir string) (string, []string, error) {
 	yamlUnmarshal(data, &keys)
 	if _, has := keys["platforms"]; has && len(l.Platforms) == 0 {
 		return "", nil, fmt.Errorf("%s in %s declares an empty platforms:; fill it in there, e.g. platforms: [linux, macos, windows]", shippedProjectFile, dir)
+	}
+	var locs struct {
+		Locations map[string]yaml.Node `yaml:"locations"`
+	}
+	yamlUnmarshal(data, &locs)
+	declared := map[string]yaml.Node{}
+	for name, node := range locs.Locations {
+		var loc struct {
+			Platforms yaml.Node `yaml:"platforms"`
+		}
+		node.Decode(&loc)
+		declared[name] = loc.Platforms
+	}
+	if err := refuseLocationPlatforms(fmt.Sprintf("%s in %s", shippedProjectFile, dir), declared); err != nil {
+		return "", nil, err
+	}
+	if errs := platformProblems(l.Platforms); len(errs) > 0 {
+		return "", nil, fmt.Errorf("%s in %s: %s", shippedProjectFile, dir, strings.Join(errs, "; "))
 	}
 	return string(data), l.Platforms, nil
 }
