@@ -1056,8 +1056,11 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 				}
 				carried = true
 				copySessionTask(bridge, old, in.SessionID)
+				if r.State.Session != old {
+					r.State.log("rebound", "", "", fmt.Sprintf("%s%s (%s)", reboundPrefix(r.State.Session), in.SessionID, in.Source))
+				}
 				r.State.Session = in.SessionID
-				r.State.log("rebound", "", "", fmt.Sprintf("session %s -> %s (%s)", old, in.SessionID, in.Source))
+				r.State.log("rebound", "", "", fmt.Sprintf("%s%s (%s)", reboundPrefix(old), in.SessionID, in.Source))
 				r.save()
 			}
 			r.close()

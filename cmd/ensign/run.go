@@ -187,7 +187,7 @@ type RunFiles struct {
 	State *State
 	lock  *flock.Flock
 	warn  error // The session's setup file could not be written; the run is bound and the hook proceeds.
-	// The open rebounded the run, so it has state to save.
+	// The open rebound the run, so it has state to save.
 	rebound bool
 }
 
@@ -430,17 +430,41 @@ func openAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 	if len(live) > 0 {
 		return r, nil
 	}
-	bindErr := bindSession(bridge, in.SessionID, r.State.Run)
+	if err := rebindRun(bridge, r, in.SessionID, fmt.Sprintf("found through agent %s", in.AgentID)); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// reboundPrefix begins the detail of every "rebound" history entry, so a run's earlier owners can be read back from its history.
+func reboundPrefix(old string) string {
+	return "session " + old + " -> "
+}
+
+// reboundAwayFrom reports whether the run's history shows it was rebound away from the session.
+func (st *State) reboundAwayFrom(session string) bool {
+	prefix := reboundPrefix(session)
+	for _, h := range st.History {
+		if h.Kind == "rebound" && strings.HasPrefix(h.Detail, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// rebindRun binds the session to the open run r and makes it the run's owner. A setup file error is tolerated and left in r.warn; any other error closes r.
+func rebindRun(bridge string, r *RunFiles, session, how string) error {
+	bindErr := bindSession(bridge, session, r.State.Run)
 	if bindErr != nil && !errors.Is(bindErr, errSetupFile) {
 		r.close()
-		return nil, bindErr
+		return bindErr
 	}
-	copySessionTask(bridge, r.State.Session, in.SessionID)
-	r.State.log("rebound", "", "", fmt.Sprintf("session %s -> %s, found through agent %s", r.State.Session, in.SessionID, in.AgentID))
-	r.State.Session = in.SessionID
+	copySessionTask(bridge, r.State.Session, session)
+	r.State.log("rebound", "", "", fmt.Sprintf("%s%s, %s", reboundPrefix(r.State.Session), session, how))
+	r.State.Session = session
 	r.warn = bindErr
 	r.rebound = true
-	return r, nil
+	return nil
 }
 
 // openSpawnRun finds the run the session's own spawn of a lead belongs to: the one named by the tag the prompt begins with, when it is one of the session's live runs. It returns nil, nil when there is none.
@@ -474,7 +498,7 @@ func openSpawnRun(bridge string, in *HookInput) (*RunFiles, error) {
 	return r, nil
 }
 
-// openHookRun opens the run a hook call is checked against. An agent's own live run comes first, even when its session is bound to another run, and that binding is left alone; the session is rebound only when it has no live run. Otherwise it is the session's run, when it has just one live run. The session's run is closed before another is opened, so no two run locks are held.
+// openHookRun opens the run a hook call is checked against. An agent's own live run comes first, even when its session is bound to another run, and that binding is left alone; the session is rebound when it has no live run, or when its one live run has the agent but is owned by another session that the history doesn't show it was rebound away from. Otherwise it is the session's run, when it has just one live run. The session's run is closed before another is opened, so no two run locks are held.
 func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
 	live, err := liveSessionRuns(bridge, in.SessionID)
 	if err != nil {
@@ -494,6 +518,11 @@ func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
 		return openAgentRun(bridge, in)
 	}
 	if run, d := agentTag(in); (run == r.State.Run && r.State.dispatch(d) != nil) || r.State.byAgent(in.AgentID) != nil {
+		if r.State.Session != in.SessionID && !r.State.terminal() && !r.State.reboundAwayFrom(in.SessionID) {
+			if err := rebindRun(bridge, r, in.SessionID, fmt.Sprintf("found through agent %s", in.AgentID)); err != nil {
+				return nil, err
+			}
+		}
 		return r, nil
 	}
 	r.close()

@@ -592,3 +592,179 @@ func TestBindSessionReportsAnUnreadablePipeline(t *testing.T) {
 		}
 	}
 }
+
+func mutateRun(t *testing.T, w *world, run string, f func(st *State)) {
+	t.Helper()
+	r, err := openRun(w.bridge, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.close()
+	f(r.State)
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func leadBash(w *world, lead string) {
+	w.t.Helper()
+	if res, code := w.hook("PostToolUse", map[string]any{"agent_id": lead, "agent_type": "orchestrator",
+		"tool_name": "Bash", "tool_response": map[string]any{"backgroundTaskId": "bash1"}}); code != 0 {
+		w.t.Fatalf("PostToolUse exited %d: %v", code, res)
+	}
+}
+
+func blockStateSave(t *testing.T, w *world, run string) string {
+	t.Helper()
+	dir := filepath.Join(runsDir(w.bridge), run, "state.json.tmp")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestFailedRebindSaveIsRetriedOnTheNextHook(t *testing.T) {
+	for _, viaEdit := range []bool{true, false} {
+		w, lead, run, allowed := agentOnNewSession(t)
+		blocker := blockStateSave(t, w, run)
+		if viaEdit {
+			editHook(w, lead, filepath.Join(allowed, "x.txt"))
+		} else if res, code := w.hook("PostToolUse", map[string]any{"agent_id": lead, "agent_type": "orchestrator",
+			"tool_name": "Bash", "tool_response": map[string]any{"backgroundTaskId": "bash1"}}); code != 2 {
+			t.Fatalf("PostToolUse with a failing save exited %d, want 2: %v", code, res)
+		}
+		if st := w.runState(run); st.Session != "s1" {
+			t.Fatalf("edit %v: the save should have failed, session %q", viaEdit, st.Session)
+		}
+		if err := os.Remove(blocker); err != nil {
+			t.Fatal(err)
+		}
+		hook := func() {
+			if viaEdit {
+				editHook(w, lead, filepath.Join(allowed, "x.txt"))
+			} else {
+				leadBash(w, lead)
+			}
+		}
+		hook()
+		st := w.runState(run)
+		if st.Session != "s2" || countRebound(st) != 1 {
+			t.Fatalf("edit %v: session %q, rebound entries %d; want s2 and one", viaEdit, st.Session, countRebound(st))
+		}
+		statePath := filepath.Join(runsDir(w.bridge), run, "state.json")
+		before, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hook()
+		after, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if viaEdit && !bytes.Equal(before, after) {
+			t.Errorf("a further edit hook rewrote state.json")
+		}
+		if st := w.runState(run); st.Session != "s2" || countRebound(st) != 1 {
+			t.Errorf("edit %v: after a further hook, session %q, rebound entries %d; want s2 and one", viaEdit, st.Session, countRebound(st))
+		}
+	}
+}
+
+func TestAgentUnderTheOldSessionDoesNotTakeTheRunBack(t *testing.T) {
+	for _, detail := range []string{"session s1 -> s2, found through agent a1", "session s1 -> s2 (clear)", ""} {
+		w, lead, run, _ := agentOnNewSession(t)
+		if detail == "" {
+			leadBash(w, lead)
+		} else {
+			mutateRun(t, w, run, func(st *State) {
+				st.Session = "s2"
+				st.log("rebound", "", "", detail)
+			})
+		}
+		w.sid = "s1"
+		leadBash(w, lead)
+		st := w.runState(run)
+		if st.Session != "s2" || countRebound(st) != 1 {
+			t.Errorf("detail %q: session %q, rebound entries %d; want s2 and one", detail, st.Session, countRebound(st))
+		}
+	}
+}
+
+func TestAgentUnderAnEarlierSessionDoesNotTakeTheRun(t *testing.T) {
+	w, lead, run, _ := agentOnNewSession(t)
+	leadBash(w, lead)
+	w.sid = "s3"
+	leadBash(w, lead)
+	for _, sid := range []string{"s1", "s2"} {
+		w.sid = sid
+		leadBash(w, lead)
+		st := w.runState(run)
+		if st.Session != "s3" || countRebound(st) != 2 {
+			t.Fatalf("from %s: session %q, rebound entries %d; want s3 and two", sid, st.Session, countRebound(st))
+		}
+	}
+}
+
+func TestMismatchedOwnerIsKeptWhenTheCallerIsNotItsAgent(t *testing.T) {
+	cases := map[string]func(w *world){
+		"session hook": func(w *world) {
+			w.hook("PreToolUse", map[string]any{"tool_name": "Agent", "tool_input": map[string]any{"subagent_type": "coder", "prompt": "x"}})
+		},
+		"other agent": func(w *world) {
+			w.hook("PostToolUse", map[string]any{"agent_id": "stranger", "agent_type": "orchestrator",
+				"tool_name": "Bash", "tool_response": map[string]any{"backgroundTaskId": "bash1"}})
+		},
+	}
+	for name, call := range cases {
+		w, _, run, _ := agentOnNewSession(t)
+		w.sid = "s1"
+		mutateRun(t, w, run, func(st *State) { st.Session = "s9" })
+		call(w)
+		if st := w.runState(run); st.Session != "s9" || countRebound(st) != 0 {
+			t.Errorf("%s: session %q, rebound entries %d; want s9 and none", name, st.Session, countRebound(st))
+		}
+	}
+}
+
+func TestCarryOverNamesTheLinkAndTheOwnerAsRebound(t *testing.T) {
+	w, lead, run, _ := agentOnNewSession(t)
+	mutateRun(t, w, run, func(st *State) { st.Session = "s9" })
+	if err := bindSession(w.bridge, "s9", run); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := json.Marshal(map[string]any{"type": "user", "sessionId": "s1"})
+	write(t, w.session, string(rec)+"\n")
+	if _, code := w.hook("SessionStart", map[string]any{"source": "resume"}); code != 0 {
+		t.Fatalf("SessionStart exited %d", code)
+	}
+	st := w.runState(run)
+	if st.Session != "s2" {
+		t.Fatalf("session %q after the carry, want s2", st.Session)
+	}
+	for _, old := range []string{"s1", "s9"} {
+		if !st.reboundAwayFrom(old) {
+			t.Errorf("history does not show a rebind away from %s", old)
+		}
+	}
+	if n := countRebound(st); n != 2 {
+		t.Errorf("rebound entries %d, want 2", n)
+	}
+	w.sid = "s9"
+	leadBash(w, lead)
+	if st := w.runState(run); st.Session != "s2" || countRebound(st) != 2 {
+		t.Errorf("an agent under s9 took the run back: session %q, rebound entries %d", st.Session, countRebound(st))
+	}
+}
+
+func TestFinishedRunWithAMismatchedOwnerIsNotRebound(t *testing.T) {
+	w, lead, run, _ := agentOnNewSession(t)
+	w.sid = "s1"
+	mutateRun(t, w, run, func(st *State) {
+		st.Session = "s9"
+		st.Status = "success"
+	})
+	leadBash(w, lead)
+	if st := w.runState(run); st.Session != "s9" || countRebound(st) != 0 {
+		t.Errorf("session %q, rebound entries %d; want s9 and none", st.Session, countRebound(st))
+	}
+}
