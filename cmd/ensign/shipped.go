@@ -31,6 +31,14 @@ func reviewedFile(bridge, project string) string {
 	return filepath.Join(bridge, "projects", project, "shipped-reviewed.yaml")
 }
 
+// settingsBlock is the bindings, pipelines, use and rules of one settings file, with bindings and rules kept as nodes so their shape can be checked.
+type settingsBlock struct {
+	Bindings  yaml.Node      `yaml:"bindings"`
+	Pipelines map[string]any `yaml:"pipelines"`
+	Use       []string       `yaml:"use"`
+	Rules     yaml.Node      `yaml:"rules"`
+}
+
 // readSettings reads a settings file; a missing file reads as empty with ok false.
 func readSettings(path string) (s shippedSettings, ok bool, err error) {
 	data, err := os.ReadFile(path)
@@ -48,9 +56,8 @@ func readSettings(path string) (s shippedSettings, ok bool, err error) {
 	return s, true, err
 }
 
-// bindingsOf decodes a bindings node with keys normalised as Config.addBindings does:
-// one leading @ is dropped and a later key replaces an earlier one.
-func bindingsOf(n *yaml.Node) (map[string]any, error) {
+// bindingsMapping resolves a bindings node for use: an alias is followed one level, an absent or null value (an alias to null included) gives nil, and any other non-mapping is an error. Config.addBindings and bindingsOf both use it, so run time and the drift report agree.
+func bindingsMapping(n *yaml.Node) (*yaml.Node, error) {
 	if n.Kind == yaml.AliasNode {
 		n = n.Alias
 	}
@@ -59,6 +66,16 @@ func bindingsOf(n *yaml.Node) (map[string]any, error) {
 	}
 	if n.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("line %d: bindings must be a mapping", n.Line)
+	}
+	return n, nil
+}
+
+// bindingsOf decodes a bindings node with keys normalised as Config.addBindings does:
+// one leading @ is dropped and a later key replaces an earlier one.
+func bindingsOf(n *yaml.Node) (map[string]any, error) {
+	n, err := bindingsMapping(n)
+	if err != nil || n == nil {
+		return nil, err
 	}
 	m := map[string]any{}
 	for i := 0; i+1 < len(n.Content); i += 2 {
@@ -150,13 +167,6 @@ func decodeSettings(path string, blk settingsBlock) (shippedSettings, error) {
 		return shippedSettings{}, err
 	}
 	return shippedSettings{b, p, blk.Use, r}, nil
-}
-
-type settingsBlock struct {
-	Bindings  yaml.Node      `yaml:"bindings"`
-	Pipelines map[string]any `yaml:"pipelines"`
-	Use       []string       `yaml:"use"`
-	Rules     yaml.Node      `yaml:"rules"`
 }
 
 // effectiveSettings is what the bridge holds for a location: the project's settings with the location's bindings laid over the project's, as sideBindings does at run time (the location's layer comes after the project's, so it wins), and the location's rules added to the project's.

@@ -64,7 +64,7 @@ func loadLocations(bridge, project string) (*Locations, error) {
 		l.deps[name] = append([]string(nil), loc.DependsOn...)
 		sort.Strings(l.deps[name])
 		l.bindings[name] = loc.Bindings
-		if _, err := parseBindingNode(&loc.Bindings, "location:"+label+"#"+name); err != nil {
+		if _, err := parseBindingNode(&loc.Bindings, "location:"+label+"#"+name, file); err != nil {
 			return nil, err
 		}
 	}
@@ -82,17 +82,17 @@ func loadLocations(bridge, project string) (*Locations, error) {
 		return nil, fmt.Errorf("%s: locations depend on each other in a cycle: %s", label, cycle)
 	}
 	var err error
-	if l.Cross, err = parseBindingNode(&pf.CrossLocation.Bindings, "cross-location:"+label); err != nil {
+	if l.Cross, err = parseBindingNode(&pf.CrossLocation.Bindings, "cross-location:"+label, file); err != nil {
 		return nil, err
 	}
 	return l, nil
 }
 
 // parseBindingNode parses a bindings mapping the way a layer's bindings are parsed.
-func parseBindingNode(n *yaml.Node, label string) (map[string]Binding, error) {
+func parseBindingNode(n *yaml.Node, label, file string) (map[string]Binding, error) {
 	out := map[string]Binding{}
 	c := &Config{Bindings: out}
-	if err := c.addBindings(n, label); err != nil {
+	if err := c.addBindings(n, label, file); err != nil {
 		return nil, err
 	}
 	return out, nil

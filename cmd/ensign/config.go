@@ -431,9 +431,13 @@ func readYAML(path string, out any) error {
 	return nil
 }
 
-// addBindings sets the bindings a layer or extension declares, replacing earlier ones.
-func (c *Config) addBindings(n *yaml.Node, label string) error {
-	if n.Kind != yaml.MappingNode {
+// addBindings sets the bindings a layer or extension declares, replacing earlier ones. An alias is followed to its mapping and applied like a plain one; an absent or null value declares none; any other non-mapping is refused, naming file and line, as the drift report does.
+func (c *Config) addBindings(n *yaml.Node, label, file string) error {
+	n, err := bindingsMapping(n)
+	if err != nil {
+		return fmt.Errorf("%s: %v", file, err)
+	}
+	if n == nil {
 		return nil
 	}
 	for i := 0; i < len(n.Content); i += 2 {
@@ -573,7 +577,8 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 			return nil, fmt.Errorf("task %q: %v", t.Task, err)
 		}
 		var tf TaskFile
-		if err := yaml.Unmarshal(front, &tf); err != nil {
+		// splitFrontmatter drops the opening --- line; the leading newline puts node lines back on their file lines.
+		if err := yaml.Unmarshal(append([]byte("\n"), front...), &tf); err != nil {
 			return nil, fmt.Errorf("%s: %v", taskFile, err)
 		}
 		if hasPlatformsKey(front) {
@@ -692,7 +697,7 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 				}
 			}
 		}
-		if err := c.addBindings(&l.layer.Bindings, l.label); err != nil {
+		if err := c.addBindings(&l.layer.Bindings, l.label, l.file); err != nil {
 			return nil, err
 		}
 		if !strings.HasPrefix(l.label, "task:") {
@@ -792,7 +797,7 @@ func (c *Config) mergeExtension(b *Extension, label string) error {
 	for _, req := range b.RequiresBindings {
 		c.needs[req] = label
 	}
-	return c.addBindings(&b.Bindings, label)
+	return c.addBindings(&b.Bindings, label, filepath.Join(b.dir, "extension.yaml"))
 }
 
 // loadProjectBindings merges the bindings of the layers that apply to a project, with no task or pipeline: bridge, project, then the location's layer when location is not empty. Extensions merge as in loadTarget.
@@ -826,7 +831,7 @@ func loadProjectBindings(bridge, project, location string) (*Config, error) {
 				return nil, err
 			}
 		}
-		if err := c.addBindings(&l.layer.Bindings, l.label); err != nil {
+		if err := c.addBindings(&l.layer.Bindings, l.label, l.file); err != nil {
 			return nil, err
 		}
 	}
@@ -902,12 +907,12 @@ func (c *Config) sideBindings(bridge string, layers []layerEntry, extensions map
 			}
 			used[use] = true
 			if b, ok := extensions[use]; ok {
-				if err := side.addBindings(&b.Bindings, "extension:"+use); err != nil {
+				if err := side.addBindings(&b.Bindings, "extension:"+use, filepath.Join(b.dir, "extension.yaml")); err != nil {
 					return nil, err
 				}
 			}
 		}
-		if err := side.addBindings(&l.layer.Bindings, l.label); err != nil {
+		if err := side.addBindings(&l.layer.Bindings, l.label, l.file); err != nil {
 			return nil, err
 		}
 	}

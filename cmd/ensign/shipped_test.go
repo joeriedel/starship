@@ -388,3 +388,89 @@ func TestShippedBindingsAliasComparesByValue(t *testing.T) {
 		t.Errorf("an aliased binding that differs should report:\n%s", got)
 	}
 }
+
+// loadBindings writes the bridge's project.yaml and loads the auth-refactor task's config.
+func loadBindings(t *testing.T, w *world, project string) (*Config, error) {
+	t.Helper()
+	write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"), "platforms: [linux]\n"+project)
+	return loadConfig(w.bridge, "supernova/auth-refactor")
+}
+
+func TestRunBindingsAliasIsApplied(t *testing.T) {
+	w := newWorld(t)
+	c, err := loadBindings(t, w, "x-common: &common\n  deploy: { command: ./deploy.sh }\nbindings: *common\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, ok := c.Bindings["deploy"]
+	if !ok || b.Command != "./deploy.sh" || !strings.Contains(b.Source, "project.yaml:3") {
+		t.Errorf("aliased binding: %v, %+v", ok, b)
+	}
+}
+
+func TestRunNonMappingBindingsAreRefused(t *testing.T) {
+	w := newWorld(t)
+	for _, body := range []string{"bindings: not-a-map\n", "bindings: [a, b]\n", "x-s: &s plain\nbindings: *s\n"} {
+		_, err := loadBindings(t, w, body)
+		if err == nil || !strings.Contains(err.Error(), "project.yaml: line ") || !strings.Contains(err.Error(), "bindings must be a mapping") {
+			t.Errorf("%q should be refused naming file and line: %v", body, err)
+		}
+	}
+}
+
+func TestRunNullBindingsAreEmpty(t *testing.T) {
+	w := newWorld(t)
+	for _, body := range []string{"bindings:\n", "bindings: ~\n", "x-n: &n ~\nbindings: *n\n"} {
+		c, err := loadBindings(t, w, body)
+		if err != nil {
+			t.Errorf("%q should load: %v", body, err)
+			continue
+		}
+		for name, b := range c.Bindings {
+			if strings.Contains(b.Source, "project.yaml") {
+				t.Errorf("%q gave binding %s from the project", body, name)
+			}
+		}
+	}
+}
+
+func TestRunNonMappingBindingsInExtensionAreRefused(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "extensions", "house", "extension.yaml"), "name: house\nsummary: house rules\nbindings: [a, b]\n")
+	_, err := loadBindings(t, w, "use: [house]\n")
+	if err == nil || !strings.Contains(err.Error(), "extension.yaml: line 3: bindings must be a mapping") {
+		t.Errorf("extension bindings should be refused: %v", err)
+	}
+}
+
+func TestLocationNonMappingBindingsAreRefused(t *testing.T) {
+	w := newWorld(t)
+	for _, body := range []string{
+		"locations:\n  api:\n    bindings: not-a-map\n",
+		"cross-location:\n  bindings: [a, b]\n",
+	} {
+		write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"), "platforms: [linux]\n"+body)
+		_, err := loadLocations(w.bridge, "supernova")
+		if err == nil || !strings.Contains(err.Error(), "project.yaml: line ") || !strings.Contains(err.Error(), "bindings must be a mapping") {
+			t.Errorf("%q should be refused naming file and line: %v", body, err)
+		}
+	}
+}
+
+func TestTaskNonMappingBindingsNameTrueLine(t *testing.T) {
+	w := newWorld(t)
+	taskFile := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md")
+	write(t, taskFile, "---\npipeline: coding\nbindings: [a, b]\n---\nbody\n")
+	_, err := loadConfig(w.bridge, "supernova/auth-refactor")
+	if err == nil || !strings.Contains(err.Error(), "task.md: line 3: bindings must be a mapping") {
+		t.Errorf("task bindings should be refused at the true file line: %v", err)
+	}
+	write(t, taskFile, "---\npipeline: coding\nbindings:\n  deploy:\n    command: ./d.sh\n---\nbody\n")
+	c, err := loadConfig(w.bridge, "supernova/auth-refactor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := c.Bindings["deploy"]; !strings.Contains(b.Source, "task.md:4") {
+		t.Errorf("task binding source should carry its true line: %+v", b)
+	}
+}
