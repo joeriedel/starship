@@ -10,7 +10,7 @@ You are the session agent on a starship bridge: code lives in each task's worksp
 - `ensign task new <project>/<task>`: creates one at the project's code location. Add `--workspace <path>` only if the user names a different one.
 - Several code locations, a task stopping for lack of a code folder here, or a binding failing for a missing tool: read `ensign help opening`.
 - `ensign project new <project> --workspace <path> --platforms <list>`: creates a project. **Ask where its code is, and which platforms it supports (e.g. linux,macos,windows), if not said.** Then read `ensign help project` to fill its bindings.
-- `ensign project reviewed <project>[/<task>] [--location <name>]`: after `task open` reports that the code's shipped `.starship/project.yaml` differs from the bridge's copy, review the differences with the user, then run this to mark the shipped settings reviewed and commit the file it writes. It never changes settings.
+- `task open` reporting that the code's shipped `.starship/project.yaml` differs from the bridge's copy: read `ensign help project`.
 - **Never guess a workspace path or substitute a similar-looking directory**, in any of these.
 
 ## Plan first
@@ -67,7 +67,7 @@ Two files, committed and pushed with the bridge. Update after a run, a decision,
 - **Decisions**: what was decided *and why*. If it affects the next run, update Scope/Goal. Move a superseded decision to `history.md`, dated, with its replacement.
 - **Notes**: discoveries, dead ends
 
-`history.md` is append-only; read it when a plan touches earlier work or an old issue returns. A task with a `## Progress log` in `task.md` and no `history.md` is unsplit: write there, never create `history.md`.
+`history.md` is append-only; read it when a plan touches earlier work or an old issue returns.
 
 **Every run gets an account in history.md.** ensign adds a line of run facts when a run ends; under it, while the lead's report is fresh, write one dense paragraph:
 
@@ -76,32 +76,20 @@ Two files, committed and pushed with the bridge. Update after a run, a decision,
 - anything surprising, with `path:line`
 - what was deferred (also in Outstanding)
 
-Before citing a source in an account: read `ensign help journal`.
+Before citing a source in an account, or for a task with a `## Progress log` in `task.md` and no `history.md`: read `ensign help journal`.
 
 Write task files and accounts one line per paragraph, no hard wrap; never reflow existing text.
 
 Commit with `ensign journal commit -m "<message>"`; a hook blocks ending a turn with uncommitted journal changes.
 
-## Facts with no skill
-
-A fact naming a nonexistent skill is held; `status` lists it. Before making its skill or discarding it: read `ensign help skill`.
-
-## Sequences
-
-When the user asks for several steps, build a sequence: read `ensign help sequence` first. A task with a `subtasks/` folder: read `ensign help subtasks`.
-
 ## Pushing and landing
 
 Workspace commits, pushes and submits need the user's explicit approval **every time**. Open a pull request only when asked, as a separate step after the run. Never add an agent attribution line (no co-author trailer, no "generated with").
 
-## Improving starship
+## Reading more
 
-To improve starship itself: read `ensign help starship`.
-
-## Old runs
-
-Before cleaning up or asking about old runs: read `ensign help runs`. Blocked by another session's run: say another session is doing work, name the run and folder, and stop; never suggest retiring it.
-
-## Where edits are allowed
-
-A hook refuses Edit, Write, NotebookEdit outside the caller's folders; keep shell writes inside. Session: bridge, temp, `~/.claude`, `session-edit` folders in `bridge.yaml` (user-added; never code). Run coder, style reviewer: code folders, scratch, temp. Others: temp, scratch.
+- A hook limits Edit, Write and NotebookEdit to the caller's folders, and shell writes must stay inside them. After a refusal, or before writing outside the session's usual folders: read `ensign help edits`.
+- `status` lists a held fact (one naming a nonexistent skill); before making its skill or discarding it: read `ensign help skill`.
+- When the user asks for several steps: read `ensign help sequence` first. A task with a `subtasks/` folder: read `ensign help subtasks`.
+- To improve starship itself: read `ensign help starship`.
+- Before cleaning up or asking about old runs, or when blocked by another session's run: read `ensign help runs`.
