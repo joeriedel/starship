@@ -109,14 +109,16 @@ func newRunStep(task string, group int, snaps []*Snapshot) *seqStep {
 }
 
 type sequence struct {
-	N        int        `json:"n"`
-	Name     string     `json:"name,omitempty"` // what the sequence is for; display only
-	Mode     string     `json:"mode"`
-	Approved bool       `json:"approved"`
-	Halted   bool       `json:"halted,omitempty"`
-	Reason   string     `json:"reason,omitempty"`
-	Closed   bool       `json:"closed,omitempty"` // its end has been reported
-	Steps    []*seqStep `json:"steps"`
+	N        int    `json:"n"`
+	Name     string `json:"name,omitempty"` // what the sequence is for; display only
+	Mode     string `json:"mode"`
+	Approved bool   `json:"approved"`
+	Halted   bool   `json:"halted,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Closed   bool   `json:"closed,omitempty"` // its end has been reported
+	// QueueStart marks a sequence approved when no earlier approved sequence was still open, so it starts a new queue for the Step X/Y count
+	QueueStart bool       `json:"queue_start,omitempty"`
+	Steps      []*seqStep `json:"steps"`
 }
 
 type seqFile struct {
@@ -195,9 +197,44 @@ func (s *sequence) label() string {
 // ref is how text outside a sequence's own listing names a step: <sequence>.<step>.
 func (s *seqStep) ref() string { return fmt.Sprintf("%d.%d", s.Seq, s.N) }
 
-// position says where a step stands in its sequence, such as "step 5 of 26".
-func (s *sequence) position(st *seqStep) string {
-	return fmt.Sprintf("step %d of %d", slices.Index(s.Steps, st)+1, len(s.Steps))
+// counts reports whether a step is part of the session's progress count: one that was cancelled, skipped, dropped or discarded never ran.
+func (s *seqStep) counts() bool {
+	switch s.Status {
+	case "cancelled", "skipped", "dropped", "discarded":
+		return false
+	}
+	return true
+}
+
+// position says where a step stands among all the steps that run in its queue, such as "Step 5/26": the approved sequences from one QueueStart to the next. Closed sequences stay in the count within the queue so that it doesn't restart when the next queued sequence begins. A file without marks is one queue from its first approved sequence.
+func (sf *seqFile) position(st *seqStep) string {
+	x, y := 0, 0
+	for _, seq := range sf.Sequences {
+		if !seq.Approved {
+			continue
+		}
+		if seq.QueueStart {
+			if x > 0 {
+				break
+			}
+			y = 0
+		}
+		for _, o := range seq.Steps {
+			if !o.counts() {
+				continue
+			}
+			y++
+			if o == st {
+				x = y
+			}
+		}
+	}
+	return fmt.Sprintf("Step %d/%d", x, y)
+}
+
+// nowAt is the line that tells the session which step it is at.
+func (sf *seqFile) nowAt(st *seqStep) string {
+	return fmt.Sprintf("Now at step %s (%s).", st.ref(), sf.position(st))
 }
 
 // outcomeLine says in one line how a step ended; it is the text of a failed or cancelled step in an advance and in a note, so the two agree.
@@ -853,6 +890,9 @@ func retireIf(bridge, id, reason string, states ...string) error {
 func (sf *seqFile) advance(bridge, session string) (string, error) {
 	text, err := sf.advanceText(bridge, session)
 	if text != "" {
+		if _, held := sf.held(); held != nil {
+			text += "\n\n" + sf.nowAt(held)
+		}
 		text += "\n\n" + sf.listing(bridge)
 	}
 	return text, err
@@ -1326,6 +1366,7 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 		if seq == nil {
 			return nil
 		}
+		seq.QueueStart = !slices.ContainsFunc(sf.Sequences, func(o *sequence) bool { return o != seq && o.Approved && !o.Closed })
 		ok, seq.Approved = true, true
 		text = fmt.Sprintf("%s approved (%d steps).", seq.label(), len(seq.Steps))
 		parts, err := sf.advanceParts(bridge, session)
@@ -1336,7 +1377,7 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 			text += " It starts when the step in progress finishes."
 		}
 		if held != nil {
-			text += fmt.Sprintf("\n\nNow at step %s (%s).", held.ref(), heldSeq.position(held))
+			text += "\n\n" + sf.nowAt(held)
 			for _, n := range heldSeq.unreportedNotes(parts) {
 				text += "\n" + n
 			}
@@ -1425,7 +1466,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 				kept := slices.DeleteFunc(slices.Clone(adv), func(p string) bool {
 					return slices.ContainsFunc(own, func(o string) bool { return strings.HasPrefix(p, o) })
 				})
-				msg := []string{fmt.Sprintf("sequence step %s is waiting for you (%s).", st.ref(), seq.position(st)), todo, strings.Join(kept, "\n"), strings.Join(seq.unreportedNotes(kept), "\n"), advNote, "Sequence rules: `ensign help sequence`."}
+				msg := []string{fmt.Sprintf("sequence step %s is waiting for you (%s).", st.ref(), sf.position(st)), todo, strings.Join(kept, "\n"), strings.Join(seq.unreportedNotes(kept), "\n"), advNote, "Sequence rules: `ensign help sequence`."}
 				msg = slices.DeleteFunc(msg, func(b string) bool { return strings.TrimSpace(b) == "" })
 				out = block(strings.Join(msg, "\n\n"))
 				return nil

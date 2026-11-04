@@ -234,7 +234,7 @@ func TestWaitingHoldsDoNotSpendTheLeadPromptsAllowance(t *testing.T) {
 	if strings.Contains(reason, "sequence 1 (mode") {
 		t.Errorf("the listing should be absent: %s", reason)
 	}
-	if n := strings.Count(reason, "step 1 of 1"); n != 1 {
+	if n := strings.Count(reason, "Step 1/1"); n != 1 {
 		t.Errorf("the position line should appear once, got %d: %s", n, reason)
 	}
 	if n := strings.Count(reason, "[starship run="+ids[0]+" lead]"); n != 1 {

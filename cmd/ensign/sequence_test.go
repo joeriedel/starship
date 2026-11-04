@@ -2598,8 +2598,8 @@ func TestSequenceStopMessageCarriesOnlyTheStepAndItsPosition(t *testing.T) {
 	w.approve()
 	w.mustSeq("done", "1.1")
 	reason := dig(w.stopHook(), "reason")
-	if !strings.Contains(reason, "second supernova chore") || strings.Count(reason, "step 2 of 3") != 1 || strings.Contains(reason, "sequence 1 (mode") {
-		t.Fatalf("the Stop message should carry step 2 of 3 and no listing:\n%s", reason)
+	if !strings.Contains(reason, "second supernova chore") || strings.Count(reason, "Step 2/3") != 1 || strings.Contains(reason, "sequence 1 (mode") {
+		t.Fatalf("the Stop message should carry Step 2/3 and no listing:\n%s", reason)
 	}
 	if strings.Contains(reason, "\n\n\n") {
 		t.Errorf("the Stop message has a stray blank line:\n%q", reason)
@@ -2622,8 +2622,8 @@ func TestSequenceStopMessageCarriesOnlyTheStepAndItsPosition(t *testing.T) {
 	if n := strings.Count(reason, "second supernova chore"); n != 1 {
 		t.Errorf("the step text should appear once, got %d:\n%s", n, reason)
 	}
-	if strings.Count(reason, "step 2 of 3") != 1 || strings.Contains(reason, "sequence 1 (mode") || strings.Contains(reason, "\n\n\n") {
-		t.Fatalf("the Stop message should carry step 2 of 3, no listing, no stray blank line:\n%q", reason)
+	if strings.Count(reason, "Step 2/3") != 1 || strings.Contains(reason, "sequence 1 (mode") || strings.Contains(reason, "\n\n\n") {
+		t.Fatalf("the Stop message should carry Step 2/3, no listing, no stray blank line:\n%q", reason)
 	}
 }
 
@@ -2632,15 +2632,15 @@ func TestSequenceGoMessageCarriesOnlyThePosition(t *testing.T) {
 	w.mustSeq("do", "first supernova chore")
 	w.mustSeq("do", "second supernova chore")
 	ctx := w.goContext()
-	if !strings.Contains(ctx, "first supernova chore") || strings.Count(ctx, "step 1 of 2") != 1 || strings.Contains(ctx, "sequence 1 (mode") {
-		t.Fatalf("go should start step 1 of 2 and not list the sequence:\n%s", ctx)
+	if !strings.Contains(ctx, "first supernova chore") || strings.Count(ctx, "Step 1/2") != 1 || strings.Contains(ctx, "sequence 1 (mode") {
+		t.Fatalf("go should start Step 1/2 and not list the sequence:\n%s", ctx)
 	}
 
 	// The first sequence still holds its step, so approving the second only queues it.
 	w.mustSeq("do", "third supernova chore")
 	w.mustSeq("do", "fourth supernova chore")
 	ctx = w.goContext()
-	if !strings.Contains(ctx, "approved (2 steps)") || strings.Count(ctx, "step 1 of 2") != 1 || strings.Contains(ctx, "sequence 2 (mode") || strings.Contains(ctx, "\n\n\n") {
+	if !strings.Contains(ctx, "approved (2 steps)") || strings.Count(ctx, "Step 1/4") != 1 || strings.Contains(ctx, "sequence 2 (mode") || strings.Contains(ctx, "\n\n\n") {
 		t.Fatalf("go should name the position of the queued sequence and not list it:\n%q", ctx)
 	}
 }
@@ -2681,7 +2681,7 @@ func TestSequenceStopMessageNotesAFailedPublishFromTheDiscardedAdvance(t *testin
 	w.wantStatus("done", "failed", "active")
 	for i := 0; i < 2; i++ {
 		reason := dig(w.stopHook(), "reason")
-		if !strings.Contains(reason, "tell the supernova user") || strings.Count(reason, "step 3 of 3") != 1 || strings.Contains(reason, "sequence 1 (mode") || strings.Contains(reason, "\n\n\n") {
+		if !strings.Contains(reason, "tell the supernova user") || strings.Count(reason, "Step 3/3") != 1 || strings.Contains(reason, "sequence 1 (mode") || strings.Contains(reason, "\n\n\n") {
 			t.Fatalf("stop %d should carry the do step and its position, no listing:\n%q", i+1, reason)
 		}
 		if n := strings.Count(reason, "step 1.2 (publish "+task+") failed: "); n != 1 {
@@ -2814,7 +2814,7 @@ func TestSequenceGoReportsARunThatCannotStart(t *testing.T) {
 	if n := strings.Count(ctx, "step 1.1 (run supernova/auth-refactor) failed: "); n != 1 {
 		t.Errorf("the failure should be reported once, got %d:\n%s", n, ctx)
 	}
-	if strings.Count(ctx, "report on the supernova") != 1 || !strings.Contains(ctx, "Now at step 1.2 (step 2 of 2).") {
+	if strings.Count(ctx, "report on the supernova") != 1 || !strings.Contains(ctx, "Now at step 1.2 (Step 2/2).") {
 		t.Errorf("go should dispatch the do step with its position:\n%s", ctx)
 	}
 }
@@ -2828,7 +2828,7 @@ func TestSequenceGoNamesTheHeldStepOfTheOlderSequence(t *testing.T) {
 	w.mustSeq("done", "1.1")
 	w.mustSeq("do", "later supernova chore")
 	ctx := w.goContext()
-	if !strings.Contains(ctx, "Now at step 1.2 (step 2 of 3).") || strings.Contains(ctx, "step 1 of 1") {
+	if !strings.Contains(ctx, "Now at step 1.2 (Step 2/4).") || strings.Contains(ctx, "Now at step 2.1") {
 		t.Errorf("go should name the held step of the first sequence:\n%s", ctx)
 	}
 
@@ -3253,5 +3253,112 @@ func TestSequenceRetryLeavesALaterUnstartedStepsWorkItemAlone(t *testing.T) {
 	after := w.stepWorkItem(2)
 	if after != before || !strings.Contains(after, "Add a multiply function") || strings.Contains(after, "Edited goal.") {
 		t.Errorf("step 2 changed:\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
+func TestSequencePositionCountsOnlyStepsThatRun(t *testing.T) {
+	step := func(status string) *seqStep { return &seqStep{Status: status} }
+	seq := func(approved, closed bool, steps ...*seqStep) *sequence {
+		return &sequence{Approved: approved, Closed: closed, Steps: steps}
+	}
+
+	// A cancelled step before the current one lowers X and Y; a cancelled later step lowers Y only.
+	a, cur, c, d := step("cancelled"), step("active"), step("cancelled"), step("pending")
+	sf := &seqFile{Sequences: []*sequence{seq(true, false, a, cur, c, d)}}
+	if got := sf.position(cur); got != "Step 1/2" {
+		t.Errorf("cancelled steps should not count, got %s", got)
+	}
+	if got := sf.position(d); got != "Step 2/2" {
+		t.Errorf("got %s", got)
+	}
+
+	// A plain skipped status is not counted; a failed step that the user skipped is.
+	sk, ran := step("skipped"), &seqStep{Status: "failed", Reason: skipPrefix + "x"}
+	cur = step("decide")
+	sf = &seqFile{Sequences: []*sequence{seq(true, false, sk, ran, cur)}}
+	if got := sf.position(cur); got != "Step 2/2" {
+		t.Errorf("skipped status should not count but a failed skipped step should, got %s", got)
+	}
+
+	// Y spans queued approved sequences and X continues into the second after the first closes; an unapproved sequence adds nothing.
+	f1, f2, s1, s2, u := step("done"), step("done"), step("active"), step("pending"), step("pending")
+	sf = &seqFile{Sequences: []*sequence{seq(true, true, f1, f2), seq(true, false, s1, s2), seq(false, false, u)}}
+	if got := sf.position(s1); got != "Step 3/4" {
+		t.Errorf("got %s", got)
+	}
+	sf.Sequences[0].Closed = false
+	if got := sf.position(f2); got != "Step 2/4" {
+		t.Errorf("got %s", got)
+	}
+
+	// A marked sequence after a closed one starts a new queue.
+	n1, n2 := step("pending"), step("pending")
+	sf = &seqFile{Sequences: []*sequence{seq(true, true, f1, f2, s1), seq(true, false, n1, n2)}}
+	sf.Sequences[1].QueueStart = true
+	if got := sf.position(n1); got != "Step 1/2" {
+		t.Errorf("a new queue should restart the count, got %s", got)
+	}
+
+	// A queue's Y leaves out a later queue, and a closed earlier queue's steps are not counted.
+	sf.Sequences[0].QueueStart = true
+	if got := sf.position(s1); got != "Step 3/3" {
+		t.Errorf("Y should leave out the later queue, got %s", got)
+	}
+	if got := sf.position(n2); got != "Step 2/2" {
+		t.Errorf("got %s", got)
+	}
+
+	// Without marks everything counts from the first approved sequence.
+	sf.Sequences[0].QueueStart, sf.Sequences[1].QueueStart = false, false
+	if got := sf.position(n2); got != "Step 5/5" {
+		t.Errorf("an unmarked file should count from its first sequence, got %s", got)
+	}
+}
+
+func TestSequenceQueueStartFollowsWhetherAnEarlierSequenceIsOpen(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "first supernova chore")
+	w.mustSeq("do", "second supernova chore")
+	w.approve()
+	w.mustSeq("do", "third supernova chore")
+	w.mustSeq("do", "fourth supernova chore")
+	ctx := w.goContext()
+	if !strings.Contains(ctx, "Step 1/4") {
+		t.Errorf("a sequence queued behind a held step should count on with it:\n%s", ctx)
+	}
+	withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		if !sf.Sequences[0].QueueStart || sf.Sequences[1].QueueStart {
+			t.Errorf("only the first sequence should start the queue: %+v %+v", sf.Sequences[0], sf.Sequences[1])
+		}
+		return nil
+	})
+
+	w.mustSeq("done", "1.1")
+	w.mustSeq("done", "1.2")
+	w.mustSeq("done", "2.1")
+	w.mustSeq("done", "2.2")
+	w.mustSeq("do", "fifth supernova chore")
+	w.mustSeq("do", "sixth supernova chore")
+	ctx = w.goContext()
+	if !strings.Contains(ctx, "Step 1/2") {
+		t.Errorf("a sequence approved after the others closed should restart the count:\n%s", ctx)
+	}
+}
+
+func TestSequenceDoneOnADoStepNamesTheNextRunStep(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "first supernova chore")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	out := w.mustSeq("done", "1.1")
+	if n := strings.Count(out, "Now at step 1.2 (Step 2/2)."); n != 1 {
+		t.Errorf("done should name the step it started once, got %d:\n%s", n, out)
+	}
+
+	w2 := newWorld(t)
+	w2.mustSeq("do", "only supernova chore")
+	w2.approve()
+	if out := w2.mustSeq("done", "1.1"); strings.Contains(out, "Now at") {
+		t.Errorf("done on the last step should not name a step:\n%s", out)
 	}
 }
