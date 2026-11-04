@@ -2906,7 +2906,7 @@ func TestSequenceDropOfARetriedPendingStepLeavesAKeptRunAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st := w.runState(ids[1]); st.Status != "error" || st.Reason != "dropped: enough" {
+	if st := w.runState(ids[1]); st.Status != "error" || st.Reason != "cancelled: enough" {
 		t.Errorf("the queued run should be retired: %s %q", st.Status, st.Reason)
 	}
 	if st := w.runState(ids[0]); st.Status == "error" {
