@@ -16,7 +16,12 @@ sources:
   work-mail:
     kind: mail
     watch: [inbox]
+  work-calendar:
+    kind: calendar
+    watch: [Work]
 ```
+
+A slack item is `#channel` (no spaces) or `@person` (a DM; spaces allowed), never a pattern (`*`, `?`) or `@here`, `@channel`, `@everyone`. A slack source also covers the threads the user is in or mentioned in, and never the rest of the workspace. Extra slack items given with `--also` follow the same forms. A calendar item is a calendar's name; the pass reads who met and across which orgs.
 
 Kinds: mail, slack, calendar, ticket, wiki. A name is lower-case letters, digits and hyphens. An entry starting with `#` or `@` must be quoted, in the block form and in `[...]`: unquoted, `#` reads as a comment and `@` is a YAML syntax error, and a syntax error breaks all of `bridge.yaml` for every command, not only `catch-up`.
 

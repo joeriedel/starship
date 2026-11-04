@@ -208,3 +208,66 @@ func TestCatchUpTopicPrints(t *testing.T) {
 		t.Errorf("help catch-up: %v", err)
 	}
 }
+
+func TestSlackItemForms(t *testing.T) {
+	for _, item := range []string{"nova", "#", "@", "# launch", "#supernova-*", "@nova?", "#supernova launch", "@here", "@Channel", "@EVERYONE"} {
+		if err := checkSourceItem("slack", item); err == nil {
+			t.Errorf("slack item %q should be refused", item)
+		}
+		yml := "sources:\n  supernova-x:\n    kind: slack\n    watch: [\"" + item + "\"]\n"
+		_, err := loadDeclaredSources(sourcesWorld(t, yml).bridge)
+		if err == nil || !strings.HasPrefix(err.Error(), "bridge.yaml: sources: supernova-x") {
+			t.Errorf("watch %q: want a sources error naming the source, got %v", item, err)
+		}
+	}
+	for _, item := range []string{"#supernova-launch", "@nova-lead", "@Nova Lead"} {
+		if err := checkSourceItem("slack", item); err != nil {
+			t.Errorf("slack item %q: %v", item, err)
+		}
+	}
+	for _, kind := range []string{"mail", "calendar", "ticket", "wiki"} {
+		for _, item := range []string{"Work", "inbox", "nova*", "x y", "#a b"} {
+			if err := checkSourceItem(kind, item); err != nil {
+				t.Errorf("%s item %q should stay opaque: %v", kind, item, err)
+			}
+		}
+	}
+}
+
+func TestCatchUpAlsoSlackForms(t *testing.T) {
+	w := sourcesWorld(t, sourcesYAML)
+	if _, err := w.catchUp("--also", "supernova-slack=#supernova*"); err == nil || !strings.Contains(err.Error(), "#supernova*") {
+		t.Errorf("a bad slack extra should fail naming the item: %v", err)
+	}
+	if _, err := w.catchUp("--also", "supernova-slack=general"); err == nil {
+		t.Errorf("an unprefixed slack extra should fail")
+	}
+	out, err := w.catchUp("--also", "supernova-slack=@Nova Lead", "--also", "work-mail=a b*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"- supernova-slack (slack): @Nova Lead", "- work-mail (mail): a b*"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("brief lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestCatchUpKindNotes(t *testing.T) {
+	w := sourcesWorld(t, sourcesYAML+"  work-calendar:\n    kind: calendar\n    watch: [Work]\n")
+	out, err := w.catchUp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slack, cal := kindNote("slack"), kindNote("calendar")
+	if strings.Count(out, slack) != 1 || strings.Count(out, cal) != 1 {
+		t.Errorf("want one threads line and one calendar line:\n%s", out)
+	}
+	mail := out[strings.Index(out, "- work-mail (mail)"):]
+	if strings.Contains(mail, slack) || strings.Contains(mail, cal) {
+		t.Errorf("a mail source carries no kind note:\n%s", mail)
+	}
+	if !strings.Contains(out, "  - #supernova-launch\n  - @nova-lead\n  - "+slack+"\n") {
+		t.Errorf("the threads line follows the slack watch items:\n%s", out)
+	}
+}

@@ -42,6 +42,38 @@ func cleanSourceItem(item string) (string, error) {
 	return item, nil
 }
 
+// checkSourceItem checks an already cleaned item against its source's kind. Only slack has a form: a pattern could reach the whole workspace, so a channel is #name and a DM is @name.
+func checkSourceItem(kind, item string) error {
+	if kind != "slack" {
+		return nil
+	}
+	if len(item) < 2 || (item[0] != '#' && item[0] != '@') {
+		return fmt.Errorf("slack item %q must be #channel or @person", item)
+	}
+	if strings.ContainsAny(item, "*?") {
+		return fmt.Errorf("slack item %q must not contain * or ?", item)
+	}
+	if item[0] == '#' && strings.ContainsFunc(item, unicode.IsSpace) {
+		return fmt.Errorf("slack channel %q must not contain whitespace", item)
+	}
+	switch strings.ToLower(item) {
+	case "@here", "@channel", "@everyone":
+		return fmt.Errorf("slack item %q is not a DM", item)
+	}
+	return nil
+}
+
+// kindNote is the line a brief prints after a source's watch items, or "" for a kind with none.
+func kindNote(kind string) string {
+	switch kind {
+	case "slack":
+		return "also the threads the user is in or mentioned in; never read the rest of the workspace"
+	case "calendar":
+		return "read who met and across which orgs, per the Catch-up section of your role"
+	}
+	return ""
+}
+
 // loadDeclaredSources reads the sources: key of bridge.yaml, sorted by name. An absent or empty key declares none.
 func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 	data, err := os.ReadFile(filepath.Join(bridge, "bridge.yaml"))
@@ -114,6 +146,9 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 			if err != nil {
 				return nil, fmt.Errorf("bridge.yaml: sources: %s: watch: %v", name, err)
 			}
+			if err := checkSourceItem(s.Kind, item); err != nil {
+				return nil, fmt.Errorf("bridge.yaml: sources: %s: watch: %v", name, err)
+			}
 			if have[item] {
 				return nil, fmt.Errorf("bridge.yaml: sources: %s: watch lists %q twice", name, item)
 			}
@@ -178,6 +213,9 @@ func cmdCatchUp(args []string, out io.Writer) error {
 		if !ok {
 			return fmt.Errorf("--also: %q is not a declared source; declared: %s", e.source, strings.Join(names, ", "))
 		}
+		if err := checkSourceItem(s.Kind, e.item); err != nil {
+			return fmt.Errorf("--also %s=%s: %v", e.source, e.item, err)
+		}
 		if seen[e] || contains(s.Watch, e.item) {
 			continue
 		}
@@ -193,6 +231,9 @@ func cmdCatchUp(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "- %s (%s)\n", s.Name, s.Kind)
 		for _, w := range s.Watch {
 			fmt.Fprintf(out, "  - %s\n", w)
+		}
+		if note := kindNote(s.Kind); note != "" {
+			fmt.Fprintf(out, "  - %s\n", note)
 		}
 	}
 	if len(extras) > 0 {
