@@ -703,7 +703,9 @@ func createGroupRuns(bridge, task string, group []subtask, carry []*Snapshot, st
 		}
 		if err != nil {
 			for _, m := range made {
-				retireIf(bridge, m.Run, "withdrawn: "+err.Error(), "pending")
+				if rerr := retireIf(bridge, m.Run, "withdrawn: "+err.Error(), "pending"); rerr != nil {
+					err = errors.Join(err, fmt.Errorf("run %s could not be withdrawn: %w", m.Run, rerr))
+				}
 			}
 			return nil, err
 		}
@@ -715,7 +717,7 @@ func createGroupRuns(bridge, task string, group []subtask, carry []*Snapshot, st
 // nextSubtaskGroup is called when every run of a step's group has succeeded. While the task has pending subtasks the step is not done: it moves to queued runs for the next group, which advance then starts.
 func (sf *seqFile) nextSubtaskGroup(bridge string, seq *sequence, st *seqStep, done []*RunFiles) {
 	fail := func(err error) {
-		st.Status, st.Reason = "failed", err.Error()
+		st.Status, st.Reason = "failed", oneLine(err)
 		sf.failed(bridge, seq, st)
 	}
 	task := done[0].Snap.Task
@@ -753,14 +755,24 @@ func (sf *seqFile) nextSubtaskGroup(bridge string, seq *sequence, st *seqStep, d
 	st.Status, st.Reason, st.Blocks, st.WaitBlocks = "pending", "", 0, 0
 }
 
-// failed applies the failure rules for a step that has just failed.
+// oneLine flattens an error to one line, as the displays cut a reason to its first line.
+func oneLine(err error) string {
+	return strings.ReplaceAll(err.Error(), "\n", "; ")
+}
+
+// seqStderr is where a sequence failure with no caller to return to is reported.
+var seqStderr io.Writer = os.Stderr
+
+// failed applies the failure rules for a step that has just failed. A run that could not be retired in the cascade has no caller to tell, so it goes to stderr.
 func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
 	why := fmt.Sprintf("step %s failed", failed.ref())
 	if seq.Mode == modeKeepGoing {
 		for _, st := range seq.Steps {
 			if st.Status == "pending" && failed.Task != "" && (st.Task == failed.Task ||
 				(failed.Kind == "release" && strings.HasPrefix(st.Task, failed.Task+"/"))) {
-				cancelStep(bridge, st, "skipped", why)
+				if err := cancelStep(bridge, st, "skipped", why); err != nil {
+					fmt.Fprintln(seqStderr, "ensign:", oneLine(err))
+				}
 			}
 		}
 		return
@@ -770,38 +782,38 @@ func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
 	}
 	for _, st := range seq.Steps {
 		if st.Status == "pending" {
-			cancelStep(bridge, st, "cancelled", why)
+			if err := cancelStep(bridge, st, "cancelled", why); err != nil {
+				fmt.Fprintln(seqStderr, "ensign:", oneLine(err))
+			}
 		}
 	}
 }
 
-// cancelStep ends a step that never started. Its runs are made terminal, as a retired run is, so they are nobody's waiting run; no run.finish handler fires for them.
-func cancelStep(bridge string, st *seqStep, status, reason string) {
+// cancelStep ends a step that never started. Its runs are made terminal, as a retired run is, so they are nobody's waiting run; no run.finish handler fires for them. Only runs still pending in the step are opened: a retried group step keeps its finished runs, and a finishing hook may hold one of those while it waits for the sequence lock, which the caller holds. A run that could not be retired is returned, and also added to the step's reason for `ensign sequence --all`.
+func cancelStep(bridge string, st *seqStep, status, reason string) error {
 	st.Status, st.Reason = status, reason
 	if st.Kind != "run" {
-		return
+		return nil
 	}
+	var errs []error
 	for _, ru := range st.runs() {
-		retireUnstarted(bridge, ru.Run, status+": "+reason)
+		if ru.Status != "" && ru.Status != "pending" {
+			continue
+		}
+		if err := retireForHalt(bridge, ru.Run, status+": "+reason, false); err != nil {
+			errs = append(errs, fmt.Errorf("run %s could not be retired: %w", ru.Run, err))
+		}
 	}
+	err := errors.Join(errs...)
+	if err != nil {
+		st.Reason += "; " + oneLine(err)
+	}
+	return err
 }
 
 // unstarted reports whether a run is queued, or approved with its lead never dispatched.
 func unstarted(st *State) bool {
 	return st.Status == "pending" || (st.Status == "running" && st.Approved && !st.Started && len(st.Dispatches) == 0)
-}
-
-// retireUnstarted retires a run that is queued, or approved with its lead never dispatched. It reports whether it did.
-func retireUnstarted(bridge, id, reason string) bool {
-	r, err := openRun(bridge, id)
-	if err != nil {
-		return false
-	}
-	if !unstarted(r.State) {
-		r.close()
-		return false
-	}
-	return markRetired(r, reason) == nil
 }
 
 // retireForHalt retires a run halt collected: an unstarted one, or one that asks the user when paused is set. A run in any other state, or whose folder is gone, is left alone with no error; the error is for a run that should have been retired and could not be.
@@ -820,17 +832,20 @@ func retireForHalt(bridge, id, reason string, paused bool) error {
 	return markRetired(r, reason)
 }
 
-// retireIf makes a run terminal, but only if it is still in one of the given states when its lock is held. It reports whether it did.
-func retireIf(bridge, id, reason string, states ...string) bool {
+// retireIf makes a run terminal, but only if it is still in one of the given states when its lock is held. A run that is not, or whose folder is gone, is left alone with no error.
+func retireIf(bridge, id, reason string, states ...string) error {
 	r, err := openRun(bridge, id)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		return false
+		return err
 	}
 	if !slices.Contains(states, r.State.Status) {
 		r.close()
-		return false
+		return nil
 	}
-	return markRetired(r, reason) == nil
+	return markRetired(r, reason)
 }
 
 // advance starts the next step if none is under way. It returns what the session should be told, followed by the listing, or "" when nothing changed.
@@ -1177,7 +1192,10 @@ func startRuns(bridge, session string, st *seqStep) (texts []string, busy, failu
 				busy = err
 			}
 		case err != nil:
-			retireIf(bridge, ru.Run, "failed: "+err.Error(), "pending")
+			if rerr := retireIf(bridge, ru.Run, "failed: "+err.Error(), "pending"); rerr != nil {
+				err = fmt.Errorf("%w; run %s could not be retired: %s", err, ru.Run, oneLine(rerr))
+				fmt.Fprintf(seqStderr, "ensign: run %s could not be retired: %s\n", ru.Run, oneLine(rerr))
+			}
 			ru.Status, ru.Reason = "error", err.Error()
 			if failure == nil {
 				failure = err
@@ -1425,7 +1443,9 @@ func carrySequence(bridge, old, session string) error {
 	if err != nil {
 		return err
 	}
-	return withSeq(bridge, session, func(sf *seqFile) error {
+	// A finishing hook holds a run's lock and then takes this sequence lock, so the runs are opened after the lock is released.
+	var ids []string
+	err = withSeq(bridge, session, func(sf *seqFile) error {
 		for _, seq := range sf.Sequences {
 			for _, st := range seq.Steps {
 				if st.Kind != "run" || !st.open() {
@@ -1435,21 +1455,27 @@ func carrySequence(bridge, old, session string) error {
 					st.Blocks = 0
 				}
 				for _, ru := range st.runs() {
-					if slices.Contains(bound, ru.Run) {
-						continue
-					}
-					if r, err := openRun(bridge, ru.Run); err == nil {
-						if r.State.Session == old {
-							r.State.Session = session
-							r.save()
-						}
-						r.close()
+					if !slices.Contains(bound, ru.Run) {
+						ids = append(ids, ru.Run)
 					}
 				}
 			}
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if r, err := openRun(bridge, id); err == nil {
+			if r.State.Session == old {
+				r.State.Session = session
+				r.save()
+			}
+			r.close()
+		}
+	}
+	return nil
 }
 
 // releaseCommand finds a project's @release command and the folder it runs in: the project's workspace, or the folder of the location asked for (the project's only one if none is asked for), whose bindings add to the project's.
@@ -1690,6 +1716,7 @@ func cmdSequence(args []string, out io.Writer) error {
 		}
 		// A finishing hook holds a run's lock and then takes the sequence lock, so the runs of an active or paused step are retired between two holds of it, and "run ensign sequence halt again" is true for them; a pending step's unstarted runs are retired under the lock because no finishing hook holds a pending run's lock, and a decide step's runs are all over and may be held by a hook, so none is opened.
 		var pausedRuns, unstartedRuns []string
+		var pendingErrs []error
 		var halted string
 		err = withSeq(bridge, session, func(sf *seqFile) error {
 			var cur *sequence
@@ -1728,7 +1755,9 @@ func cmdSequence(args []string, out io.Writer) error {
 					if wasPending {
 						for _, ru := range st.runs() {
 							if ru.Status == "" || ru.Status == "pending" {
-								retireUnstarted(bridge, ru.Run, haltPrefix+reason)
+								if err := retireForHalt(bridge, ru.Run, haltPrefix+reason, false); err != nil {
+									pendingErrs = append(pendingErrs, fmt.Errorf("run %s could not be retired and is left pending under the cancelled step: %w", ru.Run, err))
+								}
 							}
 						}
 					}
@@ -1769,9 +1798,10 @@ func cmdSequence(args []string, out io.Writer) error {
 		})
 		if len(retireErrs) > 0 {
 			err = errors.Join(append(retireErrs, err)...)
-			return fmt.Errorf("%w\nrun ensign sequence halt again to retire what is left", err)
+			err = fmt.Errorf("%w\nrun ensign sequence halt again to retire what is left", err)
 		}
-		return err
+		// The step is already cancelled, so a second halt does not reach these runs.
+		return errors.Join(append([]error{err}, pendingErrs...)...)
 	case "drop":
 		const dropUsage = "usage: ensign sequence drop <step>... [--reason <text>]"
 		var steps []string
@@ -1789,7 +1819,8 @@ func cmdSequence(args []string, out io.Writer) error {
 		if len(steps) == 0 {
 			return errors.New(dropUsage)
 		}
-		return withSeq(bridge, session, func(sf *seqFile) error {
+		var retireErr error
+		err := withSeq(bridge, session, func(sf *seqFile) error {
 			sf.reconcile(bridge)
 			open := sf.openSeq()
 			drop := map[*seqStep]bool{}
@@ -1819,7 +1850,9 @@ func cmdSequence(args []string, out io.Writer) error {
 					kept := seq.Steps[:0:0]
 					for _, st := range seq.Steps {
 						if drop[st] {
-							cancelStep(bridge, st, "dropped", reason)
+							if err := cancelStep(bridge, st, "dropped", reason); err != nil {
+								retireErr = errors.Join(retireErr, err)
+							}
 							removed++
 						} else {
 							kept = append(kept, st)
@@ -1830,7 +1863,9 @@ func cmdSequence(args []string, out io.Writer) error {
 				}
 				for _, st := range seq.Steps {
 					if drop[st] {
-						cancelStep(bridge, st, "cancelled", reason)
+						if err := cancelStep(bridge, st, "cancelled", reason); err != nil {
+							retireErr = errors.Join(retireErr, err)
+						}
 						cancelled = true
 					}
 				}
@@ -1853,6 +1888,10 @@ func cmdSequence(args []string, out io.Writer) error {
 			fmt.Fprint(out, text)
 			return err
 		})
+		if err != nil {
+			return err
+		}
+		return retireErr
 	case "discard":
 		reason, err := flagValue(rest, "--reason", "usage: ensign sequence discard [--reason <text>]")
 		if err != nil {
@@ -1861,7 +1900,8 @@ func cmdSequence(args []string, out io.Writer) error {
 		if reason == "" {
 			reason = "discarded"
 		}
-		return withSeq(bridge, session, func(sf *seqFile) error {
+		var retireErr error
+		err = withSeq(bridge, session, func(sf *seqFile) error {
 			seq := sf.openSeq()
 			if n := len(sf.Sequences); seq == nil && n > 0 && sf.Sequences[n-1].Halted && sf.Sequences[n-1].unfinished() {
 				return fmt.Errorf("%s is already halted and closes when the step still active finishes", sf.Sequences[n-1].label())
@@ -1871,12 +1911,18 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			sf.reconcile(bridge)
 			for _, st := range seq.Steps {
-				cancelStep(bridge, st, "discarded", reason)
+				if err := cancelStep(bridge, st, "discarded", reason); err != nil {
+					retireErr = errors.Join(retireErr, err)
+				}
 			}
 			sf.Sequences = sf.Sequences[:len(sf.Sequences)-1]
 			fmt.Fprintf(out, "%s discarded (%d steps removed)\n", seq.label(), len(seq.Steps))
 			return nil
 		})
+		if err != nil {
+			return err
+		}
+		return retireErr
 	case "accept":
 		if len(rest) != 1 {
 			return errors.New("usage: ensign sequence accept <seq>.<step>")
@@ -1996,7 +2042,9 @@ func cmdSequence(args []string, out io.Writer) error {
 				snap, err := retryRun(bridge, old, diagnosis, left, out)
 				if err != nil {
 					for _, f := range fresh {
-						retireIf(bridge, f.Run, "withdrawn: "+err.Error(), "pending")
+						if rerr := retireIf(bridge, f.Run, "withdrawn: "+err.Error(), "pending"); rerr != nil {
+							err = errors.Join(err, fmt.Errorf("run %s could not be withdrawn: %w", f.Run, rerr))
+						}
 					}
 					return err
 				}
@@ -2151,6 +2199,14 @@ func seqAdd(bridge, session string, out io.Writer, name string, st *seqStep) err
 			return err
 		}
 		for _, id := range live {
+			// A sequence run's hook holds its run lock while it waits for this sequence lock, so only a run that is not in a sequence is opened.
+			peek, err := readRun(bridge, id)
+			if err != nil {
+				return err
+			}
+			if peek.State.Sequence || peek.State.Approved {
+				continue
+			}
 			r, err := openRun(bridge, id)
 			if err != nil {
 				return err

@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -521,8 +522,8 @@ func TestRetireIfLeavesAResumedRunAlone(t *testing.T) {
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.approve()
 	id := w.step(1).Run
-	if retireIf(w.bridge, id, "cancelled: halted", "pending", "ask-user") {
-		t.Fatal("a running run must not be retired")
+	if err := retireIf(w.bridge, id, "cancelled: halted", "pending", "ask-user"); err != nil {
+		t.Fatal(err)
 	}
 	if st := w.runState(id); st.Status != "running" {
 		t.Errorf("run is %s, want running", st.Status)
@@ -2770,8 +2771,8 @@ func TestSequenceGoReportsARunThatCannotStart(t *testing.T) {
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.mustSeq("do", "report on the supernova")
 	w.mustSeq("mode", "keep-going")
-	if !retireIf(w.bridge, w.step(1).Run, "gone", "pending") {
-		t.Fatal("the queued run should retire")
+	if err := retireIf(w.bridge, w.step(1).Run, "gone", "pending"); err != nil {
+		t.Fatal(err)
 	}
 	ctx := w.goContext()
 	if n := strings.Count(ctx, "step 1.1 (run supernova/auth-refactor) failed: "); n != 1 {
@@ -2847,5 +2848,288 @@ func TestMarkRetiredStampsAnUnendedRunAndKeepsAnEndedOnesTime(t *testing.T) {
 	}
 	if got := w.runState(id).FinishedAt; got != st.FinishedAt {
 		t.Errorf("a run that had ended kept no end time: %d, want %d", got, st.FinishedAt)
+	}
+}
+
+// whileRunLockHeld runs fn while the test holds a run's lock, as a finishing hook does, and fails if fn does not finish while the lock is held. fn runs on its own goroutine, so it must not fail the test.
+func (w *world) whileRunLockHeld(run string, fn func()) {
+	w.t.Helper()
+	l := flock.New(filepath.Join(runsDir(w.bridge), run, "lock"))
+	if err := l.Lock(); err != nil {
+		w.t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		fn()
+		close(done)
+	}()
+	select {
+	case <-done:
+		l.Unlock()
+	case <-time.After(10 * time.Second):
+		l.Unlock()
+		<-done
+		w.t.Fatal("the command waited for a run lock")
+	}
+}
+
+// retriedGroupStep leaves step 1 of a two-run group pending, as a retry does: the first run is kept as a finished one, the second is queued.
+func (w *world) retriedGroupStep() []string {
+	w.t.Helper()
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		st := sf.Sequences[0].Steps[0]
+		st.Status = "pending"
+		st.runs()[0].Status = "success"
+		st.runs()[1].Status = "pending"
+		return nil
+	}); err != nil {
+		w.t.Fatal(err)
+	}
+	return ids
+}
+
+func (w *world) blockSave(run string) {
+	w.t.Helper()
+	if err := os.Mkdir(filepath.Join(runsDir(w.bridge), run, "state.json.tmp"), 0o755); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func TestSequenceDropOfARetriedPendingStepLeavesAKeptRunAlone(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	ids := w.retriedGroupStep()
+	var err error
+	w.whileRunLockHeld(ids[0], func() { _, err = w.seq("drop", "1", "--reason", "enough") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := w.runState(ids[1]); st.Status != "error" || st.Reason != "dropped: enough" {
+		t.Errorf("the queued run should be retired: %s %q", st.Status, st.Reason)
+	}
+	if st := w.runState(ids[0]); st.Status == "error" {
+		t.Errorf("the kept run should not be touched: %s %q", st.Status, st.Reason)
+	}
+}
+
+func TestSequenceFailedCascadeOverARetriedPendingStepLeavesAKeptRunAlone(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	ids := w.retriedGroupStep()
+	var err error
+	w.whileRunLockHeld(ids[0], func() {
+		err = withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+			seq := sf.Sequences[0]
+			sf.failed(w.bridge, seq, &seqStep{Kind: "do", N: 9, Seq: seq.N})
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := w.runState(ids[1]); st.Status != "error" {
+		t.Errorf("the queued run should be retired: %s", st.Status)
+	}
+	if st := w.runState(ids[0]); st.Status == "error" {
+		t.Errorf("the kept run should not be touched: %s", st.Status)
+	}
+}
+
+func TestSequenceFailedCascadeReportsAFailedRetireToStderr(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	ids := w.retriedGroupStep()
+	w.blockSave(ids[1])
+	var stderr strings.Builder
+	defer func(old io.Writer) { seqStderr = old }(seqStderr)
+	seqStderr = &stderr
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		seq := sf.Sequences[0]
+		sf.failed(w.bridge, seq, &seqStep{Kind: "do", N: 9, Seq: seq.N})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := stderr.String(); !strings.HasPrefix(got, "ensign: ") || !strings.Contains(got, ids[1]) || !strings.Contains(got, "could not be retired") || strings.Count(got, "\n") != 1 {
+		t.Errorf("stderr should name the run on one line: %q", got)
+	}
+	st := w.step(1)
+	if st.Status != "cancelled" || !strings.Contains(st.Reason, ids[1]) {
+		t.Errorf("the failure should also be in the reason: %s %q", st.Status, st.Reason)
+	}
+}
+
+func TestSequenceStartFailureNamesARunThatCouldNotBeRetired(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	id := w.step(1).Run
+	w.blockSave(id)
+	writeFile(sessionFile(w.bridge, w.sid)+".pin", "not-the-pinned-commit\n")
+	ctx := w.goContext()
+	if !strings.Contains(ctx, "could not be retired") || !strings.Contains(ctx, id) {
+		t.Errorf("the outcome should name the retire failure: %s", ctx)
+	}
+	if st := w.step(1); st.Status != "failed" || !strings.Contains(st.Reason, "could not be retired") || strings.Contains(st.Reason, "\n") {
+		t.Errorf("the step's reason should carry it on one line: %s %q", st.Status, st.Reason)
+	}
+}
+
+func TestSequenceStartFailureNamesEveryRunThatCouldNotBeRetired(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	ids := w.stepRuns(1)
+	w.blockSave(ids[1])
+	writeFile(sessionFile(w.bridge, w.sid)+".pin", "not-the-pinned-commit\n")
+	var stderr strings.Builder
+	defer func(old io.Writer) { seqStderr = old }(seqStderr)
+	seqStderr = &stderr
+	w.goContext()
+	if got := stderr.String(); !strings.Contains(got, "ensign: run "+ids[1]+" could not be retired: ") {
+		t.Errorf("stderr should name the second run: %q", got)
+	}
+	if st := w.runState(ids[0]); st.Status != "error" {
+		t.Errorf("the first run should be retired: %s", st.Status)
+	}
+}
+
+func TestSequenceAddDoesNotWaitForARunInTheSequence(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	var err error
+	w.whileRunLockHeld(w.step(1).Run, func() { _, err = w.seq("do", "tell the user") })
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCarrySequenceDoesNotHoldTheSequenceLockWhileWaitingForARun(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.approve()
+	// Step 1 is deciding, so carrySequence resets its Blocks under the lock: readSeq sees that only after the closure has run.
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		st := sf.Sequences[0].Steps[0]
+		st.Status, st.Blocks = "decide", 2
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := w.step(2).Run
+	if st := w.runState(id); st.Session != w.sid {
+		t.Fatalf("the queued run's session is %s, want %s", st.Session, w.sid)
+	}
+	l := flock.New(filepath.Join(runsDir(w.bridge), id, "lock"))
+	if err := l.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer l.Unlock()
+	// Stat, never open: an open file would fail writeJSON's rename on Windows. Resetting Blocks (omitempty) shrinks the file.
+	info, err := os.Stat(seqPath(w.bridge, w.sid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := info.Size()
+	carried := make(chan error, 1)
+	go func() { carried <- carrySequence(w.bridge, w.sid, "s2") }()
+	reset := false
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if info, err := os.Stat(seqPath(w.bridge, "s2")); err == nil && info.Size() != before {
+			reset = true
+			break
+		}
+	}
+	if !reset {
+		l.Unlock()
+		<-carried
+		t.Fatal("carrySequence never saved the sequence before waiting for the run")
+	}
+	taken := make(chan struct{})
+	go func() {
+		withSeq(w.bridge, "s2", func(sf *seqFile) error { return nil })
+		close(taken)
+	}()
+	free := false
+	select {
+	case <-taken:
+		free = true
+	case <-time.After(10 * time.Second):
+	}
+	l.Unlock()
+	<-taken
+	if err := <-carried; err != nil {
+		t.Fatal(err)
+	}
+	if !free {
+		t.Fatal("carrySequence kept the sequence lock while waiting for a run lock")
+	}
+	if st := w.runState(id); st.Session != "s2" {
+		t.Errorf("the run's session is %s, want s2", st.Session)
+	}
+}
+
+func TestSequenceHaltSaysSoWhenAPendingRunCouldNotBeRetired(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.approve()
+	w.spawn("", "", "orchestrator")
+	pending := w.step(2).Run
+	w.blockSave(pending)
+	_, err := w.seq("halt", "--reason", "stop")
+	if err == nil || !strings.Contains(err.Error(), pending) || !strings.Contains(err.Error(), "left pending") || strings.Contains(err.Error(), "halt again") {
+		t.Fatalf("halt error: %v", err)
+	}
+	if !readSeq(w.bridge, w.sid).Sequences[0].Halted {
+		t.Error("the sequence should still be saved halted")
+	}
+	w.wantStatus("active", "cancelled")
+}
+
+func TestSequenceHaltKeepsTheSuffixForTheRunsItIsTrueFor(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.approve()
+	active, pending := w.step(1).Run, w.step(2).Run
+	w.blockSave(active)
+	w.blockSave(pending)
+	_, err := w.seq("halt", "--reason", "stop")
+	if err == nil {
+		t.Fatal("halt should fail")
+	}
+	msg := err.Error()
+	i := strings.Index(msg, "halt again")
+	if i < 0 || !strings.Contains(msg[:i], active) || strings.Contains(msg[:i], pending) || !strings.Contains(msg[i:], pending) {
+		t.Errorf("the suffix should follow the active run and precede the pending one:\n%s", msg)
+	}
+}
+
+func TestSequenceDropAndDiscardSaySoWhenARunCouldNotBeRetired(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	second := w.step(2).Run
+	w.blockSave(second)
+	out, err := w.seq("drop", "2")
+	if err == nil || !strings.Contains(err.Error(), second) || out == "" {
+		t.Fatalf("drop: %q %v", out, err)
+	}
+	if n := len(readSeq(w.bridge, w.sid).Sequences[0].Steps); n != 1 {
+		t.Errorf("the drop should still be saved, %d steps left", n)
+	}
+	first := w.step(1).Run
+	w.blockSave(first)
+	out, err = w.seq("discard")
+	if err == nil || !strings.Contains(err.Error(), first) || !strings.Contains(out, "discarded") {
+		t.Fatalf("discard: %q %v", out, err)
+	}
+	if n := len(readSeq(w.bridge, w.sid).Sequences); n != 0 {
+		t.Errorf("the discard should still be saved, %d sequences left", n)
 	}
 }
