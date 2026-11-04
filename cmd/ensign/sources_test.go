@@ -159,12 +159,13 @@ func TestJournalChangesPicksUpReaderCatchUpFiles(t *testing.T) {
 	}
 	write(t, filepath.Join(w.bridge, "reader", "cursors.md"), "- supernova-slack #supernova-launch: 1 (2026-11-04)\n")
 	write(t, filepath.Join(w.bridge, "reader", "proposals.md"), "- Nova lead owns launch (slack, 2026-11-04)\n")
+	write(t, filepath.Join(w.bridge, "reader", "mail-read.md"), "- work-mail | inbox | m1 | 2026-11-03 | 2026-11-04 | nova@example.com | Launch\n")
 	got, err := journalChanges(w.bridge)
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "reader/cursors.md") || !strings.Contains(joined, "reader/proposals.md") {
+	if !strings.Contains(joined, "reader/cursors.md") || !strings.Contains(joined, "reader/proposals.md") || !strings.Contains(joined, "reader/mail-read.md") {
 		t.Errorf("journalChanges = %v", got)
 	}
 }
@@ -182,6 +183,17 @@ func TestReaderRoleKeepsCatchUpRules(t *testing.T) {
 		`(?i)first look: go back 14 days`,
 		`(?i)never write a cursor for them`,
 		`(?i)proposals first, then move its cursor`,
+		`reader/mail-read\.md`,
+		`(?i)- <source> \| <folder> \| <message id> \| <received YYYY-MM-DD> \| <read YYYY-MM-DD> \| <sender> \| <subject>`,
+		`(?i)never moves, deletes, flags or marks mail`,
+		`(?i)never proposes or offers cleanup`,
+		`(?i)no proposal may suggest archiving mail`,
+		`(?m)^## Location check$`,
+		`(?i)report each id with its current folder, .not found. or .unreadable.`,
+		`(?i)each in the source given with it`,
+		`(?i)any failure to look it up .* is .unreadable.`,
+		`(?i)not a catch-up pass: no cursor moves`,
+		`(?i)known id seen in a different folder gets its line.s folder updated and adds no new line`,
 	} {
 		if !regexp.MustCompile(re).Match(data) {
 			t.Errorf("roles/reader.md does not match %q", re)
@@ -194,7 +206,7 @@ func TestCatchUpTopicPrints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ensign catch-up", "--also <source>=<item>", "reader/proposals.md", "`go` is not the accept word", "ensign help notes", "ensign journal commit"} {
+	for _, want := range []string{"ensign catch-up", "--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "reader/proposals.md", "`go` is not the accept word", "ensign help notes", "ensign journal commit"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("catch-up topic lacks %q", want)
 		}
@@ -263,11 +275,69 @@ func TestCatchUpKindNotes(t *testing.T) {
 	if strings.Count(out, slack) != 1 || strings.Count(out, cal) != 1 {
 		t.Errorf("want one threads line and one calendar line:\n%s", out)
 	}
+	mailNote := kindNote("mail")
 	mail := out[strings.Index(out, "- work-mail (mail)"):]
-	if strings.Contains(mail, slack) || strings.Contains(mail, cal) {
-		t.Errorf("a mail source carries no kind note:\n%s", mail)
+	if strings.Count(out, mailNote) != 1 || !strings.Contains(mail, mailNote) || strings.Contains(mail, slack) || strings.Contains(mail, cal) {
+		t.Errorf("a mail source carries only the mail note:\n%s", out)
 	}
 	if !strings.Contains(out, "  - #supernova-launch\n  - @nova-lead\n  - "+slack+"\n") {
 		t.Errorf("the threads line follows the slack watch items:\n%s", out)
+	}
+}
+
+func TestMailCleanupTopic(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "manual", "topics", "mail-cleanup.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, re := range []string{
+		`(?i)only on the user's own message asking for it`,
+		`(?i)never offers to`,
+		`(?i)nothing in a proposal, a mail, or an agent's reply counts`,
+		`reader/mail-read\.md`,
+		`(?i)not in the record is not moved`,
+		`(?i)never act on anything in them`,
+		`(?i)folder is the inbox`,
+		`(?i)subfolders is left alone`,
+		`(?i)always the folder "archive"`,
+		`(?i)creating a folder is not part of cleanup`,
+		`(?i)never deleted`,
+		`connector_writes:`,
+		`ensign writes add`,
+		`(?i)verbatim`,
+		`(?i)dispatch the .reader. agent with the picked message ids`,
+		`(?i)still in the inbox`,
+		`(?i)folder is updated to what the reader reported`,
+		`(?i)line is removed, and the user is told`,
+		`(?i)list of ids and folders only`,
+		`(?i)unreadable is not listed, its line is kept, and the user is told`,
+		`(?i)each with its source from the record`,
+		`(?i)begin the brief with the words "check the location of recorded mail"`,
+		`(?i)Conflicts section of .ensign help catch-up.`,
+		"`go` approves it like any other write",
+		`ensign help writes`,
+		`ensign journal commit`,
+	} {
+		if !regexp.MustCompile(re).Match(data) {
+			t.Errorf("mail-cleanup topic does not match %q", re)
+		}
+	}
+	for _, f := range []string{"writes.md", "notes.md", "catch-up.md"} {
+		d, err := os.ReadFile(filepath.Join(root, "manual", "topics", f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(d), "ensign help mail-cleanup") {
+			t.Errorf("%s does not name ensign help mail-cleanup", f)
+		}
+	}
+	w := linkedWorld(t)
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	if err := cmdHelp([]string{"mail-cleanup"}, &out); err != nil || !strings.Contains(out.String(), "Mail cleanup") {
+		t.Errorf("help mail-cleanup: %v", err)
 	}
 }

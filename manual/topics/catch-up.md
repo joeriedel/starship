@@ -30,7 +30,8 @@ Kinds: mail, slack, calendar, ticket, wiki. A name is lower-case letters, digits
 1. Run `ensign catch-up`. For each extra item the user names for this pass only, add `--also <source>=<item>`. Extras are not saved and get no cursor. On Windows, prefix `MSYS_NO_PATHCONV=1` when an item starts with `/`, or Git Bash rewrites it into a Windows path.
 2. Dispatch the `reader` agent with the printed brief. You cannot call its connectors yourself.
 3. List every item in `reader/proposals.md`, numbered, including any left from earlier passes.
-4. Run `ensign journal commit -m "<message>"` so the cursors reach the other machines.
+4. A pass also keeps `reader/mail-read.md`, one line per mail message read. A catch-up never touches mail and never offers to move it; when the user asks for cleanup, see `ensign help mail-cleanup`.
+5. Run `ensign journal commit -m "<message>"` so the cursors reach the other machines.
 
 ## Deciding
 
@@ -40,4 +41,4 @@ File each accepted one by the rules in `ensign help notes`. Remove accepted and 
 
 ## Conflicts
 
-A rebase conflict on `reader/cursors.md`: keep the later position for each line. On `reader/proposals.md`: keep both sides.
+A rebase conflict on `reader/cursors.md`: keep the later position for each line. On `reader/proposals.md`: keep both sides. On `reader/mail-read.md`, unlike `proposals.md`: keep lines added on either side and keep removed lines removed, because a removed line means the mail has moved or gone.

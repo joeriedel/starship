@@ -6,7 +6,7 @@ Only when `bridge.yaml` has `connector_writes:` (exact `mcp__<server>__<tool>` n
 
 Any connector tool not listed under `connectors:`. That includes:
 - Posting to tickets or the wiki, sending email, Slack posts: they go out as the user, at once.
-- Moving or deleting, for example moving email to an archive folder.
+- Moving or deleting, for example moving email to an archive folder (`ensign help mail-cleanup`).
 - Creating a mail draft: the user then sends it, since the connector can't.
 - Creating or changing a meeting invite: it reaches others as soon as it is written.
 

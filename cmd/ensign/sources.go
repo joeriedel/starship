@@ -70,6 +70,8 @@ func kindNote(kind string) string {
 		return "also the threads the user is in or mentioned in; never read the rest of the workspace"
 	case "calendar":
 		return "read who met and across which orgs, per the Catch-up section of your role"
+	case "mail":
+		return "record every message read per the Catch-up section of your role; never change mail"
 	}
 	return ""
 }
