@@ -8,7 +8,7 @@
 - A run that only applies a dependency branch from a folder shares it with other such runs.
 - A run that works in a folder is refused while another live run holds it, working or only reading.
 - A run that only reads a folder is refused while another live run works in it.
-- When a run is refused because a live run of another session holds the folder, tell the user which run and which folder. That run's session may have ended without finishing it.
-- Run `ensign run retire <run>` only with the user's explicit OK, never on your own.
+- When a run is refused because a live run of another session holds the folder, tell the user another session is doing work, name the run and the folder, and stop. Never suggest retiring that run or speculate that it is dead.
+- Run `ensign run retire <run>` only when the user tells you to: only the user knows a run is hung or stuck.
 - Retire refuses a run of your own session, a finished run and an unknown run.
 - Retiring marks the run as error and frees its folders. It leaves the work in the code folder as it is: look at that work before you start work there.

@@ -755,6 +755,9 @@ func TestOtherSessionsRunsOnTheSameFolderRefuseANewRun(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), pending) || !strings.Contains(err.Error(), w.workspace()) {
 		t.Fatalf("a run on a folder another session's run holds: %v", err)
 	}
+	if msg := err.Error(); !strings.Contains(msg, "another session is doing work") || strings.Contains(msg, "retire") || strings.Contains(msg, "ensign help runs") {
+		t.Errorf("the refusal should say another session is working and not point at retiring: %v", err)
+	}
 	if st := w.runState(pending); st.Status != "running" {
 		t.Fatalf("running run of another session is now %s", st.Status)
 	}

@@ -72,7 +72,7 @@ func TestRunsThatOnlyReadAFolderShareIt(t *testing.T) {
 	if !errors.As(err, &busy) || busy.folder != f.models || busy.held != folderReads || busy.wanted != folderWorks {
 		t.Fatalf("a models run while client and server read models: %v", err)
 	}
-	if !strings.Contains(err.Error(), f.models) || !strings.Contains(err.Error(), "applies a branch") || !strings.Contains(err.Error(), "ensign help runs") {
+	if !strings.Contains(err.Error(), f.models) || !strings.Contains(err.Error(), "applies a branch") || !strings.Contains(err.Error(), "another session is doing work") {
 		t.Errorf("refusal text: %v", err)
 	}
 	if err := folderHolder(w.bridge, f.modelsSnap(), "s1", "20260101-000001-client", "20260101-000002-server"); err != nil {
@@ -183,8 +183,8 @@ func TestSequenceStopHoldsForAStepWaitingOnAnotherSessionsRun(t *testing.T) {
 	if res["decision"] != "block" || !strings.Contains(reason, "waiting: ") || !strings.Contains(reason, snap.Run) || !strings.Contains(reason, folder) {
 		t.Fatalf("the step waiting on another session's run should hold the turn: %v", res)
 	}
-	if !strings.Contains(reason, "ensign help runs") {
-		t.Errorf("the reason should point at the manual: %s", reason)
+	if !strings.Contains(reason, "another session is doing work") {
+		t.Errorf("the reason should say another session is working: %s", reason)
 	}
 }
 
@@ -236,5 +236,23 @@ func TestWaitingHoldsDoNotSpendTheLeadPromptsAllowance(t *testing.T) {
 	}
 	if n := strings.Count(reason, "[starship run="+ids[0]+" lead]"); n != 1 {
 		t.Errorf("the lead spawn tag should appear once, got %d: %s", n, reason)
+	}
+}
+
+func TestFolderBusyErrorSaysAnotherSessionIsDoingWork(t *testing.T) {
+	modes := []struct{ held, wanted folderMode }{{folderWorks, folderWorks}, {folderWorks, folderReads}, {folderReads, folderWorks}}
+	for _, m := range modes {
+		e := &folderBusyError{run: "20260101-000001-client", status: "running", folder: "/work/supernova", held: m.held, wanted: m.wanted, otherSession: true}
+		msg := e.Error()
+		if !strings.Contains(msg, e.run) || !strings.Contains(msg, e.folder) || !strings.Contains(msg, "another session is doing work") {
+			t.Errorf("held %v wanted %v: %s", m.held, m.wanted, msg)
+		}
+		if strings.Contains(msg, "retire") || strings.Contains(msg, "ensign help runs") {
+			t.Errorf("held %v wanted %v should not point at retiring: %s", m.held, m.wanted, msg)
+		}
+		e.otherSession = false
+		if msg := e.Error(); strings.Contains(msg, "another session") {
+			t.Errorf("held %v wanted %v: the same session's refusal mentions another session: %s", m.held, m.wanted, msg)
+		}
 	}
 }

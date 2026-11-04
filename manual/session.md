@@ -100,7 +100,7 @@ To improve starship itself: read `ensign help starship`.
 
 ## Old runs
 
-Before cleaning up or asking about old runs: read `ensign help runs`.
+Before cleaning up or asking about old runs: read `ensign help runs`. Blocked by another session's run: say another session is doing work, name the run and folder, and stop; never suggest retiring it.
 
 ## Where edits are allowed
 

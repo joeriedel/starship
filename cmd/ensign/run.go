@@ -593,7 +593,7 @@ func (e *folderBusyError) Error() string {
 		msg = fmt.Sprintf("run %s (%s) applies a branch from the code folder %s, which this run works in; start this once that run has finished", e.run, e.status, e.folder)
 	}
 	if e.otherSession {
-		msg += "; that run belongs to another session, see `ensign help runs`"
+		msg += "; another session is doing work there"
 	}
 	return msg
 }
