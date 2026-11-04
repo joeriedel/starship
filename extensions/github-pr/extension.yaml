@@ -18,7 +18,7 @@ summary: Each task works on its own branch; once it passes, you choose a pull re
 #
 # Landing the work is a separate step the user asks for after the run: a pull request,
 # or straight onto the default branch if that's a fast-forward. Either one refuses if
-# the task branch has changed since its tests passed.
+# the task branch has changed since its tests passed, or if a run of the task in that location failed after its last pass.
 #
 # Bringing a task branch up to date is also a step the user asks for: a rebase onto the
 # default branch. If it conflicts it aborts and leaves the branch unchanged. An updated

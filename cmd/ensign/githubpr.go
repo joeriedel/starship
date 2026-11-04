@@ -25,7 +25,7 @@ import (
 // Landing it is a separate step the user asks for once the run is over: a pull request
 // (`ensign github-pr pull-request`), or straight onto the default branch as a
 // fast-forward (`ensign github-pr merge`). Either one refuses unless the task branch
-// still holds exactly the tested commit.
+// still holds exactly the tested commit, and refuses if a run of the task in that location failed after its last pass.
 //
 // The tests are the project's own @test. A project whose tests are its CI on GitHub
 // binds @test to `ensign github-pr ci`: push the branch and wait for the checks.
@@ -310,6 +310,57 @@ func orDefault(b string) string {
 	return b
 }
 
+// noFaultPrefixes start the reason of a run that was retired before it started without failing at anything: the sequence cancelled, skipped, dropped, discarded, withdrew or replaced its step.
+var noFaultPrefixes = []string{haltPrefix, "skipped: ", "discarded: ", "dropped: ", "withdrawn: ", "replaced by run "}
+
+func retiredWithoutFault(st *State) bool {
+	if st.Status != "error" || st.Started {
+		return false
+	}
+	for _, p := range noFaultPrefixes {
+		if strings.HasPrefix(st.Reason, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// endedAfterPass reports whether a failed run ended after the given pass, by the At of its last history entry; history is to the second, so a tie, a pass without a finish time or a run without a readable entry falls back on run-id order.
+func endedAfterPass(failed runInfo, pass runInfo) bool {
+	if n := len(failed.state.History); n > 0 && pass.state.FinishedAt != 0 {
+		if t, err := time.Parse(time.RFC3339, failed.state.History[n-1].At); err == nil {
+			if sec, passSec := t.Unix(), time.Unix(0, pass.state.FinishedAt).Unix(); sec != passSec {
+				return sec > passSec
+			}
+		}
+	}
+	return failed.id > pass.id
+}
+
+// latestRunPassed refuses when a run of the task in this location failed after the task's last pass (or when none passed), so a marker an earlier pass left behind cannot land failed work. A run retired without a history entry after the pass was created did no work and can slip past this.
+func latestRunPassed(bridge, task, location string) error {
+	var runs []runInfo
+	var pass *runInfo
+	for _, ri := range listRuns(bridge) {
+		if ri.snap.Task != task || ri.snap.Location != location || !ri.state.terminal() {
+			continue
+		}
+		if ri.state.Status != "success" {
+			runs = append(runs, ri)
+		} else if pass == nil || ri.state.FinishedAt > pass.state.FinishedAt || (ri.state.FinishedAt == pass.state.FinishedAt && ri.id > pass.id) {
+			cp := ri
+			pass = &cp
+		}
+	}
+	for _, ri := range runs {
+		if retiredWithoutFault(&ri.state) || (pass != nil && !endedAfterPass(ri, *pass)) {
+			continue
+		}
+		return fmt.Errorf("the latest run of %s did not pass (%s); run the task again", task, ri.state.Reason)
+	}
+	return nil
+}
+
 // tested finds a task's tested commit, and checks the task branch still holds exactly it.
 func tested(bridge, task, location string) (c *Config, branch, sha string, err error) {
 	for _, ri := range liveRuns(bridge) {
@@ -325,6 +376,9 @@ func tested(bridge, task, location string) (c *Config, branch, sha string, err e
 	data, err := os.ReadFile(testedFile(bridge, task, c.Location))
 	if err != nil {
 		return nil, "", "", fmt.Errorf("%s has no passing run on this machine yet; run it first", task)
+	}
+	if err := latestRunPassed(bridge, task, c.Location); err != nil {
+		return nil, "", "", err
 	}
 	ws := c.Workspace
 	branch, sha = taskBranch(task), strings.TrimSpace(string(data))

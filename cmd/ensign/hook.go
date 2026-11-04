@@ -213,6 +213,11 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	firstOfStage := m.running(scope, s.ID) == 0 && len(sc.Branches) == 0
 	if s.isLead() && !r.State.Started {
 		r.State.Started = true
+		// A run that starts has to pass again, even if it dies before run.start's @branch.
+		if err := os.Remove(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)); err != nil && !os.IsNotExist(err) {
+			m.fail("handler", fmt.Sprintf("could not clear the tested marker: %v", err))
+			return deny(r, s.ID, "the run could not start: "+r.State.Reason), nil
+		}
 		if r.State.Sync {
 			if out, err := runHandler(r, Handler{Kind: "require", Command: "@sync", Source: "--sync"}, nil); err != nil {
 				m.fail("handler", fmt.Sprintf("@sync failed: %v: %s", err, lastLines(out, 5)))
