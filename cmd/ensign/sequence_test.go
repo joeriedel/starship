@@ -3169,3 +3169,89 @@ func TestSequenceDropAndDiscardSaySoWhenARunCouldNotBeRetired(t *testing.T) {
 		t.Errorf("the discard should still be saved, %d sequences left", n)
 	}
 }
+
+// writeTaskFile replaces the task's task.md with body under its front matter.
+func (w *world) writeTaskFile(task, body string) {
+	w.t.Helper()
+	write(w.t, filepath.Join(w.bridge, "projects/supernova/tasks", task, "task.md"), "---\npipeline: coding\n---\n\n"+body)
+}
+
+// stepWorkItem returns the work item of step n's run.
+func (w *world) stepWorkItem(n int) string {
+	w.t.Helper()
+	r, err := readRun(w.bridge, w.step(n).Run)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return r.Snap.WorkItem
+}
+
+func TestSequenceRetryTakesTheTasksCurrentGoalAndScope(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.writeTaskFile("auth-refactor", "## Goal\n\nNew goal text.\n\n## Scope\n\nNew scope text.\n")
+	w.retryStep("1")
+	wi := w.stepWorkItem(1)
+	if !strings.Contains(wi, "New goal text.") || !strings.Contains(wi, "New scope text.") || strings.Contains(wi, "Add a multiply function") {
+		t.Errorf("the retry should take the edited task:\n%s", wi)
+	}
+	if strings.Count(wi, "## Current state") != 1 || strings.Index(wi, "## Current state") < strings.Index(wi, "New scope text.") {
+		t.Errorf("one current state, after the task text:\n%s", wi)
+	}
+}
+
+func TestSequenceSecondRetryTakesTheNewestTextAndOnlyTheLatestState(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.writeTaskFile("auth-refactor", "## Goal\n\nSecond goal.\n")
+	w.retryStep("1")
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.writeTaskFile("auth-refactor", "## Goal\n\nThird goal.\n")
+	w.mustSeq("retry", "1", "--diagnosis", "the second diagnosis", "--state", "the second leftover")
+	wi := w.stepWorkItem(1)
+	if !strings.Contains(wi, "Third goal.") || strings.Contains(wi, "Second goal.") || strings.Contains(wi, "Add a multiply function") {
+		t.Errorf("the second retry should take the newest text:\n%s", wi)
+	}
+	if strings.Count(wi, "## Current state") != 1 || !strings.Contains(wi, "the second diagnosis") || strings.Contains(wi, "the fixture path was wrong") {
+		t.Errorf("only the latest state should be there:\n%s", wi)
+	}
+}
+
+func TestSequenceRetryOfATaskWithoutGoalOrScopeIsRefused(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.writeTaskFile("auth-refactor", "Just some notes.\n")
+	if _, err := w.seq("retry", "1", "--diagnosis", "why", "--state", "left"); err == nil || !strings.Contains(err.Error(), "no work item") {
+		t.Fatalf("the retry should be refused: %v", err)
+	}
+	w.wantStatus("decide")
+	w.writeTaskFile("auth-refactor", "## Goal\n\nFixed goal.\n")
+	w.retryStep("1")
+	w.wantStatus("active")
+}
+
+func TestSequenceRetryLeavesALaterUnstartedStepsWorkItemAlone(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	before := w.stepWorkItem(2)
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.writeTaskFile("auth-refactor", "## Goal\n\nEdited goal.\n")
+	w.retryStep("1")
+	after := w.stepWorkItem(2)
+	if after != before || !strings.Contains(after, "Add a multiply function") || strings.Contains(after, "Edited goal.") {
+		t.Errorf("step 2 changed:\nbefore: %s\nafter: %s", before, after)
+	}
+}

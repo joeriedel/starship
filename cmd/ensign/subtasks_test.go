@@ -476,3 +476,24 @@ func TestAddToJournalConcurrentLegacy(t *testing.T) {
 		t.Errorf("marks %+v", m)
 	}
 }
+
+func TestSequenceRetryOfASubtaskRunTakesEditedSubtaskAndTaskGoals(t *testing.T) {
+	w := newWorld(t)
+	w.subtaskTask("t", "01-a", "02-b")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.writeTaskFile("t", "## Goal\n\nEdited task goal.\n")
+	w.subtaskFile("t", "01-a", "## Goal\n\nEdited subtask goal.\n")
+	w.retryStep("1")
+	wi := w.stepWorkItem(1)
+	for _, want := range []string{"Edited task goal.", "Edited subtask goal."} {
+		if !strings.Contains(wi, want) {
+			t.Errorf("the work item lacks %q:\n%s", want, wi)
+		}
+	}
+	if strings.Contains(wi, "Do t.") || strings.Contains(wi, "Goal of 01-a.") || strings.Count(wi, "## Subtask 01-a") != 1 {
+		t.Errorf("stale text or a doubled subtask:\n%s", wi)
+	}
+}

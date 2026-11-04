@@ -93,6 +93,7 @@ func TestRulesInSubtaskRunAndRetry(t *testing.T) {
 	lead, _ := w.spawn("", "", "orchestrator")
 	w.failRun(lead)
 	w.declareRules("rules:\n  - Changed after the first run.\n")
+	w.writeTaskFile("auth-refactor", "## Goal\n\nEdited goal.\n")
 	w.retryStep("1")
 	r, err := readRun(w.bridge, w.step(1).Run)
 	if err != nil {
@@ -101,6 +102,9 @@ func TestRulesInSubtaskRunAndRetry(t *testing.T) {
 	wi := r.Snap.WorkItem
 	if strings.Count(wi, "## Project rules") != 1 || strings.Index(wi, "## Project rules") > strings.Index(wi, "## Current state") {
 		t.Errorf("retry work item:\n%s", wi)
+	}
+	if i, j, k := strings.Index(wi, "Edited goal."), strings.Index(wi, "## Project rules"), strings.Index(wi, "## Current state"); i < 0 || i > j || j > k {
+		t.Errorf("order should be goal, rules, state:\n%s", wi)
 	}
 	if strings.Contains(wi, "Changed after") || len(r.Snap.Rules) != 4 {
 		t.Errorf("the retry should keep the frozen rules: %+v\n%s", r.Snap.Rules, wi)

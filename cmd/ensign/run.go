@@ -766,9 +766,9 @@ type runOpts struct {
 	location, subtask              string
 	sides, dependencies            []string
 	dry, sync, rebuild, staleOK    bool
-	// A retry inside a sequence: the failed run's id and base, and the work item to freeze instead of the task's.
-	retryOf, retryBase, workItem string
-	rules                        []Rule // the retried run's rules, which workItem already carries
+	// A retry inside a sequence: the failed run's id and base, its rules (kept as frozen), and the "## Current state" section that ends the new work item.
+	retryOf, retryBase, currentState string
+	rules                            []Rule
 }
 
 // parseRunArgs reads the flags shared by `ensign run` and `ensign sequence run`; cmd names the command in the usage line.
@@ -929,14 +929,16 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		c.Subtask = pick.sub.Name
 		c.WorkItem = pick.workItem(c.WorkItem)
 	}
-	if o.workItem != "" {
+	if o.retryOf != "" {
 		c.Rules = o.rules
-	} else if len(c.Rules) > 0 {
+	}
+	if len(c.Rules) > 0 {
 		c.WorkItem += "\n\n## Project rules\n\n"
 		for _, r := range c.Rules {
 			c.WorkItem += "- " + r.Text + "\n"
 		}
 	}
+	c.WorkItem += o.currentState
 	var auto []string
 	if pick != nil {
 		auto = c.automaticDependencies(bridge, pick.doneLocs, o.dependencies)
@@ -1048,9 +1050,6 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		Project:      c.Project,
 		Platforms:    c.Platforms,
 		Created:      time.Now().Format(time.RFC3339),
-	}
-	if o.workItem != "" {
-		snap.WorkItem = o.workItem
 	}
 	for _, hs := range snap.Events {
 		for i := range hs {
