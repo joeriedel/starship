@@ -11,3 +11,7 @@ A task with `pipeline: none` needs no code folder: `task open` prints no workspa
 ## On this machine
 
 **Code location differs per machine**: it lives in this machine's `machine.yaml`, never the bridge's files. If a task stops for lack of a folder here, ask the user where the code is and run `ensign workspace <project> <path>` (or `<project>/<task>` for a task's own checkout). Toolchain (PATH folders, variables): `ensign env <project>`. Binding fails for a missing tool: read `ensign help machine`.
+
+## Linked items
+
+`task open` lists the task's `links:` (its project's and its own; `ensign help project`), also for a task without code. With no links it prints nothing about them. When the bridge declares the `reader`, it then tells you to dispatch the reader with those links before you start work: it compares each item with what it kept, and you tell the user what it says changed. Without a reader the links are only listed. Invalid links print a `STOP:` line naming the file.

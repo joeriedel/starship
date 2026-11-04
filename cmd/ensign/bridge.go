@@ -1059,6 +1059,7 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 			}
 		}
 	}
+	printLinks(bridge, project, filepath.Join(taskDir, "task.md"), front, out)
 	notes, err := projectNotes(bridge, project)
 	if err != nil {
 		return err

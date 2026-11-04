@@ -53,3 +53,19 @@ cross-location:
 - Record each location's folder on this machine: `ensign workspace <project> --location <name> <path>`. Ask the user; never guess.
 - A new project with locations: `ensign project new <name> --locations client,server --platforms <list>` (instead of `--workspace`; `--platforms` is required). It writes the `locations:` block and records no folder; record each with the command above.
 - A project that declares no locations works as before.
+
+## Links to external items
+
+A task and a project may each list the external items they are about, under `links:` in `task.md` frontmatter or `project.yaml`:
+
+```yaml
+links:
+  - kind: wiki
+    ref: https://wiki.example/supernova/launch-plan
+  - kind: ticket
+    ref: SUPER-42
+```
+
+- `kind` is `ticket`, `wiki`, `mail` or `slack`; `ref` is a one-line identifier or URL, kept as written. Nothing else is allowed in an entry.
+- A task's links are its project's plus its own, each shown once. `ensign task open` lists them; a malformed `links:` prints a `STOP:` line there and breaks nothing else.
+- When `bridge.yaml` declares the `reader`, `task open` also tells the session to dispatch it with the links; see `ensign help opening`.

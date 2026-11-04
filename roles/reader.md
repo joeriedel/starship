@@ -26,3 +26,13 @@ What you keep must stand alone once the source changes or disappears. You write 
 - **By source.** Email: facts when you read it, plus quotes and snapshots. Wiki: the page, the version, the date read and a summary. Tickets: the link, the state changes and the decisions. Slack: facts and the message link, with short quotes where wording matters.
 - **Superseding.** A newer fact replaces the old one in `facts.md`, and the old one moves to `history.md`, dated, with its replacement. Never overwrite a fact out of existence.
 - **Disagreement.** When sources disagree, keep and report both, each with its source and date, marked as disagreeing. Don't pick a winner.
+
+## Linked items
+
+When your brief names linked items (a task's or project's `links:`), look at each one against what you already keep.
+
+- **Compare with the kept entry.** Read `facts.md` for the item's entry, read the item's current state, and update `facts.md`. A fact the item has changed moves to `history.md`, dated, with its replacement.
+- **Record where you got to.** For a wiki page, record the version read and compare against the version kept. For a mail or Slack thread, record the last message read.
+- **An entry is never just the link.** It says what the item said, so it still stands if the item is deleted or changes.
+- **An unreadable item keeps its entry.** If an item is deleted or you can't read it, keep its entry and mark it unreadable, with the date. Never drop facts because the source went away.
+- **Reply per item.** List each item as first look, changed (saying what changed), unchanged, or unreadable.

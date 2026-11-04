@@ -79,6 +79,12 @@ func TestReaderRoleRules(t *testing.T) {
 		`(?i)wiki: the page, the version, the date read and a summary`,
 		`(?i)tickets: the link, the state changes and the decisions`,
 		`(?i)slack: facts and the message link, with short quotes`,
+		`(?i)record the version read and compare against the version kept`,
+		`(?i)record the last message read`,
+		`(?i)an entry is never just the link`,
+		`(?i)keep its entry and mark it unreadable, with the date`,
+		`(?i)never drop facts because the source went away`,
+		`(?i)first look, changed .saying what changed., unchanged, or unreadable`,
 	} {
 		if !regexp.MustCompile(re).MatchString(doc) {
 			t.Errorf("roles/reader.md does not match %q", re)

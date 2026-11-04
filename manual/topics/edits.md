@@ -17,6 +17,8 @@ With `connector_writes:` declared, the session may make a listed write only afte
 
 ## What the reader keeps
 
+For a task's or project's `links:`, `task open` tells you to dispatch the reader; its last look at each item is its entry in `reader/facts.md` (`ensign help opening`).
+
 The reader keeps, under `<bridge>/reader/`, what stands alone once a source changes or disappears. Level 1, facts for everything, in `facts.md` (current state) with `history.md` (superseded facts, append-only): each with source, as-of date and date read. Level 2, short exact quotes under their fact, only where wording matters. Level 3, pinned snapshots in `sources/`, text only, at most 64 KiB each, never rewritten.
 
 - You may read `reader/facts.md` and `reader/history.md`.
