@@ -1,0 +1,16 @@
+# Copyright (c) 2026 Joseph Riedel
+# Licensed under the MIT License. See LICENSE.
+
+name: focal-sheet
+summary: A curated, themed brag sheet, one document per review period, kept for the bridges that turn it on.
+quiet: true
+
+help:
+  - say: '"start a focal sheet for <period>"'
+    does: begin a sheet for a review period, with themes from the default set or from a rubric file you name
+    run: >-
+      edit bridge.yaml (use: [focal-sheet], and a documents: entry with path: notes/focal/<period>.md; the path must be under notes/focal/ or the sheet gets no themes or entry checks; optionally rubric: naming a bridge file whose "## " headings replace the default themes)
+  - say: '"add this to my focal sheet"'
+    does: propose an entry for the sheet, using your own account of your part in it
+    run: >-
+      ensign document propose <document> "<what happened>; why it mattered, if known; my part: <the user's part>" --evidence "<link>"   (ask the user for their part and never guess it; the sheet's content never goes in a brief, commit message, report or command output)

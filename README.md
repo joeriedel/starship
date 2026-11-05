@@ -142,10 +142,11 @@ events:
 
 `task.close` fires when the session runs `ensign task close <project>/<task>`, for a task with or without code, and not inside a run. Its `require` handlers run first, in order, in the bridge root with `STARSHIP_BRIDGE`, `STARSHIP_PROJECT` and `STARSHIP_TASK` set; one that fails stops the close with nothing written, so it can be retried, and so does a handler that names none or more than one of `require`, `observe` and `augment`. Then the task is marked closed (`status: closed` in its frontmatter; a second close does nothing) and the `observe` handlers run, where a failure only warns, as does a failure to journal the close. `@binding` commands, `ensign …` handlers and generated `@name` augments are refused, since there is no run. To ask the session a question, use an `augment` file or a handler that prints the question: their text is shown after `Closed` and the session must deal with it in the same turn.
 
-Three extensions ship with starship, and a project turns each one on through `use:`:
+Four extensions ship with starship, and a project turns each one on through `use:`:
 
 - [`git-catalog`](extensions/git-catalog) commits each coder pass and squashes the commits into one when you ask.
 - [`style-learning`](extensions/style-learning) records what the style pass finds in a per-project style guide and adds the guide's active rules to the coder's brief. You can seed it with style docs or example code.
+- [`focal-sheet`](extensions/focal-sheet) keeps a curated brag sheet, one document per review period under `notes/focal/`, grouped by themes you choose or three defaults. A bridge turns it on with `use: [focal-sheet]`, and without it the extension leaves no trace in the help.
 - [`github-pr`](extensions/github-pr) gives each task its own branch and can use your own tests or the repository's CI. After a task passes, you ask for a pull request or for it to go straight to the main branch.
 
 A repository can also ship its own project settings in `.starship/project.yaml`, so adding it as a project needs nothing filled in. Starship ships one. To work on starship from your own bridge, say "improve starship": each change becomes a task on its own branch, with CI as its tests.

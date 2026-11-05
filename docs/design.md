@@ -251,6 +251,8 @@ The control plane ships generic extensions (no project names). A bridge may ship
 in the same format. A project or task enables extensions with `use: [<name>, ...]`. A
 extension declares the bindings it requires, so it cannot be enabled where it doesn't fit.
 
+An extension with `quiet: true` in its `extension.yaml` leaves no trace in a bridge whose own `bridge.yaml` `use:` does not name it: its `help:` entries and its pipelines' help are left out of the `help` word, `ensign help requests` and the session-start pointer.
+
 ### 4.4 Skills
 
 **A skill is knowledge of a technology.** The test for whether a fact belongs in one:
@@ -1141,6 +1143,26 @@ per pass early and late, and lists entries hit in three of the last ten passes. 
 active entry hit run after run is badly worded, or isn't reaching the coder; the curator
 is given those entries and told to reword them. A learned rule that is clearly generic is a candidate for the control plane's
 house style, as a starship task (§3.2) — never copied across directly.
+
+---
+
+## 9a. Extension: `focal-sheet`
+
+A curated, themed brag sheet, one document per review period. It is `quiet: true` and a bridge turns it on in its own `bridge.yaml`:
+
+```yaml
+use: [focal-sheet]
+documents:
+  focal-2026-h2:
+    path: notes/focal/2026-h2.md
+    rubric: notes/focal/rubric.md   # optional
+```
+
+A focal document is a declared document whose path is under `notes/focal/` (compared case-insensitively) in a bridge that uses the extension; any other document behaves as before. The period is the file's stem, so a new period is a new `documents:` entry or an edited `path`.
+
+Themes are the `## ` headings of the document's rubric, in order. Without a rubric the defaults in `extensions/focal-sheet/briefs/default-themes.md` apply, in the same format, found through the extension's directory so a bridge extension of the same name overrides them. Headings inside code fences are ignored. A document whose themes cannot be read or are empty fails before dispatch.
+
+Entries carry `theme`, `why` and `part` besides `text` and `evidence` (all omitted when empty, so other documents are unchanged). The curator is given `briefs/entry-format.md` for each focal document. A rewrite is refused when an entry has no `part`, no evidence or a `theme` that is not a listed one; refusals name the entry id and the field, never a value. A valid rewrite is written grouped by theme order, with ids unchanged. The sheet's content stays out of briefs, commit messages, reports and command output like any declared document's.
 
 ---
 

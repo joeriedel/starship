@@ -292,7 +292,15 @@ func extraHelp(bridge string) map[string][]HelpEntry {
 		return out
 	}
 	files, _ := filepath.Glob(filepath.Join(cp, "pipelines", "*.yaml"))
+	var dirs []string
 	for _, dir := range extensionDirs(bridge, cp) {
+		var x Extension
+		if readYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && x.Quiet && !bridgeUses(bridge, x.Name) {
+			continue
+		}
+		dirs = append(dirs, dir)
+	}
+	for _, dir := range dirs {
 		more, _ := filepath.Glob(filepath.Join(dir, "pipelines", "*.yaml"))
 		files = append(files, more...)
 	}
@@ -304,7 +312,7 @@ func extraHelp(bridge string) map[string][]HelpEntry {
 			out["Doing the work"] = append(out["Doing the work"], p.Help...)
 		}
 	}
-	for _, dir := range extensionDirs(bridge, cp) {
+	for _, dir := range dirs {
 		var x Extension
 		if readYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && x.Name != "" && len(x.Help) > 0 {
 			group := strings.ToUpper(x.Name[:1]) + strings.ReplaceAll(x.Name[1:], "-", " ")

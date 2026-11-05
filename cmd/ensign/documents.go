@@ -363,6 +363,13 @@ func documentProblems(bridge string, docs []DeclaredDocument) []string {
 		if d.Rubric != "" {
 			if fi, err := os.Stat(d.rubricFile(bridge)); err != nil || fi.IsDir() {
 				out = append(out, fmt.Sprintf("document %s: its rubric %s is missing", d.Name, d.Rubric))
+				continue
+			}
+		}
+		if isFocalDocument(bridge, d) {
+			themes, err := focalThemes(bridge, d)
+			if _, ferr := focalFile(bridge, "briefs/entry-format.md"); err != nil || len(themes) == 0 || ferr != nil {
+				out = append(out, fmt.Sprintf("document %s (%s): its themes or entry format cannot be read", d.Name, d.Path))
 			}
 		}
 	}
@@ -429,9 +436,17 @@ func documentContext(bridge, name string, d *Dispatch) string {
 	d.Fields["inputs"] = append(d.Fields["inputs"], rels...)
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Document: %s\n\n", name)
+	focal := isFocalDocument(bridge, decl)
 	if decl.Rubric != "" {
 		rubric, _ := os.ReadFile(decl.rubricFile(bridge))
 		fmt.Fprintf(&b, "## Rubric: what belongs in this document\n\n%s\n\n", strings.TrimSpace(string(rubric)))
+	} else if focal {
+		themes, _ := focalFile(bridge, "briefs/default-themes.md")
+		fmt.Fprintf(&b, "## Rubric: what belongs in this document\n\n%s\n\n", strings.TrimSpace(themes))
+	}
+	if focal {
+		format, _ := focalFile(bridge, "briefs/entry-format.md")
+		fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(format))
 	}
 	fmt.Fprintf(&b, "## Its entries now (D ids)\n\n```yaml\n%s```\n\n## Pending proposals\n\n```yaml\n%s\n```\n", entries, strings.Join(texts, "\n---\n"))
 	return b.String()

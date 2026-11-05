@@ -349,6 +349,7 @@ type Extension struct {
 	Summary          string      `yaml:"summary"`
 	RequiresBindings []string    `yaml:"requires-bindings"`
 	Help             []HelpEntry `yaml:"help"`
+	Quiet            bool        `yaml:"quiet"`   // leaves no trace in a bridge whose own use: does not name it
 	Publish          string      `yaml:"publish"` // the command that publishes a task's tested work; the task is its argument
 	Layer            `yaml:",inline"`
 	dir              string
@@ -382,6 +383,12 @@ func loadBridgeFile(bridge string) (*BridgeFile, error) {
 		return nil, err
 	}
 	return &bf, nil
+}
+
+// bridgeUses reports whether the bridge's own bridge.yaml names the extension in use:. A bridge.yaml that cannot be loaded names nothing.
+func bridgeUses(bridge, name string) bool {
+	bf, err := loadBridgeFile(bridge)
+	return err == nil && slices.Contains(bf.Use, name)
 }
 
 // controlPlaneDir is where this bridge reads the control plane from.

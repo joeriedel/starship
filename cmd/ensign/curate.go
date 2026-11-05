@@ -26,6 +26,9 @@ type Entry struct {
 	ID       string   `yaml:"id"`
 	Status   string   `yaml:"status"` // candidate or active
 	Text     string   `yaml:"text"`
+	Theme    string   `yaml:"theme,omitempty"`
+	Why      string   `yaml:"why,omitempty"`
+	Part     string   `yaml:"part,omitempty"`
 	Hits     int      `yaml:"hits"`
 	Evidence []string `yaml:"evidence"`
 }
@@ -380,11 +383,13 @@ func validateCurationAs(private bool, prefix string, old, next Doc, ledger map[s
 // problem to send back to the curator, or "".
 func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 	var path, prefix string
+	var decl DeclaredDocument
 	authoritative := map[string]bool{}
 	private := s.Curates == "document"
 	switch s.Curates {
 	case "document":
-		decl, err := findDeclaredDocument(r.Snap.Bridge, d.Dim)
+		var err error
+		decl, err = findDeclaredDocument(r.Snap.Bridge, d.Dim)
 		if err != nil {
 			return err.Error()
 		}
@@ -436,8 +441,22 @@ func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 		} else {
 			old, _ = loadDoc(path)
 		}
-		if errs := validateCurationAs(private, prefix, old, next, ledger, authoritative); len(errs) > 0 {
+		errs := validateCurationAs(private, prefix, old, next, ledger, authoritative)
+		var themes []string
+		focal := private && isFocalDocument(r.Snap.Bridge, decl)
+		if focal {
+			var err error
+			if themes, err = focalThemes(r.Snap.Bridge, decl); err != nil {
+				return "The document's themes cannot be read: " + err.Error()
+			}
+			errs = append(errs, focalProblems(prefix, themes, next)...)
+			sort.Strings(errs)
+		}
+		if len(errs) > 0 {
 			return "The rewrite was refused:\n- " + strings.Join(errs, "\n- ")
+		}
+		if focal {
+			sortByTheme(&next, themes)
 		}
 		if private {
 			if err := writeDocumentFile(r.Snap.Bridge, path, d.Dim, next); err != nil {
