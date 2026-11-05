@@ -271,10 +271,17 @@ func liveSessionRuns(bridge, session string) ([]string, error) {
 	return live, nil
 }
 
-// runIsLive says whether a run exists and is not over, reading through readRun so a deleted run fails at once and a state.json mid-save is retried.
+// runIsLive judges a run by state.json alone, retrying a not-found read only when pipeline.json shows the run exists, so a deleted run fails at once and a state.json mid-save is retried.
 func runIsLive(bridge, id string) bool {
-	r, err := readRun(bridge, id)
-	return err == nil && !r.State.terminal()
+	dir := filepath.Join(runsDir(bridge), id)
+	var st State
+	err := readJSON(filepath.Join(dir, "state.json"), &st)
+	if errors.Is(err, fs.ErrNotExist) {
+		if _, serr := os.Stat(filepath.Join(dir, "pipeline.json")); serr == nil {
+			err = readExistingJSON(filepath.Join(dir, "state.json"), &st)
+		}
+	}
+	return err == nil && !st.terminal()
 }
 
 // writeSessionRuns replaces a session's run ids; an empty list removes the file.
