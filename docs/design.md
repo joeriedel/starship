@@ -252,7 +252,7 @@ The control plane ships generic extensions (no project names). A bridge may ship
 in the same format. A project or task enables extensions with `use: [<name>, ...]`. An
 extension declares the bindings it requires, so it cannot be enabled where it doesn't fit.
 
-An extension with `quiet: true` in its `extension.yaml` leaves no trace in a bridge whose own `bridge.yaml` `use:` does not name it: its `help:` entries and its pipelines' help are left out of the `help` word, `ensign help requests` and the session-start pointer.
+An extension with `quiet: true` in its `extension.yaml` leaves no trace in a bridge whose own `bridge.yaml` `use:` does not name it: its `help:` entries and its pipelines' help are left out of the `help` word, `ensign help requests` and the session-start pointer. One session-start warning is an exception: a project or open task whose `use:` names such an extension in a bridge that doesn't is warned about (see §9a for `focal-sheet`).
 
 ### 4.4 Skills
 
@@ -359,6 +359,7 @@ stop with the reasons if it fails:
 
 - every existing id appears in the ledger as `kept`, `reworded`, `promoted`,
   `merged-into <id>` or `dropped <reason>` — nothing disappears silently;
+- `kept` means unchanged, for style, skill and document curation alike: `text`, `theme`, `why`, `part` and `status` identical, `hits` may rise, `evidence` may grow (every old element still present; order is not compared). Anything else under `kept` is refused, and the curator uses `reworded`, or `promoted` for a status change; a candidate becoming active under `kept` is refused;
 - a merge keeps the lower id;
 - a new entry has evidence and starts as `candidate`, unless an authoritative source
   (`source:<id>`) backs it;
@@ -1173,6 +1174,10 @@ A focal document is a declared document whose path is under `notes/focal/` (comp
 Themes are the `## ` headings of the document's rubric, in order. Without a rubric the defaults in `extensions/focal-sheet/briefs/default-themes.md` apply, in the same format, found through the extension's directory so a bridge extension of the same name overrides them. Headings inside code fences are ignored. A document whose themes cannot be read or are empty fails before dispatch.
 
 Entries carry `theme`, `why` and `part` besides `text` and `evidence` (all omitted when empty, so other documents are unchanged). The curator is given `briefs/entry-format.md` for each focal document. A rewrite is refused when an entry has no `part`, no evidence or a `theme` that is not a listed one; refusals name the entry id and the field, never a value. A valid rewrite is written grouped by theme order, with ids unchanged. The sheet's content stays out of briefs, commit messages, reports and command output like any declared document's.
+
+Each curation of a focal document with outcome `updated` also writes a companion Markdown file beside it, for sharing: `notes/focal/2026.md` gets `notes/focal/2026.readable.md`. It has a title, a generated-file line and a heading per theme in theme order (a theme with no active entries keeps its heading), with each `active` entry's text, why and part. It leaves out candidates and `id`, `status`, `hits` and `evidence`. It is regenerated each time, so hand edits are overwritten, and it is written before the sheet, whose own file stays the machine-owned block. The journal and notes commits pick it up like any `.md` under `notes/`. If the companion's path equals another declared document's path or rubric (case-insensitively), `ensign run` refuses before a curator starts, and a check at write time refuses the rewrite if `bridge.yaml` changed during the run; the proposals stay pending.
+
+Session-start notes carry two warnings. When the bridge uses `focal-sheet`, a declared document outside `notes/focal/` whose path or name contains `focal` is flagged, since it is curated as a plain document. When the bridge's `bridge.yaml` doesn't use it, each project or open task whose `use:` names `focal-sheet` is flagged, since it loads with no focal effect (the sheet reads `bridge.yaml`'s `use:` only); closed tasks don't warn. The second is the one exception to `quiet: true` leaving no trace (§4.3).
 
 Work reaches the sheet as proposals from four routes. A task closing comes from the extension's `task.close` augment (`briefs/task-close.md`), which has the session ask who benefited, ask once for an easy metric, and propose with the user's part. A linked ticket resolving and a catch-up pass come from two hooks that print the extension's `briefs/ticket-resolved.md` after the reader line of `task open` (when a link is a ticket) and `briefs/catch-up.md` after the catch-up brief, outside the reader's brief. No Go detects a ticket resolving: the reader's report is the signal, so without a reader that route is the user saying so, which is the fourth route. `ensign document propose` refuses a proposal with no evidence for a focal document, since every claim on a sheet traces to a source.
 
