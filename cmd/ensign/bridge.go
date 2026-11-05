@@ -788,6 +788,9 @@ func cmdProject(args []string, out io.Writer) error {
 	if !validName(name) {
 		return fmt.Errorf("project names are lower-case letters, digits and dashes")
 	}
+	if windowsReserved(name) {
+		return fmt.Errorf("project name %q is a name Windows reserves, and the name becomes a committed folder", name)
+	}
 	p := filepath.Join(bridge, "projects", name, "project.yaml")
 	if _, err := os.Stat(p); err == nil {
 		return fmt.Errorf("project %s already exists", name)
@@ -862,6 +865,9 @@ func newLocationsProject(bridge, name, file, locationList string, platforms []st
 		n = strings.TrimSpace(n)
 		if !validName(n) {
 			return fmt.Errorf("--locations %q: name each location with lower-case letters, digits and dashes", locationList)
+		}
+		if windowsReserved(n) {
+			return fmt.Errorf("--locations %q: %s is a name Windows reserves", locationList, n)
 		}
 		if contains(names, n) {
 			return fmt.Errorf("--locations %q: %s is named twice", locationList, n)
@@ -948,6 +954,11 @@ func shippedProject(dir string) (string, []string, error) {
 	if err := refuseLocationPlatforms(fmt.Sprintf("%s in %s", shippedProjectFile, dir), declared); err != nil {
 		return "", nil, err
 	}
+	for _, name := range sortedKeys(declared) {
+		if windowsReserved(name) {
+			return "", nil, fmt.Errorf("%s in %s: location %q: a name Windows reserves", shippedProjectFile, dir, name)
+		}
+	}
 	if errs := platformProblems(l.Platforms); len(errs) > 0 {
 		return "", nil, fmt.Errorf("%s in %s: %s", shippedProjectFile, dir, strings.Join(errs, "; "))
 	}
@@ -1020,6 +1031,9 @@ func cmdTask(args []string, out io.Writer) error {
 		}
 		return cmdTaskClose(bridge, args[1], out)
 	case "new":
+		if windowsReserved(parts[1]) {
+			return fmt.Errorf("task name %q is a name Windows reserves, and the name becomes a committed folder", parts[1])
+		}
 		var ws, branch, locations, pipeline string
 		for i := 2; i+1 < len(args); i += 2 {
 			switch args[i] {

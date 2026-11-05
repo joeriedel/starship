@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -469,5 +470,86 @@ func TestProjectNewRefusesShippedPlatformProblems(t *testing.T) {
 		if _, serr := os.Stat(filepath.Join(b, "projects", name, "project.yaml")); serr == nil {
 			t.Errorf("%s: a refused project should not be written", name)
 		}
+	}
+}
+
+func TestProjectNewRefusesWindowsReservedName(t *testing.T) {
+	b := newBridge(t)
+	var out bytes.Buffer
+	for _, name := range []string{"con", "com1"} {
+		err := cmdProject([]string{"new", name, "--locations", "web", "--platforms", "linux"}, &out)
+		if err == nil || !strings.Contains(err.Error(), "Windows reserves") {
+			t.Errorf("project new %s: %v", name, err)
+		}
+		if dirHasEntry(filepath.Join(b, "projects"), name) {
+			t.Errorf("project new %s created a folder", name)
+		}
+	}
+	if err := cmdProject([]string{"new", "console", "--locations", "web", "--platforms", "linux"}, &out); err != nil {
+		t.Errorf("a near miss should be accepted: %v", err)
+	}
+}
+
+func TestProjectNewRefusesWindowsReservedShippedLocation(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	b := newBridge(t)
+	var out bytes.Buffer
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, ".starship", "project.yaml"), "platforms: [linux]\nlocations:\n  web: {}\n  aux: {}\n")
+	err := cmdProject([]string{"new", "supernova", "--workspace", ws, "--platforms", "linux"}, &out)
+	if err == nil || !strings.Contains(err.Error(), `location "aux": a name Windows reserves`) {
+		t.Errorf("a reserved shipped location should be refused: %v", err)
+	}
+	if dirHasEntry(filepath.Join(b, "projects"), "supernova") {
+		t.Error("a refused project should not be written")
+	}
+}
+
+func TestTaskNewRefusesWindowsReservedTaskName(t *testing.T) {
+	w := newWorld(t)
+	w.enter()
+	var out bytes.Buffer
+	ws := t.TempDir()
+	for _, args := range [][]string{
+		{"new", "supernova/con"},
+		{"new", "supernova/con", "--workspace", ws},
+	} {
+		err := cmdTask(args, &out)
+		if err == nil || !strings.Contains(err.Error(), "Windows reserves") {
+			t.Errorf("%v: %v", args, err)
+		}
+		if dirHasEntry(filepath.Join(w.bridge, "projects/supernova/tasks"), "con") {
+			t.Errorf("%v created a task folder", args)
+		}
+	}
+	if got, ok := loadMachine(w.bridge).Workspaces["supernova/con"]; ok {
+		t.Errorf("machine.yaml should have no entry for the refused task: %q", got)
+	}
+}
+
+func TestTaskLookupsAcceptWindowsReservedNames(t *testing.T) {
+	w := newWorld(t)
+	w.enter()
+	var out bytes.Buffer
+	for _, verb := range []string{"close", "open"} {
+		err := cmdTask([]string{verb, "supernova/con"}, &out)
+		if err != nil && (strings.Contains(err.Error(), "Windows reserves") || strings.Contains(err.Error(), "task must be")) {
+			t.Errorf("task %s should pass the name check: %v", verb, err)
+		}
+	}
+}
+
+func TestTaskNewInReservedProjectName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a folder named con cannot be created on Windows")
+	}
+	w := noCodeWorld(t, "")
+	w.enter()
+	write(t, filepath.Join(w.bridge, "projects", "con", "project.yaml"), "pipeline: none\n")
+	var out bytes.Buffer
+	if err := cmdTask([]string{"new", "con/first", "--pipeline", "none"}, &out); err != nil {
+		t.Errorf("an existing project with a reserved name should still take tasks: %v", err)
 	}
 }

@@ -528,3 +528,16 @@ func TestWriteFileAtomicLeavesNothingBesideTheTarget(t *testing.T) {
 		t.Errorf("the temp file was not renamed away: %v", left)
 	}
 }
+
+func TestWindowsReserved(t *testing.T) {
+	for _, s := range []string{"con", "CON", "prn", "aux", "nul", "conin$", "conout$", "com1", "com9", "lpt1", "lpt9", "COM1", "com¹", "com²", "com³", "lpt¹", "lpt²", "lpt³", "con.txt", "aux.draft.md", "con.", "nul ", "nul .md"} {
+		if !windowsReserved(s) {
+			t.Errorf("%q should be reserved", s)
+		}
+	}
+	for _, s := range []string{"", "com", "lpt", "com0", "lpt0", "com10", "lpt10", "com1a", "console", "auxiliary", "nula", "supernova"} {
+		if windowsReserved(s) {
+			t.Errorf("%q should not be reserved", s)
+		}
+	}
+}

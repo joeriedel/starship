@@ -872,3 +872,27 @@ func TestLocationsRefusePlatformsInSortedOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectNewRefusesWindowsReservedLocation(t *testing.T) {
+	b := newBridge(t)
+	var out bytes.Buffer
+	err := cmdProject([]string{"new", "supernova", "--locations", "con,web", "--platforms", "linux"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "Windows reserves") {
+		t.Errorf("a reserved location should be refused: %v", err)
+	}
+	if dirHasEntry(filepath.Join(b, "projects"), "supernova") {
+		t.Error("a refused project should not be written")
+	}
+}
+
+func TestLoadLocationsAcceptsExistingReservedName(t *testing.T) {
+	b := newBridge(t)
+	write(t, filepath.Join(b, "projects", "supernova", "project.yaml"), "platforms: [linux]\nlocations:\n  con: {}\n  web: {}\n")
+	locs, err := loadLocations(b, "supernova")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := locs.Names(); !reflect.DeepEqual(got, []string{"con", "web"}) {
+		t.Errorf("locations = %v", got)
+	}
+}
