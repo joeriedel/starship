@@ -12,6 +12,10 @@ Such a task is unsplit: write everything that would go to `history.md` (accounts
 
 A task with `pipeline: none` has no runs, so no run accounts. Record what happened as a dated list item appended to `history.md`: `- YYYY-MM-DD: <what happened>`. Status and Decisions in `task.md` work as for any task. `ensign journal commit` needs no workspace.
 
+## A journal-off project's files
+
+Commit them by naming the path: `ensign journal commit -m "<message>" <path>`; a deleted tracked path may be named too. The no-path form and the Stop hook skip a journal-off project's files, so nothing else commits them or reminds you. Moving a note from `projects/supernova/...` (journal off) into `notes/` commits only the new file; commit the source's deletion by name, or the dirty tree keeps notes commits from pushing and the bridge from updating at session start.
+
 ## Closing a task
 
 When the user says a task is finished, or you would record it as Done, run `ensign task close <project>/<task>` instead of editing Status by hand. It works for tasks with and without code. It runs the `task.close` handlers, sets `status: closed` in the task's frontmatter, puts `Done.` first in `## Status` and adds `- YYYY-MM-DD: closed.` to `history.md`. A `require` handler that fails stops the close and changes nothing: fix what it names and run the command again. Closing a closed task does nothing. Output after the `Closed` line comes from extensions and asks something of you: deal with it before ending this turn, asking the user if it needs them. The answer goes nowhere else; there is nothing to resume.
