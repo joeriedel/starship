@@ -282,14 +282,18 @@ func TestSessionStartFitsBudgetWithWorstNotes(t *testing.T) {
 
 // Claude Code cuts additionalContext at 10,000 characters; the bridge path is repeated in the text, so the budget is checked as if the path were 200 characters long.
 func TestSessionStartFitsBudgetWithLongBridgePath(t *testing.T) {
-	for _, c := range []struct{ name, source, notes string }{
-		{"startup", "startup", ""},
-		{"full notes block", "startup", ""},
-		{"notes too long to reprint", "compact", strings.Repeat("Prefer small commits and explain each one.\n", 400)},
+	for _, c := range []struct {
+		name, source, notes string
+		seed                bool
+		want                []string
+	}{
+		{"startup", "startup", "", false, nil},
+		{"full notes block", "startup", "", true, []string{"and ", " more", "unsorted notes", "committed hand edits"}},
+		{"notes too long to reprint", "compact", strings.Repeat("Prefer small commits and explain each one.\n", 400), false, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			w := linkedWorld(t)
-			if c.name == "full notes block" {
+			if c.seed {
 				needGit(t)
 				journalFixture(t, w)
 				for i := 0; i < 40; i++ {
@@ -298,11 +302,9 @@ func TestSessionStartFitsBudgetWithLongBridgePath(t *testing.T) {
 				write(t, filepath.Join(w.bridge, "notes", "inbox.md"), "call Ada\n")
 			}
 			ctx := w.startWithNotes(c.source, c.notes)
-			if c.name == "full notes block" {
-				for _, want := range []string{"and ", " more", "unsorted notes", "committed hand edits"} {
-					if !strings.Contains(ctx, want) {
-						t.Fatalf("the worst case should hold %q:\n%s", want, ctx)
-					}
+			for _, want := range c.want {
+				if !strings.Contains(ctx, want) {
+					t.Fatalf("the worst case should hold %q:\n%s", want, ctx)
 				}
 			}
 			size := len(ctx)

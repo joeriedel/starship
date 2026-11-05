@@ -35,8 +35,8 @@ func journalChanges(bridge string) ([]string, error) {
 		return nil, fmt.Errorf("git status: %v", err)
 	}
 	var out []string
-	add := func(path string, renamed bool) {
-		if !renamed && (strings.HasPrefix(path, "notes/") || strings.HasPrefix(path, "reader/")) && !isNoteFile(path) {
+	add := func(path string, keep bool) {
+		if !keep && (strings.HasPrefix(path, "notes/") || strings.HasPrefix(path, "reader/")) && !isNoteFile(path) {
 			return
 		}
 		if p, ok := strings.CutPrefix(path, "projects/"); ok {

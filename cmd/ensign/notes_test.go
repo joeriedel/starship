@@ -399,3 +399,64 @@ func TestNotesRenameAcrossFilterCommitsBothSides(t *testing.T) {
 		}
 	}
 }
+
+func TestNoteMovedFromProjectsIntoNotes(t *testing.T) {
+	needGit(t)
+	const old, moved = "projects/supernova/a.md", "notes/a.md"
+	for _, c := range []struct {
+		name     string
+		gitMv    bool
+		off      bool
+		wantDel  string
+		wantList bool
+	}{
+		{"git mv, journal on", true, false, "D  " + old, true},
+		{"plain move, journal on", false, false, " D " + old, true},
+		{"git mv, journal off", true, true, "D  " + old, false},
+		{"plain move, journal off", false, true, " D " + old, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := linkedWorld(t)
+			journalFixture(t, w)
+			write(t, notesPath(w, old), "supernova\n")
+			if c.off {
+				w.project("journal: { commit: off, reason: kept elsewhere }\n")
+			}
+			runGit(t, w.bridge, "add", "-A")
+			runGit(t, w.bridge, "commit", "-q", "-m", "seed")
+			if err := os.MkdirAll(notesPath(w, "notes"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if c.gitMv {
+				runGit(t, w.bridge, "mv", old, moved)
+			} else if err := os.Rename(notesPath(w, old), notesPath(w, moved)); err != nil {
+				t.Fatal(err)
+			}
+			startRaw(t, w, "startup")
+			if got := strings.TrimSpace(committedNotes(t, w.bridge)); got != moved {
+				t.Fatalf("notes commit holds %q, want only %s", got, moved)
+			}
+			if st := runGit(t, w.bridge, "status", "--porcelain", "--untracked-files=all"); st != strings.TrimSpace(c.wantDel) {
+				t.Fatalf("status %q, want %q", st, c.wantDel)
+			}
+			changed, err := journalChanges(w.bridge)
+			if err != nil || (strings.Join(changed, ",") == old) != c.wantList || (!c.wantList && len(changed) != 0) {
+				t.Fatalf("journalChanges %v %v, want the old path listed: %v", changed, err, c.wantList)
+			}
+			args := []string{"commit", "-m", "Move note"}
+			if c.off {
+				args = append(args, old)
+			}
+			var buf bytes.Buffer
+			wd, _ := os.Getwd()
+			defer os.Chdir(wd)
+			os.Chdir(w.bridge)
+			if err := cmdJournal(args, &buf); err != nil {
+				t.Fatalf("journal commit: %v\n%s", err, buf.String())
+			}
+			if st := runGit(t, w.bridge, "status", "--porcelain", "--untracked-files=all"); st != "" {
+				t.Fatalf("tree not clean:\n%s", st)
+			}
+		})
+	}
+}

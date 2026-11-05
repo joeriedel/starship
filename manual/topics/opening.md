@@ -14,4 +14,4 @@ A task with `pipeline: none` needs no code folder: `task open` prints no workspa
 
 ## Linked items
 
-`task open` lists the task's `links:` (its project's and its own; `ensign help project`), also for a task without code. With no links it prints nothing about them. When the bridge declares the `reader`, it then tells you to dispatch the reader with those links before you start work: it compares each item with what it kept, and you tell the user what it says changed. Without a reader the links are only listed. Invalid links print a `STOP:` line naming the file.
+`task open` lists the task's `links:`, also for a task without code (`ensign help project`). When the bridge declares the `reader`, dispatch it with those links before you start work: it compares each item with what it kept, and you tell the user what it says changed.
