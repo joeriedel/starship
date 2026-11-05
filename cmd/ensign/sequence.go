@@ -52,7 +52,7 @@ type seqStep struct {
 	WaitBlocks  int       `json:"wait_blocks,omitempty"` // stops held open while this step waited for a busy folder
 	Prev        string    `json:"prev_run,omitempty"`    // the first run this step's latest retry replaces; set once the step has been retried
 	Retries     int       `json:"retries,omitempty"`     // how many times the current group has been retried; a file from before this field has Prev set and 0 here
-	SkippedAt   int64     `json:"skipped_at,omitempty"`  // unix nanoseconds when the user skipped the step; 0 for a skip from before this field
+	SkippedAt   int64     `json:"skipped_at,omitempty"`  // unix nanoseconds when the step was skipped, by the user or because a keep-going run step failed; 0 for a skip from before this field
 	Diagnosis   string    `json:"diagnosis,omitempty"`   // why the previous run failed, as the session wrote it
 }
 
@@ -64,12 +64,12 @@ func (s *seqStep) attempt() int {
 	return s.Retries + 1
 }
 
-// skipPrefix starts the reason of a step the user skipped.
+// skipPrefix starts the reason of a step the user skipped. A keep-going run step that failed has SkippedAt but keeps the run's reason, since the user skipped nothing.
 const skipPrefix = "skipped by the user: "
 
-// skipped reports whether the user skipped the step, as opposed to it failing or being accepted as failed.
+// skipped reports whether a failed run step counts as skipped: the user skipped it, or its run failed in keep-going mode and the step was ended at once, which cancels later publishes of its task. A keep-going step whose run was lost, or that failed to start, is not marked; nor is a step that failed in stop mode and was not skipped.
 func (s *seqStep) skipped() bool {
-	return s.Status == "failed" && strings.HasPrefix(s.Reason, skipPrefix)
+	return s.Status == "failed" && (s.SkippedAt != 0 || strings.HasPrefix(s.Reason, skipPrefix))
 }
 
 // seqRun is one run of a run step's group.
@@ -119,6 +119,7 @@ type sequence struct {
 	// QueueStart marks a sequence approved when no earlier approved sequence was still open, so it starts a new queue for the Step X/Y count
 	QueueStart bool       `json:"queue_start,omitempty"`
 	Steps      []*seqStep `json:"steps"`
+	Report     string     `json:"report,omitempty"` // a keep-going sequence's failure report, built when it closed; cleared once the Stop hook has delivered it
 }
 
 type seqFile struct {
@@ -275,8 +276,11 @@ func (s *sequence) notes() (lines, keys []string) {
 	return
 }
 
-// unreportedNotes is the sequence's notes without those a part already reports.
+// unreportedNotes is the sequence's notes without those a part already reports. A keep-going sequence that isn't halted reports its failures once, in its report.
 func (s *sequence) unreportedNotes(parts []string) []string {
+	if s.Mode == modeKeepGoing && !s.Halted {
+		return nil
+	}
 	lines, keys := s.notes()
 	var out []string
 	for i, line := range lines {
@@ -584,6 +588,9 @@ const haltPrefix = "cancelled: "
 func (sf *seqFile) reconcile(bridge string) {
 	for _, seq := range sf.Sequences {
 		for _, st := range seq.Steps {
+			if sf.endStaleDecision(bridge, seq, st) {
+				continue
+			}
 			if st.Kind != "run" || !st.holds() {
 				continue
 			}
@@ -636,13 +643,16 @@ func (sf *seqFile) reconcile(bridge string) {
 				st.Status, st.Reason = "cancelled", retiredReason
 			case failed > 0:
 				st.Reason = reason
-				if !lost && !seq.Halted {
+				switch {
+				case !lost && !seq.Halted && seq.Mode == modeKeepGoing:
+					sf.endKeepGoingFailure(bridge, seq, st)
+				case !lost && !seq.Halted:
 					st.Status = "decide"
 					st.Blocks = 0
-					continue
+				default:
+					st.Status = "failed"
+					sf.failed(bridge, seq, st)
 				}
-				st.Status = "failed"
-				sf.failed(bridge, seq, st)
 			default:
 				st.Status, st.Reason = "done", ""
 				if snaps[0].Snap.Subtask != "" {
@@ -651,6 +661,21 @@ func (sf *seqFile) reconcile(bridge string) {
 			}
 		}
 	}
+}
+
+// endStaleDecision ends a deciding run step of a keep-going sequence that isn't halted and reports whether it did. A file from before keep-going stopped asking can hold one.
+func (sf *seqFile) endStaleDecision(bridge string, seq *sequence, st *seqStep) bool {
+	if st.Kind != "run" || !st.deciding() || seq.Mode != modeKeepGoing || seq.Halted {
+		return false
+	}
+	sf.endKeepGoingFailure(bridge, seq, st)
+	return true
+}
+
+// endKeepGoingFailure ends a run step that failed in a keep-going sequence at once: no decision, the task's later steps skipped. SkippedAt keeps a later sequence from publishing the task, and the reason stays the run's own.
+func (sf *seqFile) endKeepGoingFailure(bridge string, seq *sequence, st *seqStep) {
+	st.Status, st.SkippedAt = "failed", time.Now().UnixNano()
+	sf.failed(bridge, seq, st)
 }
 
 // groupHeadline is the line a run step shows: its work item's headline, and the subtasks it works on.
@@ -937,16 +962,26 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 				if seq.Halted {
 					parts = append(parts, fmt.Sprintf("%s halted: %s", seq.label(), seq.Reason))
 				} else {
+					keepGoing := seq.Mode == modeKeepGoing
 					var skips []string
 					for _, s := range seq.Steps {
-						if s.skipped() {
+						if (keepGoing && s.Status == "failed") || (!keepGoing && s.skipped()) {
 							skips = append(skips, s.ref())
 						}
 					}
-					switch len(skips) {
-					case 0:
+					if keepGoing {
+						seq.Report = sf.failureReport(bridge, seq)
+					}
+					switch {
+					case len(skips) == 0:
 						parts = append(parts, fmt.Sprintf("%s finished.", seq.label()))
-					case 1:
+					case keepGoing:
+						noun := "steps"
+						if len(skips) == 1 {
+							noun = "step"
+						}
+						parts = append(parts, fmt.Sprintf("%s finished with %d failed %s: %s.", seq.label(), len(skips), noun, strings.Join(skips, ", ")))
+					case len(skips) == 1:
 						parts = append(parts, fmt.Sprintf("%s finished with a skipped step: step %s.", seq.label(), skips[0]))
 					default:
 						parts = append(parts, fmt.Sprintf("%s finished with %d skipped steps: %s.", seq.label(), len(skips), strings.Join(skips, ", ")))
@@ -1073,8 +1108,16 @@ const maxSkipPaths = 10
 
 // skipWorkspaceText says what the folders of the step's failed runs hold now. It reads no run's lock and never fails: a folder it can't read gets the generic sentence.
 func skipWorkspaceText(bridge string, st *seqStep) string {
-	var lines, seen []string
-	unknown := false
+	lines, unknown := failedFolderLines(bridge, st)
+	if unknown || len(lines) == 0 {
+		lines = append(lines, skipWorkspaceUnknown)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// failedFolderLines is a line for the folder of each failed run of the step, and whether some run's folder could not be found.
+func failedFolderLines(bridge string, st *seqStep) (lines []string, unknown bool) {
+	var seen []string
 	for _, ru := range st.runs() {
 		r, err := readRun(bridge, ru.Run)
 		if err != nil || r.Snap.Workspace == "" {
@@ -1105,37 +1148,62 @@ func skipWorkspaceText(bridge string, st *seqStep) string {
 			lines = append(lines, fmt.Sprintf("%s (on %s) has uncommitted changes: %s. A later run in that folder won't start until they are committed or stashed.", ws, branch, list))
 		}
 	}
-	if unknown || len(lines) == 0 {
-		lines = append(lines, skipWorkspaceUnknown)
-	}
-	return strings.Join(lines, "\n")
+	return lines, unknown
 }
 
-// decideBriefText is the requirement on the session's message to the user, shared by both modes; the Stop hook repeats itself, so it asks for the whole brief every time.
+// failureReport is the report of a closing keep-going sequence: every failed step with why, the steps skipped or cancelled, and the state of the failed runs' folders as they are now. It is "" when nothing failed, was skipped or was cancelled.
+func (sf *seqFile) failureReport(bridge string, seq *sequence) string {
+	var lines []string
+	listed := map[*seqStep]bool{}
+	for _, st := range seq.Steps {
+		if st.Status != "failed" {
+			continue
+		}
+		lines = append(lines, "- "+st.outcomeLine("failed", firstLine(st.Reason)))
+		if st.Kind == "run" {
+			if len(st.runs()) > 1 {
+				for _, ru := range st.runs() {
+					if ru.Status == "error" {
+						lines = append(lines, fmt.Sprintf("  run %s failed: %s", ru.Run, firstLine(ru.Reason)))
+					}
+				}
+			}
+			folders, unknown := failedFolderLines(bridge, st)
+			if unknown && len(folders) == 0 && slices.ContainsFunc(st.runs(), func(ru *seqRun) bool { return ru.Status == "error" }) {
+				folders = append(folders, skipWorkspaceUnknown)
+			}
+			for _, f := range folders {
+				lines = append(lines, "  folder: "+f)
+			}
+		}
+		why := fmt.Sprintf("step %s failed", st.ref())
+		for _, o := range seq.Steps {
+			if o.Status == "skipped" && strings.HasPrefix(o.Reason, why) {
+				lines = append(lines, "  "+o.outcomeLine("skipped", firstLine(o.Reason)))
+				listed[o] = true
+			}
+		}
+	}
+	for _, st := range seq.Steps {
+		if (st.Status == "skipped" && !listed[st]) || st.Status == "cancelled" {
+			lines = append(lines, "- "+st.outcomeLine(st.Status, firstLine(st.Reason)))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s ran in keep-going mode and did not do everything:\n%s\nTell the user this now, in plain words: what failed and why, what was skipped or cancelled because of it, and the state of the folders. Nothing is waiting for a decision, and you must not retry, skip or accept anything; the user decides what happens next.", seq.label(), strings.Join(lines, "\n"))
+}
+
+// decideBriefText is the requirement on the session's message to the user, for stop mode; the Stop hook repeats itself, so it asks for the whole brief every time.
 const decideBriefText = "Your message to the user must be a full brief, every time, even if an earlier message already said the same thing. It says: what failed and why, in plain words, not just the reason line above; what state the work is in; what each of retry, skip and halt would do; and every decision a retry needs, with each option spelled out and a recommendation. Never refer to an option by letter or by pointing at an earlier message, because this message repeats and earlier text scrolls away.\n"
 
-// decideText tells the session to take a failed step to the user, who chooses retry, skip or halt; the commands behind those words differ by mode. Both modes require the same full brief.
+// decideText tells the session to take a failed step of a stop-mode sequence to the user, who chooses retry, skip or halt.
 func decideText(bridge string, sf *seqFile, seq *sequence, st *seqStep) string {
 	ref := st.ref()
 	text := fmt.Sprintf("Its run failed: %s\nTake this to the user now. Offer exactly three choices, in this order: retry, skip, halt. Do not act until the user chooses, and end your turn to wait for the answer.\n", firstLine(st.Reason))
 	text += decideBriefText
 	text += fmt.Sprintf("- retry: `ensign sequence retry %s --diagnosis \"<why it failed>\" --state \"<what is left>\"`; fill in the diagnosis and state after the user chooses retry.\n", ref)
-	if seq.Mode == modeKeepGoing {
-		text += fmt.Sprintf("- skip: `ensign sequence accept %s` ends the step as failed and skips that task's later steps; the rest of the sequence carries on.\n", ref)
-		text += "- halt: `ensign sequence halt --reason \"<why>\"` halts the sequence and cancels this step and every later step.\n"
-		text += "Say retry, skip and halt to the user, not the command names.\n" + skipWorkspaceText(bridge, st)
-		// accept skips the task's own pending steps itself, so they are not left to the user's check.
-		var list []*seqStep
-		for _, a := range skipAffected(sf, seq, st) {
-			if a.Seq != seq.N || a.Task != st.Task {
-				list = append(list, a)
-			}
-		}
-		if affected := skipAffectedText(list); affected != "" {
-			text += "\n" + affected
-		}
-		return text
-	}
 	text += fmt.Sprintf("- skip: `ensign sequence skip %s` ends the step as failed, cancels the task's publish step, and the rest of the sequence carries on. %s\n", ref, skipWorkspaceText(bridge, st))
 	text += fmt.Sprintf("- halt: `ensign sequence accept %s` ends the step as failed, halts the sequence and cancels every later step.\n", ref)
 	text += "Say retry, skip and halt to the user, not the command names."
@@ -1417,6 +1485,13 @@ func sequenceStop(bridge string, in *HookInput) any {
 		if advErr != nil {
 			advNote = "The sequence could not advance: " + advErr.Error()
 		}
+		var reports []string
+		for _, seq := range sf.Sequences {
+			if seq.Report != "" {
+				reports = append(reports, seq.Report)
+				seq.Report = ""
+			}
+		}
 		for _, seq := range sf.Sequences {
 			for _, st := range seq.Steps {
 				var todo string
@@ -1466,11 +1541,14 @@ func sequenceStop(bridge string, in *HookInput) any {
 				kept := slices.DeleteFunc(slices.Clone(adv), func(p string) bool {
 					return slices.ContainsFunc(own, func(o string) bool { return strings.HasPrefix(p, o) })
 				})
-				msg := []string{fmt.Sprintf("sequence step %s is waiting for you (%s).", st.ref(), sf.position(st)), todo, strings.Join(kept, "\n"), strings.Join(seq.unreportedNotes(kept), "\n"), advNote, "Sequence rules: `ensign help sequence`."}
+				msg := []string{fmt.Sprintf("sequence step %s is waiting for you (%s).", st.ref(), sf.position(st)), todo, strings.Join(kept, "\n"), strings.Join(seq.unreportedNotes(kept), "\n"), strings.Join(reports, "\n\n"), advNote, "Sequence rules: `ensign help sequence`."}
 				msg = slices.DeleteFunc(msg, func(b string) bool { return strings.TrimSpace(b) == "" })
 				out = block(strings.Join(msg, "\n\n"))
 				return nil
 			}
+		}
+		if len(reports) > 0 {
+			out = block(strings.Join(append(reports, "Sequence rules: `ensign help sequence`."), "\n\n"))
 		}
 		return nil
 	})
@@ -1976,44 +2054,46 @@ func cmdSequence(args []string, out io.Writer) error {
 		if len(rest) != 1 {
 			return errors.New("usage: ensign sequence accept <seq>.<step>")
 		}
-		return withSeq(bridge, session, func(sf *seqFile) error {
+		var refused error
+		err := withSeq(bridge, session, func(sf *seqFile) error {
 			seq, st, err := sf.stepRef(rest[0])
 			if err != nil {
 				return err
+			}
+			if sf.endStaleDecision(bridge, seq, st) {
+				// The ending is saved, so the refusal is returned after withSeq.
+				refused = fmt.Errorf("step %s is not waiting for a decision (it is %s)", st.ref(), st.Status)
+				return nil
 			}
 			if !st.deciding() {
 				return fmt.Errorf("step %s is not waiting for a decision", st.ref())
 			}
 			st.Status = "failed"
 			sf.failed(bridge, seq, st)
-			keepGoing := seq.Mode == modeKeepGoing
-			var workspace, affected string
-			if keepGoing {
-				st.Reason, st.SkippedAt = skipPrefix+st.Reason, time.Now().UnixNano()
-				workspace = skipWorkspaceText(bridge, st)
-				affected = skipAffectedText(skipAffected(sf, seq, st))
-			}
 			text, err := sf.advance(bridge, session)
 			if text == "" {
 				text = sf.listing(bridge)
 			}
-			if keepGoing {
-				if affected != "" {
-					text = affected + "\n" + text
-				}
-				text = workspace + "\n" + text
-			}
 			fmt.Fprint(out, text)
 			return err
 		})
+		if err != nil {
+			return err
+		}
+		return refused
 	case "skip":
 		if len(rest) != 1 {
 			return errors.New("usage: ensign sequence skip <seq>.<step>")
 		}
-		return withSeq(bridge, session, func(sf *seqFile) error {
+		var refused error
+		err := withSeq(bridge, session, func(sf *seqFile) error {
 			seq, st, err := sf.stepRef(rest[0])
 			if err != nil {
 				return err
+			}
+			if sf.endStaleDecision(bridge, seq, st) {
+				refused = fmt.Errorf("step %s is not waiting for a decision (it is %s)", st.ref(), st.Status)
+				return nil
 			}
 			switch {
 			case seq.Halted:
@@ -2022,8 +2102,6 @@ func cmdSequence(args []string, out io.Writer) error {
 				return fmt.Errorf("step %s is a %s step; only run steps can be skipped, not publish, do or release steps", st.ref(), st.Kind)
 			case !st.deciding():
 				return fmt.Errorf("step %s is not waiting for a decision (it is %s)", st.ref(), st.Status)
-			case seq.Mode == modeKeepGoing:
-				return fmt.Errorf("sequence %d is in keep-going mode; `ensign sequence accept %s` already continues past a failure", seq.N, st.ref())
 			}
 			affected := skipAffectedText(skipAffected(sf, seq, st))
 			workspace := skipWorkspaceText(bridge, st)
@@ -2044,6 +2122,10 @@ func cmdSequence(args []string, out io.Writer) error {
 			fmt.Fprint(out, text)
 			return err
 		})
+		if err != nil {
+			return err
+		}
+		return refused
 	case "retry":
 		usage := "usage: ensign sequence retry <seq>.<step> --diagnosis <why it failed> --state <what is left>"
 		if len(rest) < 1 {
@@ -2063,10 +2145,15 @@ func cmdSequence(args []string, out io.Writer) error {
 				return errors.New(usage)
 			}
 		}
-		return withSeq(bridge, session, func(sf *seqFile) error {
+		var refused error
+		err := withSeq(bridge, session, func(sf *seqFile) error {
 			seq, st, err := sf.stepRef(rest[0])
 			if err != nil {
 				return err
+			}
+			if sf.endStaleDecision(bridge, seq, st) {
+				refused = fmt.Errorf("step %s is not waiting for a decision (it is %s)", st.ref(), st.Status)
+				return nil
 			}
 			switch {
 			case seq.Halted:
@@ -2115,6 +2202,10 @@ func cmdSequence(args []string, out io.Writer) error {
 			fmt.Fprint(out, text)
 			return err
 		})
+		if err != nil {
+			return err
+		}
+		return refused
 	case "done", "fail":
 		if len(rest) < 1 {
 			return fmt.Errorf("usage: ensign sequence done <seq>.<step> [--note <text>] | fail <seq>.<step> --reason <text>")

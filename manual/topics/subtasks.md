@@ -30,8 +30,8 @@ Sequences:
 - The step creates the runs of the first group, all queued; `go` starts every one of them and returns a dispatch instruction for each. Dispatch every lead; the runs work side by side.
 - A run whose folder is busy waits, with its own reason in the listing, and starts when the folder is free.
 - When every run of the group has succeeded, the step creates the next group's runs and starts them. The step is done when none are pending.
-- When one run of a group fails, the others continue to their end; then the step waits for a decision.
-- `ensign sequence retry` reruns only the failed subtasks of the group; the runs that succeeded stay. `accept` and `skip` end the step: later groups do not run and their subtasks stay pending.
+- When one run of a group fails, the others continue to their end; then in stop mode the step waits for a decision, and in keep-going mode it ends failed.
+- `ensign sequence retry` reruns only the failed subtasks of the group; the runs that succeeded stay. In stop mode `accept` and `skip` end the step; in keep-going mode a failed group ends the step at once (no retry). Either way later groups do not run and their subtasks stay pending.
 - The listing shows each group, e.g. `group 2: 02-client-api (client), 03-server-api (server)`, with the status of the runs that exist.
 - A run for a subtask applies the task branch of earlier done subtasks in the locations it depends on, by itself: see `ensign help project`, dependencies.
 - Each lead is dispatched with the prompt its approval text gives, first line included; that line ties the spawn to its run.

@@ -211,14 +211,19 @@ func TestSequenceKeepGoingSkipsLaterStepsOfTheFailedTask(t *testing.T) {
 	w.approve()
 	lead, _ := w.spawn("", "", "orchestrator")
 	w.failRun(lead)
-	w.wantStatus("decide", "pending", "pending", "pending")
-	w.mustSeq("accept", "1")
 	w.wantStatus("failed", "skipped", "active", "pending")
+	if r := w.step(1).Reason; strings.HasPrefix(r, skipPrefix) || w.step(1).SkippedAt == 0 {
+		t.Errorf("the failed step keeps the run's reason and is marked skipped: %+v", w.step(1))
+	}
 	if r := w.step(2).Reason; !strings.Contains(r, "step 1.1 failed") {
 		t.Errorf("the skip should name the failed step: %q", r)
 	}
 	if skipped := w.runState(w.step(2).Run); !skipped.terminal() {
 		t.Errorf("the skipped run should be terminal: %s", skipped.Status)
+	}
+	reason := dig(w.stopHook(), "reason")
+	if !strings.Contains(reason, "report") || strings.Contains(reason, "failed") || strings.Contains(reason, "retry") {
+		t.Errorf("the hold is for the do step and says nothing of the failure:\n%s", reason)
 	}
 	w.mustSeq("done", "3")
 	w.wantStatus("failed", "skipped", "done", "active")
@@ -618,18 +623,181 @@ func TestSequenceCarriedDecisionIsPutToTheContinuingSession(t *testing.T) {
 	}
 }
 
-func TestSequenceKeepGoingDecisionIsHeldOnce(t *testing.T) {
+func TestSequenceKeepGoingReportIsDeliveredOnce(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	write(t, filepath.Join(ws, "junk-report.txt"), "x\n")
+	w.failRun(lead)
+	w.wantStatus("failed", "skipped")
+	if !readSeq(w.bridge, w.sid).Sequences[0].Closed {
+		t.Fatal("the failure closes the sequence")
+	}
+	r, err := readRun(w.bridge, w.step(1).Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := w.stopHook()
+	reason, _ := res["reason"].(string)
+	if res["decision"] != "block" {
+		t.Fatalf("the report should be put to the session: %v", res)
+	}
+	for _, want := range []string{"step 1.1 (run supernova/auth-refactor) failed", firstLine(w.step(1).Reason), "step 1.2 (run supernova/auth-refactor) skipped: step 1.1 failed", r.Snap.Workspace, "junk-report.txt", "task/auth-refactor", "must not retry"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the report lacks %q:\n%s", want, reason)
+		}
+	}
+	if strings.Contains(reason, "sequence skip") || strings.Contains(reason, "sequence retry") {
+		t.Errorf("nothing is offered to decide:\n%s", reason)
+	}
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Errorf("the report has been delivered: %v", res)
+	}
+}
+
+func TestSequenceKeepGoingReportCoversEveryKindOfFailure(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("do", "chore for the supernova")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.mustSeq("fail", "3", "--reason", "the chore could not be done")
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("failed", "skipped", "failed", "failed")
+	reason := dig(w.stopHook(), "reason")
+	for _, want := range []string{"step 1.1 (run supernova/auth-refactor) failed", "step 1.2 (run supernova/auth-refactor) skipped: step 1.1 failed", "step 1.3 (do chore for the supernova) failed: the chore could not be done", "step 1.4 (run supernova/other) failed"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the report lacks %q:\n%s", want, reason)
+		}
+	}
+	if n := strings.Count(reason, "ran in keep-going mode"); n != 1 {
+		t.Errorf("one report, got %d:\n%s", n, reason)
+	}
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Errorf("the report has been delivered: %v", res)
+	}
+}
+
+func TestSequenceKeepGoingReportRidesOnALaterSequencesTodo(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.mustSeq("mode", "keep-going")
 	w.approve()
 	lead, _ := w.spawn("", "", "orchestrator")
 	w.failRun(lead)
-	if res := w.stopHook(); res["decision"] != "block" {
-		t.Fatalf("the decision should be put to the session: %v", res)
+	w.mustSeq("do", "next supernova chore")
+	w.approve()
+	first := dig(w.stopHook(), "reason")
+	if !strings.Contains(first, "next supernova chore") || strings.Count(first, "ran in keep-going mode") != 1 {
+		t.Errorf("the report goes in the todo block once:\n%s", first)
 	}
-	if res := w.stopHook(); res["decision"] == "block" {
-		t.Errorf("the session has been told: %v", res)
+	for i := 0; i < 3; i++ {
+		if again := dig(w.stopHook(), "reason"); strings.Contains(again, "ran in keep-going mode") {
+			t.Errorf("stop %d repeats the report:\n%s", i+2, again)
+		}
+	}
+}
+
+func TestSequenceKeepGoingRefusesRetryAcceptAndSkip(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("do", "later")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("failed", "active")
+	for _, args := range [][]string{{"retry", "1.1", "--diagnosis", "why", "--state", "left"}, {"accept", "1.1"}, {"skip", "1.1"}} {
+		if _, err := w.seq(args...); err == nil || !strings.Contains(err.Error(), "not waiting for a decision") {
+			t.Errorf("%v should be refused: %v", args, err)
+		}
+	}
+	w.wantStatus("failed", "active")
+}
+
+func TestSequenceKeepGoingEndsAStepAlreadyDeciding(t *testing.T) {
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("decide", "pending", "pending")
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		sf.Sequences[0].Mode = modeKeepGoing
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.stopHook()
+	w.wantStatus("failed", "skipped", "active")
+	if st := w.step(1); !st.skipped() || strings.HasPrefix(st.Reason, skipPrefix) {
+		t.Errorf("the step ended as a keep-going failure: %+v", st)
+	}
+}
+
+func TestSequenceKeepGoingRefusesAStepAlreadyDecidingAndEndsIt(t *testing.T) {
+	for _, verb := range []string{"retry", "accept", "skip"} {
+		w := newWorld(t)
+		w.addTask("other")
+		w.mustSeq("run", "supernova/auth-refactor")
+		w.mustSeq("run", "supernova/auth-refactor")
+		w.mustSeq("run", "supernova/other")
+		w.approve()
+		lead, _ := w.spawn("", "", "orchestrator")
+		w.failRun(lead)
+		w.wantStatus("decide", "pending", "pending")
+		if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+			sf.Sequences[0].Mode = modeKeepGoing
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		args := []string{verb, "1.1"}
+		if verb == "retry" {
+			args = append(args, "--diagnosis", "why", "--state", "left")
+		}
+		if _, err := w.seq(args...); err == nil || !strings.Contains(err.Error(), "not waiting for a decision") {
+			t.Errorf("%s should be refused: %v", verb, err)
+		}
+		w.wantStatus("failed", "skipped", "pending")
+		w.stopHook()
+		w.wantStatus("failed", "skipped", "active")
+		if st := w.step(1); st.SkippedAt == 0 {
+			t.Errorf("%s: the step has no SkippedAt: %+v", verb, st)
+		}
+	}
+}
+
+func TestSequenceKeepGoingRunAskingTheUserStillPauses(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	r, err := openRun(w.bridge, w.step(1).Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status, r.State.Reason = "ask-user", "which database?"
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+	w.stopHook()
+	w.wantStatus("paused")
+	if got := w.step(1).Reason; !strings.Contains(got, "which database?") {
+		t.Errorf("the pause carries the question: %q", got)
 	}
 }
 
@@ -692,30 +860,11 @@ func TestSequenceFailedRetryHaltsInStopMode(t *testing.T) {
 	}
 }
 
-func TestSequenceFailedRetrySkipsTheTasksLaterStepsInKeepGoingMode(t *testing.T) {
-	w := newWorld(t)
-	w.addTask("other")
-	w.mustSeq("run", "supernova/auth-refactor")
-	w.mustSeq("run", "supernova/auth-refactor")
-	w.mustSeq("run", "supernova/other")
-	w.mustSeq("mode", "keep-going")
-	w.approve()
-	lead, _ := w.spawn("", "", "orchestrator")
-	w.failRun(lead)
-	w.retryStep("1")
-	lead, _ = w.spawn("", "", "orchestrator")
-	w.failRun(lead)
-	w.wantStatus("decide", "pending", "pending")
-	w.mustSeq("accept", "1")
-	w.wantStatus("failed", "skipped", "active")
-}
-
 func TestSequenceBadRetriesAreRefusedAndASecondRetryWorks(t *testing.T) {
 	w, _, _, _ := githubWorld(t, "success", localTest)
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.mustSeq("publish", "supernova/auth-refactor")
 	w.mustSeq("do", "report")
-	w.mustSeq("mode", "keep-going")
 	w.approve()
 	lead, _ := w.spawn("", "", "orchestrator")
 	if _, err := w.seq("retry", "1", "--diagnosis", "x", "--state", "y"); err == nil || !strings.Contains(err.Error(), "not waiting") {
@@ -1682,11 +1831,10 @@ func TestSequenceSkipRefusesWhatIsNotDeciding(t *testing.T) {
 	k.approve()
 	lead, _ := k.spawn("", "", "orchestrator")
 	k.failRun(lead)
-	k.wantStatus("decide")
-	if _, err := k.seq("skip", "1"); err == nil || !strings.Contains(err.Error(), "accept") {
-		t.Errorf("skip in keep-going should point to accept: %v", err)
+	k.wantStatus("failed")
+	if _, err := k.seq("skip", "1.1"); err == nil || !strings.Contains(err.Error(), "not waiting for a decision") {
+		t.Errorf("skip in keep-going has nothing to decide: %v", err)
 	}
-	k.wantStatus("decide")
 }
 
 func TestSequenceSkipNamesTheStepsItMayAffect(t *testing.T) {
@@ -1793,8 +1941,10 @@ func TestSequenceStopOffersSkipOnlyInStopMode(t *testing.T) {
 		lead, _ := w.spawn("", "", "orchestrator")
 		w.failRun(lead)
 		reason, _ := w.stopHook()["reason"].(string)
-		if got := strings.Contains(reason, "sequence skip 1"); got != (mode == "stop") {
-			t.Errorf("%s mode: offers skip = %v:\n%s", mode, got, reason)
+		for _, offer := range []string{"sequence skip 1", "sequence accept 1", "sequence retry 1"} {
+			if got := strings.Contains(reason, offer); got != (mode == "stop") {
+				t.Errorf("%s mode: offers %q = %v:\n%s", mode, offer, got, reason)
+			}
 		}
 		if !strings.Contains(reason, "uncommitted") {
 			t.Errorf("%s mode: the workspace text is missing:\n%s", mode, reason)
@@ -2052,7 +2202,7 @@ func TestSequenceSkipAndAcceptWorkAfterRetries(t *testing.T) {
 }
 
 func TestSequenceDecideTextOffersRetrySkipHaltInOrder(t *testing.T) {
-	for _, mode := range []string{"stop", "keep-going"} {
+	for _, mode := range []string{"stop"} {
 		w := newWorld(t)
 		w.mustSeq("run", "supernova/auth-refactor")
 		w.mustSeq("mode", mode)
@@ -2070,9 +2220,6 @@ func TestSequenceDecideTextOffersRetrySkipHaltInOrder(t *testing.T) {
 			t.Fatalf("%s mode: want retry, skip, halt in that order:\n%s", mode, text)
 		}
 		wantSkip, wantHalt := "`ensign sequence skip 1.1`", "`ensign sequence accept 1.1`"
-		if mode == "keep-going" {
-			wantSkip, wantHalt = "`ensign sequence accept 1.1`", "`ensign sequence halt"
-		}
 		if !strings.Contains(lines[1], wantSkip) || !strings.Contains(lines[2], wantHalt) {
 			t.Errorf("%s mode: wrong commands:\n%s", mode, text)
 		}
@@ -2093,7 +2240,7 @@ func TestSequenceDecideTextOffersRetrySkipHaltInOrder(t *testing.T) {
 
 func TestSequenceDecideTextRequiresAFullBriefEveryTime(t *testing.T) {
 	var briefs []string
-	for _, mode := range []string{"stop", "keep-going"} {
+	for _, mode := range []string{"stop"} {
 		w := newWorld(t)
 		w.mustSeq("run", "supernova/auth-refactor")
 		w.mustSeq("mode", mode)
@@ -2122,12 +2269,12 @@ func TestSequenceDecideTextRequiresAFullBriefEveryTime(t *testing.T) {
 			}
 		}
 	}
-	if len(briefs) != 2 || briefs[0] != briefs[1] {
-		t.Errorf("the brief differs between modes: %q", briefs)
+	if len(briefs) != 1 || briefs[0] != decideBriefText[:len(decideBriefText)-1] {
+		t.Errorf("the brief is not the shared text: %q", briefs)
 	}
 }
 
-func TestSequenceKeepGoingHaltCancelsADecidingStep(t *testing.T) {
+func TestSequenceKeepGoingHaltByHandGivesNoReport(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.mustSeq("do", "later")
@@ -2135,9 +2282,15 @@ func TestSequenceKeepGoingHaltCancelsADecidingStep(t *testing.T) {
 	w.approve()
 	lead, _ := w.spawn("", "", "orchestrator")
 	w.failRun(lead)
-	w.wantStatus("decide", "pending")
+	w.wantStatus("failed", "active")
 	w.mustSeq("halt", "--reason", "enough")
-	w.wantStatus("cancelled", "cancelled")
+	w.wantStatus("failed", "cancelled")
+	w.stopHook()
+	for _, seq := range readSeq(w.bridge, w.sid).Sequences {
+		if seq.Report != "" {
+			t.Errorf("a halted sequence gets no report:\n%s", seq.Report)
+		}
+	}
 }
 
 func TestSkipWorkspaceTextNamesTheFoldersState(t *testing.T) {
@@ -2280,7 +2433,7 @@ func TestSequenceClosingSaysWhatWasSkipped(t *testing.T) {
 	}
 }
 
-func TestSequenceKeepGoingAcceptIsASkipForLaterPublishes(t *testing.T) {
+func TestSequenceKeepGoingFailureIsASkipForLaterPublishes(t *testing.T) {
 	w, ws, remote, _ := githubWorld(t, "success", localTest)
 	task := "supernova/auth-refactor"
 	mainBefore := runGit(t, ".", "--git-dir", remote, "rev-parse", "main")
@@ -2293,17 +2446,16 @@ func TestSequenceKeepGoingAcceptIsASkipForLaterPublishes(t *testing.T) {
 	w.failRun(lead)
 	w.staleMarker(ws)
 	runGit(t, ws, "checkout", "-q", "task/auth-refactor")
-	out := w.mustSeq("accept", "1")
-	if !strings.Contains(out, "sequence 1 finished with a skipped step: step 1.1.") {
-		t.Errorf("the close should name the skipped step:\n%s", out)
-	}
-	if r := w.step(1).Reason; !strings.HasPrefix(r, skipPrefix) {
-		t.Errorf("the accepted step's reason should carry the skip prefix: %q", r)
+	if r := w.step(1).Reason; strings.HasPrefix(r, skipPrefix) || !w.step(1).skipped() {
+		t.Errorf("the failed step keeps the run's reason and counts as skipped: %q", r)
 	}
 	w.mustSeq("publish", task)
-	out = w.goContext()
+	out := w.goContext()
 	if !strings.Contains(out, "step 2.1 (publish supernova/auth-refactor) cancelled: step 1.1 was skipped") {
 		t.Errorf("the later publish should be cancelled:\n%s", out)
+	}
+	if r := w.step(2).Reason; r != "step 1.1 was skipped" {
+		t.Errorf("the cancel reason: %q", r)
 	}
 	if got := runGit(t, ".", "--git-dir", remote, "rev-parse", "main"); got != mainBefore {
 		t.Errorf("nothing may be pushed to main: %s", got)
@@ -2569,8 +2721,8 @@ func TestSequenceSkippedBeforeSurvivesADeletedRunFolder(t *testing.T) {
 	}
 }
 
-func TestSequenceKeepGoingDecideTextLeavesOutTheTasksOwnSteps(t *testing.T) {
-	for _, mode := range []string{"stop", "keep-going"} {
+func TestSequenceDecideTextListsTheTasksOwnStepsInStopMode(t *testing.T) {
+	for _, mode := range []string{"stop"} {
 		w := releaseWorld(t, 0)
 		w.mustSeq("run", "supernova/auth-refactor")
 		w.mustSeq("run", "supernova/auth-refactor")
@@ -2583,8 +2735,8 @@ func TestSequenceKeepGoingDecideTextLeavesOutTheTasksOwnSteps(t *testing.T) {
 		if !strings.Contains(text, "step 1.3, release") {
 			t.Errorf("%s mode: the release step should be listed:\n%s", mode, text)
 		}
-		if got := strings.Contains(text, "step 1.2, run"); got != (mode == "stop") {
-			t.Errorf("%s mode: own pending run step listed=%v:\n%s", mode, got, text)
+		if !strings.Contains(text, "step 1.2, run") {
+			t.Errorf("%s mode: own pending run step should be listed:\n%s", mode, text)
 		}
 	}
 }
@@ -2661,7 +2813,7 @@ func TestSequenceListingStaysWhereItIsKept(t *testing.T) {
 	}
 }
 
-func TestSequenceStopMessageNotesAFailedPublishFromTheDiscardedAdvance(t *testing.T) {
+func TestSequenceStopMessageLeavesAKeepGoingFailureToTheReport(t *testing.T) {
 	w, ws, remote, _ := githubWorld(t, "success", localTest)
 	task := "supernova/auth-refactor"
 	w.mustSeq("run", task)
@@ -2684,8 +2836,8 @@ func TestSequenceStopMessageNotesAFailedPublishFromTheDiscardedAdvance(t *testin
 		if !strings.Contains(reason, "tell the supernova user") || strings.Count(reason, "Step 3/3") != 1 || strings.Contains(reason, "sequence 1 (mode") || strings.Contains(reason, "\n\n\n") {
 			t.Fatalf("stop %d should carry the do step and its position, no listing:\n%q", i+1, reason)
 		}
-		if n := strings.Count(reason, "step 1.2 (publish "+task+") failed: "); n != 1 {
-			t.Fatalf("stop %d should note the failed publish once, got %d:\n%s", i+1, n, reason)
+		if n := strings.Count(reason, "step 1.2 (publish "+task+") failed: "); n != 0 {
+			t.Fatalf("stop %d should leave the failed publish to the report, got %d:\n%s", i+1, n, reason)
 		}
 	}
 }
