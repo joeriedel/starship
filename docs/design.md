@@ -226,7 +226,7 @@ Handler kinds:
 **All events are fired by deterministic code** (§7), never by an agent. An event an
 agent forgets to fire is a silent skip, whatever the handler kind.
 
-`task.close` is fired by `ensign task close <p>/<t>`, outside any run, for tasks with and without code. `require` handlers run first, in order; one that fails ends the close with nothing written, so it can be retried; so does a handler with no single kind. Then the task is marked closed (`status: closed` in its frontmatter, which makes a second close a no-op) and `observe` handlers run; a failing one only warns, as does a failure to journal the close. Handlers run in the bridge root with `STARSHIP_BRIDGE`, `STARSHIP_PROJECT` and `STARSHIP_TASK`, and without `STARSHIP_RUN`, `STARSHIP_RUN_DIR` or `STARSHIP_WORKSPACE`. `@binding` commands, `ensign …` handlers and generated `@name` augments need a run and are refused. The output of handlers and the text of `augment` files are printed after `Closed <p>/<t>.` for the session to act on in the same turn: this is how an extension asks the session (and through it the user) a question.
+`task.close` is fired by `ensign task close <p>/<t>`, outside any run, for tasks with and without code. `require` handlers run first, in order; one that fails ends the close with nothing written, so it can be retried. A handler that doesn't set exactly one of `require`, `observe` and `augment` ends the close the same way, before any handler runs. Then the task is marked closed (`status: closed` in its frontmatter, which makes a second close a no-op) and `observe` handlers run; a failing one only warns, as does a failure to journal the close. Handlers run in the bridge root with `STARSHIP_BRIDGE`, `STARSHIP_PROJECT` and `STARSHIP_TASK`, and without `STARSHIP_RUN`, `STARSHIP_RUN_DIR` or `STARSHIP_WORKSPACE`. `@binding` commands, `ensign …` handlers and generated `@name` augments need a run and are refused. The output of handlers and the text of `augment` files are printed after `Closed <p>/<t>.` for the session to act on in the same turn: this is how an extension asks the session (and through it the user) a question.
 
 ### 4.3 Extensions
 
@@ -324,10 +324,9 @@ as a fact about the technology alone.
 ### 4.5 The curator
 
 One `curator` role maintains every curated document: style guides (§9), skills'
-learned entries (§4.4) and declared documents (below). A stage marks itself with
-`curates: style`, `curates: skill` or `curates: document`, and its agents are the only
-writers of those documents. Each document type supplies a brief
-(`briefs/curate-style.md`, `briefs/curate-skill.md`, `briefs/curate-document.md`); the pass and the checks are
+learned entries (§4.4) and declared documents (below). A stage marks itself with `curates: style`, `curates: skill` or `curates: document`,
+and its agents are the only writers of those documents. Each document type supplies a
+brief (`briefs/curate-style.md`, `briefs/curate-skill.md`, `briefs/curate-document.md`); the pass and the checks are
 the same for all of them. The curator's context is deliberately small — the document,
 the proposals, and anything that outranks them — so its attention goes to consistency.
 

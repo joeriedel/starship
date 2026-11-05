@@ -644,3 +644,19 @@ func TestDocsRemovedFileInDocs(t *testing.T) {
 		t.Error("old.md should stay deleted")
 	}
 }
+
+func TestValidateCurates(t *testing.T) {
+	for _, curates := range []string{"", "style", "skill", "document", "styles"} {
+		c := &Config{ControlPlane: repoRoot(t), Pipeline: &Pipeline{
+			Stages: []*Stage{{ID: "s", Role: "coder", Curates: curates, Outcomes: Outcomes{{Name: "a", Then: Transition{Finish: "success"}}}}},
+		}}
+		got := strings.Join(validate(c), "\n")
+		if curates == "styles" {
+			if !strings.Contains(got, `curates "styles" is not supported`) {
+				t.Errorf("validate should refuse curates styles:\n%s", got)
+			}
+		} else if strings.Contains(got, "curates") {
+			t.Errorf("curates %q should be accepted:\n%s", curates, got)
+		}
+	}
+}

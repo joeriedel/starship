@@ -1504,6 +1504,11 @@ func validate(c *Config) []string {
 					add("%s: spends unknown budget %q", at, s.Spend)
 				}
 			}
+			switch s.Curates {
+			case "", "style", "skill", "document":
+			default:
+				add("%s: curates %q is not supported (style, skill or document)", at, s.Curates)
+			}
 			if s.isLead() {
 				if depth >= 1 {
 					add("%s: nested leads are not implemented yet", at)

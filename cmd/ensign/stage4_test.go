@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -467,5 +468,69 @@ func TestLinkRemovesEmptyStaleSkillFolders(t *testing.T) {
 	}
 	if _, err := os.Stat(mine); err != nil {
 		t.Errorf("a file outside the manifest must stay: %v", err)
+	}
+}
+
+func TestSkillNewRefusesWindowsReservedNames(t *testing.T) {
+	w := newWorld(t)
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	for _, name := range []string{"con", "com1"} {
+		err := cmdSkill([]string{"new", name, "--description", "x"}, &out)
+		if err == nil || !strings.Contains(err.Error(), "Windows reserves") {
+			t.Errorf("skill new %s: %v", name, err)
+		}
+		if dirHasEntry(filepath.Join(w.bridge, "skills"), name+".md") || dirHasEntry(filepath.Join(w.bridge, "skills/proposed"), name) {
+			t.Errorf("skill new %s wrote something", name)
+		}
+	}
+}
+
+// dirHasEntry lists dir rather than stat-ing the name, which Windows can resolve to a DOS device; a missing dir has no entries.
+func dirHasEntry(dir, name string) bool {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSkillDiscardClearsReservedName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a folder named con can't exist on Windows")
+	}
+	w := newWorld(t)
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	write(t, filepath.Join(proposedSkillDir(w.bridge, "con"), "f.yaml"), "fact: x\n")
+	var out bytes.Buffer
+	if err := cmdSkill([]string{"discard", "con"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(proposedSkillDir(w.bridge, "con")); !os.IsNotExist(err) {
+		t.Errorf("discarded facts should be gone")
+	}
+}
+
+func TestFactForReservedSkillNameIsSkipped(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "skills/shell.md"), "---\ndescription: POSIX shell\n---\nQuote every expansion.\n")
+	lead := w.startLead()
+	coder, _ := w.spawn(lead, "orchestrator", "coder")
+	msg := "Done.\n\n```starship-report\noutcome: compiled\nsummary: ok\n" +
+		"fact: con | reserved | x\nfact: shell | quoting matters | tested\n```\n"
+	w.stop(coder, "coder", msg, false)
+	for _, d := range []string{"pending", "proposed"} {
+		if dirHasEntry(filepath.Join(w.bridge, "skills", d), "con") {
+			t.Errorf("skills/%s/con was created", d)
+		}
+	}
+	if got, _ := filepath.Glob(filepath.Join(w.bridge, "skills/pending/shell/*.yaml")); len(got) != 1 {
+		t.Errorf("the normal fact should be pending: %v", got)
 	}
 }

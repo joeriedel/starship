@@ -292,6 +292,9 @@ func cmdSkill(args []string, out io.Writer) error {
 		if contains(knownSkills(bridge, cp, ""), name) {
 			return fmt.Errorf("skill %q already exists", name)
 		}
+		if windowsReserved(name) {
+			return fmt.Errorf("skill name %q is a name Windows reserves, and the name becomes a committed folder", name)
+		}
 		body := fmt.Sprintf("---\ndescription: %s\n---\n\n# %s\n\nWhat agents have established about %s, curated from their reports.\n",
 			yamlScalar(args[3]), name, name)
 		if err := writeFile(filepath.Join(bridge, "skills", name+".md"), body); err != nil {
@@ -326,7 +329,7 @@ func recordFacts(r *RunFiles, d *Dispatch) {
 			continue
 		}
 		skill := strings.TrimSpace(parts[0])
-		if !validName(skill) {
+		if !validName(skill) || windowsReserved(skill) {
 			continue
 		}
 		f := map[string]string{"fact": strings.TrimSpace(parts[1]), "run": r.State.Run, "stage": d.Stage}
