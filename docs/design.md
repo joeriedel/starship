@@ -1559,7 +1559,7 @@ runs against Claude Code, except where listed below.
 | `ensign journal commit -m <msg>` / `ensign journal push` | commit and push the bridge's records |
 | `ensign git-catalog squash <p>/<t> -m <msg>` | collapse a task's catalog into one commit |
 | `ensign style ingest <project> <path-or-url> --trust <t>` | add a style source |
-| `ensign selftest` | re-check the Claude Code behaviour starship depends on |
+| `ensign selftest` | re-check the Claude Code behaviour starship depends on, including that MCP tool calls carry the agent's identity, that a hook deny stops them, and that an agent's `tools:` list grants the MCP tools it names |
 | `ensign hook <event>` | the hook driver |
 
 ### 15.2 Settled while building
