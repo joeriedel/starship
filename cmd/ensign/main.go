@@ -318,7 +318,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			if !found && len(unread) > 0 {
 				reason = "starship: this agent's run can't be found, and " + role + " can't be ruled out as a stage role because a pipeline file could not be read: " + strings.Join(unread, "; ")
 			}
-			if found || len(unread) > 0 {
+			if !found && len(unread) > 0 && readOnlyRole(bridge, role) {
+				json.NewEncoder(stdout).Encode(map[string]any{"systemMessage": "starship: this agent's run can't be found, and " + role + " is read-only, so it is let through although these could not be read: " + strings.Join(unread, "; ")})
+			} else if found || len(unread) > 0 {
 				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
 					"hookEventName": "PreToolUse", "permissionDecision": "deny",
 					"permissionDecisionReason": reason}})

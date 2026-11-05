@@ -308,13 +308,8 @@ func frontmatterToolsLoc(data []byte) []int {
 	return m
 }
 
-// withDeclaredTools appends a role's declared connector tools, sorted and without duplicates, to the tools: line in its frontmatter. A role with no such line is left alone. The line must be a plain comma list on one line, since it is edited as text; label names the role in the error.
-func withDeclaredTools(label string, data []byte, declared []string) ([]byte, error) {
-	m := frontmatterToolsLoc(data)
-	if m == nil {
-		return data, nil
-	}
-	value := strings.TrimSpace(string(data[m[4]:m[5]]))
+// frontmatterToolsValue decodes data's frontmatter and returns what YAML reads for tools:, which is nil when absent.
+func frontmatterToolsValue(label string, data []byte) (any, error) {
 	front, _, err := splitFrontmatterData(label, data)
 	if err != nil {
 		return nil, err
@@ -325,8 +320,22 @@ func withDeclaredTools(label string, data []byte, declared []string) ([]byte, er
 	if err := decodeFrontmatter(front, &fm); err != nil {
 		return nil, fmt.Errorf("%s: frontmatter: %v", label, err)
 	}
+	return fm.Tools, nil
+}
+
+// withDeclaredTools appends a role's declared connector tools, sorted and without duplicates, to the tools: line in its frontmatter. A role with no such line is left alone. The line must be a plain comma list on one line, since it is edited as text; label names the role in the error.
+func withDeclaredTools(label string, data []byte, declared []string) ([]byte, error) {
+	m := frontmatterToolsLoc(data)
+	if m == nil {
+		return data, nil
+	}
+	value := strings.TrimSpace(string(data[m[4]:m[5]]))
+	parsedTools, err := frontmatterToolsValue(label, data)
+	if err != nil {
+		return nil, err
+	}
 	// YAML must read the line as the very string the text edit sees: quotes, comments, flow or block forms, continuation lines and null all read differently.
-	if parsed, ok := fm.Tools.(string); !ok || parsed != value || value == "" {
+	if parsed, ok := parsedTools.(string); !ok || parsed != value || value == "" {
 		return nil, fmt.Errorf("%s: connectors are declared for this role, so its frontmatter tools: must be a plain comma-separated list on one line, like `tools: Read, Grep`, with no quotes, brackets, block list, comment or continuation line", label)
 	}
 	var have []string
@@ -379,7 +388,10 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 	}
 	roles := map[string][]byte{}
 	sources := map[string]string{}
-	cpRoles, _ := filepath.Glob(filepath.Join(cp, "roles", "*.md"))
+	cpRoles, err := filesIn(filepath.Join(cp, "roles"), ".md")
+	if err != nil {
+		return nil, err
+	}
 	for _, f := range cpRoles {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -393,7 +405,10 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 	}
 	var bridgeRoles []string
 	for _, d := range append([]string{filepath.Join(bridge, "roles")}, extensionRoleDirs(bridge, cp)...) {
-		found, _ := filepath.Glob(filepath.Join(d, "*.md"))
+		found, err := filesIn(d, ".md")
+		if err != nil {
+			return nil, err
+		}
 		bridgeRoles = append(bridgeRoles, found...)
 	}
 	for _, f := range bridgeRoles {

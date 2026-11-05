@@ -67,17 +67,20 @@ func brokenExtensionLines(bridge string) []string {
 	if err != nil {
 		return nil
 	}
-	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	var out []string
+	dirs, derr := extensionDirs(bridge, cp)
+	if derr != nil {
+		out = append(out, flatLine("all extensions: "+derr.Error()))
+	}
 	_, broken := scanExtensions(bridge, cp)
 	for name, err := range broken {
-		out = append(out, oneLine(fmt.Sprintf("%s: %s", name, err)))
+		out = append(out, flatLine(fmt.Sprintf("%s: %s", name, err)))
 	}
-	for _, dir := range extensionDirs(bridge, cp) {
+	for _, dir := range dirs {
 		file := filepath.Join(dir, "extension.yaml")
 		var x Extension
 		if readYAML(file, &x) == nil && x.Name == "" {
-			out = append(out, oneLine(fmt.Sprintf("%s: %s declares no name", filepath.Base(dir), file)))
+			out = append(out, flatLine(fmt.Sprintf("%s: %s declares no name", filepath.Base(dir), file)))
 		}
 	}
 	sort.Strings(out)
@@ -294,29 +297,32 @@ func helpText(bridge, session string) string {
 // extraHelp gathers help entries from pipelines and extensions, by group. The lines returned are what it could not read, one each, for the "may be missing" section; a bridge with no bridge.yaml has none.
 func extraHelp(bridge string) (map[string][]HelpEntry, []string) {
 	out := map[string][]HelpEntry{}
-	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	var problems []string
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			problems = append(problems, oneLine("all extensions and pipelines: "+err.Error()))
+			problems = append(problems, flatLine("all extensions and pipelines: "+err.Error()))
 		}
 		return out, problems
 	}
 	cp, err := controlPlaneDir(bridge, bf)
 	if err != nil {
-		return out, append(problems, oneLine("all extensions and pipelines: "+err.Error()))
+		return out, append(problems, flatLine("all extensions and pipelines: "+err.Error()))
 	}
-	glob := func(pattern string) []string {
-		found, err := filepath.Glob(pattern)
+	glob := func(dir string) []string {
+		found, err := filesIn(dir, ".yaml")
 		if err != nil {
-			problems = append(problems, oneLine(fmt.Sprintf("%s: %v", pattern, err)))
+			problems = append(problems, flatLine(fmt.Sprintf("%s: %v", dir, err)))
 		}
 		return found
 	}
-	files := glob(filepath.Join(cp, "pipelines", "*.yaml"))
+	files := glob(filepath.Join(cp, "pipelines"))
 	var dirs []string
-	for _, dir := range extensionDirs(bridge, cp) {
+	allDirs, derr := extensionDirs(bridge, cp)
+	if derr != nil {
+		problems = append(problems, flatLine("all extensions: "+derr.Error()))
+	}
+	for _, dir := range allDirs {
 		var x Extension
 		if readYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && x.Quiet && !bridgeUses(bridge, x.Name) {
 			continue
@@ -325,14 +331,14 @@ func extraHelp(bridge string) (map[string][]HelpEntry, []string) {
 	}
 	// findPipeline does not decode extension.yaml, so a broken extension's pipelines still run and still give help.
 	for _, dir := range dirs {
-		files = append(files, glob(filepath.Join(dir, "pipelines", "*.yaml"))...)
+		files = append(files, glob(filepath.Join(dir, "pipelines"))...)
 	}
 	for _, f := range files {
 		var p struct {
 			Help []HelpEntry `yaml:"help"`
 		}
 		if err := readYAML(f, &p); err != nil {
-			problems = append(problems, oneLine(fmt.Sprintf("%s: %v", strings.TrimSuffix(filepath.Base(f), ".yaml"), err)))
+			problems = append(problems, flatLine(fmt.Sprintf("%s: %v", strings.TrimSuffix(filepath.Base(f), ".yaml"), err)))
 			continue
 		}
 		out["Doing the work"] = append(out["Doing the work"], p.Help...)

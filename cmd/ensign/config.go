@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -757,8 +758,11 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 		}
 	}
 
-	base, baseLabel := findPipeline(bridge, c.ControlPlane, name)
+	base, baseLabel, ferr := findPipeline(bridge, c.ControlPlane, name)
 	if base == "" {
+		if ferr != nil {
+			return nil, fmt.Errorf("no pipeline %q (extensions could not be listed: %v)", name, ferr)
+		}
 		return nil, fmt.Errorf("no pipeline %q", name)
 	}
 	p := &Pipeline{}
@@ -1107,18 +1111,20 @@ func (c *Config) locationLayerFor(bridge, location string) layerEntry {
 }
 
 // findPipeline locates a pipeline file: the control plane's, then any extension's.
-func findPipeline(bridge, cp, name string) (path, label string) {
+// The error is what kept the extensions from being listed, which a pipeline not found may be down to.
+func findPipeline(bridge, cp, name string) (path, label string, err error) {
 	f := filepath.Join(cp, "pipelines", name+".yaml")
 	if _, err := os.Stat(f); err == nil {
-		return f, "control-plane:pipelines/" + name + ".yaml"
+		return f, "control-plane:pipelines/" + name + ".yaml", nil
 	}
-	for _, dir := range extensionDirs(bridge, cp) {
+	dirs, err := extensionDirs(bridge, cp)
+	for _, dir := range dirs {
 		f := filepath.Join(dir, "pipelines", name+".yaml")
 		if _, err := os.Stat(f); err == nil {
-			return f, "extension:" + filepath.Base(dir) + "/pipelines/" + name + ".yaml"
+			return f, "extension:" + filepath.Base(dir) + "/pipelines/" + name + ".yaml", nil
 		}
 	}
-	return "", ""
+	return "", "", err
 }
 
 func (p *Pipeline) scope() string {
@@ -1647,8 +1653,15 @@ func (c *Config) findFile(rel string) (string, error) {
 }
 
 func (c *Config) roleExists(role string) bool {
-	_, err := c.findFile("roles/" + role + ".md")
-	return err == nil
+	if _, err := c.findFile("roles/" + role + ".md"); err == nil {
+		return true
+	}
+	for _, dir := range extensionRoleDirs(c.Bridge, c.ControlPlane) {
+		if _, err := os.Stat(filepath.Join(dir, role+".md")); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func yamlUnmarshal(data []byte, out any) error { return yaml.Unmarshal(data, out) }
@@ -1692,7 +1705,9 @@ func (e *brokenExtension) Error() string { return e.err.Error() }
 func scanExtensions(bridge, cp string) (map[string]*Extension, map[string]error) {
 	out := map[string]*Extension{}
 	broken := map[string]error{}
-	for _, dir := range extensionDirs(bridge, cp) {
+	// A folder extensionDirs could not list is reported by its other callers (help, link).
+	dirs, _ := extensionDirs(bridge, cp)
+	for _, dir := range dirs {
 		var b Extension
 		err := readYAML(filepath.Join(dir, "extension.yaml"), &b)
 		switch {
@@ -1774,16 +1789,62 @@ func normalizeYAMLBytes(data []byte) []byte {
 	return []byte(string(utf16.Decode(units)))
 }
 
-func extensionDirs(bridge, cp string) []string {
+// extensionDirs lists the extension folders: the control plane's, then the bridge's. A folder is one with an extension.yaml, found through symlinks. What could not be listed or checked is the error; the folders found are returned with it.
+func extensionDirs(bridge, cp string) ([]string, error) {
 	var out []string
+	var errs []error
 	for _, base := range []string{cp, bridge} {
-		found, _ := filepath.Glob(filepath.Join(base, "extensions", "*", "extension.yaml"))
-		for _, f := range found {
-			out = append(out, filepath.Dir(f))
+		dir := filepath.Join(base, "extensions")
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		for _, e := range entries {
+			d := filepath.Join(dir, e.Name())
+			yamlPath := filepath.Join(d, "extension.yaml")
+			_, err := os.Stat(yamlPath)
+			if errors.Is(err, fs.ErrNotExist) {
+				// A dangling symlink still counts, so it is reported as broken.
+				if _, lerr := os.Lstat(yamlPath); lerr == nil {
+					err = nil
+				}
+			}
+			if err == nil {
+				out = append(out, d)
+				continue
+			}
+			// A stray file in extensions/ makes the stat fail with something other than not-exist (ENOTDIR on Linux).
+			if fi, serr := os.Stat(d); !errors.Is(err, fs.ErrNotExist) && (serr != nil || fi.IsDir()) {
+				errs = append(errs, err)
+			}
 		}
 	}
-	return out
+	return out, errors.Join(errs...)
 }
+
+// filesIn lists the files in dir whose names end in suffix, as paths, in name order. It reads the folder rather than matching a pattern, so brackets in the path mean nothing. A missing dir has none.
+func filesIn(dir, suffix string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), suffix) {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	return out, nil
+}
+
+// flatLine collapses all whitespace, newlines included, to single spaces.
+func flatLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func extensionRoleDirs(bridge, cp string) []string {
 	var out []string
@@ -1794,11 +1855,15 @@ func extensionRoleDirs(bridge, cp string) []string {
 	return out
 }
 
-// brokenRoleLines says, one line each and sorted, which broken or nameless extensions have roles that link leaves out. It walks every extension folder, so a broken file that another extension shadows is still counted: unless, for a file that fails to decode, its key is gone from the broken map, which means a later good extension took its place. A Glob error is a line too.
+// brokenRoleLines says, one line each and sorted, which broken or nameless extensions have roles that link leaves out. It walks every extension folder, so a broken file that another extension shadows is still counted: unless, for a file that fails to decode, its key is gone from the broken map, which means a later good extension took its place. A folder that cannot be listed is a line too.
 func brokenRoleLines(bridge, cp string) []string {
 	_, broken := scanExtensions(bridge, cp)
 	var out []string
-	for _, dir := range extensionDirs(bridge, cp) {
+	dirs, derr := extensionDirs(bridge, cp)
+	if derr != nil {
+		out = append(out, flatLine("Note: could not list all extensions: "+derr.Error()))
+	}
+	for _, dir := range dirs {
 		file := filepath.Join(dir, "extension.yaml")
 		var b Extension
 		err := readYAML(file, &b)
@@ -1815,13 +1880,13 @@ func brokenRoleLines(bridge, cp string) []string {
 				continue
 			}
 		}
-		pattern := filepath.Join(dir, "roles", "*.md")
-		found, gerr := filepath.Glob(pattern)
+		rolesDir := filepath.Join(dir, "roles")
+		found, gerr := filesIn(rolesDir, ".md")
 		switch {
 		case gerr != nil:
-			out = append(out, strings.Join(strings.Fields(fmt.Sprintf("Note: extension %s: could not look for its roles in %s: %v", name, pattern, gerr)), " "))
+			out = append(out, flatLine(fmt.Sprintf("Note: extension %s: could not look for its roles in %s: %v", name, rolesDir, gerr)))
 		case len(found) > 0:
-			out = append(out, strings.Join(strings.Fields(fmt.Sprintf("Note: extension %s is broken, so its roles are not linked: %v", name, err)), " "))
+			out = append(out, flatLine(fmt.Sprintf("Note: extension %s is broken, so its roles are not linked: %v", name, err)))
 		}
 	}
 	sort.Strings(out)

@@ -1175,7 +1175,7 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 }
 
 // stageRoleAnywhere reports whether role is a stage role, not free, in a live run's
-// pipeline or in a pipeline file of the bridge's control plane and extensions. It also returns the pipeline files and Glob patterns it could not read, one line each, which stop it ruling the role out.
+// pipeline or in a pipeline file of the bridge's control plane and extensions. It also returns what it could not read, one line each (pipeline files, folders, or all of them when the bridge's own files can't be read), which stop it ruling the role out. A bridge with no bridge.yaml has none.
 func stageRoleAnywhere(bridge, role string) (bool, []string) {
 	if role == "" {
 		return false, nil
@@ -1195,23 +1195,30 @@ func stageRoleAnywhere(bridge, role string) (bool, []string) {
 	}
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
-		return false, nil
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, []string{flatLine("all extensions and pipelines: " + err.Error())}
 	}
 	cp, err := controlPlaneDir(bridge, bf)
 	if err != nil {
-		return false, nil
+		return false, []string{flatLine("all extensions and pipelines: " + err.Error())}
 	}
 	var unread []string
-	glob := func(pattern string) []string {
-		found, err := filepath.Glob(pattern)
+	glob := func(dir string) []string {
+		found, err := filesIn(dir, ".yaml")
 		if err != nil {
-			unread = append(unread, fmt.Sprintf("%s: %v", pattern, err))
+			unread = append(unread, flatLine(fmt.Sprintf("%s: %v", dir, err)))
 		}
 		return found
 	}
-	files := glob(filepath.Join(cp, "pipelines", "*.yaml"))
-	for _, dir := range extensionDirs(bridge, cp) {
-		files = append(files, glob(filepath.Join(dir, "pipelines", "*.yaml"))...)
+	files := glob(filepath.Join(cp, "pipelines"))
+	dirs, derr := extensionDirs(bridge, cp)
+	if derr != nil {
+		unread = append(unread, flatLine("all extensions: "+derr.Error()))
+	}
+	for _, dir := range dirs {
+		files = append(files, glob(filepath.Join(dir, "pipelines"))...)
 	}
 	for _, f := range files {
 		var p Pipeline
@@ -1222,4 +1229,35 @@ func stageRoleAnywhere(bridge, role string) (bool, []string) {
 		}
 	}
 	return false, unread
+}
+
+// readOnlyRole reports whether the role's definition in the bridge's .claude/agents, the file Claude Code uses, grants only Read, Grep, Glob and Bash. It fails closed: no file, no tools line, an empty list or any other tool is not read-only.
+func readOnlyRole(bridge, role string) bool {
+	if role == "" || strings.ContainsAny(role, `/\:`) || strings.Contains(role, "..") {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(bridge, ".claude", "agents", role+".md"))
+	if err != nil {
+		return false
+	}
+	m := frontmatterToolsLoc(data)
+	if m == nil {
+		return false
+	}
+	value := strings.TrimSpace(string(data[m[4]:m[5]]))
+	if value == "" {
+		return false
+	}
+	// A continuation line would give the agent tools this line does not show.
+	if parsed, err := frontmatterToolsValue(role, data); err != nil || parsed != value {
+		return false
+	}
+	for _, tool := range strings.Split(value, ",") {
+		switch strings.TrimSpace(tool) {
+		case "Read", "Grep", "Glob", "Bash":
+		default:
+			return false
+		}
+	}
+	return true
 }

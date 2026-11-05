@@ -73,8 +73,12 @@ func focalFile(bridge, rel string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	x := availableExtensions(bridge, cp)[focalExtension]
+	good, broken := scanExtensions(bridge, cp)
+	x := good[focalExtension]
 	if x == nil {
+		if berr := broken[focalExtension]; berr != nil {
+			return "", fmt.Errorf("the %s extension is broken: %w", focalExtension, berr)
+		}
 		return "", fmt.Errorf("the %s extension has no %s", focalExtension, rel)
 	}
 	data, err := os.ReadFile(filepath.Join(x.dir, filepath.FromSlash(rel)))

@@ -448,3 +448,21 @@ func TestFocalBriefsKeepTheirRules(t *testing.T) {
 		}
 	}
 }
+
+func TestFocalFileNamesABrokenExtension(t *testing.T) {
+	w := newWorld(t)
+	cp := t.TempDir()
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+cp+"\n")
+	if _, err := focalFile(w.bridge, "briefs/x.md"); err == nil || !strings.Contains(err.Error(), "has no") || strings.Contains(err.Error(), "broken") {
+		t.Errorf("absent extension: %v", err)
+	}
+	write(t, filepath.Join(cp, "extensions", "my-focal", "extension.yaml"), "name: focal-sheet\nsummary: [a\n")
+	if _, err := focalFile(w.bridge, "briefs/x.md"); err == nil || !strings.Contains(err.Error(), "is broken") {
+		t.Errorf("broken extension: %v", err)
+	}
+	write(t, filepath.Join(cp, "extensions", "my-focal", "extension.yaml"), "name: focal-sheet\n")
+	write(t, filepath.Join(cp, "extensions", "my-focal", "briefs", "x.md"), "text\n")
+	if got, err := focalFile(w.bridge, "briefs/x.md"); err != nil || got != "text\n" {
+		t.Errorf("readable extension: %q, %v", got, err)
+	}
+}
