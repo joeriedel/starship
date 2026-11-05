@@ -118,7 +118,11 @@ release (a tag), then each bridge updates
   into ensign so it runs the same on every platform; it needs git and a signed-in `gh`.
   Each step is its own: `@branch` at `run.start` moves the workspace to `task/<name>`,
   created from the default branch the first time, and a run won't start over
-  uncommitted work on another branch; before the test stage, the run's changes are
+  uncommitted work on another branch; an existing task branch that is behind the default
+  branch is fast-forwarded to it if it has no commits of its own (uncommitted work that
+  doesn't overlap the incoming commits is kept, and overlap refuses the run), and is
+  refused if it has, unless the run starts with `--stale-branch`, which takes the branch as
+  it is; before the test stage, the run's changes are
   committed on the task branch; the tests are the project's own `@test`; and when the run
   passes, the tested commit is recorded and noted in the finish message. Nothing is pushed
   or opened by the run. A project whose tests
