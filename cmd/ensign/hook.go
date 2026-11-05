@@ -1096,12 +1096,15 @@ func processBaseline(bridge, pid, source, connectors, agents string) (string, st
 	return connectors, agents
 }
 
+// carryBind binds a run to the session that continues its own; a variable so a test can fail it.
+var carryBind = bindSession
+
 // carryOverSession binds a restarted session to the live run of the session it continues.
 // It assumes a resumed or compacted session's transcript still holds records
 // stamped with the earlier session's id; a cleared session's does not, see below. A failure to read the earlier session's runs is
 // returned for SessionStart to report; SessionStart never fails over this.
 // A run whose setup file could not be written is still carried over, and that error is returned too.
-// A sequence that could not be moved is returned too, and the runs are still carried; a run whose rebind could not be saved stays on the earlier session and is reported to this one, see reportRebindFailures.
+// A sequence that could not be moved is returned too, and the runs are still carried; a run that could not be opened or bound, or whose rebind could not be saved, stays on the earlier session and is reported to this one, see reportRebindFailures; a run whose folder is gone is skipped. A run that stays is moved again only if a later session start or an agent hook happens to reach it; a run already reported by an earlier prior in this call is skipped in the later ones.
 // A clear leaves no records under the earlier id in the new transcript, so prev, the id the session's CLAUDE_PID last started under, is tried first; it counts only for a clear to a different id, and then the task is carried even with no live run.
 func carryOverSession(bridge string, in *HookInput, prev string) error {
 	switch in.Source {
@@ -1136,8 +1139,9 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 		priors = kept
 	}
 	var errs []error
+	reported := map[string]bool{}
 	for _, old := range priors {
-		if err := carrySequence(bridge, old, in.SessionID); err != nil {
+		if err := carrySequence(bridge, old, in.SessionID, reported); err != nil {
 			errs = append(errs, err)
 		}
 		carried := false
@@ -1148,8 +1152,15 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 		}
 		var failed []rebindFail
 		for _, id := range ids {
+			if reported[id] {
+				continue
+			}
 			r, err := openRun(bridge, id)
 			if err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					failed = append(failed, rebindFail{id, err, rebindMayMove})
+					reported[id] = true
+				}
 				continue
 			}
 			switch {
@@ -1157,8 +1168,10 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 			case r.State.Session == in.SessionID:
 				carried = true
 			default:
-				bindErr := bindSession(bridge, in.SessionID, id)
+				bindErr := carryBind(bridge, in.SessionID, id)
 				if bindErr != nil && !errors.Is(bindErr, errSetupFile) {
+					failed = append(failed, rebindFail{id, bindErr, rebindMayMove})
+					reported[id] = true
 					break
 				}
 				if bindErr != nil {
@@ -1172,7 +1185,7 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 				r.State.Session = in.SessionID
 				r.State.log("rebound", "", "", fmt.Sprintf("%s%s (%s)", reboundPrefix(old), in.SessionID, in.Source))
 				if err := r.save(); err != nil {
-					failed = append(failed, rebindFail{id, err})
+					failed = append(failed, rebindFail{id, err, rebindSaveFailed})
 				}
 			}
 			r.close()

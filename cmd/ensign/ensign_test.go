@@ -1719,6 +1719,49 @@ func TestSessionStartCarriesBindingOver(t *testing.T) {
 	}
 }
 
+func TestSessionStartNotReadyStillShowsACarryFailure(t *testing.T) {
+	w := newWorld(t)
+	w.startLead()
+	run := w.state().Run
+	rec, _ := json.Marshal(map[string]any{"type": "user", "sessionId": "s1"})
+	write(t, w.session, string(rec)+"\n")
+	old := carryBind
+	t.Cleanup(func() { carryBind = old })
+	carryBind = func(string, string, string) error { return errors.New("session file busy") }
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "{not yaml: [")
+	w.sid = "s2"
+	reply, code := w.hook("SessionStart", map[string]any{"source": "resume"})
+	if code != 0 {
+		t.Fatalf("SessionStart exited %d", code)
+	}
+	data, _ := json.Marshal(reply)
+	out := string(data)
+	if !strings.Contains(out, "this bridge is not ready") || !strings.Contains(out, "could not carry the earlier session's runs over") || !strings.Contains(out, run) {
+		t.Errorf("the not-ready context should carry the failure:\n%s", out)
+	}
+}
+
+func TestSessionStartEnvFileFailureStillShowsACarryFailure(t *testing.T) {
+	w := newWorld(t)
+	w.startLead()
+	run := w.state().Run
+	rec, _ := json.Marshal(map[string]any{"type": "user", "sessionId": "s1"})
+	write(t, w.session, string(rec)+"\n")
+	old := carryBind
+	t.Cleanup(func() { carryBind = old })
+	carryBind = func(string, string, string) error { return errors.New("session file busy") }
+	t.Setenv("CLAUDE_ENV_FILE", t.TempDir())
+	w.sid = "s2"
+	reply, code := w.hook("SessionStart", map[string]any{"source": "resume"})
+	if code != 2 {
+		t.Fatalf("SessionStart exited %d, want 2", code)
+	}
+	stderr := dig(reply, "stderr")
+	if !strings.Contains(stderr, "could not record the session id") || !strings.Contains(stderr, "could not carry the earlier session's runs over") || !strings.Contains(stderr, run) {
+		t.Errorf("stderr should carry the failure:\n%s", stderr)
+	}
+}
+
 func TestLastSeenAndStatus(t *testing.T) {
 	w := newWorld(t)
 	lead := w.startLead()

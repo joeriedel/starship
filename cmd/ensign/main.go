@@ -450,6 +450,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		}
 		if err != nil {
 			fmt.Fprintln(stderr, "starship: could not record the session id:", err)
+			if carryErr != nil {
+				fmt.Fprintf(stderr, "starship: could not carry the earlier session's runs over: %v\n", carryErr)
+			}
 			return 2
 		}
 	}
@@ -462,13 +465,19 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		})
 		return 0
 	}
+	notReady := func(err error) int {
+		context := fmt.Sprintf("starship: this bridge is not ready: %v", err)
+		if carryErr != nil {
+			context += fmt.Sprintf("\nstarship: could not carry the earlier session's runs over: %v", carryErr)
+		}
+		return reply("Starship is not ready in this bridge. Ask Claude to set it up.", context)
+	}
 	bf, err := loadBridgeFile(bridge)
 	if err == nil {
 		_, err = controlPlaneDir(bridge, bf)
 	}
 	if err != nil {
-		return reply("Starship is not ready in this bridge. Ask Claude to set it up.",
-			fmt.Sprintf("starship: this bridge is not ready: %v", err))
+		return notReady(err)
 	}
 	var ctx strings.Builder
 	if in.SessionID != "" {
@@ -495,8 +504,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	if linkStale(bridge) && len(liveRuns(bridge)) == 0 {
 		if err := link(bridge, false, nil); err != nil {
-			return reply("Starship is not ready in this bridge. Ask Claude to set it up.",
-				fmt.Sprintf("starship: this bridge is not ready: %v", err))
+			return notReady(err)
 		}
 	}
 	addGitattributes(bridge)
@@ -507,12 +515,10 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	// The sync may have pulled a changed bridge.yaml, which the settings must follow.
 	if bf, err = loadBridgeFile(bridge); err != nil {
-		return reply("Starship is not ready in this bridge. Ask Claude to set it up.",
-			fmt.Sprintf("starship: this bridge is not ready: %v", err))
+		return notReady(err)
 	}
 	if err := upgradeHookSettings(bridge, bf); err != nil {
-		return reply("Starship is not ready in this bridge. Ask Claude to set it up.",
-			fmt.Sprintf("starship: this bridge is not ready: %v", err))
+		return notReady(err)
 	}
 	after, _ := os.ReadFile(settingsFile)
 	restart := connectorsFrom != connectorSignature(string(after))

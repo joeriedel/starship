@@ -1808,17 +1808,38 @@ func sequenceStop(bridge string, in *HookInput) any {
 // seqRename moves a sequence file to the session that continues it; a variable so a test can fail it.
 var seqRename = renameRetry
 
-// rebindFail is a run whose rebind to the new session could not be saved.
+// rebindHow says what can still move a run whose move to the new session failed, which decides what its report tells the user.
+type rebindHow int
+
+const (
+	// rebindQueued is a queued run of a moved sequence: it is not in the new session's file, and a repeat carry returns early because the sequence has moved.
+	rebindQueued rebindHow = iota
+	// rebindSaveFailed is a run the new session's file lists, because its save failed; an agent hook can finish the move.
+	rebindSaveFailed
+	// rebindMayMove is a run the new session's file does not list, because its open or bind failed; a later SessionStart in the session or a hook from one of the run's agents may carry it, but nothing is sure to.
+	rebindMayMove
+)
+
+// rebindFail is a run that could not be moved to the new session.
 type rebindFail struct {
 	run string
 	err error
+	how rebindHow
 }
 
-// reportRebindFailures tells the session of runs that stay on the old session because their rebind could not be saved, with no promise of a retry. The queued report is the route when the session has a sequence to queue on; with no file or an empty one, or when the queue fails, the returned error is, so each failure reaches the session once. Call it with no run lock held and outside withSeq.
+// reportRebindFailures tells the session of runs that stay on the old session because their move failed, and for each what can still move it, see rebindHow. The queued report is the route when the session has a sequence to queue on; with no file or an empty one, or when the queue fails, the returned error is, so each failure reaches the session once. Call it with no run lock held and outside withSeq.
 func reportRebindFailures(bridge, session string, fails []rebindFail) error {
 	var errs []error
 	for _, f := range fails {
-		msg := fmt.Sprintf("run %s could not be moved to this session and stays on the earlier session; starship does not retry: %s", f.run, oneLine(f.err))
+		var msg string
+		switch f.how {
+		case rebindSaveFailed:
+			msg = fmt.Sprintf("run %s's move to this session could not be saved and it stays on the earlier session for now; the next hook from one of its agents can move it: %s", f.run, oneLine(f.err))
+		case rebindMayMove:
+			msg = fmt.Sprintf("run %s could not be moved to this session and stays on the earlier session for now; a later session start or a hook from one of its agents may move it, but nothing is sure to: %s", f.run, oneLine(f.err))
+		default:
+			msg = fmt.Sprintf("run %s could not be moved to this session and stays on the earlier session; starship does not retry: %s", f.run, oneLine(f.err))
+		}
 		switch qerr := queueSequenceFailure(bridge, session, f.run, msg); {
 		case qerr == nil:
 		case errors.Is(qerr, errNoSequence):
@@ -1830,8 +1851,8 @@ func reportRebindFailures(bridge, session string, fails []rebindFail) error {
 	return errors.Join(errs...)
 }
 
-// carrySequence moves a session's sequence to the session that continues it, and points the runs that are not bound to the old session at the new one. A sequence that could not be moved stays on the old session and is returned, not retried. A run whose rebind could not be saved is reported to the session and the rest are still rebound.
-func carrySequence(bridge, old, session string) error {
+// carrySequence moves a session's sequence to the session that continues it, and points the runs that are not bound to the old session at the new one. A sequence that could not be moved stays on the old session and is returned, not retried. A run that could not be opened or whose rebind could not be saved is reported to the session and the rest are still rebound; a run whose folder is gone is skipped. Each run it reports is marked in reported, and a run already in reported is not reported again, so a run is reported once per carry.
+func carrySequence(bridge, old, session string, reported map[string]bool) error {
 	if !seqExists(bridge, old) || seqExists(bridge, session) {
 		return nil
 	}
@@ -1870,15 +1891,22 @@ func carrySequence(bridge, old, session string) error {
 	}
 	var failed []rebindFail
 	for _, id := range ids {
-		if r, err := openRun(bridge, id); err == nil {
-			if r.State.Session == old {
-				r.State.Session = session
-				if err := r.save(); err != nil {
-					failed = append(failed, rebindFail{id, err})
-				}
+		r, err := openRun(bridge, id)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) && !reported[id] {
+				failed = append(failed, rebindFail{id, err, rebindQueued})
+				reported[id] = true
 			}
-			r.close()
+			continue
 		}
+		if r.State.Session == old {
+			r.State.Session = session
+			if err := r.save(); err != nil && !reported[id] {
+				failed = append(failed, rebindFail{id, err, rebindQueued})
+				reported[id] = true
+			}
+		}
+		r.close()
 	}
 	return reportRebindFailures(bridge, session, failed)
 }

@@ -3802,7 +3802,7 @@ func TestCarrySequenceDoesNotHoldTheSequenceLockWhileWaitingForARun(t *testing.T
 	}
 	before := info.Size()
 	carried := make(chan error, 1)
-	go func() { carried <- carrySequence(w.bridge, w.sid, "s2") }()
+	go func() { carried <- carrySequence(w.bridge, w.sid, "s2", map[string]bool{}) }()
 	reset := false
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 		if info, err := os.Stat(seqPath(w.bridge, "s2")); err == nil && info.Size() != before {
@@ -4358,7 +4358,7 @@ func carryWorld(t *testing.T) (*world, []string) {
 func TestCarrySequenceQueuesARunItCouldNotRebindAndCarriesTheRest(t *testing.T) {
 	w, ids := carryWorld(t)
 	w.blockSave(ids[1])
-	if err := carrySequence(w.bridge, w.sid, "s2"); err != nil {
+	if err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{}); err != nil {
 		t.Fatalf("a queued failure is not also returned: %v", err)
 	}
 	if !seqExists(w.bridge, "s2") {
@@ -4368,14 +4368,30 @@ func TestCarrySequenceQueuesARunItCouldNotRebindAndCarriesTheRest(t *testing.T) 
 	for _, seq := range readSeq(w.bridge, "s2").Sequences {
 		report += seq.Report
 	}
-	if !strings.Contains(report, ids[1]) || strings.Contains(report, ids[2]) || !strings.Contains(report, "stays on the earlier session") {
-		t.Errorf("the new session's report should name the second run only:\n%s", report)
+	if !strings.Contains(report, ids[1]) || strings.Contains(report, ids[2]) || !strings.Contains(report, "stays on the earlier session") || !strings.Contains(report, "does not retry") {
+		t.Errorf("the new session's report should name the second run only and say it is not retried:\n%s", report)
 	}
 	if got := w.runState(ids[2]).Session; got != "s2" {
 		t.Errorf("the third run should be carried: %s", got)
 	}
 	if got := w.runState(ids[1]).Session; got != "s1" {
 		t.Errorf("the second run stays on the old session: %s", got)
+	}
+}
+
+func TestCarrySequenceDoesNotReportARunAnEarlierPriorAlreadyReported(t *testing.T) {
+	w, ids := carryWorld(t)
+	w.corruptRun(ids[1])
+	if err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{ids[1]: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, seq := range readSeq(w.bridge, "s2").Sequences {
+		if seq.Report != "" {
+			t.Errorf("no failure should be reported for a run already reported:\n%s", seq.Report)
+		}
+	}
+	if got := w.runState(ids[2]).Session; got != "s2" {
+		t.Errorf("the third run should still be carried: %s", got)
 	}
 }
 
@@ -4393,6 +4409,9 @@ func TestCarryOverReturnsASaveFailureWhenTheSessionHasNoSequenceAndRebindsTheRes
 	err := carryOverSession(w.bridge, in, "")
 	if err == nil || !strings.Contains(err.Error(), ids[0]) || strings.Contains(err.Error(), ids[1]) || strings.Contains(err.Error(), ids[2]) {
 		t.Fatalf("the error should name the first run only: %v", err)
+	}
+	if !strings.Contains(err.Error(), "can move it") || strings.Contains(err.Error(), "does not retry") {
+		t.Errorf("a failed save is listed, so an agent hook can move it: %v", err)
 	}
 	for _, id := range ids[1:] {
 		if got := w.runState(id).Session; got != "s2" {
@@ -4417,11 +4436,164 @@ func TestCarryOverReturnsASaveFailureWhenTheSessionHasAnEmptySequenceFile(t *tes
 	if err == nil || !strings.Contains(err.Error(), ids[0]) || strings.Contains(err.Error(), ids[1]) || strings.Contains(err.Error(), errNoSequence.Error()) {
 		t.Fatalf("the error should name the first run only: %v", err)
 	}
+	if !strings.Contains(err.Error(), "can move it") || strings.Contains(err.Error(), "does not retry") {
+		t.Errorf("a failed save is listed, so an agent hook can move it: %v", err)
+	}
 	if !seqExists(w.bridge, "s2") || len(readSeq(w.bridge, "s2").Sequences) != 0 {
 		t.Error("the empty sequence file should have moved unchanged")
 	}
 	if got := w.runState(ids[1]).Session; got != "s2" {
 		t.Errorf("run %s should be rebound: %s", ids[1], got)
+	}
+}
+
+func (w *world) corruptRun(id string) {
+	w.t.Helper()
+	write(w.t, filepath.Join(runsDir(w.bridge), id, "state.json"), "{not json")
+}
+
+func (w *world) carryAllFromS1(ids []string) (*HookInput, error) {
+	w.t.Helper()
+	if err := editSessionRuns(w.bridge, w.sid, func([]string) []string { return slices.Clone(ids) }); err != nil {
+		w.t.Fatal(err)
+	}
+	if err := os.Remove(seqPath(w.bridge, w.sid)); err != nil {
+		w.t.Fatal(err)
+	}
+	write(w.t, w.session, `{"sessionId":"s1"}`+"\n")
+	return &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session}, nil
+}
+
+func TestCarryOverReportsAnUnreadableRunAndCarriesTheRest(t *testing.T) {
+	w, ids := carryWorld(t)
+	in, _ := w.carryAllFromS1(ids)
+	w.corruptRun(ids[1])
+	err := carryOverSession(w.bridge, in, "")
+	if err == nil || !strings.Contains(err.Error(), ids[1]) || strings.Contains(err.Error(), ids[2]) || !strings.Contains(err.Error(), "nothing is sure to") || strings.Contains(err.Error(), "does not retry") {
+		t.Fatalf("the error should name the unreadable run only, as one that may still move: %v", err)
+	}
+	for _, id := range []string{ids[0], ids[2]} {
+		if got := w.runState(id).Session; got != "s2" {
+			t.Errorf("run %s should be carried: %s", id, got)
+		}
+	}
+}
+
+func TestCarryOverReportsAnUnreadableRunListedByTwoPriorsOnce(t *testing.T) {
+	w, ids := carryWorld(t)
+	in, _ := w.carryAllFromS1(ids)
+	if err := editSessionRuns(w.bridge, "s1", func([]string) []string { return []string{ids[1]} }); err != nil {
+		t.Fatal(err)
+	}
+	if err := editSessionRuns(w.bridge, "s0", func([]string) []string { return []string{ids[1], ids[2]} }); err != nil {
+		t.Fatal(err)
+	}
+	write(t, w.session, `{"sessionId":"s0"}`+"\n"+`{"sessionId":"s1"}`+"\n")
+	w.corruptRun(ids[1])
+	err := carryOverSession(w.bridge, in, "")
+	if err == nil || strings.Count(err.Error(), "could not be moved to this session") != 1 {
+		t.Fatalf("the unreadable run should be reported once: %v", err)
+	}
+	if got := w.runState(ids[2]).Session; got != "s2" {
+		t.Errorf("the live run listed by the second prior should be carried: %s", got)
+	}
+}
+
+func TestCarryOverDoesNotReportAQueuedFailureAgainFromALaterPrior(t *testing.T) {
+	w, ids := carryWorld(t)
+	if err := editSessionRuns(w.bridge, w.sid, func([]string) []string { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := editSessionRuns(w.bridge, "s0", func([]string) []string { return []string{ids[1]} }); err != nil {
+		t.Fatal(err)
+	}
+	write(t, w.session, `{"sessionId":"s0"}`+"\n"+`{"sessionId":"s1"}`+"\n")
+	w.corruptRun(ids[1])
+	in := &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session}
+	if err := carryOverSession(w.bridge, in, ""); err != nil {
+		t.Fatalf("the queued report is not also returned: %v", err)
+	}
+	var report string
+	for _, seq := range readSeq(w.bridge, "s2").Sequences {
+		report += seq.Report
+	}
+	if n := strings.Count(report, "could not be moved to this session"); n != 1 || !strings.Contains(report, ids[1]) || !strings.Contains(report, "does not retry") || strings.Contains(report, "nothing is sure to") {
+		t.Errorf("the unreadable run should be reported once, as not retried, got %d:\n%s", n, report)
+	}
+}
+
+func TestCarryOverSkipsARunWhoseFolderIsGone(t *testing.T) {
+	w, ids := carryWorld(t)
+	in, _ := w.carryAllFromS1(ids)
+	if err := os.RemoveAll(filepath.Join(runsDir(w.bridge), ids[1])); err != nil {
+		t.Fatal(err)
+	}
+	if err := carryOverSession(w.bridge, in, ""); err != nil {
+		t.Fatalf("a run that no longer exists is not a failed move: %v", err)
+	}
+	if got := w.runState(ids[2]).Session; got != "s2" {
+		t.Errorf("run %s should be carried: %s", ids[2], got)
+	}
+}
+
+func TestCarryOverReportsAFailedBindAndCarriesTheRest(t *testing.T) {
+	w, ids := carryWorld(t)
+	in, _ := w.carryAllFromS1(ids)
+	old := carryBind
+	t.Cleanup(func() { carryBind = old })
+	carryBind = func(bridge, session, run string) error {
+		if run == ids[1] {
+			return errors.New("session file busy")
+		}
+		return old(bridge, session, run)
+	}
+	err := carryOverSession(w.bridge, in, "")
+	if err == nil || !strings.Contains(err.Error(), ids[1]) || strings.Contains(err.Error(), ids[2]) || !strings.Contains(err.Error(), "session file busy") || !strings.Contains(err.Error(), "nothing is sure to") || strings.Contains(err.Error(), "does not retry") {
+		t.Fatalf("the error should name the unbound run only, as one that may still move: %v", err)
+	}
+	if got := w.runState(ids[1]).Session; got != "s1" {
+		t.Errorf("the unbound run stays on the old session: %s", got)
+	}
+	for _, id := range []string{ids[0], ids[2]} {
+		if got := w.runState(id).Session; got != "s2" {
+			t.Errorf("run %s should be carried: %s", id, got)
+		}
+	}
+}
+
+func TestCarrySequenceReportsAnUnreadableQueuedRunAndCarriesTheRest(t *testing.T) {
+	w, ids := carryWorld(t)
+	w.corruptRun(ids[1])
+	if err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{}); err != nil {
+		t.Fatalf("a queued failure is not also returned: %v", err)
+	}
+	var report string
+	for _, seq := range readSeq(w.bridge, "s2").Sequences {
+		report += seq.Report
+	}
+	if !strings.Contains(report, ids[1]) || strings.Contains(report, ids[2]) || !strings.Contains(report, "does not retry") {
+		t.Errorf("the report should name the unreadable run only:\n%s", report)
+	}
+	if got := w.runState(ids[2]).Session; got != "s2" {
+		t.Errorf("the third run should be carried: %s", got)
+	}
+}
+
+func TestCarrySequenceSkipsAQueuedRunWhoseFolderIsGone(t *testing.T) {
+	w, ids := carryWorld(t)
+	if err := os.RemoveAll(filepath.Join(runsDir(w.bridge), ids[1])); err != nil {
+		t.Fatal(err)
+	}
+	if err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, seq := range readSeq(w.bridge, "s2").Sequences {
+		if strings.Contains(seq.Report, ids[1]) {
+			t.Errorf("a run that no longer exists is not reported:\n%s", seq.Report)
+		}
+	}
+	if got := w.runState(ids[2]).Session; got != "s2" {
+		t.Errorf("the third run should be carried: %s", got)
 	}
 }
 
@@ -4435,7 +4607,7 @@ func failRename(t *testing.T) {
 func TestCarrySequenceReturnsAFailedRenameAndLeavesTheSequenceOnTheOldSession(t *testing.T) {
 	w, _ := carryWorld(t)
 	failRename(t)
-	err := carrySequence(w.bridge, w.sid, "s2")
+	err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{})
 	if err == nil || !strings.Contains(err.Error(), "sharing violation") || !strings.Contains(err.Error(), w.sid) || !strings.Contains(err.Error(), "s2") {
 		t.Fatalf("the failed move should be returned: %v", err)
 	}
@@ -4456,7 +4628,7 @@ func TestCarrySequenceTakesAnAlreadyMovedSequenceForDone(t *testing.T) {
 	old := seqRename
 	t.Cleanup(func() { seqRename = old })
 	seqRename = func(string, string) error { return os.ErrNotExist }
-	if err := carrySequence(w.bridge, w.sid, "s2"); err != nil {
+	if err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{}); err != nil {
 		t.Errorf("a sequence that is already gone is not a failure: %v", err)
 	}
 }
@@ -4464,7 +4636,7 @@ func TestCarrySequenceTakesAnAlreadyMovedSequenceForDone(t *testing.T) {
 func TestRebindFailuresFallBackToTheReturnedErrorWhenTheQueueFails(t *testing.T) {
 	w, _ := carryWorld(t)
 	t.Setenv(lockHeldEnv, w.sid)
-	err := reportRebindFailures(w.bridge, w.sid, []rebindFail{{"20260101-000000-supernova", errors.New("disk full")}})
+	err := reportRebindFailures(w.bridge, w.sid, []rebindFail{{"20260101-000000-supernova", errors.New("disk full"), rebindSaveFailed}})
 	if err == nil || !strings.Contains(err.Error(), "20260101-000000-supernova") || !strings.Contains(err.Error(), "disk full") || !strings.Contains(err.Error(), "sequence lock") {
 		t.Errorf("the failure should come back with the queue's error: %v", err)
 	}
