@@ -16,6 +16,8 @@ Create a file when first needed. Keep notes short and factual. Long material sta
 
 The user adds notes by telling you. File each in the place above, commit with `ensign journal commit -m "<message>"`, and ask one short question if the place is unclear.
 
+When you move a note out of a journal-off project (`projects/supernova/...` into `notes/`), the no-path commit leaves the source's deletion uncommitted; follow the section "A journal-off project's files" of `ensign help journal`.
+
 ## Inbox
 
 `notes/inbox.md` holds unsorted notes the user edits from anywhere, such as a phone. When session start says it holds something, sort each item into its place by the rules above first, leave the file blank (keep it), and commit. Ask one short question about an unclear item and leave that item in the inbox until answered.
