@@ -66,7 +66,7 @@ func loadSubtasks(taskDir string) ([]subtask, error) {
 			if err != nil {
 				return nil, err
 			}
-			if err := yamlUnmarshal(front, &meta); err != nil {
+			if err := decodeFrontmatter(front, &meta); err != nil {
 				return nil, fmt.Errorf("%s: %v", path, err)
 			}
 			body = string(rest)
@@ -240,7 +240,7 @@ func pickSubtask(bridge string, o runOpts) (*chosenSubtask, error) {
 		return nil, fmt.Errorf("task %q: %v", o.task, err)
 	}
 	var tf TaskFile
-	if err := yamlUnmarshal(front, &tf); err != nil {
+	if err := decodeFrontmatter(front, &tf); err != nil {
 		return nil, err
 	}
 	if err := checkSubtasks(subs, tf.Locations); err != nil {

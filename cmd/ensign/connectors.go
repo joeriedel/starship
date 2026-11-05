@@ -8,8 +8,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 var connectorToolRe = regexp.MustCompile(`^mcp__[A-Za-z0-9_.-]+__[A-Za-z0-9_.-]+$`)
@@ -114,7 +112,7 @@ func frontmatterMcpServers(label string, data []byte) (has bool, name string, er
 		return false, "", err
 	}
 	var fm map[string]any
-	if err := yaml.Unmarshal(front, &fm); err != nil {
+	if err := decodeFrontmatter(front, &fm); err != nil {
 		return false, "", fmt.Errorf("%s: frontmatter: %v", label, err)
 	}
 	_, has = fm["mcpServers"]

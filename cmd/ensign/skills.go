@@ -63,7 +63,7 @@ func assembleSkill(bridge, cp, project, name string) (*SkillDelivery, error) {
 		}
 		found = true
 		var m skillMeta
-		if err := yaml.Unmarshal(front, &m); err != nil {
+		if err := decodeFrontmatter(front, &m); err != nil {
 			return nil, fmt.Errorf("%s: %v", f, err)
 		}
 		if m.Replace {

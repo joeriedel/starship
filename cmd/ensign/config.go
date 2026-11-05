@@ -545,6 +545,11 @@ func (c *Config) addRules(n *yaml.Node, label string) error {
 	return nil
 }
 
+// decodeFrontmatter decodes the front returned by splitFrontmatter; the leading newline stands in for the dropped opening --- line, so node lines are file lines.
+func decodeFrontmatter(front []byte, out any) error {
+	return yaml.Unmarshal(append([]byte("\n"), front...), out)
+}
+
 func splitFrontmatter(path string) (front, body []byte, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

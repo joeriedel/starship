@@ -322,7 +322,7 @@ func withDeclaredTools(label string, data []byte, declared []string) ([]byte, er
 	var fm struct {
 		Tools any `yaml:"tools"`
 	}
-	if err := yaml.Unmarshal(front, &fm); err != nil {
+	if err := decodeFrontmatter(front, &fm); err != nil {
 		return nil, fmt.Errorf("%s: frontmatter: %v", label, err)
 	}
 	// YAML must read the line as the very string the text edit sees: quotes, comments, flow or block forms, continuation lines and null all read differently.
@@ -1015,7 +1015,7 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 		return err
 	}
 	var tf TaskFile
-	if err := yamlUnmarshal(front, &tf); err != nil {
+	if err := decodeFrontmatter(front, &tf); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "task       %s\n", task)
