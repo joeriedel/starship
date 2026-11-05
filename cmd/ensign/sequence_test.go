@@ -561,6 +561,54 @@ func TestSequenceFailedRunWaitsForADecisionAndStopHoldsTheTurnOnce(t *testing.T)
 	}
 }
 
+func TestSequenceDecisionKeepsALaterSequencesStepFromHoldingTheTurn(t *testing.T) {
+	for _, kind := range []string{"do", "release"} {
+		for _, goBeforeFailure := range []bool{true, false} {
+			name := kind + "/go after the decision"
+			if goBeforeFailure {
+				name = kind + "/go while step 1 is active"
+			}
+			t.Run(name, func(t *testing.T) {
+				w := releaseWorld(t, 0)
+				w.mustSeq("run", "supernova/auth-refactor")
+				w.approve()
+				lead, _ := w.spawn("", "", "orchestrator")
+				if kind == "do" {
+					w.mustSeq("do", "write to the user")
+				} else {
+					w.mustSeq("release", "supernova", "1.0.0")
+				}
+				if goBeforeFailure {
+					w.goContext()
+				}
+				w.failRun(lead)
+				w.wantStatus("decide", "pending")
+				if !goBeforeFailure {
+					w.goContext()
+				}
+				res := w.stopHook()
+				reason, _ := res["reason"].(string)
+				if res["decision"] != "block" || !strings.Contains(reason, "sequence retry 1") || !strings.Contains(reason, "sequence accept 1") {
+					t.Fatalf("the Stop hook should hold the turn and name both commands: %v", res)
+				}
+				for i := 0; i < seqStopBudget+1; i++ {
+					if res := w.stopHook(); res["decision"] == "block" {
+						t.Errorf("stop %d: the session has been told, so the later sequence's step must not hold the turn: %v", i+2, res)
+					}
+				}
+				w.wantStatus("decide", "pending")
+				if st := w.step(2); st.Blocks != 0 {
+					t.Errorf("the later step never started, so it spent %d blocks", st.Blocks)
+				}
+				if kind == "do" {
+					w.mustSeq("accept", "1")
+					w.wantStatus("failed", "active")
+				}
+			})
+		}
+	}
+}
+
 func TestSequenceRetriedStepThatFailsAgainIsHeldOnceMore(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("run", "supernova/auth-refactor")
