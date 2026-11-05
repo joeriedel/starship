@@ -1931,11 +1931,9 @@ func extensionDirs(bridge, cp string) ([]string, error) {
 	var errs []error
 	for _, base := range []string{cp, bridge} {
 		dir := filepath.Join(base, "extensions")
-		entries, err := os.ReadDir(dir)
+		entries, err := readDirIfAny(dir)
 		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				errs = append(errs, err)
-			}
+			errs = append(errs, err)
 			continue
 		}
 		for _, e := range entries {
@@ -1961,13 +1959,22 @@ func extensionDirs(bridge, cp string) ([]string, error) {
 	return out, errors.Join(errs...)
 }
 
+// readDirIfAny lists dir, and a missing dir has no entries. Windows reports a plain file in place of a folder as not-exist, and that is not a missing folder.
+func readDirIfAny(dir string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		if fi, serr := os.Stat(dir); serr == nil && !fi.IsDir() {
+			return nil, fmt.Errorf("%s is not a folder", dir)
+		}
+		return nil, nil
+	}
+	return entries, err
+}
+
 // filesIn lists the files in dir whose names end in suffix, as paths, in name order. It reads the folder rather than matching a pattern, so brackets in the path mean nothing. A missing dir has none.
 func filesIn(dir, suffix string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	entries, err := readDirIfAny(dir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	var out []string
@@ -1981,11 +1988,8 @@ func filesIn(dir, suffix string) ([]string, error) {
 
 // subDirs lists the folders in dir as paths, in name order, following symlinks to folders and skipping files. A missing dir has none.
 func subDirs(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	entries, err := readDirIfAny(dir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	var out []string

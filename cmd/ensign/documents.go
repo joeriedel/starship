@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -387,8 +386,8 @@ func pendingDocuments(bridge string) ([]string, error) {
 	for _, d := range declared {
 		byName[d.Name] = d
 	}
-	dirs, err := os.ReadDir(filepath.Join(bridge, "documents", "pending"))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	dirs, err := readDirIfAny(filepath.Join(bridge, "documents", "pending"))
+	if err != nil {
 		return nil, fmt.Errorf("listing documents/pending: %v", err)
 	}
 	var out []string

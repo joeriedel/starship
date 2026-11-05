@@ -43,10 +43,7 @@ func taskDirOf(bridge, task string) string {
 
 // loadSubtasks reads a task's subtasks in order: by the number its name starts with, then by name. A task with no subtasks folder, or an empty one, has none.
 func loadSubtasks(taskDir string) ([]subtask, error) {
-	entries, err := os.ReadDir(subtasksDir(taskDir))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
+	entries, err := readDirIfAny(subtasksDir(taskDir))
 	if err != nil {
 		return nil, err
 	}

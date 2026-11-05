@@ -4,10 +4,8 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,8 +246,8 @@ func knownSkills(bridge, cp, project string) ([]string, error) {
 // proposedSkills counts the held facts for each skill that doesn't exist yet.
 func proposedSkills(bridge string) (map[string]int, error) {
 	out := map[string]int{}
-	dirs, err := os.ReadDir(filepath.Join(bridge, "skills", "proposed"))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	dirs, err := readDirIfAny(filepath.Join(bridge, "skills", "proposed"))
+	if err != nil {
 		return nil, fmt.Errorf("listing skills/proposed: %v", err)
 	}
 	for _, d := range dirs {
@@ -377,8 +375,8 @@ func recordFacts(r *RunFiles, d *Dispatch) {
 func generatorItems(c *Config, over string, rebuild bool) ([]string, error) {
 	switch over {
 	case "pending-skills":
-		dirs, err := os.ReadDir(filepath.Join(c.Bridge, "skills", "pending"))
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		dirs, err := readDirIfAny(filepath.Join(c.Bridge, "skills", "pending"))
+		if err != nil {
 			return nil, fmt.Errorf("listing skills/pending: %v", err)
 		}
 		var out []string

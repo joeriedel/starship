@@ -5,6 +5,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -362,4 +364,22 @@ func TestScanExtensionsLaterBrokenExtensionReplacesGoodOne(t *testing.T) {
 			t.Errorf("good = %v, broken = %v", got, broken)
 		}
 	})
+}
+
+func TestReadDirIfAny(t *testing.T) {
+	dir := t.TempDir()
+	if entries, err := readDirIfAny(filepath.Join(dir, "missing")); err != nil || len(entries) != 0 {
+		t.Errorf("missing folder: entries = %v, err = %v", entries, err)
+	}
+	file := filepath.Join(dir, "supernova.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDirIfAny(file); err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("plain file: err = %v, want an error that is not fs.ErrNotExist", err)
+	}
+	entries, err := readDirIfAny(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "supernova.txt" {
+		t.Errorf("real folder: entries = %v, err = %v", entries, err)
+	}
 }
