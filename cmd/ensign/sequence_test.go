@@ -2343,7 +2343,7 @@ func TestSequenceDecideTextRequiresAFullBriefEveryTime(t *testing.T) {
 	}
 }
 
-func TestSequenceKeepGoingHaltByHandGivesNoReport(t *testing.T) {
+func TestSequenceKeepGoingHaltByHandWithAFailedRunGivesTheReportOnce(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.mustSeq("do", "later")
@@ -2352,13 +2352,135 @@ func TestSequenceKeepGoingHaltByHandGivesNoReport(t *testing.T) {
 	lead, _ := w.spawn("", "", "orchestrator")
 	w.failRun(lead)
 	w.wantStatus("failed", "active")
-	w.mustSeq("halt", "--reason", "enough")
+	if out := w.mustSeq("halt", "--reason", "enough"); strings.Count(out, "halted: enough") != 1 {
+		t.Errorf("the halt output should say halted: enough once:\n%s", out)
+	}
 	w.wantStatus("failed", "cancelled")
-	w.stopHook()
-	for _, seq := range readSeq(w.bridge, w.sid).Sequences {
-		if seq.Report != "" {
-			t.Errorf("a halted sequence gets no report:\n%s", seq.Report)
+	reason := dig(w.stopHook(), "reason")
+	for _, want := range []string{"ran in keep-going mode", "step 1.1 (run supernova/auth-refactor) failed: ", "  folder: ", "cancelled: enough"} {
+		if strings.Count(reason, want) != 1 {
+			t.Errorf("the close should have %q once:\n%s", want, reason)
 		}
+	}
+	if reason := dig(w.stopHook(), "reason"); strings.Contains(reason, "ran in keep-going mode") {
+		t.Errorf("the report has been delivered:\n%s", reason)
+	}
+}
+
+func TestSequenceKeepGoingHaltByHandWithNothingFailedGivesNoFailureReport(t *testing.T) {
+	w, _, _, _ := githubWorld(t, "success", localTest)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("publish", "supernova/auth-refactor")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	w.mustSeq("halt", "--reason", "enough")
+	w.wantStatus("cancelled", "cancelled")
+	seq := readSeq(w.bridge, w.sid).Sequences[0]
+	if !seq.Closed {
+		t.Fatalf("the halted sequence should be closed: %+v", seq)
+	}
+	if strings.Contains(seq.Report, "ran in keep-going mode") {
+		t.Errorf("a halt with nothing failed gets no failure report:\n%s", seq.Report)
+	}
+	line := w.step(2).publishLine("cancelled", w.step(2).Reason)
+	reason := dig(w.stopHook(), "reason")
+	if strings.Contains(reason, "ran in keep-going mode") || strings.Count(reason, line) != 1 {
+		t.Errorf("want the cancelled publish line %q once and no failure report:\n%s", line, reason)
+	}
+	if reason := dig(w.stopHook(), "reason"); strings.Contains(reason, line) {
+		t.Errorf("the publish line has been delivered:\n%s", reason)
+	}
+}
+
+// laterPublish adds an approved sequence holding one pending publish of the task after the session's open ones, closing those, and returns the publish.
+func (w *world) laterPublish(task string) *seqStep {
+	w.t.Helper()
+	pub := &seqStep{N: 1, Kind: "publish", Task: task, Status: "pending"}
+	err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		for _, seq := range sf.Sequences {
+			seq.Closed = true
+		}
+		sf.Sequences = append(sf.Sequences, &sequence{N: len(sf.Sequences) + 1, Mode: modeKeepGoing, Approved: true, Steps: []*seqStep{pub}})
+		_, err := sf.advanceParts(w.bridge, w.sid)
+		pub.Status = sf.Sequences[len(sf.Sequences)-1].Steps[0].Status
+		return err
+	})
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return pub
+}
+
+func TestSequenceKeepGoingLostRunIsSkippedAndCancelsALaterPublish(t *testing.T) {
+	for _, mode := range []string{"keep-going", "stop"} {
+		w := newWorld(t)
+		task := "supernova/auth-refactor"
+		w.mustSeq("run", task)
+		w.mustSeq("mode", mode)
+		w.approve()
+		w.spawn("", "", "orchestrator")
+		if err := os.RemoveAll(filepath.Join(runsDir(w.bridge), w.step(1).Run)); err != nil {
+			t.Fatal(err)
+		}
+		if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error { sf.reconcile(w.bridge); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		st := w.step(1)
+		if st.Status != "failed" {
+			t.Fatalf("%s: the lost run's step is %s", mode, st.Status)
+		}
+		if got := st.SkippedAt != 0; got != (mode == "keep-going") {
+			t.Errorf("%s: SkippedAt set is %v: %+v", mode, got, st)
+		}
+		if mode == "keep-going" {
+			if pub := w.laterPublish(task); pub.Status != "cancelled" {
+				t.Errorf("a later publish of the lost run's task is %s, want cancelled", pub.Status)
+			}
+		}
+	}
+}
+
+func TestSequenceKeepGoingRunThatCannotStartIsSkippedAndCancelsALaterPublish(t *testing.T) {
+	for _, mode := range []string{"keep-going", "stop"} {
+		w := newWorld(t)
+		task := "supernova/auth-refactor"
+		w.mustSeq("run", task)
+		w.mustSeq("mode", mode)
+		if err := retireIf(w.bridge, w.step(1).Run, "gone", "pending"); err != nil {
+			t.Fatal(err)
+		}
+		w.goContext()
+		st := w.step(1)
+		if st.Status != "failed" {
+			t.Fatalf("%s: the step is %s", mode, st.Status)
+		}
+		if got := st.SkippedAt != 0; got != (mode == "keep-going") {
+			t.Errorf("%s: SkippedAt set is %v: %+v", mode, got, st)
+		}
+		if mode == "keep-going" {
+			if pub := w.laterPublish(task); pub.Status != "cancelled" {
+				t.Errorf("a later publish of the task is %s, want cancelled", pub.Status)
+			}
+		}
+	}
+}
+
+func TestSequenceKeepGoingRunThatFailsInAHaltedSequenceIsSkipped(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		sf.Sequences[0].Halted, sf.Sequences[0].Reason = true, "enough"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.failRun(lead)
+	if st := w.step(1); st.Status != "failed" || st.SkippedAt == 0 {
+		t.Errorf("a run that fails for real in a halted keep-going sequence is skipped: %+v", st)
 	}
 }
 
@@ -3306,8 +3428,8 @@ func TestSequenceKeepGoingHaltByHandDeliversAFailedPublishOnce(t *testing.T) {
 	w, task := keepGoingFailedPublishWithAHeldDo(t)
 	w.mustSeq("halt", "--reason", "enough")
 	reason := dig(w.stopHook(), "reason")
-	if n := strings.Count(reason, "Step 2/3: step 1.2 (publish "+task+") failed: "); n != 1 || strings.Contains(reason, "ran in keep-going mode") {
-		t.Errorf("the halted sequence should deliver the publish once and give no failure report, got %d:\n%s", n, reason)
+	if n := strings.Count(reason, "Step 2/3: step 1.2 (publish "+task+") failed: "); n != 1 || strings.Count(reason, "ran in keep-going mode") != 1 {
+		t.Errorf("the halted sequence should deliver the publish once, in the failure report, got %d:\n%s", n, reason)
 	}
 	if reason := dig(w.stopHook(), "reason"); strings.Contains(reason, "(publish ") {
 		t.Errorf("the publish has been delivered:\n%s", reason)

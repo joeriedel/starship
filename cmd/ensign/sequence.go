@@ -52,7 +52,7 @@ type seqStep struct {
 	WaitBlocks  int       `json:"wait_blocks,omitempty"` // stops held open while this step waited for a busy folder
 	Prev        string    `json:"prev_run,omitempty"`    // the first run this step's latest retry replaces; set once the step has been retried
 	Retries     int       `json:"retries,omitempty"`     // how many times the current group has been retried; a file from before this field has Prev set and 0 here
-	SkippedAt   int64     `json:"skipped_at,omitempty"`  // unix nanoseconds when the step was skipped, by the user or because a keep-going run step failed; 0 for a skip from before this field
+	SkippedAt   int64     `json:"skipped_at,omitempty"`  // unix nanoseconds when the step was skipped, by the user or because a keep-going run step failed; 0 for a skip from before this field, and for a stop-mode step that failed without being skipped
 	Diagnosis   string    `json:"diagnosis,omitempty"`   // why the previous run failed, as the session wrote it
 	Position    string    `json:"position,omitempty"`    // publish: its Step X/Y when it ran, taken before it and before any cancelling; "" for a cancelled one
 	Queued      bool      `json:"queued,omitempty"`      // publish: its outcome line went into the sequence's Report, so it is not also a note
@@ -67,10 +67,10 @@ func (s *seqStep) attempt() int {
 	return s.Retries + 1
 }
 
-// skipPrefix starts the reason of a step the user skipped. A keep-going run step that failed has SkippedAt but keeps the run's reason, since the user skipped nothing.
+// skipPrefix starts the reason of a step the user skipped. A run step that failed in a keep-going sequence has SkippedAt but keeps the run's reason, since the user skipped nothing.
 const skipPrefix = "skipped by the user: "
 
-// skipped reports whether a failed run step counts as skipped: the user skipped it, or its run failed in keep-going mode and the step was ended at once, which cancels later publishes of its task. A keep-going step whose run was lost, or that failed to start, is not marked; nor is a step that failed in stop mode and was not skipped.
+// skipped reports whether a failed run step counts as skipped: the user skipped it, or its run step failed in a keep-going sequence, which cancels later publishes of its task. A step that failed in stop mode and was not skipped is not marked, even when its run was lost or failed to start.
 func (s *seqStep) skipped() bool {
 	return s.Status == "failed" && (s.SkippedAt != 0 || strings.HasPrefix(s.Reason, skipPrefix))
 }
@@ -685,9 +685,9 @@ func (sf *seqFile) endStaleDecision(bridge string, seq *sequence, st *seqStep) b
 	return true
 }
 
-// endKeepGoingFailure ends a run step that failed in a keep-going sequence at once: no decision, the task's later steps skipped. SkippedAt keeps a later sequence from publishing the task, and the reason stays the run's own.
+// endKeepGoingFailure ends a run step that failed in a keep-going sequence at once: no decision, the task's later steps skipped. The reason stays the run's own.
 func (sf *seqFile) endKeepGoingFailure(bridge string, seq *sequence, st *seqStep) {
-	st.Status, st.SkippedAt = "failed", time.Now().UnixNano()
+	st.Status = "failed"
 	sf.failed(bridge, seq, st)
 }
 
@@ -851,6 +851,9 @@ var seqStderr io.Writer = os.Stderr
 func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
 	why := fmt.Sprintf("step %s failed", failed.ref())
 	if seq.Mode == modeKeepGoing {
+		if failed.Kind == "run" {
+			failed.SkippedAt = time.Now().UnixNano()
+		}
 		for _, st := range seq.Steps {
 			if st.Status == "pending" && failed.Task != "" && (st.Task == failed.Task ||
 				(failed.Kind == "release" && strings.HasPrefix(st.Task, failed.Task+"/"))) {
@@ -1089,7 +1092,14 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 				seq.Closed = true
 				if seq.Halted {
 					parts = append(parts, fmt.Sprintf("%s halted: %s", seq.label(), seq.Reason))
-					if seq.Mode == modeKeepGoing {
+					switch {
+					case seq.Mode != modeKeepGoing:
+					case slices.ContainsFunc(seq.Steps, func(s *seqStep) bool { return s.Status == "failed" }):
+						seq.Report = joinReport(seq.Report, sf.failureReport(bridge, seq))
+						for _, st := range seq.Steps {
+							st.Queued = st.Queued || (st.Kind == "publish" && (st.Status == "failed" || st.Status == "cancelled"))
+						}
+					default:
 						for _, st := range seq.Steps {
 							if st.Kind == "publish" && (st.Status == "failed" || st.Status == "cancelled") {
 								parts = publishReport(seq, st, parts, st.publishLine(st.Status, st.Reason), true)
@@ -1385,15 +1395,21 @@ func failedFolderLines(bridge string, st *seqStep) (lines []string, unknown bool
 	return lines, unknown
 }
 
-// failureReport is the report of a closing keep-going sequence: every failed step with why, the steps skipped or cancelled, and the state of the failed runs' folders as they are now. It is "" when nothing failed, was skipped or was cancelled.
+// failureReport is the report of a closing keep-going sequence: every failed step with why, the steps skipped or cancelled, and the state of the failed runs' folders as they are now. It is "" when nothing failed, was skipped or was cancelled. A halted sequence's report gives a publish's whole reason, since nothing else delivers it.
 func (sf *seqFile) failureReport(bridge string, seq *sequence) string {
 	var lines []string
 	listed := map[*seqStep]bool{}
+	reasonOf := func(st *seqStep) string {
+		if seq.Halted && st.Kind == "publish" {
+			return st.Reason
+		}
+		return firstLine(st.Reason)
+	}
 	for _, st := range seq.Steps {
 		if st.Status != "failed" {
 			continue
 		}
-		lines = append(lines, "- "+st.publishLine("failed", firstLine(st.Reason)))
+		lines = append(lines, "- "+st.publishLine("failed", reasonOf(st)))
 		if st.Kind == "run" {
 			if len(st.runs()) > 1 {
 				for _, ru := range st.runs() {
@@ -1420,7 +1436,7 @@ func (sf *seqFile) failureReport(bridge string, seq *sequence) string {
 	}
 	for _, st := range seq.Steps {
 		if (st.Status == "skipped" && !listed[st]) || st.Status == "cancelled" {
-			lines = append(lines, "- "+st.outcomeLine(st.Status, firstLine(st.Reason)))
+			lines = append(lines, "- "+st.outcomeLine(st.Status, reasonOf(st)))
 		}
 	}
 	if len(lines) == 0 {
