@@ -56,6 +56,7 @@ type seqStep struct {
 	Diagnosis   string    `json:"diagnosis,omitempty"`   // why the previous run failed, as the session wrote it
 	Position    string    `json:"position,omitempty"`    // publish: its Step X/Y when it ran, taken before it and before any cancelling; "" for a cancelled one
 	Queued      bool      `json:"queued,omitempty"`      // publish: its outcome line went into the sequence's Report, so it is not also a note
+	RetireNote  string    `json:"retire_note,omitempty"` // run step: why a run under this cancelled or skipped step could not be retired; it is the tail of Reason, and starship retries the run
 }
 
 // attempt is the number of the attempt the step is on, counting the first as 1.
@@ -127,7 +128,11 @@ type sequence struct {
 type seqFile struct {
 	NextStep  int         `json:"next_step,omitempty"` // only in files written when steps were numbered across the session
 	Sequences []*sequence `json:"sequences"`
+	stopPass  bool        // set by the Stop hook: a retire that still fails is not queued, so a persistent failure can't hold every Stop
 }
+
+// lockHeldEnv names the session whose sequence lock a publish command's process tree is running under.
+const lockHeldEnv = "STARSHIP_SEQUENCE_LOCK_HELD"
 
 func seqPath(bridge, session string) string { return sessionFile(bridge, session) + ".sequence" }
 
@@ -141,6 +146,9 @@ func seqExists(bridge, session string) bool {
 
 // withSeq reads the session's sequences under their lock, runs fn, and saves them if fn succeeds.
 func withSeq(bridge, session string, fn func(sf *seqFile) error) error {
+	if session != "" && os.Getenv(lockHeldEnv) == session {
+		return errors.New("a publish command is holding this session's sequence lock, so it can't call an ensign command that needs that lock")
+	}
 	path := seqPath(bridge, session)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -839,7 +847,7 @@ func oneLine(err error) string {
 // seqStderr is where a sequence failure with no caller to return to is reported.
 var seqStderr io.Writer = os.Stderr
 
-// failed applies the failure rules for a step that has just failed. A run that could not be retired in the cascade has no caller to tell, so it goes to stderr.
+// failed applies the failure rules for a step that has just failed. A run that could not be retired in the cascade has no caller to tell, so it goes to stderr and, since a hook's stderr never reaches the session, to the sequence's queued report.
 func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
 	why := fmt.Sprintf("step %s failed", failed.ref())
 	if seq.Mode == modeKeepGoing {
@@ -848,6 +856,7 @@ func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
 				(failed.Kind == "release" && strings.HasPrefix(st.Task, failed.Task+"/"))) {
 				if err := cancelStep(bridge, st, "skipped", why); err != nil {
 					fmt.Fprintln(seqStderr, "ensign:", oneLine(err))
+					seq.queue("ensign: " + oneLine(err))
 				}
 			}
 		}
@@ -860,14 +869,15 @@ func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
 		if st.Status == "pending" {
 			if err := cancelStep(bridge, st, "cancelled", why); err != nil {
 				fmt.Fprintln(seqStderr, "ensign:", oneLine(err))
+				seq.queue("ensign: " + oneLine(err))
 			}
 		}
 	}
 }
 
-// cancelStep ends a step that never started. Its runs are made terminal, as a retired run is, so they are nobody's waiting run; no run.finish handler fires for them. Only runs still pending in the step are opened: a retried group step keeps its finished runs, and a finishing hook may hold one of those while it waits for the sequence lock, which the caller holds. A run that could not be retired is returned, and also added to the step's reason for `ensign sequence --all`.
+// cancelStep ends a step that never started. Its runs are made terminal, as a retired run is, so they are nobody's waiting run; no run.finish handler fires for them. Only runs still pending in the step are opened: a retried group step keeps its finished runs, and a finishing hook may hold one of those while it waits for the sequence lock, which the caller holds. A run that could not be retired is returned, and also added to the step's reason for `ensign sequence --all`; starship retries it at each advance.
 func cancelStep(bridge string, st *seqStep, status, reason string) error {
-	st.Status, st.Reason = status, reason
+	st.Status, st.Reason, st.RetireNote = status, reason, ""
 	if st.Kind != "run" {
 		return nil
 	}
@@ -882,9 +892,109 @@ func cancelStep(bridge string, st *seqStep, status, reason string) error {
 	}
 	err := errors.Join(errs...)
 	if err != nil {
-		st.Reason += "; " + oneLine(err)
+		st.setRetireNote(oneLine(err))
 	}
 	return err
+}
+
+// reasonOnly is the step's reason without the retire note.
+func (s *seqStep) reasonOnly() string {
+	if s.RetireNote == "" {
+		return s.Reason
+	}
+	return strings.TrimSuffix(s.Reason, "; "+s.RetireNote)
+}
+
+// setRetireNote replaces the failure text at the end of the step's reason with note, which may be empty, so the reason holds only the current failure.
+func (s *seqStep) setRetireNote(note string) {
+	s.Reason, s.RetireNote = s.reasonOnly(), note
+	if note != "" {
+		s.Reason += "; " + note
+	}
+}
+
+// queue adds a line to the sequence's queued report unless the report already has it.
+func (s *sequence) queue(line string) {
+	if !slices.Contains(strings.Split(s.Report, "\n"), line) {
+		s.Report = joinReport(s.Report, line)
+	}
+}
+
+// strandedRuns lists the runs of a cancelled or skipped run step that were left behind: ones the step knows as pending or not at all, which may still be pending on disk.
+func (s *seqStep) strandedRuns() []*seqRun {
+	if s.Kind != "run" || (s.Status != "cancelled" && s.Status != "skipped") {
+		return nil
+	}
+	return slices.DeleteFunc(slices.Clone(s.runs()), func(ru *seqRun) bool { return ru.Status != "" && ru.Status != "pending" })
+}
+
+// runStranded reports whether a run is pending on disk, read without its lock. Only a pending run is retired: an approved one may have a lead. A run whose folder is gone is not stranded.
+func runStranded(bridge, id string) (bool, error) {
+	r, err := readRun(bridge, id)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return r.State.Status == "pending", nil
+}
+
+// retryOutcome is a line about a retry of a retire, for the sequence that holds the step.
+type retryOutcome struct {
+	seq    *sequence
+	line   string
+	failed bool
+}
+
+// hasStranded reports, without the lock, whether any step has a run that is pending on disk under a cancelled or skipped step, or one that can't be read.
+func (sf *seqFile) hasStranded(bridge string) bool {
+	for _, seq := range sf.Sequences {
+		for _, st := range seq.Steps {
+			for _, ru := range st.strandedRuns() {
+				if pending, err := runStranded(bridge, ru.Run); pending || err != nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// retryRetires retires again the runs that were left pending under a cancelled or skipped step, in every sequence, closed ones too. The step's note becomes the failures that remain.
+func (sf *seqFile) retryRetires(bridge string) []retryOutcome {
+	var outcomes []retryOutcome
+	for _, seq := range sf.Sequences {
+		for _, st := range seq.Steps {
+			var errs []error
+			retired := false
+			for _, ru := range st.strandedRuns() {
+				pending, err := runStranded(bridge, ru.Run)
+				if err == nil && pending {
+					err = retireIf(bridge, ru.Run, st.Status+": "+st.reasonOnly(), "pending")
+					if err == nil {
+						retired = true
+						outcomes = append(outcomes, retryOutcome{seq: seq, line: fmt.Sprintf("step %s: run %s, left pending under the %s step, was retired on retry.", st.ref(), ru.Run, st.Status)})
+					}
+				}
+				if err != nil {
+					errs = append(errs, fmt.Errorf("run %s could not be retired: %w", ru.Run, err))
+				}
+			}
+			if len(errs) == 0 {
+				if st.RetireNote != "" {
+					st.setRetireNote("")
+					if !retired {
+						outcomes = append(outcomes, retryOutcome{seq: seq, line: fmt.Sprintf("step %s (%s): its runs are no longer stranded.", st.ref(), st.Status)})
+					}
+				}
+				continue
+			}
+			st.setRetireNote(oneLine(errors.Join(errs...)))
+			outcomes = append(outcomes, retryOutcome{seq: seq, failed: true, line: fmt.Sprintf("step %s (%s): %s; starship tries again at each advance and at session start.", st.ref(), st.Status, st.RetireNote)})
+		}
+	}
+	return outcomes
 }
 
 // unstarted reports whether a run is queued, or approved with its lead never dispatched.
@@ -945,6 +1055,11 @@ func (sf *seqFile) advanceText(bridge, session string) (string, error) {
 // advanceParts does the advancing and returns what the session should be told, one entry per piece; a piece can span lines.
 func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 	sf.reconcile(bridge)
+	for _, o := range sf.retryRetires(bridge) {
+		if !o.failed || !sf.stopPass {
+			o.seq.queue(o.line)
+		}
+	}
 	var parts []string
 	for _, seq := range sf.Sequences {
 		if seq.Closed {
@@ -1039,7 +1154,7 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 					continue
 				}
 				st.Position = sf.position(st)
-				out, err := runPublish(bridge, seq, st)
+				out, err := runPublish(bridge, session, seq, st)
 				if err != nil {
 					st.Status, st.Reason = "failed", err.Error()
 					sf.failed(bridge, seq, st)
@@ -1099,6 +1214,48 @@ func (sf *seqFile) takeReports() []string {
 		}
 	}
 	return reports
+}
+
+// errNoSequence is queueSequenceFailure's answer when the session has no sequence to queue on, whether it has no file or an empty one.
+var errNoSequence = errors.New("the session has no sequence to queue on")
+
+// queueSequenceFailure adds a line to the queued report of the session's sequence that holds the run, else its last sequence, so the session hears of a failure on a path where only stderr was left. It returns errNoSequence, writing nothing, when the session has no sequence.
+func queueSequenceFailure(bridge, session, run, line string) error {
+	return withSeq(bridge, session, func(sf *seqFile) error {
+		var target *sequence
+		for _, seq := range sf.Sequences {
+			if slices.ContainsFunc(seq.Steps, func(st *seqStep) bool {
+				return slices.ContainsFunc(st.runs(), func(ru *seqRun) bool { return ru.Run == run })
+			}) {
+				target = seq
+			}
+		}
+		if target == nil && len(sf.Sequences) > 0 {
+			target = sf.Sequences[len(sf.Sequences)-1]
+		}
+		if target == nil {
+			return errNoSequence
+		}
+		target.queue(line)
+		return nil
+	})
+}
+
+// retryStrandedRetires is the session start's retry of runs left pending under a cancelled or skipped step. It looks without the lock first, since a publish holds the lock, so a start with nothing stranded never waits for one. The text goes to the session directly.
+func retryStrandedRetires(bridge, session string) string {
+	if !seqExists(bridge, session) || !readSeq(bridge, session).hasStranded(bridge) {
+		return ""
+	}
+	var lines []string
+	if err := withSeq(bridge, session, func(sf *seqFile) error {
+		for _, o := range sf.retryRetires(bridge) {
+			lines = append(lines, "starship: "+o.line)
+		}
+		return nil
+	}); err != nil {
+		lines = append(lines, "starship: could not retry the runs left pending under a cancelled step: "+oneLine(err))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // takeSequenceReports is what a prompt delivers: the session's queued reports, cleared. It looks without the lock first, since a publish holds the lock, so a prompt with nothing queued never waits for one.
@@ -1469,7 +1626,7 @@ func publishCommand(bridge, task string) (string, error) {
 }
 
 // runPublish carries out a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell.
-func runPublish(bridge string, seq *sequence, st *seqStep) (string, error) {
+func runPublish(bridge, session string, seq *sequence, st *seqStep) (string, error) {
 	loc := precedingRunLocation(bridge, seq, st.N, st.Task)
 	if args, ok := strings.CutPrefix(st.Command, "ensign "); ok {
 		if strings.TrimSpace(args) == "github-pr merge" {
@@ -1485,7 +1642,8 @@ func runPublish(bridge string, seq *sequence, st *seqStep) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := shell(c.Workspace, st.Command+" "+shellQuote(st.Task), projectEnv(bridge, c.Project, os.Environ()))
+	// The command runs under the session's sequence lock; withSeq refuses an ensign child of it for this session at once, where it would wait out the handler timeout.
+	out, err := shell(c.Workspace, st.Command+" "+shellQuote(st.Task), projectEnv(bridge, c.Project, append(os.Environ(), lockHeldEnv+"="+session)))
 	if err != nil {
 		return "", fmt.Errorf("%v: %s", err, lastLines(out, 5))
 	}
@@ -1561,6 +1719,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 	}
 	var out any
 	withSeq(bridge, in.SessionID, func(sf *seqFile) error {
+		sf.stopPass = true
 		adv, advErr := sf.advanceParts(bridge, in.SessionID)
 		var advNote string
 		if advErr != nil {
@@ -1630,13 +1789,41 @@ func sequenceStop(bridge string, in *HookInput) any {
 	return out
 }
 
-// carrySequence moves a session's sequence to the session that continues it, and points the runs that are not bound to the old session at the new one.
+// seqRename moves a sequence file to the session that continues it; a variable so a test can fail it.
+var seqRename = renameRetry
+
+// rebindFail is a run whose rebind to the new session could not be saved.
+type rebindFail struct {
+	run string
+	err error
+}
+
+// reportRebindFailures tells the session of runs that stay on the old session because their rebind could not be saved, with no promise of a retry. The queued report is the route when the session has a sequence to queue on; with no file or an empty one, or when the queue fails, the returned error is, so each failure reaches the session once. Call it with no run lock held and outside withSeq.
+func reportRebindFailures(bridge, session string, fails []rebindFail) error {
+	var errs []error
+	for _, f := range fails {
+		msg := fmt.Sprintf("run %s could not be moved to this session and stays on the earlier session; starship does not retry: %s", f.run, oneLine(f.err))
+		switch qerr := queueSequenceFailure(bridge, session, f.run, msg); {
+		case qerr == nil:
+		case errors.Is(qerr, errNoSequence):
+			errs = append(errs, errors.New(msg))
+		default:
+			errs = append(errs, errors.Join(errors.New(msg), qerr))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// carrySequence moves a session's sequence to the session that continues it, and points the runs that are not bound to the old session at the new one. A sequence that could not be moved stays on the old session and is returned, not retried. A run whose rebind could not be saved is reported to the session and the rest are still rebound.
 func carrySequence(bridge, old, session string) error {
 	if !seqExists(bridge, old) || seqExists(bridge, session) {
 		return nil
 	}
-	if os.Rename(seqPath(bridge, old), seqPath(bridge, session)) != nil {
-		return nil
+	if err := seqRename(seqPath(bridge, old), seqPath(bridge, session)); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("the sequence of session %s could not be moved to session %s and stays on the earlier session: %w", old, session, err)
 	}
 	bound, err := sessionRuns(bridge, old)
 	if err != nil {
@@ -1665,16 +1852,19 @@ func carrySequence(bridge, old, session string) error {
 	if err != nil {
 		return err
 	}
+	var failed []rebindFail
 	for _, id := range ids {
 		if r, err := openRun(bridge, id); err == nil {
 			if r.State.Session == old {
 				r.State.Session = session
-				r.save()
+				if err := r.save(); err != nil {
+					failed = append(failed, rebindFail{id, err})
+				}
 			}
 			r.close()
 		}
 	}
-	return nil
+	return reportRebindFailures(bridge, session, failed)
 }
 
 // releaseCommand finds a project's @release command and the folder it runs in: the project's workspace, or the folder of the location asked for (the project's only one if none is asked for), whose bindings add to the project's.
@@ -1955,12 +2145,17 @@ func cmdSequence(args []string, out io.Writer) error {
 					wasPending := st.Status == "pending"
 					st.Status, st.Reason = "cancelled", reason
 					if wasPending {
+						var stepErrs []error
 						for _, ru := range st.runs() {
 							if ru.Status == "" || ru.Status == "pending" {
 								if err := retireForHalt(bridge, ru.Run, haltPrefix+reason, false); err != nil {
-									pendingErrs = append(pendingErrs, fmt.Errorf("run %s could not be retired and is left pending under the cancelled step: %w", ru.Run, err))
+									stepErrs = append(stepErrs, fmt.Errorf("run %s could not be retired: %w", ru.Run, err))
+									pendingErrs = append(pendingErrs, fmt.Errorf("run %s could not be retired and is left pending under the cancelled step; starship tries again at each advance and at session start: %w", ru.Run, err))
 								}
 							}
+						}
+						if len(stepErrs) > 0 {
+							st.setRetireNote(oneLine(errors.Join(stepErrs...)))
 						}
 					}
 				case st.Status == "pending" || st.deciding() || (st.Status == "active" && (st.Kind == "do" || (st.Kind == "release" && !st.Started))):
@@ -2002,7 +2197,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			err = errors.Join(append(retireErrs, err)...)
 			err = fmt.Errorf("%w\nrun ensign sequence halt again to retire what is left", err)
 		}
-		// The step is already cancelled, so a second halt does not reach these runs.
+		// The step is already cancelled, so a second halt does not reach these runs; the retry at each advance does.
 		return errors.Join(append([]error{err}, pendingErrs...)...)
 	case "drop":
 		const dropUsage = "usage: ensign sequence drop <step>... [--reason <text>]"

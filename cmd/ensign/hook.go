@@ -1033,6 +1033,7 @@ func pidRecord(bridge, pid string) string {
 // stamped with the earlier session's id; a cleared session's does not, see below. A failure to read the earlier session's runs is
 // returned for SessionStart to report; SessionStart never fails over this.
 // A run whose setup file could not be written is still carried over, and that error is returned too.
+// A sequence that could not be moved is returned too, and the runs are still carried; a run whose rebind could not be saved stays on the earlier session and is reported to this one, see reportRebindFailures.
 // A clear leaves no records under the earlier id in the new transcript, so prev, the id the session's CLAUDE_PID last started under, is tried first; it counts only for a clear to a different id, and then the task is carried even with no live run.
 func carryOverSession(bridge string, in *HookInput, prev string) error {
 	switch in.Source {
@@ -1066,16 +1067,18 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 		}
 		priors = kept
 	}
+	var errs []error
 	for _, old := range priors {
 		if err := carrySequence(bridge, old, in.SessionID); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 		carried := false
 		var setupErr error
 		ids, err := sessionRuns(bridge, old)
 		if err != nil {
-			return err
+			return errors.Join(append(errs, err)...)
 		}
+		var failed []rebindFail
 		for _, id := range ids {
 			r, err := openRun(bridge, id)
 			if err != nil {
@@ -1100,15 +1103,19 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 				}
 				r.State.Session = in.SessionID
 				r.State.log("rebound", "", "", fmt.Sprintf("%s%s (%s)", reboundPrefix(old), in.SessionID, in.Source))
-				r.save()
+				if err := r.save(); err != nil {
+					failed = append(failed, rebindFail{id, err})
+				}
 			}
 			r.close()
 		}
+		// The queue takes the sequence lock, so it is called with no run lock held.
+		errs = append(errs, reportRebindFailures(bridge, in.SessionID, failed))
 		if carried {
-			return setupErr
+			return errors.Join(append(errs, setupErr)...)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // stageRoleAnywhere reports whether role is a stage role, not free, in a live run's

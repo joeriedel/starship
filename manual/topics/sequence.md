@@ -23,6 +23,10 @@ When the project declares locations:
 - Retry keeps the run's location. It keeps the sides only if the old run was narrowed; otherwise the retry takes the default sides.
 - A release step takes `--location <name>`: `ensign sequence release <project> <version> --location <name>`. Its `@release` is the project's overridden by that location's, and it runs in that location's folder. Without `--location` the project's only location is used; with several, the step is refused.
 
+A run that could not be retired under a cancelled or skipped step stays pending and is retried at each advance and at session start; each failure and the retry's success are reported to you once, in the next prompt or Stop message.
+
+A publish command runs under the session's sequence lock, so it can't call an `ensign` command that takes that lock (`sequence` commands, `run`, `go`): such a call fails at once.
+
 Drop pending steps of an approved sequence with `ensign sequence drop <seq>.<step>... --reason <why>` only when the user asks; it keeps the rest running, and dropping a run step drops its task's publish step.
 
 Before `go` the sequence is yours to rebuild: `ensign sequence drop <seq>.<step>...` removes steps (the rest renumber; publish rule as above), `ensign sequence discard` removes the whole sequence so the next step starts a fresh one. To reorder or insert a step (say a `supernova` publish step between two runs), drop the later steps and add them again in the new order. `halt` stops work that has begun; don't use it to rebuild. Halt leaves a run with a lead running; end it with `ensign run stop <run>`.

@@ -5,10 +5,13 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -3934,5 +3937,397 @@ func TestSequenceRetryListingShowsTheNewGoal(t *testing.T) {
 	got := sequenceListing(w.bridge, w.sid)
 	if !strings.Contains(got, "Brand new goal.") || strings.Contains(got, "Add a multiply function") {
 		t.Errorf("the listing should show the retry's goal:\n%s", got)
+	}
+}
+
+// strandedWorld halts a two-step sequence whose pending second run could not be retired, so that step 2 is cancelled with the run still pending. It returns that run.
+func strandedWorld(t *testing.T) (*world, string) {
+	t.Helper()
+	w := newWorld(t)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.approve()
+	w.spawn("", "", "orchestrator")
+	pending := w.step(2).Run
+	w.blockSave(pending)
+	if _, err := w.seq("halt", "--reason", "stop"); err == nil {
+		t.Fatal("halt should fail")
+	}
+	return w, pending
+}
+
+func (w *world) unblockSave(run string) {
+	w.t.Helper()
+	if err := os.Remove(filepath.Join(runsDir(w.bridge), run, "state.json.tmp")); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func TestSequenceHaltNotesAFailedRetireOnTheStepAndRetriesItAtTheNextAdvance(t *testing.T) {
+	w, pending := strandedWorld(t)
+	st := w.step(2)
+	if st.Status != "cancelled" || !strings.Contains(st.RetireNote, pending) || !strings.HasSuffix(st.Reason, "; "+st.RetireNote) {
+		t.Fatalf("the step should carry the failure: %s %q %q", st.Status, st.Reason, st.RetireNote)
+	}
+	if out, _ := w.seq("--all"); !strings.Contains(out, "could not be retired") {
+		t.Errorf("the listing should carry the failure:\n%s", out)
+	}
+	w.unblockSave(pending)
+	takeSequenceReports(w.bridge, w.sid)
+	if _, err := advanceSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.runState(pending); got.Status != "error" || got.Reason != "cancelled: stop" {
+		t.Errorf("the run should be retired on retry: %s %q", got.Status, got.Reason)
+	}
+	if st := w.step(2); st.RetireNote != "" || st.Reason != "stop" {
+		t.Errorf("the note should be cleared: %q %q", st.RetireNote, st.Reason)
+	}
+	if got := takeSequenceReports(w.bridge, w.sid); strings.Count(got, "was retired on retry") != 1 || !strings.Contains(got, pending) {
+		t.Errorf("the retry should be reported once: %q", got)
+	}
+	advanceSequence(w.bridge, w.sid)
+	if got := takeSequenceReports(w.bridge, w.sid); got != "" {
+		t.Errorf("nothing more to report: %q", got)
+	}
+}
+
+func TestSequenceRetryThatStillFailsIsReportedAtThePromptAndTheReasonDoesNotGrow(t *testing.T) {
+	w, pending := strandedWorld(t)
+	takeSequenceReports(w.bridge, w.sid)
+	before := w.step(2).Reason
+	for i := 0; i < 2; i++ {
+		if _, err := advanceSequence(w.bridge, w.sid); err != nil {
+			t.Fatal(err)
+		}
+		res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "hello"})
+		if ctx := dig(res, "hookSpecificOutput", "additionalContext"); !strings.Contains(ctx, pending) || !strings.Contains(ctx, "could not be retired") {
+			t.Errorf("prompt %d should report the failure: %v", i+1, res)
+		}
+	}
+	if st := w.step(2); st.Reason != before || strings.Count(st.Reason, "could not be retired") != 1 {
+		t.Errorf("the reason should not grow: %q, was %q", st.Reason, before)
+	}
+}
+
+func TestSequenceStopDoesNotQueueARetireThatKeepsFailing(t *testing.T) {
+	w, _ := strandedWorld(t)
+	takeSequenceReports(w.bridge, w.sid)
+	for i := 0; i < 2; i++ {
+		if res := w.stopHook(); res["decision"] != nil {
+			t.Fatalf("stop %d should not block: %v", i+1, res)
+		}
+	}
+	if got := takeSequenceReports(w.bridge, w.sid); got != "" {
+		t.Errorf("a stop should queue nothing for a retire that still fails: %q", got)
+	}
+	if w.step(2).RetireNote == "" {
+		t.Error("the note should stay")
+	}
+}
+
+func TestSequenceStopReportsARetireThatSucceeds(t *testing.T) {
+	w, pending := strandedWorld(t)
+	takeSequenceReports(w.bridge, w.sid)
+	w.unblockSave(pending)
+	if reason := dig(w.stopHook(), "reason"); !strings.Contains(reason, "was retired on retry") {
+		t.Errorf("the stop should report it: %q", reason)
+	}
+	if res := w.stopHook(); res["decision"] != nil {
+		t.Errorf("the second stop should not block: %v", res)
+	}
+}
+
+func TestSequenceRetryLeavesARunThatIsNotPendingOnDisk(t *testing.T) {
+	w, pending := strandedWorld(t)
+	w.unblockSave(pending)
+	r, err := openRun(w.bridge, pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status, r.State.Approved = "running", true
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+	if _, err := advanceSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.runState(pending); got.Status != "running" {
+		t.Errorf("an approved run is not retired: %s", got.Status)
+	}
+	if st := w.step(2); st.RetireNote != "" || strings.Contains(st.Reason, "could not be retired") {
+		t.Errorf("the note should be cleared: %q / %q", st.RetireNote, st.Reason)
+	}
+	report := ""
+	for _, seq := range readSeq(w.bridge, w.sid).Sequences {
+		report += seq.Report + "\n"
+	}
+	if n := strings.Count(report, "no longer stranded"); n != 1 {
+		t.Errorf("the end of the failure should be reported once, got %d:\n%s", n, report)
+	}
+	if _, err := advanceSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
+	report = ""
+	for _, seq := range readSeq(w.bridge, w.sid).Sequences {
+		report += seq.Report + "\n"
+	}
+	if n := strings.Count(report, "no longer stranded"); n != 1 {
+		t.Errorf("a step with no note stays silent, got %d:\n%s", n, report)
+	}
+}
+
+func TestSessionStartRetriesAStrandedRunAndReportsAFailure(t *testing.T) {
+	w, pending := strandedWorld(t)
+	res, code := w.hook("SessionStart", map[string]any{"source": "startup"})
+	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); code != 0 || !strings.Contains(ctx, pending) || !strings.Contains(ctx, "could not be retired") {
+		t.Fatalf("the start should report the failure: %d %v", code, res)
+	}
+	w.unblockSave(pending)
+	res, _ = w.hook("SessionStart", map[string]any{"source": "startup"})
+	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); !strings.Contains(ctx, "was retired on retry") {
+		t.Errorf("the start should report the retry: %v", res)
+	}
+	if got := w.runState(pending); got.Status != "error" {
+		t.Errorf("the run should be retired: %s", got.Status)
+	}
+}
+
+func TestSessionStartWithNothingStrandedDoesNotTakeTheSequenceLock(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	l := flock.New(seqPath(w.bridge, w.sid) + ".lock")
+	if err := l.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer l.Unlock()
+	done := make(chan string, 1)
+	go func() { done <- retryStrandedRetires(w.bridge, w.sid) }()
+	select {
+	case got := <-done:
+		if got != "" {
+			t.Errorf("nothing to say: %q", got)
+		}
+	case <-time.After(10 * time.Second):
+		l.Unlock()
+		<-done
+		t.Fatal("the start waited for the sequence lock")
+	}
+}
+
+func TestSequenceCascadeRetireFailureAndAdvanceFailureReachTheNextPrompt(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	ids := w.retriedGroupStep()
+	w.blockSave(ids[1])
+	defer func(old io.Writer) { seqStderr = old }(seqStderr)
+	seqStderr = io.Discard
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		seq := sf.Sequences[0]
+		sf.failed(w.bridge, seq, &seqStep{Kind: "do", N: 9, Seq: seq.N})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "hello"})
+	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); !strings.Contains(ctx, ids[1]) || !strings.Contains(ctx, "could not be retired") {
+		t.Errorf("the cascade failure should reach the prompt: %v", res)
+	}
+	if err := queueSequenceFailure(w.bridge, w.sid, ids[0], "could not advance the sequence: boom"); err != nil {
+		t.Fatal(err)
+	}
+	res, _ = w.hook("UserPromptSubmit", map[string]any{"prompt": "hello"})
+	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); !strings.Contains(ctx, "could not advance the sequence: boom") {
+		t.Errorf("the advance failure should reach the prompt: %v", res)
+	}
+}
+
+func TestFinishIfTerminalWarnsWhenTheAdvanceFailureCannotBeQueued(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	r, err := openRun(w.bridge, w.step(1).Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.close()
+	(&machine{snap: r.Snap, st: r.State}).fail("handler", "boom")
+	if err := os.Mkdir(seqPath(w.bridge, w.sid)+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if err := finishIfTerminal(r, false, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "could not advance the sequence") || r.warn == nil || !strings.Contains(r.warn.Error(), "could not advance the sequence") {
+		t.Errorf("stderr %q, warn %v", stderr.String(), r.warn)
+	}
+}
+
+// carryWorld has three queued runs; the second and third are not in the old session's list, as when an earlier carry left them to carrySequence. It returns their ids.
+func carryWorld(t *testing.T) (*world, []string) {
+	t.Helper()
+	w := newWorld(t)
+	w.addTask("other")
+	w.addTask("third")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("run", "supernova/third")
+	w.approve()
+	ids := []string{w.step(1).Run, w.step(2).Run, w.step(3).Run}
+	if err := editSessionRuns(w.bridge, w.sid, func(all []string) []string {
+		return slices.DeleteFunc(all, func(id string) bool { return id != ids[0] })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return w, ids
+}
+
+// Windows rename and permission behaviour differs, so these tests fail the rename and the save by seam and by a directory in the way, which behave alike on every platform.
+func TestCarrySequenceQueuesARunItCouldNotRebindAndCarriesTheRest(t *testing.T) {
+	w, ids := carryWorld(t)
+	w.blockSave(ids[1])
+	if err := carrySequence(w.bridge, w.sid, "s2"); err != nil {
+		t.Fatalf("a queued failure is not also returned: %v", err)
+	}
+	if !seqExists(w.bridge, "s2") {
+		t.Error("the sequence should have moved")
+	}
+	var report string
+	for _, seq := range readSeq(w.bridge, "s2").Sequences {
+		report += seq.Report
+	}
+	if !strings.Contains(report, ids[1]) || strings.Contains(report, ids[2]) || !strings.Contains(report, "stays on the earlier session") {
+		t.Errorf("the new session's report should name the second run only:\n%s", report)
+	}
+	if got := w.runState(ids[2]).Session; got != "s2" {
+		t.Errorf("the third run should be carried: %s", got)
+	}
+	if got := w.runState(ids[1]).Session; got != "s1" {
+		t.Errorf("the second run stays on the old session: %s", got)
+	}
+}
+
+func TestCarryOverReturnsASaveFailureWhenTheSessionHasNoSequenceAndRebindsTheRest(t *testing.T) {
+	w, ids := carryWorld(t)
+	if err := editSessionRuns(w.bridge, w.sid, func([]string) []string { return slices.Clone(ids) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(seqPath(w.bridge, w.sid)); err != nil {
+		t.Fatal(err)
+	}
+	w.blockSave(ids[0])
+	write(t, w.session, `{"sessionId":"s1"}`+"\n")
+	in := &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session}
+	err := carryOverSession(w.bridge, in, "")
+	if err == nil || !strings.Contains(err.Error(), ids[0]) || strings.Contains(err.Error(), ids[1]) || strings.Contains(err.Error(), ids[2]) {
+		t.Fatalf("the error should name the first run only: %v", err)
+	}
+	for _, id := range ids[1:] {
+		if got := w.runState(id).Session; got != "s2" {
+			t.Errorf("run %s should be rebound: %s", id, got)
+		}
+	}
+	if got := w.runState(ids[0]).Session; got != "s1" {
+		t.Errorf("the run whose save failed stays on the old session: %s", got)
+	}
+}
+
+func TestCarryOverReturnsASaveFailureWhenTheSessionHasAnEmptySequenceFile(t *testing.T) {
+	w, ids := carryWorld(t)
+	if err := editSessionRuns(w.bridge, w.sid, func([]string) []string { return slices.Clone(ids) }); err != nil {
+		t.Fatal(err)
+	}
+	write(t, seqPath(w.bridge, w.sid), `{"sequences":[]}`)
+	w.blockSave(ids[0])
+	write(t, w.session, `{"sessionId":"s1"}`+"\n")
+	in := &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session}
+	err := carryOverSession(w.bridge, in, "")
+	if err == nil || !strings.Contains(err.Error(), ids[0]) || strings.Contains(err.Error(), ids[1]) || strings.Contains(err.Error(), errNoSequence.Error()) {
+		t.Fatalf("the error should name the first run only: %v", err)
+	}
+	if !seqExists(w.bridge, "s2") || len(readSeq(w.bridge, "s2").Sequences) != 0 {
+		t.Error("the empty sequence file should have moved unchanged")
+	}
+	if got := w.runState(ids[1]).Session; got != "s2" {
+		t.Errorf("run %s should be rebound: %s", ids[1], got)
+	}
+}
+
+func failRename(t *testing.T) {
+	t.Helper()
+	old := seqRename
+	t.Cleanup(func() { seqRename = old })
+	seqRename = func(string, string) error { return errors.New("sharing violation") }
+}
+
+func TestCarrySequenceReturnsAFailedRenameAndLeavesTheSequenceOnTheOldSession(t *testing.T) {
+	w, _ := carryWorld(t)
+	failRename(t)
+	err := carrySequence(w.bridge, w.sid, "s2")
+	if err == nil || !strings.Contains(err.Error(), "sharing violation") || !strings.Contains(err.Error(), w.sid) || !strings.Contains(err.Error(), "s2") {
+		t.Fatalf("the failed move should be returned: %v", err)
+	}
+	if !seqExists(w.bridge, w.sid) || seqExists(w.bridge, "s2") {
+		t.Error("the sequence should stay on the old session")
+	}
+	if _, err := os.Stat(sessionFile(w.bridge, "s2") + ".sequence.carry"); err == nil {
+		t.Error("nothing should be recorded for a retry")
+	}
+	entries, _ := filepath.Glob(sessionFile(w.bridge, "s2") + "*")
+	if len(entries) != 0 {
+		t.Errorf("no file should exist for the new session: %v", entries)
+	}
+}
+
+func TestCarrySequenceTakesAnAlreadyMovedSequenceForDone(t *testing.T) {
+	w, _ := carryWorld(t)
+	old := seqRename
+	t.Cleanup(func() { seqRename = old })
+	seqRename = func(string, string) error { return os.ErrNotExist }
+	if err := carrySequence(w.bridge, w.sid, "s2"); err != nil {
+		t.Errorf("a sequence that is already gone is not a failure: %v", err)
+	}
+}
+
+func TestRebindFailuresFallBackToTheReturnedErrorWhenTheQueueFails(t *testing.T) {
+	w, _ := carryWorld(t)
+	t.Setenv(lockHeldEnv, w.sid)
+	err := reportRebindFailures(w.bridge, w.sid, []rebindFail{{"20260101-000000-supernova", errors.New("disk full")}})
+	if err == nil || !strings.Contains(err.Error(), "20260101-000000-supernova") || !strings.Contains(err.Error(), "disk full") || !strings.Contains(err.Error(), "sequence lock") {
+		t.Errorf("the failure should come back with the queue's error: %v", err)
+	}
+}
+
+func TestWithSeqRefusesForTheSessionWhoseLockAPublishHolds(t *testing.T) {
+	w := newWorld(t)
+	t.Setenv(lockHeldEnv, w.sid)
+	called := false
+	err := withSeq(w.bridge, w.sid, func(*seqFile) error { called = true; return nil })
+	if err == nil || called || !strings.Contains(err.Error(), "publish command is holding this session's sequence lock") {
+		t.Fatalf("withSeq should refuse at once: %v", err)
+	}
+	if err := withSeq(w.bridge, "s7", func(*seqFile) error { return nil }); err != nil {
+		t.Errorf("another session is not refused: %v", err)
+	}
+}
+
+func TestSequencePublishCommandSeesWhichSessionsLockItHolds(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "placeholder")
+	command := "echo held=$STARSHIP_SEQUENCE_LOCK_HELD #"
+	if runtime.GOOS == "windows" && gitBashPath() == "" {
+		command = "echo held=%STARSHIP_SEQUENCE_LOCK_HELD% & rem"
+	}
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		sf.Sequences[0].Steps[0] = &seqStep{Kind: "publish", Task: "supernova/auth-refactor", Command: command, Status: "pending"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.approve()
+	if st := w.step(1); st.Status != "done" || !strings.Contains(st.Reason, "held="+w.sid) {
+		t.Errorf("the publish command should see the session: %s %q", st.Status, st.Reason)
 	}
 }

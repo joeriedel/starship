@@ -515,6 +515,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if carryErr != nil {
 		fmt.Fprintf(&ctx, "starship: could not carry the earlier session's runs over: %v\n", carryErr)
 	}
+	if note := retryStrandedRetires(bridge, in.SessionID); note != "" {
+		fmt.Fprintln(&ctx, note)
+	}
 	if envNote != "" {
 		fmt.Fprintln(&ctx, envNote)
 	}
@@ -810,6 +813,10 @@ func finishIfTerminal(r *RunFiles, wasTerminal bool, stderr io.Writer) error {
 		}
 		if _, err := advanceSequence(r.Snap.Bridge, r.State.Session); err != nil {
 			fmt.Fprintln(stderr, "ensign: could not advance the sequence:", err)
+			// A hook's stderr never reaches the session, so the failure is also queued in the sequence's report.
+			if qerr := queueSequenceFailure(r.Snap.Bridge, r.State.Session, r.State.Run, "could not advance the sequence: "+oneLine(err)); qerr != nil && r.warn == nil {
+				r.warn = fmt.Errorf("could not advance the sequence: %v (and could not queue that for the session: %v)", oneLine(err), oneLine(qerr))
+			}
 		}
 	}
 	return nil
