@@ -25,7 +25,6 @@ func loadSupernova(w *world, task string) error {
 }
 
 func TestStrictKeysProject(t *testing.T) {
-	file := "projects/supernova/project.yaml"
 	for name, c := range map[string]struct{ yaml, want string }{
 		"top level":      {"conectors: x\n", "conectors"},
 		"journal":        {"journal:\n  comit: off\n", "journal.comit"},
@@ -36,6 +35,7 @@ func TestStrictKeysProject(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
+			file := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
 			w.project(c.yaml)
 			w.frontTask("t", "")
 			err := loadSupernova(w, "supernova/t")
@@ -43,6 +43,16 @@ func TestStrictKeysProject(t *testing.T) {
 				t.Fatalf("got %v; want unknown key %s in %s", err, c.want, file)
 			}
 		})
+	}
+}
+
+func TestStrictKeysMappingWhereListExpected(t *testing.T) {
+	w := newWorld(t)
+	w.project("events:\n  task.close: {require: ./check.sh}\n")
+	w.frontTask("t", "")
+	err := loadSupernova(w, "supernova/t")
+	if err == nil || strings.Contains(err.Error(), "unknown key") {
+		t.Fatalf("got %v; want the decoder's type error", err)
 	}
 }
 

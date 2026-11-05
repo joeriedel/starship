@@ -99,6 +99,9 @@ func walkKeys(n *yaml.Node, s *keySchema, place string, seen map[keyVisit]bool) 
 			}
 		}
 	case yaml.MappingNode:
+		if s.keys == nil && s.values == nil {
+			return "", 0
+		}
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
 			if k.Kind == yaml.ScalarNode && k.Value == "<<" && (k.Tag == "" || k.Tag == "!" || k.Tag == "!!merge") {
