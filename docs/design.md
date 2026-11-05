@@ -325,7 +325,7 @@ as a fact about the technology alone.
 
 One `curator` role maintains every curated document: style guides (§9), skills'
 learned entries (§4.4) and declared documents (below). A stage marks itself with `curates: style`, `curates: skill` or `curates: document`,
-and its agents are the only writers of those documents. Each document type supplies a
+and its agents are the only writers of those documents. Any other `curates` value fails validation. Each document type supplies a
 brief (`briefs/curate-style.md`, `briefs/curate-skill.md`, `briefs/curate-document.md`); the pass and the checks are
 the same for all of them. The curator's context is deliberately small — the document,
 the proposals, and anything that outranks them — so its attention goes to consistency.
@@ -1591,7 +1591,7 @@ runs against Claude Code, except where listed below.
 - **Facts for a skill that doesn't exist are held, not curated.** Agents are told which
   skill names exist. A fact for any other name goes to `skills/proposed/<name>/`, and
   `status` lists it. `ensign skill new <name> --description …` creates the skill and
-  makes its facts pending; `ensign skill discard <name>` drops them.
+  makes its facts pending; `ensign skill discard <name>` drops them. `skill new` refuses a Windows reserved name (`con`, `nul`, `com1` and the like), and a fact line naming one is skipped as an invalid name is; `skill discard` still accepts one, so facts already held under it can be cleared.
 - **Help entries name their command for the session.** A pipeline's or extension's help
   entry may carry `run:`, the command that carries the request out. `help` never shows
   it; `ensign help requests` lists every one, generated at call time, and the SessionStart hook points at it after the manual, so the session doesn't have to guess how to "squash this task's commits".
