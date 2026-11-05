@@ -457,7 +457,7 @@ stages:
           error: { error: test-error }
       - id: docs
         role: documentation
-        report-fields: [files]
+        report-fields: [files, checked]
         outcomes:
           updated:   { finish: success }
           unchanged: { finish: success }
@@ -687,7 +687,7 @@ report whose `outcome` is missing or not among the stage's declared outcomes, an
 the agent with the valid outcomes listed: a handback is denied at the call, so the agent
 can resend it; a final message with no handback is blocked at its stop. A stop with no
 handback and nothing of the agent's own still running is rejected the same way. Stages may
-require further fields (the `code` stage requires `files` when `git-catalog` is enabled).
+require further fields (the `code` stage requires `files` when `git-catalog` is enabled; the `docs` stage requires `files` and `checked`). A `checked` line lists the code the stage read, may repeat, and is required unless the outcome is `blocked`; the driver checks only that one is present and non-empty, not what it says.
 
 Agents never have to be taught the format by a role file: the driver appends the report
 instructions, with that stage's outcomes, to every dispatch (§7).
@@ -1073,7 +1073,7 @@ contradicts `@style`.
 | `style-generator` | reads one source; proposes the rules it supports, with evidence | that source |
 | `curator` (§4.5) | the only writer of the guide (and of skills' learned entries and declared documents) | the guide, this run's proposals, sources' trust, `@style` |
 | `coder` | — | the guide's active entries |
-| `documentation` | checks the project's `@docs` paths against what the run changed and updates them; changes only those paths | the task's record and the changed files |
+| `documentation` | checks the project's `@docs` paths against what the run changed and updates them; reads the code behind each claim before writing it (the code wins over the brief; text it can't confirm is left out and reported); changes only those paths | the task's record and the changed files |
 
 ### 9.3 Learning from the style pass
 
