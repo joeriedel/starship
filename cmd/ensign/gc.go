@@ -17,7 +17,7 @@ import (
 // defaultKeepRuns is how many finished runs a bridge keeps when bridge.yaml has no keep-runs.
 const defaultKeepRuns = 500
 
-// sessionStartGCCap is how many deletes one session start attempts, failed ones included, so neither a first cleanup of a long-neglected bridge nor a set of undeletable folders can hold the start up.
+// sessionStartGCCap is how many deletes one session start attempts, failed ones included, so neither a first cleanup of a long-neglected bridge nor a set of undeletable folders can hold the start up. The delete attempts cost at most about 2s each on Windows, so 100s, well inside the 600s default hook timeout. The cap limits attempts only, not reads: a persistently unreadable state.json or pipeline.json can cost up to 2s per read on Windows with no attempt counted. Only folders that keep pipeline.json between starts can use the cap repeatedly, and `ensign gc` has no cap, so it reaches what they hold back.
 const sessionStartGCCap = 50
 
 // pipelineOnlyAge is how old a run folder's pipeline.json must be, with no state.json beside it, before gc takes the folder for a leftover. Age, because createRun writes pipeline.json and then state.json with no lock held between them, and five minutes outlasts that gap.
@@ -61,6 +61,7 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		var st State
 		dir := filepath.Join(runsDir(bridge), entries[i].Name())
 		err := readJSON(filepath.Join(dir, "state.json"), &st)
+		// A folder with neither file (a run creation that failed early, a crash mid-delete, or a failed delete, because os.RemoveAll removes all it can) is left alone on purpose. It costs no attempt. After a failed delete it holds only what couldn't be deleted, and reclaiming it would bring undeletable folders back into the cap at every start. A failed run creation or a crash mid-delete can leave deletable content (scratch, reports, skills) that stays until someone removes it by hand; that is accepted, because gc can't tell these apart from a failed delete, they are rare, and they cost no time. A state-only folder fails openRun in the second pass, likewise without an attempt.
 		if err == nil && finishedRun(&st) {
 			finished = append(finished, entries[i].Name())
 		} else if errors.Is(err, fs.ErrNotExist) {

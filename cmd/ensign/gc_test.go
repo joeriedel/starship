@@ -823,3 +823,46 @@ func TestGCPipelineOnlyFoldersCountTowardCap(t *testing.T) {
 		t.Fatalf("pipeline-only folders use the cap before finished runs: %+v", res)
 	}
 }
+
+func TestGCLeavesNeitherFileFolderAndSpendsNoAttempt(t *testing.T) {
+	w := newWorld(t)
+	bare := filepath.Join(runsDir(w.bridge), "20240101-000001-supernova")
+	write(t, filepath.Join(bare, "scratch", "note.txt"), "x")
+	fin := fabricate(t, w, "20240101-000002-supernova", "success", true)
+	res := gcRuns(w.bridge, 0, 1)
+	if !exists(bare) {
+		t.Errorf("a folder with neither file must survive")
+	}
+	if exists(fin) || res.Removed != 1 || res.More {
+		t.Fatalf("the finished run must go and the bare folder use no attempt: %+v", res)
+	}
+}
+
+func TestGCLeavesStateOnlyFolderAndSpendsNoAttempt(t *testing.T) {
+	w := newWorld(t)
+	stateOnly := fabricate(t, w, "20240101-000001-supernova", "success", true)
+	if err := os.Remove(filepath.Join(stateOnly, "pipeline.json")); err != nil {
+		t.Fatal(err)
+	}
+	newer := fabricate(t, w, "20240101-000002-supernova", "success", true)
+	res := gcRuns(w.bridge, 0, 1)
+	if !exists(stateOnly) {
+		t.Errorf("a state-only folder must survive")
+	}
+	if exists(newer) || res.Removed != 1 || res.More {
+		t.Fatalf("the newer run must go and the state-only folder use no attempt: %+v", res)
+	}
+}
+
+func TestGCStateOnlyFolderTakesKeepSlot(t *testing.T) {
+	w := newWorld(t)
+	older := fabricate(t, w, "20240101-000001-supernova", "success", true)
+	stateOnly := fabricate(t, w, "20240101-000002-supernova", "success", true)
+	if err := os.Remove(filepath.Join(stateOnly, "pipeline.json")); err != nil {
+		t.Fatal(err)
+	}
+	res := gcRuns(w.bridge, 1, 0)
+	if exists(older) || !exists(stateOnly) || res.Removed != 1 {
+		t.Fatalf("the state-only folder must hold the keep slot: %+v", res)
+	}
+}

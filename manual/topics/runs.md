@@ -1,6 +1,6 @@
 # Runs
 
-`bridge.yaml` `keep-runs` (default 500) is how many finished runs the bridge keeps in all. SessionStart deletes older finished runs beyond it, 50 at most per start; `ensign gc [<keep>]` does it now. Finished runs lose their `scratch/` contents. Pending, running and ask-user runs are never deleted.
+`bridge.yaml` `keep-runs` (default 500) is how many finished runs the bridge keeps in all. SessionStart deletes older finished runs beyond it, 50 delete attempts at most per start, shared with folders that have `pipeline.json` and no `state.json`, which are deleted first once 5 minutes old and don't count toward `keep-runs`; `ensign gc [<keep>]` does it now. Finished runs lose their `scratch/` contents. Pending, running and ask-user runs are never deleted.
 
 ## Folders held by another session's run
 
