@@ -17,8 +17,11 @@ import (
 // defaultKeepRuns is how many finished runs a bridge keeps when bridge.yaml has no keep-runs.
 const defaultKeepRuns = 500
 
-// sessionStartGCCap is how many runs one session start deletes, so a first cleanup of a long-neglected bridge cannot hold the start up.
+// sessionStartGCCap is how many deletes one session start attempts, failed ones included, so neither a first cleanup of a long-neglected bridge nor a set of undeletable folders can hold the start up.
 const sessionStartGCCap = 50
+
+// pipelineOnlyAge is how old a run folder's pipeline.json must be, with no state.json beside it, before gc takes the folder for a leftover. Age, because createRun writes pipeline.json and then state.json with no lock held between them, and five minutes outlasts that gap.
+const pipelineOnlyAge = 5 * time.Minute
 
 // keepRuns is the bridge's limit on finished runs.
 func (bf *BridgeFile) keepRuns() (int, error) {
@@ -34,13 +37,13 @@ func (bf *BridgeFile) keepRuns() (int, error) {
 // gcResult is what a cleanup did.
 type gcResult struct {
 	Removed, Scratch, Links int
-	More                    bool // candidates remain because the cap was reached
+	More                    bool // candidates remain because the cap on delete attempts was reached
 }
 
 // finishedRun reports whether a run's state says success or error. Pending, running and ask-user runs are never finished.
 func finishedRun(st *State) bool { return st.Status == "success" || st.Status == "error" }
 
-// gcRuns deletes finished runs beyond keep, oldest first, at most max of them (max <= 0 means no cap). It then empties the scratch folders of the finished runs it keeps (runs an open sequence step still needs are left alone) and drops session links to runs that no longer exist.
+// gcRuns first deletes pipeline-only run folders (pipeline.json but no state.json, see pipelineOnlyAge), then finished runs beyond keep, oldest first. It attempts at most max deletes in all, failed ones included (max <= 0 means no cap). It then empties the scratch folders of the finished runs it keeps (runs an open sequence step still needs are left alone) and drops session links to runs that no longer exist.
 func gcRuns(bridge string, keep, max int) gcResult {
 	var res gcResult
 	held, ok := heldRuns(bridge)
@@ -50,14 +53,52 @@ func gcRuns(bridge string, keep, max int) gcResult {
 	}
 	entries, _ := os.ReadDir(runsDir(bridge))
 	var finished []string // newest first
+	var pipelineOnly []string
 	for i := len(entries) - 1; i >= 0; i-- {
 		if !entries[i].IsDir() || held[entries[i].Name()] {
 			continue
 		}
 		var st State
-		if readJSON(filepath.Join(runsDir(bridge), entries[i].Name(), "state.json"), &st) == nil && finishedRun(&st) {
+		dir := filepath.Join(runsDir(bridge), entries[i].Name())
+		err := readJSON(filepath.Join(dir, "state.json"), &st)
+		if err == nil && finishedRun(&st) {
 			finished = append(finished, entries[i].Name())
+		} else if errors.Is(err, fs.ErrNotExist) {
+			if info, err := os.Stat(filepath.Join(dir, "pipeline.json")); err == nil && time.Since(info.ModTime()) > pipelineOnlyAge {
+				pipelineOnly = append(pipelineOnly, entries[i].Name())
+			}
 		}
+	}
+	attempts := 0
+	capped := func() bool {
+		if max > 0 && attempts >= max {
+			res.More = true
+			return true
+		}
+		return false
+	}
+	remove := func(dir string) {
+		attempts++
+		removeRun(dir)
+		if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+			res.Removed++
+		}
+	}
+	for i := len(pipelineOnly) - 1; i >= 0; i-- {
+		if capped() {
+			break
+		}
+		dir := filepath.Join(runsDir(bridge), pipelineOnly[i])
+		l := flock.New(filepath.Join(dir, "lock"))
+		if ok, err := l.TryLock(); err != nil || !ok {
+			continue
+		}
+		_, err := os.Stat(filepath.Join(dir, "state.json"))
+		l.Unlock()
+		if !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		remove(dir)
 	}
 	kept := finished
 	var candidates []string
@@ -65,8 +106,7 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		kept, candidates = finished[:keep], finished[keep:]
 	}
 	for i := len(candidates) - 1; i >= 0; i-- {
-		if max > 0 && res.Removed >= max {
-			res.More = true
+		if capped() {
 			break
 		}
 		r, err := openRun(bridge, candidates[i])
@@ -79,10 +119,7 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		if !done {
 			continue
 		}
-		removeRun(dir)
-		if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
-			res.Removed++
-		}
+		remove(dir)
 	}
 	for _, id := range kept {
 		if emptyScratchIfFinished(bridge, id) {
@@ -156,7 +193,7 @@ const staleGCAge = 5 * time.Minute
 // pidRecordAge is how old a <pid>.pid record must be before a sweep removes it. Age, not liveness, because a session idle past it loses only the link to its earlier id, which is how /clear behaved before the record existed.
 const pidRecordAge = 30 * 24 * time.Hour
 
-// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .writes, .topic-*, .lock, .sequence.lock, .writes.lock, .sequence.tmp and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
+// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .writes, .topic-*, .lock, .sequence.lock, .writes.lock, .sequence.tmp, .writes.tmp and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
 const sessionFileAge = 30 * 24 * time.Hour
 
 // deadLink reports whether a session link names at least one run, none of the names is a path, and every named run's folder is gone. A link that is empty, unreadable or names a path is not dead. Links hold one run id per line.
@@ -272,17 +309,17 @@ func sweepSessionFiles(bridge string, entries []os.DirEntry) {
 	})
 }
 
-// leftoverOfFile returns the session id a <id>.lock, <id>.sequence.lock, <id>.writes.lock, <id>.sequence.tmp or <id>.tmp file name belongs to. Names of the swept types, the bridge-wide .sweep.lock and files such as <id>.task.tmp and <id>.writes.tmp (whose stem is itself a session file) are not leftovers.
+// leftoverOfFile returns the session id a <id>.lock, <id>.sequence.lock, <id>.writes.lock, <id>.sequence.tmp, <id>.writes.tmp or <id>.tmp file name belongs to. Names of the swept types, the bridge-wide .sweep.lock and files such as <id>.task.tmp (whose stem is itself a session file) are not leftovers.
 func leftoverOfFile(name string) (string, bool) {
 	if _, ok := sessionOfFile(name); ok || name == ".sweep.lock" {
 		return "", false
 	}
-	for _, suf := range []string{".sequence.lock", ".writes.lock", ".sequence.tmp", ".lock", ".tmp"} {
+	for _, suf := range []string{".sequence.lock", ".writes.lock", ".sequence.tmp", ".writes.tmp", ".lock", ".tmp"} {
 		id, found := strings.CutSuffix(name, suf)
 		if !found {
 			continue
 		}
-		if _, isSession := sessionOfFile(id); isSession && suf != ".sequence.lock" && suf != ".writes.lock" && suf != ".sequence.tmp" {
+		if _, isSession := sessionOfFile(id); isSession && suf != ".sequence.lock" && suf != ".writes.lock" && suf != ".sequence.tmp" && suf != ".writes.tmp" {
 			return "", false
 		}
 		return id, id != ""
@@ -292,9 +329,9 @@ func leftoverOfFile(name string) (string, bool) {
 
 // sweptLeftovers is one session's lock and tmp files.
 type sweptLeftovers struct {
-	seqLock, writesLock, lock, tmp, seqTmp bool
-	newest                                 time.Time
-	failed                                 bool
+	seqLock, writesLock, lock, tmp, seqTmp, writesTmp bool
+	newest                                            time.Time
+	failed                                            bool
 }
 
 // leftoverGroups finds the sessions with lock or tmp files in the snapshot and reads their ages. It runs before the swept files are renamed, because an entry's Info fails once its file is gone.
@@ -326,6 +363,8 @@ func leftoverGroups(entries []os.DirEntry) map[string]*sweptLeftovers {
 		switch {
 		case strings.HasSuffix(e.Name(), ".sequence.tmp"):
 			g.seqTmp = true
+		case strings.HasSuffix(e.Name(), ".writes.tmp"):
+			g.writesTmp = true
 		case strings.HasSuffix(e.Name(), ".sequence.lock"):
 			g.seqLock = true
 		case strings.HasSuffix(e.Name(), ".writes.lock"):
@@ -352,7 +391,7 @@ func leftoverGroups(entries []os.DirEntry) map[string]*sweptLeftovers {
 	return groups
 }
 
-// sweepLeftovers removes the <id>.lock, <id>.sequence.lock, <id>.sequence.tmp and <id>.tmp files of sessions whose newest file, link included, is older than sessionFileAge and that are not busy. A lock's own mtime is its creation time, so the session's other files and link show its use. Every lock is taken without blocking and the session is left for a later sweep if one is held; <id>.lock is also taken for a <id>.tmp, because its only writer holds it. <id>.sequence.lock is taken for a <id>.sequence.tmp as well, because its only writer holds it; it is created if missing and removed again with the other locks, and a .sequence.tmp alone never takes <id>.lock.
+// sweepLeftovers removes the <id>.lock, <id>.sequence.lock, <id>.writes.lock, <id>.sequence.tmp, <id>.writes.tmp and <id>.tmp files of sessions whose newest file, link included, is older than sessionFileAge and that are not busy. A lock's own mtime is its creation time, so the session's other files and link show its use. Every lock is taken without blocking and the session is left for a later sweep if one is held; <id>.lock is also taken for a <id>.tmp, because its only writer holds it. <id>.sequence.lock is taken for a <id>.sequence.tmp as well, because its only writer holds it; it is created if missing and removed again with the other locks, and a .sequence.tmp alone never takes <id>.lock. <id>.writes.lock is taken the same way for a <id>.writes.tmp, because withWrites holds it across the write.
 func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, listRunsOnce func() []runInfo) {
 	dir := filepath.Join(bridge, ".starship", "sessions")
 	for id, g := range groups {
@@ -364,7 +403,7 @@ func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, listRunsOn
 		if g.seqLock || g.seqTmp {
 			paths = append(paths, filepath.Join(dir, id+".sequence.lock"))
 		}
-		if g.writesLock {
+		if g.writesLock || g.writesTmp {
 			paths = append(paths, filepath.Join(dir, id+".writes.lock"))
 		}
 		if g.lock || g.tmp {
@@ -390,6 +429,9 @@ func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, listRunsOn
 		}
 		if g.seqTmp {
 			os.Remove(filepath.Join(dir, id+".sequence.tmp"))
+		}
+		if g.writesTmp {
+			os.Remove(filepath.Join(dir, id+".writes.tmp"))
 		}
 		var left []string
 		for _, path := range paths {

@@ -724,8 +724,8 @@ func TestSessionLeftoversCreateNoSequenceLock(t *testing.T) {
 func TestSessionLeftoversSparesSweepLockAndSessionTmp(t *testing.T) {
 	w := newWorld(t)
 	dir := filepath.Join(w.bridge, ".starship", "sessions")
-	keep := []string{".sweep.lock", "s1.task.tmp", "s1.writes.tmp"}
-	for _, n := range keep {
+	keep := []string{".sweep.lock", "s1.task.tmp"}
+	for _, n := range append([]string{"s1.writes.tmp"}, keep...) {
 		oldFile(t, filepath.Join(dir, n), oldAge)
 	}
 	dropDeadLinks(w.bridge)
@@ -734,9 +734,92 @@ func TestSessionLeftoversSparesSweepLockAndSessionTmp(t *testing.T) {
 			t.Errorf("%s must stay", n)
 		}
 	}
-	for _, n := range []string{"s1.sequence.lock", "s1.lock", "s1.sequence.sequence.lock"} {
+	for _, n := range []string{"s1.writes.tmp", "s1.writes.lock", "s1.writes.writes.lock", "s1.sequence.lock", "s1.lock", "s1.sequence.sequence.lock"} {
 		if exists(filepath.Join(dir, n)) {
-			t.Errorf("%s must not be created", n)
+			t.Errorf("%s must not exist", n)
 		}
+	}
+}
+
+// pipelineOnlyRun makes a run folder with an aged pipeline.json and no state.json.
+func pipelineOnlyRun(t *testing.T, w *world, id string, age time.Duration) string {
+	t.Helper()
+	dir := filepath.Join(runsDir(w.bridge), id)
+	oldFile(t, filepath.Join(dir, "pipeline.json"), age)
+	return dir
+}
+
+func TestGCReclaimsOldPipelineOnlyFolderAndDropsLink(t *testing.T) {
+	w := newWorld(t)
+	old := pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
+	young := pipelineOnlyRun(t, w, "20240101-000002-supernova", time.Minute)
+	link := filepath.Join(w.bridge, ".starship", "sessions", "dead")
+	write(t, link, "20240101-000001-supernova\n")
+	res := gcRuns(w.bridge, 500, 0)
+	if exists(old) || res.Removed != 1 {
+		t.Fatalf("an old pipeline-only folder must go: %+v", res)
+	}
+	if !exists(young) {
+		t.Error("a young pipeline-only folder must stay")
+	}
+	if exists(link) || res.Links != 1 {
+		t.Errorf("the link naming the removed folder must be dropped in the same pass: %+v", res)
+	}
+}
+
+func TestGCKeepsPipelineOnlyFolderWhenLockHeld(t *testing.T) {
+	w := newWorld(t)
+	dir := pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
+	l := flock.New(filepath.Join(dir, "lock"))
+	if ok, err := l.TryLock(); err != nil || !ok {
+		t.Fatalf("lock: %v %v", ok, err)
+	}
+	defer l.Unlock()
+	if res := gcRuns(w.bridge, 500, 0); !exists(dir) || res.Removed != 0 {
+		t.Fatalf("a folder whose run lock is held must stay: %+v", res)
+	}
+}
+
+func TestGCKeepsPipelineOnlyFolderHeldBySequence(t *testing.T) {
+	w := newWorld(t)
+	dir := pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
+	sf := &seqFile{Sequences: []*sequence{{Steps: []*seqStep{{N: 1, Kind: "run", Run: "20240101-000001-supernova", Status: "active"}}}}}
+	write(t, filepath.Join(w.bridge, ".starship", "sessions", "keep"), "")
+	if err := writeJSON(seqPath(w.bridge, "s1"), sf); err != nil {
+		t.Fatal(err)
+	}
+	if res := gcRuns(w.bridge, 500, 0); !exists(dir) || res.Removed != 0 {
+		t.Fatalf("a folder held by a sequence must stay: %+v", res)
+	}
+}
+
+func TestGCKeepsPipelineOnlyFolderWithCorruptState(t *testing.T) {
+	w := newWorld(t)
+	dir := pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
+	write(t, filepath.Join(dir, "state.json"), "{not json")
+	if res := gcRuns(w.bridge, 500, 0); !exists(dir) || res.Removed != 0 {
+		t.Fatalf("a folder with a corrupt state.json must stay: %+v", res)
+	}
+}
+
+func TestGCPipelineOnlyFoldersDoNotChangeKeptRuns(t *testing.T) {
+	w := newWorld(t)
+	old := fabricate(t, w, "20240101-000001-supernova", "success", true)
+	newer := fabricate(t, w, "20240101-000002-supernova", "success", true)
+	po := pipelineOnlyRun(t, w, "20240101-000003-supernova", pipelineOnlyAge+time.Minute)
+	res := gcRuns(w.bridge, 1, 0)
+	if exists(po) || exists(old) || !exists(newer) || res.Removed != 2 {
+		t.Fatalf("keep-runs counts finished runs only: %+v", res)
+	}
+}
+
+func TestGCPipelineOnlyFoldersCountTowardCap(t *testing.T) {
+	w := newWorld(t)
+	f1 := fabricate(t, w, "20240101-000001-supernova", "success", true)
+	po1 := pipelineOnlyRun(t, w, "20240101-000002-supernova", pipelineOnlyAge+time.Minute)
+	po2 := pipelineOnlyRun(t, w, "20240101-000003-supernova", pipelineOnlyAge+time.Minute)
+	res := gcRuns(w.bridge, 0, 2)
+	if exists(po1) || exists(po2) || !exists(f1) || res.Removed != 2 || !res.More {
+		t.Fatalf("pipeline-only folders use the cap before finished runs: %+v", res)
 	}
 }

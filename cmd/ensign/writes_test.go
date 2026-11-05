@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 )
 
@@ -760,6 +761,36 @@ func TestSweepRemovesOldWritesFiles(t *testing.T) {
 	}
 	if !exists(young) {
 		t.Error("a young session's .writes must stay")
+	}
+}
+
+func TestSweepWritesTmp(t *testing.T) {
+	w := writesWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	oldFile(t, filepath.Join(dir, "old.writes.tmp"), oldAge)
+	write(t, filepath.Join(dir, "young.writes.tmp"), "")
+	oldFile(t, filepath.Join(dir, "held.writes.tmp"), oldAge)
+	oldFile(t, filepath.Join(dir, "held.writes.lock"), oldAge)
+	l := flock.New(filepath.Join(dir, "held.writes.lock"))
+	if ok, err := l.TryLock(); err != nil || !ok {
+		t.Fatalf("lock: %v %v", ok, err)
+	}
+	defer l.Unlock()
+	oldFile(t, filepath.Join(dir, "mixed.writes.tmp"), oldAge)
+	oldFile(t, filepath.Join(dir, "mixed.lock"), oldAge)
+	write(t, filepath.Join(dir, "mixed"), "")
+	dropDeadLinks(w.bridge)
+	if exists(filepath.Join(dir, "old.writes.tmp")) || exists(filepath.Join(dir, "old.writes.lock")) || exists(filepath.Join(dir, "old.lock")) {
+		t.Error("an old lone .writes.tmp must be swept without leaving or taking other locks")
+	}
+	if !exists(filepath.Join(dir, "young.writes.tmp")) {
+		t.Error("a young .writes.tmp must stay")
+	}
+	if !exists(filepath.Join(dir, "held.writes.tmp")) {
+		t.Error("a .writes.tmp must stay while its .writes.lock is held")
+	}
+	if !exists(filepath.Join(dir, "mixed.writes.tmp")) {
+		t.Error("a fresh file must keep the group young")
 	}
 }
 

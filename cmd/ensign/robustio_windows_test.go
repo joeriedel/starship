@@ -266,3 +266,16 @@ func TestRemoveRunSucceedsWhilePipelineHeld(t *testing.T) {
 		t.Fatal("want the run folder removed")
 	}
 }
+
+func TestGCReclaimsPipelineOnlyFolderFast(t *testing.T) {
+	w := newWorld(t)
+	dir := pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
+	start := time.Now()
+	res := gcRuns(w.bridge, 500, 0)
+	if time.Since(start) > retryWindow/2 {
+		t.Fatalf("reclaiming took %v", time.Since(start))
+	}
+	if exists(dir) || res.Removed != 1 {
+		t.Fatalf("the pipeline-only folder must be reclaimed: %+v", res)
+	}
+}
