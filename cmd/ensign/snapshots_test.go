@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -116,10 +117,9 @@ func TestSnapshotGuardBridgeYAML(t *testing.T) {
 
 func TestSnapshotGuardPlatformFolding(t *testing.T) {
 	w, _ := declaredGuardWorld(t)
-	in := &HookInput{ToolName: "Write", AgentID: "r1", AgentType: "reader", ToolInput: map[string]any{"content": "no marker"}}
-	// Slash-form paths: only the windows fold converts backslashes, so on a Windows host the darwin and linux folds can't be exercised with the host's own paths.
-	slashBridge := filepath.ToSlash(w.bridge)
-	target := slashBridge + "/Reader/Sources/mail-m1-2026-11-04.md"
+	in := &HookInput{ToolName: "Write", AgentID: "r1", AgentType: "reader", Cwd: w.bridge, ToolInput: map[string]any{"content": "no marker"}}
+	// Relative targets under the bridge as cwd: a host path with a single leading slash is ambiguous on Windows, and only the windows fold converts backslashes, so on a Windows host the darwin and linux folds can't be exercised with the host's own paths.
+	target := "Reader/Sources/mail-m1-2026-11-04.md"
 	for goos, want := range map[string]bool{"windows": true, "darwin": true, "linux": false} {
 		if runtime.GOOS == "windows" && goos != "windows" {
 			continue
@@ -129,7 +129,7 @@ func TestSnapshotGuardPlatformFolding(t *testing.T) {
 		}
 	}
 	// Directly in sources is compared on folded paths too.
-	sub := slashBridge + "/READER/sources/Mail/m1-2026-11-04.md"
+	sub := "READER/sources/Mail/m1-2026-11-04.md"
 	if why := snapshotGuard(w.bridge, in, sub, "windows"); !strings.Contains(why, "directly") {
 		t.Errorf("subfolder under folded case: %q", why)
 	}
@@ -409,5 +409,85 @@ func TestReadGuardExpandsPathsAsReadDoes(t *testing.T) {
 	}
 	if res, denied := w.toolCall2("", "", "Read", map[string]any{"file_path": "~/bridge/reader/facts.md"}, w.bridge); denied || res != nil {
 		t.Errorf("a target outside sources stays open: %v", res)
+	}
+}
+
+func TestSourcesWindowsSpellings(t *testing.T) {
+	w, _ := declaredGuardWorld(t)
+	for _, tool := range []string{"Read", "Grep"} {
+		key := "file_path"
+		if tool == "Grep" {
+			key = "path"
+		}
+		for _, p := range deviceSpellings {
+			in := guardInput(tool, key, p)
+			d := readGuard(w.bridge, in, "windows")
+			if d == nil || !strings.Contains(fmt.Sprint(d), "full") {
+				t.Errorf("%s windows %s: %v", tool, p, d)
+			}
+			if readGuard(w.bridge, in, "linux") != nil {
+				t.Errorf("%s linux %s refused", tool, p)
+			}
+			in.AgentID, in.AgentType = "r1", "reader"
+			if readGuard(w.bridge, in, "windows") != nil {
+				t.Errorf("reader %s %s refused", tool, p)
+			}
+		}
+		for _, p := range []string{
+			`\\localhost\C$\work\bridge\reader\sources\x`,
+			`\\?\UNC\localhost\C$\work\bridge\reader\sources\x`,
+			`//localhost/C$/work/bridge/reader/sources/x`,
+			`\\LOCALHOST\C$\work\bridge\READER\Sources\x`,
+			`\\localhost\C$\work\bridge\other\..\reader\sources\x`,
+			`\\localhost\C$\work\bridge\reader.\sources \x`,
+		} {
+			if readGuard(w.bridge, guardInput(tool, key, p), "windows") == nil {
+				t.Errorf("%s windows %s allowed", tool, p)
+			}
+		}
+		for _, p := range []string{`\\nas\share\notes.md`, `/c/supernova/x`, `C:\supernova\x`, `\\?\C:\supernova\x`} {
+			if d := readGuard(w.bridge, guardInput(tool, key, p), "windows"); d != nil {
+				t.Errorf("%s windows %s denied: %v", tool, p, d)
+			}
+		}
+	}
+	undeclared := newWorld(t)
+	if d := readGuard(undeclared.bridge, guardInput("Read", "file_path", `\\.\C:\x`), "windows"); d != nil {
+		t.Errorf("undeclared bridge denied: %v", d)
+	}
+}
+
+func TestSnapshotGuardWindowsSpellings(t *testing.T) {
+	w, _ := declaredGuardWorld(t)
+	for _, p := range append([]string{`\\localhost\C$\work\bridge\reader\sources\supernova-m1-2026-11-04.md`}, deviceSpellings...) {
+		in := &HookInput{ToolName: "Write", AgentID: "r1", AgentType: "reader", ToolInput: map[string]any{"file_path": p, "content": goodSnapshot}}
+		why := snapshotGuard(w.bridge, in, p, "windows")
+		if !strings.Contains(why, "full") || !strings.Contains(why, "refused because") {
+			t.Errorf("reader Write %s: %q", p, why)
+		}
+		if why := snapshotGuard(w.bridge, in, p, "linux"); strings.Contains(why, "full") {
+			t.Errorf("linux %s: %q", p, why)
+		}
+	}
+	undeclared := newWorld(t)
+	if why := snapshotGuard(undeclared.bridge, &HookInput{ToolName: "Write"}, `\\.\C:\x`, "windows"); why != "" {
+		t.Errorf("undeclared bridge refused: %q", why)
+	}
+}
+
+func TestSourcesUnplaceableUNCBridge(t *testing.T) {
+	bridge := `\\nas\share\bridge`
+	p := `\\nas\share\bridge\reader\sources\mail-m1-2026-11-04.md`
+	if sourcesUnplaceable(bridge, p, true, "windows") {
+		t.Error("a UNC target that resolved inside sources of a UNC bridge is placeable")
+	}
+	if !sourcesUnplaceable(bridge, p, false, "windows") {
+		t.Error("a UNC target naming sources that did not resolve inside is unplaceable")
+	}
+	if !sourcesUnplaceable(bridge, `\\?\Volume{1234}\x`, true, "windows") {
+		t.Error("an unresolvable spelling stays unplaceable inside sources")
+	}
+	if sourcesUnplaceable(bridge, p, false, "linux") {
+		t.Error("linux never makes a target unplaceable")
 	}
 }

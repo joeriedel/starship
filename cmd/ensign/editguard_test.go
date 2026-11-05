@@ -202,3 +202,107 @@ func TestEditGuardSeveralLiveRuns(t *testing.T) {
 	w.expectEdit("ghost", "coder", filepath.Join(client, "main.go"), true)
 	w.expectEdit("ghost", "coder", filepath.Join(server, "main.go"), true)
 }
+
+func TestStripExtendedPrefixUNCCase(t *testing.T) {
+	for _, p := range []string{`\\?\unc\srv\share`, `\\?\Unc\srv\share`, `\\?\UNC\srv\share`} {
+		if got := stripExtendedPrefix(p, "windows"); got != `\\srv\share` {
+			t.Errorf("%s stripped to %s", p, got)
+		}
+		if got := stripExtendedPrefix(p, "linux"); got != p {
+			t.Errorf("%s changed off Windows: %s", p, got)
+		}
+	}
+	if got := stripExtendedPrefix(`//?/C:/x`, "windows"); got != `//?/C:/x` {
+		t.Errorf("forward-slash prefix stripped: %s", got)
+	}
+}
+
+var deviceSpellings = []string{`\\?\Volume{1234}\x`, `\\.\C:\x`, `//?/C:/x`, `\\?\unc\localhost\c$\x`, `\\?\GLOBALROOT\x`, `C:rel\x`, `\rooted\x`}
+
+func guardInput(tool, key, p string) *HookInput {
+	return &HookInput{ToolName: tool, ToolInput: map[string]any{key: p}}
+}
+
+func TestWindowsSpellingsControlPlaneAndEditGuard(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	for _, p := range deviceSpellings {
+		in := guardInput("Edit", "file_path", p)
+		if why := controlPlaneEdit(w.bridge, in, "windows"); !strings.Contains(why, "full") {
+			t.Errorf("controlPlaneEdit windows %s: %q", p, why)
+		}
+		if why, _, err := editGuard(w.bridge, in, "windows"); err != nil || !strings.Contains(why, "full") || !strings.Contains(why, "Working around the guard is a failure, not a fix.") {
+			t.Errorf("editGuard windows %s: %q %v", p, why, err)
+		}
+		if why := controlPlaneEdit(w.bridge, in, "linux"); strings.Contains(why, "full") {
+			t.Errorf("controlPlaneEdit linux %s: %q", p, why)
+		}
+		if why, _, _ := editGuard(w.bridge, in, "linux"); strings.Contains(why, "full `C:") {
+			t.Errorf("editGuard linux %s: %q", p, why)
+		}
+	}
+}
+
+func TestControlPlaneEditUNCByName(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: /opt/supernova/ship\n")
+	for _, p := range []string{
+		`\\localhost\C$\work\bridge\.starship\control-plane\x`,
+		`\\?\UNC\localhost\C$\work\bridge\.starship\control-plane\x`,
+		`//localhost/C$/work/bridge/.starship/control-plane/x`,
+		`\\LOCALHOST\C$\Work\Bridge\.STARSHIP\Control-Plane\X`,
+		`\\localhost\C$\work\bridge\other\..\.starship\control-plane\x`,
+		`\\localhost\C$\work\bridge\.starship.\control-plane \x`,
+		`\\srv\share\supernova\ship\x`,
+	} {
+		if why := controlPlaneEdit(w.bridge, guardInput("Write", "file_path", p), "windows"); !strings.Contains(why, "pinned copy") {
+			t.Errorf("windows %s allowed: %q", p, why)
+		}
+	}
+	for _, p := range []string{`\\nas\share\notes.md`, `\\?\C:\supernova\notes.md`, `C:\supernova\notes.md`} {
+		if why := controlPlaneEdit(w.bridge, guardInput("Write", "file_path", p), "windows"); why != "" {
+			t.Errorf("windows %s refused: %q", p, why)
+		}
+	}
+}
+
+func TestWindowsLeadingSpaceSpellings(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	for _, p := range []string{` \\?\Volume{1234}\x`, ` \\.\C:\x`} {
+		in := guardInput("Write", "file_path", p)
+		if why := controlPlaneEdit(w.bridge, in, "windows"); !strings.Contains(why, "full") {
+			t.Errorf("controlPlaneEdit windows %q: %q", p, why)
+		}
+		if why, _, err := editGuard(w.bridge, in, "windows"); err != nil || !strings.Contains(why, "full") {
+			t.Errorf("editGuard windows %q: %q %v", p, why, err)
+		}
+		if why := controlPlaneEdit(w.bridge, in, "linux"); strings.Contains(why, "full") {
+			t.Errorf("controlPlaneEdit linux %q: %q", p, why)
+		}
+		if why, _, _ := editGuard(w.bridge, in, "linux"); strings.Contains(why, "full `C:") {
+			t.Errorf("editGuard linux %q: %q", p, why)
+		}
+	}
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: /opt/supernova/ship\n")
+	unc := ` \\localhost\C$\work\bridge\.starship\control-plane\x`
+	if why := controlPlaneEdit(w.bridge, guardInput("Write", "file_path", unc), "windows"); !strings.Contains(why, "pinned copy") {
+		t.Errorf("controlPlaneEdit windows %q: %q", unc, why)
+	}
+	if why := controlPlaneEdit(w.bridge, guardInput("Write", "file_path", unc), "linux"); why != "" {
+		t.Errorf("controlPlaneEdit linux %q: %q", unc, why)
+	}
+}
+
+func TestEditFolderTarget(t *testing.T) {
+	for _, c := range []struct{ in, goos, want string }{
+		{` \\fs\share\x.txt`, "windows", `\\fs\share\x.txt`},
+		{` //fs/share/x.txt`, "windows", `//fs/share/x.txt`},
+		{` C:\x`, "windows", ` C:\x`},
+		{`notes.md`, "windows", `notes.md`},
+		{` notes.md`, "windows", ` notes.md`},
+		{` \\fs\share\x.txt`, "linux", ` \\fs\share\x.txt`},
+	} {
+		if got := editFolderTarget(c.in, "/home/u", c.goos); got != c.want {
+			t.Errorf("editFolderTarget(%q, %s) = %q, want %q", c.in, c.goos, got, c.want)
+		}
+	}
+}

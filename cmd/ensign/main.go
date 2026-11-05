@@ -243,7 +243,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 0
 		}
 		if in.ToolName == "Read" || in.ToolName == "Grep" {
-			if d := readGuard(bridge, &in); d != nil {
+			if d := readGuard(bridge, &in, runtime.GOOS); d != nil {
 				json.NewEncoder(stdout).Encode(d)
 			}
 			return 0
@@ -255,7 +255,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			}
 		}
 		if in.ToolName != "Agent" && in.ToolName != "Task" && in.ToolName != "SubagentHandback" {
-			if why := controlPlaneEdit(bridge, &in); why != "" {
+			if why := controlPlaneEdit(bridge, &in, runtime.GOOS); why != "" {
 				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
 					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}})
 				return 0
@@ -265,7 +265,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 					"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "starship: " + why}})
 				return 0
 			}
-			why, warning, err := editGuard(bridge, &in)
+			why, warning, err := editGuard(bridge, &in, runtime.GOOS)
 			if err != nil {
 				return failHook(&in, nil, err, stderr)
 			}

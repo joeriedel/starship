@@ -13,7 +13,7 @@ import (
 )
 
 // editGuard refuses an Edit, Write or NotebookEdit outside the folders the calling agent may edit. It returns the reason, or "" to allow, and the warning from binding the run, if any. The error means the run could not be looked up; a failed save of the rebind is a warning.
-func editGuard(bridge string, in *HookInput) (reason, warning string, err error) {
+func editGuard(bridge string, in *HookInput, goos string) (reason, warning string, err error) {
 	if in.ToolName != "Edit" && in.ToolName != "Write" && in.ToolName != "NotebookEdit" {
 		return "", "", nil
 	}
@@ -24,7 +24,12 @@ func editGuard(bridge string, in *HookInput) (reason, warning string, err error)
 	if target == "" {
 		return "", "", nil
 	}
-	if why := snapshotGuard(bridge, in, target, runtime.GOOS); why != "" {
+	home, _ := os.UserHomeDir()
+	if windowsUnresolvable(target, goos) || windowsUnresolvable(claudeToolPath(target, home, goos), goos) {
+		return "this edit was refused because on Windows, give the full `C:\\...` path of the file; this spelling (a stream, a device or volume path, a drive-relative or a rooted path with no drive) can't be checked against the folders this agent may edit. Working around the guard is a failure, not a fix.", "", nil
+	}
+	folderTarget := editFolderTarget(target, home, goos)
+	if why := snapshotGuard(bridge, in, target, goos); why != "" {
 		return why, "", nil
 	}
 	if in.AgentID != "" && in.AgentType == "reader" {
@@ -38,7 +43,7 @@ func editGuard(bridge string, in *HookInput) (reason, warning string, err error)
 		}
 		if _, declared := rules["reader"]; declared {
 			folder := filepath.Join(bridge, "reader")
-			if pathWithin(resolveEditTarget(target, in.Cwd, runtime.GOOS), resolveEditFolder(folder, runtime.GOOS), runtime.GOOS) {
+			if pathWithin(resolveEditTarget(folderTarget, in.Cwd, goos), resolveEditFolder(folder, goos), goos) {
 				return "", "", nil
 			}
 			return "this edit was refused because " + target + " is outside " + folder + ", the only folder a reader may edit. Working around the guard is a failure, not a fix.", "", nil
@@ -86,9 +91,9 @@ func editGuard(bridge string, in *HookInput) (reason, warning string, err error)
 			}
 		}
 	}
-	resolved := resolveEditTarget(target, in.Cwd, runtime.GOOS)
+	resolved := resolveEditTarget(folderTarget, in.Cwd, goos)
 	for _, f := range folders {
-		if pathWithin(resolved, resolveEditFolder(f, runtime.GOOS), runtime.GOOS) {
+		if pathWithin(resolved, resolveEditFolder(f, goos), goos) {
 			return "", warning, nil
 		}
 	}
@@ -284,13 +289,13 @@ func systemTempFolders(goos string) []string {
 	return out
 }
 
-// stripExtendedPrefix removes a Windows \\?\ prefix, turning \\?\UNC\x into \\x.
+// stripExtendedPrefix removes a Windows \\?\ prefix, turning \\?\UNC\x into \\x; UNC is matched in any case, since a lower-case one would otherwise become a relative path. A forward-slash //?/ prefix is left alone: tool-input paths of that form are refused up front, and a cwd or folder comes from the OS with backslashes.
 func stripExtendedPrefix(p, goos string) string {
 	if goos != "windows" {
 		return p
 	}
-	if rest, ok := strings.CutPrefix(p, `\\?\UNC\`); ok {
-		return `\\` + rest
+	if len(p) >= 8 && strings.HasPrefix(p, `\\?\`) && strings.EqualFold(p[4:7], "UNC") && p[7] == '\\' {
+		return `\\` + p[8:]
 	}
 	return strings.TrimPrefix(p, `\\?\`)
 }
@@ -310,6 +315,16 @@ func foldPath(p, goos string) string {
 func pathWithin(p, dir, goos string) bool {
 	p, dir = foldPath(p, goos), foldPath(dir, goos)
 	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
+}
+
+// editFolderTarget is the path editGuard resolves for its folder checks: on Windows a UNC path as Claude Code's tools expand it (so a leading space can't make it look relative to the cwd), otherwise the raw target.
+func editFolderTarget(target, home, goos string) string {
+	if goos == "windows" {
+		if expanded := claudeToolPath(target, home, goos); isUNCPath(expanded) {
+			return expanded
+		}
+	}
+	return target
 }
 
 func resolveEditTarget(p, cwd, goos string) string {

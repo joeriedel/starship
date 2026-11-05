@@ -1666,7 +1666,7 @@ func TestEditGuardFindsAgentRunFirst(t *testing.T) {
 	}
 	in := &HookInput{SessionID: "s2", AgentID: coder, AgentType: "coder", ToolName: "Write",
 		ToolInput: map[string]any{"file_path": filepath.Join(filepath.Dir(w.bridge), "workspace", "x.go")}}
-	if reason, _, err := editGuard(w.bridge, in); err != nil || reason != "" {
+	if reason, _, err := editGuard(w.bridge, in, runtime.GOOS); err != nil || reason != "" {
 		t.Errorf("the coder's write in run A's workspace: %q, %v", reason, err)
 	}
 	if got := w.state().Run; got != runB {

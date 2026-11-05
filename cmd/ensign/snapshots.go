@@ -6,7 +6,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"unicode"
 )
@@ -58,10 +57,17 @@ func inSourcesFolder(bridge, target, cwd, goos string) (resolved string, in bool
 	return resolved, pathWithin(resolved, resolveEditFolder(filepath.Join(bridge, "reader", "sources"), goos), goos)
 }
 
+// sourcesUnplaceable reports that a tool target, already through claudeToolPath, can't be placed outside <bridge>/reader/sources: a spelling that can't be resolved, or a UNC path that names the folder without having resolved inside it (a bridge on a share resolves inside by its own path).
+func sourcesUnplaceable(bridge, target string, within bool, goos string) bool {
+	return windowsUnresolvable(target, goos) || (!within && uncNamesFolder(target, filepath.Join(bridge, "reader", "sources"), goos))
+}
+
 // snapshotGuard refuses a write into <bridge>/reader/sources/ that is not a new, well-formed pin made by the reader with a Write. It returns "" to leave the call to the other checks, which is also the answer for a target elsewhere and for a bridge that does not declare the reader.
 func snapshotGuard(bridge string, in *HookInput, target, goos string) string {
+	home, _ := os.UserHomeDir()
 	resolved, within := inSourcesFolder(bridge, target, in.Cwd, goos)
-	if !within {
+	unplaceable := sourcesUnplaceable(bridge, claudeToolPath(target, home, goos), within, goos)
+	if !within && !unplaceable {
 		return ""
 	}
 	declared, err := readerDeclared(bridge)
@@ -70,6 +76,9 @@ func snapshotGuard(bridge string, in *HookInput, target, goos string) string {
 	}
 	if !declared {
 		return ""
+	}
+	if unplaceable {
+		return "this edit was refused because on Windows, give the full `C:\\...` path of the file; this spelling can't be checked against reader/sources/"
 	}
 	if in.AgentID == "" || in.AgentType != "reader" {
 		return "this edit was refused because only the reader pins snapshots into reader/sources/; dispatch the reader with the user's word to keep the source"
@@ -108,7 +117,7 @@ func snapshotGuard(bridge string, in *HookInput, target, goos string) string {
 }
 
 // readGuard denies a Read or Grep aimed at <bridge>/reader/sources/ for everyone but the reader. It returns nil to leave the call to the permission system. It reads bridge.yaml only when the target is in that folder and never touches a run.
-func readGuard(bridge string, in *HookInput) any {
+func readGuard(bridge string, in *HookInput, goos string) any {
 	key := "file_path"
 	if in.ToolName == "Grep" {
 		key = "path"
@@ -117,7 +126,10 @@ func readGuard(bridge string, in *HookInput) any {
 	if target == "" {
 		return nil
 	}
-	if _, within := inSourcesFolder(bridge, target, in.Cwd, runtime.GOOS); !within {
+	home, _ := os.UserHomeDir()
+	_, within := inSourcesFolder(bridge, target, in.Cwd, goos)
+	unplaceable := sourcesUnplaceable(bridge, claudeToolPath(target, home, goos), within, goos)
+	if !within && !unplaceable {
 		return nil
 	}
 	declared, err := readerDeclared(bridge)
@@ -126,6 +138,9 @@ func readGuard(bridge string, in *HookInput) any {
 	}
 	if !declared || (in.AgentID != "" && in.AgentType == "reader") {
 		return nil
+	}
+	if unplaceable {
+		return denial(fmt.Sprintf("%s of this path is refused: on Windows, give the full `C:\\...` path, because this spelling can't be checked against reader/sources/", in.ToolName))
 	}
 	return denial(fmt.Sprintf("%s of reader/sources/ is refused: pinned snapshots are external text and are read only through the reader. Dispatch a reader with what to look for; the facts are in reader/facts.md (ensign help edits, What the reader keeps)", in.ToolName))
 }

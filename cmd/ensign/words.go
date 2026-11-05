@@ -10,7 +10,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -474,13 +473,18 @@ func firstLine(s string) string {
 }
 
 // controlPlaneEdit refuses edits to the control plane from a bridge session.
-func controlPlaneEdit(bridge string, in *HookInput) string {
+func controlPlaneEdit(bridge string, in *HookInput, goos string) string {
 	path, _ := in.ToolInput["file_path"].(string)
 	if path == "" {
 		path, _ = in.ToolInput["notebook_path"].(string)
 	}
 	if path == "" {
 		return ""
+	}
+	home, _ := os.UserHomeDir()
+	expanded := claudeToolPath(path, home, goos)
+	if windowsUnresolvable(path, goos) || windowsUnresolvable(expanded, goos) {
+		return "on Windows, give the full `C:\\...` path of the file; this spelling (a stream, a device or volume path, a drive-relative or a rooted path with no drive) can't be checked against the bridge's pinned copy of starship."
 	}
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
@@ -490,9 +494,10 @@ func controlPlaneEdit(bridge string, in *HookInput) string {
 	if cp, err := controlPlaneDir(bridge, bf); err == nil {
 		roots = append(roots, cp)
 	}
-	target := resolveEditTarget(path, in.Cwd, runtime.GOOS)
+	target := resolveEditTarget(path, in.Cwd, goos)
 	for _, root := range roots {
-		if pathWithin(target, resolveEditFolder(root, runtime.GOOS), runtime.GOOS) {
+		folder := resolveEditFolder(root, goos)
+		if pathWithin(target, folder, goos) || uncNamesFolder(expanded, root, goos) || uncNamesFolder(expanded, folder, goos) {
 			return "this is the bridge's pinned copy of starship, which isn't edited. To change starship, work on a starship checkout as a project task; the change lands as a pull request."
 		}
 	}
@@ -529,6 +534,66 @@ func writesStateEdit(bridge string, in *HookInput, goos string) string {
 		}
 	}
 	return ""
+}
+
+// windowsUnresolvable reports, on Windows only, a path spelling that can't be placed by name: a device or volume path, a stream, a drive-relative or a rooted path with no drive. It takes the raw path.
+func windowsUnresolvable(p, goos string) bool {
+	return goos == "windows" && (windowsDevicePath(p) || windowsAmbiguousPath(stripExtendedPrefix(p, goos)))
+}
+
+// isUNCPath reports two leading slashes of either kind, after any \\?\ prefix.
+func isUNCPath(p string) bool {
+	stripped := stripExtendedPrefix(p, "windows")
+	return len(stripped) >= 2 && (stripped[0] == '\\' || stripped[0] == '/') && (stripped[1] == '\\' || stripped[1] == '/')
+}
+
+// uncNamesFolder reports, on Windows only, a UNC path (two leading slashes of either kind, after any \\?\ prefix) whose segments hold the last two segments of root, a drive excluded, one after the other. A share can name any folder, so the string can't prove where a UNC path lands; like writesStateEdit, this decides by name alone. Trailing dots and spaces are dropped from each segment because Win32 drops them when opening a file and no filepath.Abs runs on this string.
+func uncNamesFolder(p, root, goos string) bool {
+	if goos != "windows" {
+		return false
+	}
+	if !isUNCPath(p) {
+		return false
+	}
+	segs := func(s string) []string {
+		parts := strings.Split(strings.ReplaceAll(s, `\`, "/"), "/")
+		for i, part := range parts {
+			if part != "." && part != ".." {
+				parts[i] = strings.TrimRight(part, ". ")
+			}
+		}
+		var out []string
+		for _, seg := range strings.Split(foldPath(strings.Join(parts, "/"), goos), "/") {
+			if seg != "" {
+				out = append(out, seg)
+			}
+		}
+		return out
+	}
+	want := segs(stripExtendedPrefix(root, goos))
+	if len(want) > 0 && strings.HasSuffix(want[0], ":") {
+		want = want[1:]
+	}
+	if len(want) > 2 {
+		want = want[len(want)-2:]
+	}
+	if len(want) == 0 {
+		return false
+	}
+	have := segs(stripExtendedPrefix(p, goos))
+	for i := 0; i+len(want) <= len(have); i++ {
+		match := true
+		for k, w := range want {
+			if have[i+k] != w {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
 
 // windowsDevicePath reports a raw Windows device or volume spelling: two slashes of either kind, then `?` or `.`, then a slash, other than `\\?\X:\` and `\\?\UNC\`. It takes the path before any prefix is stripped. It is pure, so it runs on any host.
