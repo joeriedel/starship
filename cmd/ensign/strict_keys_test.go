@@ -31,12 +31,12 @@ func TestStrictKeysProject(t *testing.T) {
 		"handler":        {"events:\n  task.close:\n    - { requires: ./check.sh }\n", "events.task.close[0].requires"},
 		"location":       {"locations:\n  app:\n    depend-on: []\n", "locations.app.depend-on"},
 		"cross-location": {"cross-location:\n  rules: x\n", "cross-location.rules"},
-		"pipeline op":    {"pipelines:\n  coding:\n    opz: []\n", "pipelines.coding.opz"},
+		"pipeline op":    {"platforms: [linux]\npipelines:\n  coding:\n    opz: []\n", "pipelines.coding.opz"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
 			file := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
-			w.project(c.yaml)
+			write(t, file, c.yaml)
 			w.frontTask("t", "")
 			err := loadSupernova(w, "supernova/t")
 			if err == nil || !strings.Contains(err.Error(), file) || !strings.Contains(err.Error(), c.want+": unknown key") {
@@ -58,7 +58,8 @@ func TestStrictKeysMappingWhereListExpected(t *testing.T) {
 
 func TestStrictKeysProjectAllowed(t *testing.T) {
 	w := newWorld(t)
-	w.project(`x-common: &m
+	file := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
+	write(t, file, `x-common: &m
   journal: {commit: "on", reason: "r"}
   documentation: "on"
 x-other: {anything: [1, 2], at: all}
@@ -77,8 +78,7 @@ events:
 locations:
   app: {depends-on: [], bindings: {}, rules: []}
 `)
-	w.frontTask("t", "")
-	if err := loadSupernova(w, "supernova/t"); err != nil && strings.Contains(err.Error(), "unknown key") {
+	if err := checkProjectKeys(file); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -137,7 +137,7 @@ func TestStrictKeysTask(t *testing.T) {
 func TestStrictKeysTaskAllowed(t *testing.T) {
 	w := newWorld(t)
 	w.frontTask("t", "pipelines: {}\nbindings: {}\nrules: []\nuse: []\nskills: []\nworkspace: \"\"\nevents: {}\njournal: {commit: \"on\"}\ndocumentation: \"on\"\npipeline: coding\nvcs: {kind: git, branch: b, client: c}\nlocations: []\nlinks: []\nstatus: open\n")
-	if err := loadSupernova(w, "supernova/t"); err != nil && strings.Contains(err.Error(), "unknown key") {
+	if err := loadSupernova(w, "supernova/t"); err != nil {
 		t.Fatal(err)
 	}
 }
