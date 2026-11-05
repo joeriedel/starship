@@ -53,7 +53,8 @@ func focalLedger(ids ...string) string {
 	return strings.Join(ids, ": new\n") + ": new\n"
 }
 
-func TestFocalLeavesNoTraceWithoutUse(t *testing.T) {
+// Named without "focal": t.TempDir embeds the test name in the bridge path, and session start prints that path.
+func TestSheetLeavesNoTraceWithoutUse(t *testing.T) {
 	w := focalWorld(t, false, focalPath, "")
 	for name, got := range map[string]string{"help": helpText(w.bridge, w.session), "requests": requestCommands(w.bridge), "session start": sessionStartText(t, w)} {
 		if strings.Contains(strings.ToLower(got), "focal") {
