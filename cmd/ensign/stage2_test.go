@@ -1581,7 +1581,7 @@ func TestHelpNamesBrokenExtensions(t *testing.T) {
 	}
 
 	w = newWorld(t)
-	file = ext(w, "supernova-nameless", "platforms: linux\n")
+	ext(w, "supernova-nameless", "platforms: linux\n")
 	help, cmds = both(w)
 	for _, got := range []string{help, cmds} {
 		if n := strings.Count(got, "supernova-nameless: "); n != 1 {
@@ -1607,5 +1607,239 @@ func TestHelpNamesBrokenExtensions(t *testing.T) {
 	_, cmds = both(w)
 	if cmds == "" || strings.Contains(cmds, heading) {
 		t.Errorf("want the broken section alone:\n%s", cmds)
+	}
+}
+
+// planetCP gives the world a control plane of its own, so a test can put files in it.
+func planetCP(t *testing.T, w *world) string {
+	t.Helper()
+	cp := t.TempDir()
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+cp+"\n")
+	write(t, filepath.Join(cp, "pipelines", "supernova-ok.yaml"), "help:\n  - say: supernova ok\n    does: fine\n    run: ls\n")
+	return cp
+}
+
+func helpBoth(w *world) (string, string) {
+	return helpText(w.bridge, w.session), requestCommands(w.bridge)
+}
+
+func TestHelpNamesBrokenPipelineFiles(t *testing.T) {
+	w := newWorld(t)
+	bad := filepath.Join(w.bridge, "extensions", "supernova-feed", "pipelines", "supernova-bad.yaml")
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-feed", "extension.yaml"), "name: supernova-feed\n")
+	write(t, bad, "help: [a\n")
+	help, cmds := helpBoth(w)
+	for _, got := range []string{help, cmds} {
+		if !strings.Contains(got, "supernova-bad: ") || !strings.Contains(got, bad) {
+			t.Errorf("broken pipeline not named with its file %s:\n%s", bad, got)
+		}
+		if n := strings.Count(got, "supernova-bad: "); n != 1 {
+			t.Errorf("want one line, got %d:\n%s", n, got)
+		}
+	}
+	if strings.Index(help, "Extensions and pipelines whose requests may be missing from this help") > strings.Index(help, "Projects:") {
+		t.Errorf("section misplaced:\n%s", help)
+	}
+	if !strings.Contains(cmds, "Extensions and pipelines whose requests may be missing from the help") {
+		t.Errorf("heading:\n%s", cmds)
+	}
+
+	w = newWorld(t)
+	cp := planetCP(t, w)
+	bad = filepath.Join(cp, "pipelines", "supernova-cpbad.yaml")
+	write(t, bad, "help: [a\n")
+	help, cmds = helpBoth(w)
+	for _, got := range []string{help, cmds} {
+		if !strings.Contains(got, "supernova-cpbad: ") || !strings.Contains(got, bad) {
+			t.Errorf("broken control-plane pipeline not named:\n%s", got)
+		}
+	}
+}
+
+func TestHelpIgnoresWhatTheHelpDecodeAccepts(t *testing.T) {
+	w := newWorld(t)
+	cp := planetCP(t, w)
+	write(t, filepath.Join(cp, "pipelines", "supernova-budget.yaml"), "help:\n  - say: supernova budget\n    does: fine\n    run: ls\nbudgets: 3\n")
+	help, cmds := helpBoth(w)
+	if strings.Contains(help, "supernova-budget: ") || strings.Contains(cmds, "supernova-budget: ") || !strings.Contains(cmds, "supernova budget") {
+		t.Errorf("a pipeline with good help and bad budgets:\n%s\n%s", help, cmds)
+	}
+
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-quiet", "extension.yaml"), "name: supernova-quiet\nquiet: true\n")
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-quiet", "pipelines", "supernova-qbad.yaml"), "help: [a\n")
+	help, cmds = helpBoth(w)
+	if strings.Contains(help, "supernova-qbad") || strings.Contains(cmds, "supernova-qbad") {
+		t.Errorf("a quiet unused extension's broken pipeline was reported:\n%s\n%s", help, cmds)
+	}
+}
+
+func TestBrokenExtensionKeepsItsPipelineHelp(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-feed", "extension.yaml"), "name: supernova-feed\nsummary: [a\n")
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-feed", "pipelines", "supernova-feed.yaml"), "help:\n  - say: supernova feed\n    does: fine\n    run: ls\n")
+	help, cmds := helpBoth(w)
+	if !strings.Contains(cmds, "- supernova feed: `ls`") || !strings.Contains(help, "supernova feed") {
+		t.Errorf("a broken extension's valid pipeline lost its help:\n%s\n%s", help, cmds)
+	}
+	if !strings.Contains(cmds, "supernova-feed: ") {
+		t.Errorf("the broken extension is not named:\n%s", cmds)
+	}
+}
+
+func TestHelpProblemsOfTheBridgeFile(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane: [a\n")
+	help, cmds := helpBoth(w)
+	for _, got := range []string{help, cmds} {
+		if !strings.Contains(got, "all extensions and pipelines: ") {
+			t.Errorf("corrupt bridge.yaml not reported:\n%s", got)
+		}
+	}
+
+	w = newWorld(t)
+	os.Remove(filepath.Join(w.bridge, "bridge.yaml"))
+	help, cmds = helpBoth(w)
+	if strings.Contains(help, "may be missing") || strings.Contains(cmds, "may be missing") {
+		t.Errorf("a bridge without bridge.yaml should be quiet:\n%s\n%s", help, cmds)
+	}
+}
+
+func TestHelpReportsABadGlobPattern(t *testing.T) {
+	w := newWorld(t)
+	cp := filepath.Join(t.TempDir(), "supernova[cp")
+	write(t, filepath.Join(cp, "pipelines", "supernova-ok.yaml"), "help:\n  - say: supernova ok\n    does: fine\n    run: ls\n")
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+cp+"\n")
+	help, cmds := helpBoth(w)
+	for _, got := range []string{help, cmds} {
+		if !strings.Contains(got, "syntax error in pattern") {
+			t.Errorf("a bad glob pattern not reported:\n%s", got)
+		}
+	}
+}
+
+func TestNamelessExtensionIsBrokenButNeverShadowsAGoodOne(t *testing.T) {
+	w := newWorld(t)
+	file := filepath.Join(w.bridge, "extensions", "supernova-nameless", "extension.yaml")
+	write(t, file, "summary: nothing\n")
+	useExtension(t, w, "supernova-nameless")
+	for path, err := range loadAllPaths(w) {
+		want := `extension "supernova-nameless": ` + file + " declares no name"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: want %q, got %v", path, want, err)
+		}
+	}
+
+	w = newWorld(t)
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-nameless", "extension.yaml"), "platforms: linux\n")
+	useExtension(t, w, "supernova-nameless")
+	for path, err := range loadAllPaths(w) {
+		if err == nil || !strings.Contains(err.Error(), "platforms: is a project setting") {
+			t.Errorf("%s: nameless file with platforms: %v", path, err)
+		}
+	}
+
+	// Bridge nameless over control-plane good, and the reverse.
+	for _, order := range []string{"bridge nameless", "control plane nameless"} {
+		bridge, cp := t.TempDir(), t.TempDir()
+		nameless, good := bridge, cp
+		if order == "control plane nameless" {
+			nameless, good = cp, bridge
+		}
+		write(t, filepath.Join(nameless, "extensions", "supernova-feed", "extension.yaml"), "summary: nothing\n")
+		write(t, filepath.Join(good, "extensions", "supernova-feed", "extension.yaml"), "name: supernova-feed\n")
+		goodMap, broken := scanExtensions(bridge, cp)
+		if goodMap["supernova-feed"] == nil || broken["supernova-feed"] != nil {
+			t.Errorf("%s: good = %v, broken = %v; the good extension must stand alone", order, goodMap, broken)
+		}
+	}
+}
+
+func TestRoleLinesOfBrokenExtensions(t *testing.T) {
+	w := newWorld(t)
+	for folder, body := range map[string]string{
+		"supernova-broken":   "name: supernova-broken\nsummary: [a\n",
+		"supernova-nameless": "summary: nothing\n",
+		"supernova-bare":     "name: supernova-bare\nsummary: [a\n",
+	} {
+		write(t, filepath.Join(w.bridge, "extensions", folder, "extension.yaml"), body)
+	}
+	for _, folder := range []string{"supernova-broken", "supernova-nameless"} {
+		write(t, filepath.Join(w.bridge, "extensions", folder, "roles", "supernova-role.md"), "---\nname: supernova-role\n---\nx\n")
+	}
+	var out bytes.Buffer
+	if err := link(w.bridge, true, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"supernova-broken", "supernova-nameless"} {
+		if !strings.Contains(out.String(), "extension "+name+" is broken, so its roles are not linked") {
+			t.Errorf("link did not name %s:\n%s", name, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "supernova-bare") {
+		t.Errorf("an extension with no roles was named:\n%s", out.String())
+	}
+
+	res, code := w.hook("SessionStart", map[string]any{"source": "startup"})
+	ctx := dig(res, "hookSpecificOutput", "additionalContext")
+	if code != 0 || !strings.Contains(ctx, "STARSHIP-READY") || !strings.Contains(ctx, "extension supernova-broken is broken, so its roles are not linked") || strings.Contains(ctx, "supernova-bare") {
+		t.Errorf("SessionStart context (code %d):\n%s", code, ctx)
+	}
+}
+
+func TestUntiedAgentIsDeniedWhenAPipelineCannotBeRead(t *testing.T) {
+	w := newWorld(t)
+	w.startLead()
+	w.sid = "s3"
+	spawn := func(role string) (map[string]any, int) {
+		return w.hook("PreToolUse", map[string]any{"agent_id": "ghost", "agent_type": "orchestrator",
+			"tool_name": "Agent", "tool_input": map[string]any{"subagent_type": role, "prompt": "x"}})
+	}
+	bad := filepath.Join(w.bridge, "extensions", "supernova-feed", "pipelines", "supernova-bad.yaml")
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-feed", "extension.yaml"), "name: supernova-feed\n")
+	write(t, bad, "stages: [a\n")
+	res, code := spawn("supernova-unknown")
+	why := dig(res, "hookSpecificOutput", "permissionDecisionReason")
+	if code != 0 || !strings.HasPrefix(why, "starship: this agent's run can't be found") || !strings.Contains(why, bad) {
+		t.Errorf("unknown role with a broken pipeline: %d %q", code, why)
+	}
+	res, _ = spawn("coder")
+	if why := dig(res, "hookSpecificOutput", "permissionDecisionReason"); !strings.Contains(why, "can't dispatch stages") {
+		t.Errorf("a role found in a readable pipeline should keep the original reason: %q", why)
+	}
+}
+
+func TestBrokenRoleLinesCountShadowedExtensions(t *testing.T) {
+	role := "---\nname: supernova-role\n---\nbody\n"
+	good := "name: supernova-feed\n"
+
+	w := newWorld(t)
+	cp := planetCP(t, w)
+	write(t, filepath.Join(cp, "extensions", "supernova-feed", "extension.yaml"), good)
+	nameless := filepath.Join(w.bridge, "extensions", "supernova-feed", "extension.yaml")
+	write(t, nameless, "summary: x\n")
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-feed", "roles", "supernova-role.md"), role)
+	lines := brokenRoleLines(w.bridge, cp)
+	if len(lines) != 1 || !strings.Contains(lines[0], nameless+" declares no name") {
+		t.Errorf("a nameless bridge extension sharing a good name: %q", lines)
+	}
+
+	w = newWorld(t)
+	cp = planetCP(t, w)
+	cpBad := filepath.Join(cp, "extensions", "supernova-feed", "extension.yaml")
+	write(t, cpBad, "name: supernova-feed\nsummary: [a\n")
+	write(t, filepath.Join(cp, "extensions", "supernova-feed", "roles", "supernova-role.md"), role)
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-feed", "extension.yaml"), "name: supernova-feed\nsummary: [b\n")
+	lines = brokenRoleLines(w.bridge, cp)
+	if len(lines) != 1 || !strings.Contains(lines[0], cpBad) {
+		t.Errorf("two broken files with one key, roles in the first: %q", lines)
+	}
+
+	w = newWorld(t)
+	cp = planetCP(t, w)
+	write(t, filepath.Join(cp, "extensions", "supernova-feed", "extension.yaml"), "name: supernova-feed\nsummary: [a\n")
+	write(t, filepath.Join(cp, "extensions", "supernova-feed", "roles", "supernova-role.md"), role)
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-feed", "extension.yaml"), good)
+	if lines = brokenRoleLines(w.bridge, cp); len(lines) != 0 {
+		t.Errorf("a broken extension replaced by a good one of its name: %q", lines)
 	}
 }

@@ -999,7 +999,7 @@ Where each part comes from:
 A pipeline or extension without help entries is a validation error: a missing description is
 caught, never guessed.
 
-An extension whose file is broken has no help entries to show, so help and `ensign help requests` name it, with its file and why, instead of leaving it out.
+An extension whose file is broken has no help entries to show, so help and `ensign help requests` name it, with its file and why, instead of leaving it out. They name a pipeline file that cannot be read, and an extension that declares no name, the same way.
 
 `ensign help` in a terminal is separate: it documents the `ensign` commands, for whoever
 is developing or debugging starship itself.
@@ -1319,6 +1319,7 @@ the bridge). Rules:
   control plane, or a role in a bridge extension.
 - **Name clashes are errors.** A bridge extension's role with the same name as a
   control-plane role is refused unless it declares `replaces: <role>`.
+- **A broken extension's roles are left out, and said so.** The roles of a broken or nameless extension are not linked; `ensign link` and every session start say which extension and why, without failing.
 - **Failures are loud.** A failed link stops the session's starship features with the
   reason; it never carries on with stale files.
 - **No symlinks**: on Windows they need developer mode, and git checks them out as plain

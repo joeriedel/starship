@@ -1173,10 +1173,10 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 }
 
 // stageRoleAnywhere reports whether role is a stage role, not free, in a live run's
-// pipeline or in a pipeline file of the bridge's control plane and extensions.
-func stageRoleAnywhere(bridge, role string) bool {
+// pipeline or in a pipeline file of the bridge's control plane and extensions. It also returns the pipeline files and Glob patterns it could not read, one line each, which stop it ruling the role out.
+func stageRoleAnywhere(bridge, role string) (bool, []string) {
 	if role == "" {
-		return false
+		return false, nil
 	}
 	isStage := func(p *Pipeline) bool {
 		for _, fr := range p.FreeRoles {
@@ -1188,27 +1188,36 @@ func stageRoleAnywhere(bridge, role string) bool {
 	}
 	for _, ri := range liveRuns(bridge) {
 		if ri.snap.Pipeline != nil && isStage(ri.snap.Pipeline) {
-			return true
+			return true, nil
 		}
 	}
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
-		return false
+		return false, nil
 	}
 	cp, err := controlPlaneDir(bridge, bf)
 	if err != nil {
-		return false
+		return false, nil
 	}
-	files, _ := filepath.Glob(filepath.Join(cp, "pipelines", "*.yaml"))
+	var unread []string
+	glob := func(pattern string) []string {
+		found, err := filepath.Glob(pattern)
+		if err != nil {
+			unread = append(unread, fmt.Sprintf("%s: %v", pattern, err))
+		}
+		return found
+	}
+	files := glob(filepath.Join(cp, "pipelines", "*.yaml"))
 	for _, dir := range extensionDirs(bridge, cp) {
-		more, _ := filepath.Glob(filepath.Join(dir, "pipelines", "*.yaml"))
-		files = append(files, more...)
+		files = append(files, glob(filepath.Join(dir, "pipelines", "*.yaml"))...)
 	}
 	for _, f := range files {
 		var p Pipeline
-		if readYAML(f, &p) == nil && isStage(&p) {
-			return true
+		if err := readYAML(f, &p); err != nil {
+			unread = append(unread, err.Error())
+		} else if isStage(&p) {
+			return true, nil
 		}
 	}
-	return false
+	return false, unread
 }

@@ -496,6 +496,9 @@ func link(bridge string, force bool, out io.Writer) error {
 		return err
 	}
 	if out != nil {
+		for _, l := range brokenRoleLines(bridge, cp) {
+			fmt.Fprintln(out, l)
+		}
 		fmt.Fprintf(out, "linked %d files from %s (%d changed)\n", len(want), cp, changed)
 	}
 	return nil

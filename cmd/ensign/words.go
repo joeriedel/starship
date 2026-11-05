@@ -4,11 +4,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -25,7 +28,7 @@ type HelpEntry struct {
 // requestCommands is the body of `ensign help requests`, about carrying out the requests that pipelines and extensions answer to; SessionStart prints only a pointer to that topic.
 func requestCommands(bridge string) string {
 	var lines []string
-	extra := extraHelp(bridge)
+	extra, problems := extraHelp(bridge)
 	for _, group := range sortedKeys(extra) {
 		for _, e := range extra[group] {
 			if e.Run != "" {
@@ -38,13 +41,20 @@ func requestCommands(bridge string) string {
 		out = "## Requests this bridge answers, and the command for each\n\n" +
 			"A command that starts a run needs the user's go, like any run.\n\n" + strings.Join(lines, "\n") + "\n"
 	}
-	if broken := brokenExtensionLines(bridge); len(broken) > 0 {
+	if broken := helpProblemLines(bridge, problems); len(broken) > 0 {
 		if out != "" {
 			out += "\n"
 		}
-		out += "## Extensions whose requests may be missing from the help, because their file is broken\n\n- " + strings.Join(broken, "\n- ") + "\n"
+		out += "## Extensions and pipelines whose requests may be missing from the help, because their file is broken\n\n- " + strings.Join(broken, "\n- ") + "\n"
 	}
 	return out
+}
+
+// helpProblemLines merges the problems extraHelp met with the broken extensions into the lines of the "may be missing" section: sorted, with no line twice.
+func helpProblemLines(bridge string, problems []string) []string {
+	out := slices.Concat(problems, brokenExtensionLines(bridge))
+	sort.Strings(out)
+	return slices.Compact(out)
 }
 
 // brokenExtensionLines describes, one line each and sorted, the extensions whose file is broken: one that does not decode, or one that decodes without a name.
@@ -71,7 +81,7 @@ func brokenExtensionLines(bridge string) []string {
 		}
 	}
 	sort.Strings(out)
-	return out
+	return slices.Compact(out)
 }
 
 var fixedHelp = []struct {
@@ -256,7 +266,8 @@ func helpText(bridge, session string) string {
 		groups[g.group] = append(groups[g.group], g.entries...)
 		order = append(order, g.group)
 	}
-	for group, entries := range extraHelp(bridge) {
+	extra, problems := extraHelp(bridge)
+	for group, entries := range extra {
 		if _, ok := groups[group]; !ok {
 			order = append(order[:len(order)-1], group, order[len(order)-1])
 		}
@@ -268,8 +279,8 @@ func helpText(bridge, session string) string {
 			fmt.Fprintf(&b, "  %-44s %s\n", e.Say, e.Does)
 		}
 	}
-	if broken := brokenExtensionLines(bridge); len(broken) > 0 {
-		b.WriteString("\nExtensions whose requests may be missing from this help, because their file is broken\n")
+	if broken := helpProblemLines(bridge, problems); len(broken) > 0 {
+		b.WriteString("\nExtensions and pipelines whose requests may be missing from this help, because their file is broken\n")
 		for _, l := range broken {
 			b.WriteString("  " + l + "\n")
 		}
@@ -280,18 +291,30 @@ func helpText(bridge, session string) string {
 	return b.String()
 }
 
-// extraHelp gathers help entries from pipelines and extensions, by group.
-func extraHelp(bridge string) map[string][]HelpEntry {
+// extraHelp gathers help entries from pipelines and extensions, by group. The lines returned are what it could not read, one each, for the "may be missing" section; a bridge with no bridge.yaml has none.
+func extraHelp(bridge string) (map[string][]HelpEntry, []string) {
 	out := map[string][]HelpEntry{}
+	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	var problems []string
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
-		return out
+		if !errors.Is(err, fs.ErrNotExist) {
+			problems = append(problems, oneLine("all extensions and pipelines: "+err.Error()))
+		}
+		return out, problems
 	}
 	cp, err := controlPlaneDir(bridge, bf)
 	if err != nil {
-		return out
+		return out, append(problems, oneLine("all extensions and pipelines: "+err.Error()))
 	}
-	files, _ := filepath.Glob(filepath.Join(cp, "pipelines", "*.yaml"))
+	glob := func(pattern string) []string {
+		found, err := filepath.Glob(pattern)
+		if err != nil {
+			problems = append(problems, oneLine(fmt.Sprintf("%s: %v", pattern, err)))
+		}
+		return found
+	}
+	files := glob(filepath.Join(cp, "pipelines", "*.yaml"))
 	var dirs []string
 	for _, dir := range extensionDirs(bridge, cp) {
 		var x Extension
@@ -300,17 +323,19 @@ func extraHelp(bridge string) map[string][]HelpEntry {
 		}
 		dirs = append(dirs, dir)
 	}
+	// findPipeline does not decode extension.yaml, so a broken extension's pipelines still run and still give help.
 	for _, dir := range dirs {
-		more, _ := filepath.Glob(filepath.Join(dir, "pipelines", "*.yaml"))
-		files = append(files, more...)
+		files = append(files, glob(filepath.Join(dir, "pipelines", "*.yaml"))...)
 	}
 	for _, f := range files {
 		var p struct {
 			Help []HelpEntry `yaml:"help"`
 		}
-		if readYAML(f, &p) == nil {
-			out["Doing the work"] = append(out["Doing the work"], p.Help...)
+		if err := readYAML(f, &p); err != nil {
+			problems = append(problems, oneLine(fmt.Sprintf("%s: %v", strings.TrimSuffix(filepath.Base(f), ".yaml"), err)))
+			continue
 		}
+		out["Doing the work"] = append(out["Doing the work"], p.Help...)
 	}
 	for _, dir := range dirs {
 		var x Extension
@@ -319,7 +344,7 @@ func extraHelp(bridge string) map[string][]HelpEntry {
 			out[group] = append(out[group], x.Help...)
 		}
 	}
-	return out
+	return out, problems
 }
 
 func projectList(bridge string) string {

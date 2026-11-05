@@ -236,7 +236,8 @@ func TestStartDocsRefusedWhenOff(t *testing.T) {
 
 func TestHelpListsStartDocs(t *testing.T) {
 	w := newWorld(t)
-	for _, e := range extraHelp(w.bridge)["Doing the work"] {
+	extra, _ := extraHelp(w.bridge)
+	for _, e := range extra["Doing the work"] {
 		if e.Run == "ensign run <project>/<task> --start docs" {
 			return
 		}

@@ -308,10 +308,17 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			}
 		}
 		role, _ := in.ToolInput["subagent_type"].(string)
-		if event == "PreToolUse" && in.AgentID != "" && stageRoleAnywhere(bridge, role) {
-			json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
-				"hookEventName": "PreToolUse", "permissionDecision": "deny",
-				"permissionDecisionReason": "starship: this agent's run can't be found: the session restarted and the agent could not be tied to any live run, so it can't dispatch stages"}})
+		if event == "PreToolUse" && in.AgentID != "" {
+			found, unread := stageRoleAnywhere(bridge, role)
+			reason := "starship: this agent's run can't be found: the session restarted and the agent could not be tied to any live run, so it can't dispatch stages"
+			if !found && len(unread) > 0 {
+				reason = "starship: this agent's run can't be found, and " + role + " can't be ruled out as a stage role because a pipeline file could not be read: " + strings.Join(unread, "; ")
+			}
+			if found || len(unread) > 0 {
+				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
+					"hookEventName": "PreToolUse", "permissionDecision": "deny",
+					"permissionDecisionReason": reason}})
+			}
 		}
 		return 0
 	}
@@ -530,6 +537,11 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		return reply("Starship is not ready in this bridge. Ask Claude to set it up.", ctx.String())
 	}
 	fmt.Fprintf(&ctx, "\n%s", manual)
+	if cp, err := controlPlaneDir(bridge, bf); err == nil {
+		for _, l := range brokenRoleLines(bridge, cp) {
+			fmt.Fprintln(&ctx, l)
+		}
+	}
 	if requestCommands(bridge) != "" {
 		fmt.Fprint(&ctx, "\nTo carry out a request like squashing commits or curating skills: read `ensign help requests` for the requests this bridge answers and the command for each.\n")
 	}

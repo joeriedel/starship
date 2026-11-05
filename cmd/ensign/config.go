@@ -1675,7 +1675,7 @@ func availableExtensions(bridge, cp string) map[string]*Extension {
 	return good
 }
 
-// brokenExtension is an extension file that does not decode.
+// brokenExtension is an extension file that does not decode, or that declares no name.
 type brokenExtension struct {
 	file string
 	err  error
@@ -1683,7 +1683,7 @@ type brokenExtension struct {
 
 func (e *brokenExtension) Error() string { return e.err.Error() }
 
-// scanExtensions is availableExtensions that also returns the extensions whose file does not decode, by the name they declare or, when none can be recovered, by their folder's name. A file that fails to decode has no name from the decode, so the name is recovered from its first column-0 name: line. A later extension of the same name, good or broken, decides the broken entry; the good map is as availableExtensions has always had it.
+// scanExtensions is availableExtensions that also returns the extensions whose file is broken: one that does not decode, by the name it declares or, when none can be recovered, by its folder's name; and one that decodes without a name, by its folder's name unless a good extension or another broken one already has that key. A file that fails to decode has no name from the decode, so the name is recovered from its first column-0 name: line. A later extension of the same name, good or broken, decides the broken entry; the good map is as availableExtensions has always had it.
 func scanExtensions(bridge, cp string) (map[string]*Extension, map[string]error) {
 	out := map[string]*Extension{}
 	broken := map[string]error{}
@@ -1696,17 +1696,28 @@ func scanExtensions(bridge, cp string) (map[string]*Extension, map[string]error)
 			out[b.Name] = &b
 			delete(broken, b.Name)
 		case err != nil:
-			name := b.Name
-			if name == "" {
-				name = declaredName(filepath.Join(dir, "extension.yaml"))
+			broken[brokenKey(dir, b.Name)] = &brokenExtension{file: filepath.Join(dir, "extension.yaml"), err: err}
+		case err == nil:
+			key, file := filepath.Base(dir), filepath.Join(dir, "extension.yaml")
+			_, isGood := out[key]
+			_, isBroken := broken[key]
+			if !isGood && !isBroken {
+				broken[key] = &brokenExtension{file: file, err: fmt.Errorf("%s declares no name", file)}
 			}
-			if name == "" {
-				name = filepath.Base(dir)
-			}
-			broken[name] = &brokenExtension{file: filepath.Join(dir, "extension.yaml"), err: err}
 		}
 	}
 	return out, broken
+}
+
+// brokenKey is the name an extension that failed to decode goes by: the decoded name if any, else the name: line, else its folder's name.
+func brokenKey(dir, decoded string) string {
+	if decoded != "" {
+		return decoded
+	}
+	if name := declaredName(filepath.Join(dir, "extension.yaml")); name != "" {
+		return name
+	}
+	return filepath.Base(dir)
 }
 
 // declaredName reads the name: line of a file that failed to decode as a whole, or "" when there is none or the file cannot be read. It accepts a UTF-8 BOM and UTF-16, with or without a BOM, which Windows editors write.
@@ -1773,6 +1784,40 @@ func extensionRoleDirs(bridge, cp string) []string {
 	var out []string
 	for _, b := range availableExtensions(bridge, cp) {
 		out = append(out, filepath.Join(b.dir, "roles"))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// brokenRoleLines says, one line each and sorted, which broken or nameless extensions have roles that link leaves out. It walks every extension folder, so a broken file that another extension shadows is still counted: unless, for a file that fails to decode, its key is gone from the broken map, which means a later good extension took its place. A Glob error is a line too.
+func brokenRoleLines(bridge, cp string) []string {
+	_, broken := scanExtensions(bridge, cp)
+	var out []string
+	for _, dir := range extensionDirs(bridge, cp) {
+		file := filepath.Join(dir, "extension.yaml")
+		var b Extension
+		err := readYAML(file, &b)
+		var name string
+		switch {
+		case err == nil && b.Name != "":
+			continue
+		case err == nil:
+			name = filepath.Base(dir)
+			err = fmt.Errorf("%s declares no name", file)
+		default:
+			name = brokenKey(dir, b.Name)
+			if _, ok := broken[name]; !ok {
+				continue
+			}
+		}
+		pattern := filepath.Join(dir, "roles", "*.md")
+		found, gerr := filepath.Glob(pattern)
+		switch {
+		case gerr != nil:
+			out = append(out, strings.Join(strings.Fields(fmt.Sprintf("Note: extension %s: could not look for its roles in %s: %v", name, pattern, gerr)), " "))
+		case len(found) > 0:
+			out = append(out, strings.Join(strings.Fields(fmt.Sprintf("Note: extension %s is broken, so its roles are not linked: %v", name, err)), " "))
+		}
 	}
 	sort.Strings(out)
 	return out
