@@ -139,7 +139,7 @@ func jsonText(v any) string {
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
-	enc.Encode(v)
+	enc.Encode(v) // cannot fail: v is a string or a decodeNumbers value, and b is an in-memory buffer
 	var out strings.Builder
 	for _, r := range strings.TrimRight(b.String(), "\n") {
 		switch {

@@ -89,8 +89,8 @@ func connectorDecision(bridge string, in *HookInput) any {
 	if err != nil {
 		return denial(fmt.Sprintf("%s is refused: %v", in.ToolName, err))
 	}
-	writes, writesOn, _ := bf.connectorWrites()
-	if writesOn {
+	writes, writesDeclared, _ := bf.connectorWrites()
+	if writesDeclared {
 		return writeDecision(bridge, in, rules, writes)
 	}
 	if rules == nil {
@@ -132,7 +132,7 @@ func mcpServersRefusal(bridge string, in *HookInput) string {
 		return ""
 	}
 	rules, err := bf.connectorRules()
-	if _, writesOn, _ := bf.connectorWrites(); err != nil || (rules == nil && !writesOn) {
+	if _, writesDeclared, _ := bf.connectorWrites(); err != nil || (rules == nil && !writesDeclared) {
 		return ""
 	}
 	files, _ := filepath.Glob(filepath.Join(bridge, ".claude", "agents", "*.md"))
@@ -266,8 +266,8 @@ func upgradeHookSettings(bridge string, bf *BridgeFile) error {
 	if err != nil {
 		return err
 	}
-	writes, writesOn, _ := bf.connectorWrites()
-	declared, tools := rules != nil || writesOn, settingsTools(rules, writes)
+	writes, writesDeclared, _ := bf.connectorWrites()
+	declared, tools := rules != nil || writesDeclared, settingsTools(rules, writes)
 	_, readerRule := rules["reader"]
 	f := filepath.Join(bridge, ".claude", "settings.json")
 	data, rerr := os.ReadFile(f)

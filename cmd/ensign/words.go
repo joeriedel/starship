@@ -502,12 +502,18 @@ func writesStateEdit(bridge string, in *HookInput, goos string) string {
 	if p == "" {
 		return ""
 	}
-	if goos == "windows" && windowsAmbiguousPath(stripExtendedPrefix(p, goos)) {
-		return "on Windows, give the full `C:\\...` path of the file; this spelling (a stream, a drive-relative or a rooted path with no drive) can't be checked against the session's connector writes state."
+	unc := false
+	if goos == "windows" {
+		stripped := stripExtendedPrefix(p, goos)
+		if windowsDevicePath(p) || windowsAmbiguousPath(stripped) {
+			return "on Windows, give the full `C:\\...` path of the file; this spelling (a stream, a device or volume path, a drive-relative or a rooted path with no drive) can't be checked against the session's connector writes state."
+		}
+		unc = len(stripped) > 1 && (stripped[0] == '\\' || stripped[0] == '/') && (stripped[1] == '\\' || stripped[1] == '/')
 	}
 	target := foldPath(resolveEditTarget(p, in.Cwd, goos), goos)
 	dir := foldPath(resolveEditFolder(filepath.Join(bridge, ".starship", "sessions"), goos), goos)
-	if path.Dir(target) != dir {
+	// A share can name the sessions folder in ways that can't be listed (host, address, share), so a UNC path is decided by its name alone.
+	if !unc && path.Dir(target) != dir {
 		return ""
 	}
 	name := path.Base(target)
@@ -517,6 +523,24 @@ func writesStateEdit(bridge string, in *HookInput, goos string) string {
 		}
 	}
 	return ""
+}
+
+// windowsDevicePath reports a raw Windows device or volume spelling: two slashes of either kind, then `?` or `.`, then a slash, other than `\\?\X:\` and `\\?\UNC\`. It takes the path before any prefix is stripped. It is pure, so it runs on any host.
+func windowsDevicePath(raw string) bool {
+	isSlash := func(c byte) bool { return c == '\\' || c == '/' }
+	if len(raw) < 4 || !isSlash(raw[0]) || !isSlash(raw[1]) || (raw[2] != '?' && raw[2] != '.') || !isSlash(raw[3]) {
+		return false
+	}
+	if raw[0] == '\\' && raw[1] == '\\' && raw[2] == '?' && raw[3] == '\\' {
+		rest := raw[4:]
+		if len(rest) > 2 && rest[1] == ':' && isSlash(rest[2]) && (rest[0]|0x20 >= 'a' && rest[0]|0x20 <= 'z') {
+			return false
+		}
+		if len(rest) >= 4 && rest[:3] == "UNC" && rest[3] == '\\' {
+			return false
+		}
+	}
+	return true
 }
 
 // windowsAmbiguousPath reports a Windows spelling the Go resolver can't be trusted on: a colon other than the drive's in `C:\` or `C:/` (a stream, `C:rel`, `\\.\C:\`) or a single leading slash (rooted, no drive). UNC paths and plain relative paths are not ambiguous. It is pure, so it runs on any host.

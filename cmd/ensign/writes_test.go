@@ -762,3 +762,119 @@ func TestSweepRemovesOldWritesFiles(t *testing.T) {
 		t.Error("a young session's .writes must stay")
 	}
 }
+
+func TestWindowsDevicePath(t *testing.T) {
+	for raw, want := range map[string]bool{
+		`\\?\Volume{1234}\bridge\x`: true,
+		`\\.\Volume{1234}\bridge\x`: true,
+		`//?/Volume{1234}/bridge/x`: true,
+		`//./Volume{1234}/bridge/x`: true,
+		`\\?\GLOBALROOT\Device\x`:   true,
+		`\\?\unc\srv\share\x`:       true,
+		`\\.\C:\x`:                  true,
+		`\/?\Volume{1234}\x`:        true,
+		`//?\Volume{1234}\x`:        true,
+		`\\?\C:\x`:                  false,
+		`\\?\UNC\srv\share\x`:       false,
+		`\\srv\share\x`:             false,
+		`//srv/share/x`:             false,
+		`C:\x`:                      false,
+		`notes.md`:                  false,
+		`..\notes.md`:               false,
+	} {
+		if got := windowsDevicePath(raw); got != want {
+			t.Errorf("windowsDevicePath(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+func TestWritesStateEditDeviceAndUNC(t *testing.T) {
+	w := writesWorld(t)
+	edit := func(p string) string {
+		in := &HookInput{Cwd: w.bridge, ToolInput: map[string]any{"file_path": p}}
+		return writesStateEdit(w.bridge, in, "windows")
+	}
+	for _, p := range []string{
+		`\\?\Volume{1234}\bridge\.starship\sessions\ID.writes`,
+		`\\.\Volume{1234}\bridge\.starship\sessions\ID.writes`,
+		`//?/Volume{1234}/bridge/.starship/sessions/ID.writes`,
+		`//./Volume{1234}/bridge/.starship/sessions/ID.writes`,
+		`\\?\GLOBALROOT\Device\x\ID.writes`,
+		`\\?\unc\srv\share\ID.writes`,
+	} {
+		if why := edit(p); !strings.Contains(why, "full") {
+			t.Errorf("%q must be refused with the full-path reason, got %q", p, why)
+		}
+	}
+	for _, name := range []string{"ID.writes", "ID.writes.lock", "ID.writes.tmp"} {
+		for _, p := range []string{
+			`\\localhost\C$\bridge\.starship\sessions\` + name,
+			`\\127.0.0.1\c$\bridge\.starship\sessions\` + name,
+			`//localhost/C$/bridge/.starship/sessions/` + name,
+			`\\?\UNC\localhost\C$\bridge\.starship\sessions\` + name,
+		} {
+			if why := edit(p); !strings.Contains(why, "connector writes state") {
+				t.Errorf("%q must be refused as writes state, got %q", p, why)
+			}
+		}
+	}
+	if why := edit(`\\nas\share\notes.md`); why != "" {
+		t.Errorf("an ordinary UNC file stays allowed, got %q", why)
+	}
+}
+
+func TestWritesStateEditTrailingDotsAndSpaces(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("trailing dots and spaces are dropped by the Windows path resolver")
+	}
+	w := writesWorld(t)
+	sessions := filepath.Join(w.bridge, ".starship", "sessions")
+	for _, suffix := range []string{".writes", ".writes.lock", ".writes.tmp"} {
+		for _, tail := range []string{".", " ", ". ."} {
+			in := &HookInput{Cwd: w.bridge, ToolInput: map[string]any{"file_path": filepath.Join(sessions, w.sid+suffix) + tail}}
+			if writesStateEdit(w.bridge, in, "windows") == "" {
+				t.Errorf("%q must be refused", in.ToolInput["file_path"])
+			}
+		}
+	}
+}
+
+func TestGarbledListingIsNotShown(t *testing.T) {
+	for _, garbled := range []string{"caf?", "cafÃ©"} {
+		w := writesWorld(t)
+		w.addWrite(wikiPost, `{"body":"café"}`)
+		list, _ := w.runWrites("")
+		bad := strings.Replace(list, "café", garbled, 1)
+		if bad == list {
+			t.Fatal("the listing must contain the text")
+		}
+		if res := w.replyStop("Pending:\n"+bad, false); dig(res, "decision") != "block" {
+			t.Errorf("%q: a garbled listing must be blocked: %v", garbled, res)
+		}
+		if w.writesState().ShownDigest != "" {
+			t.Errorf("%q: a garbled listing must not be recorded as shown", garbled)
+		}
+		if ctx := w.say("go"); !strings.Contains(ctx, "not shown") {
+			t.Errorf("%q: go must approve nothing: %q", garbled, ctx)
+		}
+		w.approveWrites()
+	}
+}
+
+func TestJSONText(t *testing.T) {
+	for _, in := range []string{`"s"`, `12345678901234567890`, `1e400`, `1.50`, `true`, `null`, `[1,[2,{"a":[3]}]]`, `{"a":{"b":[1e400,"x"]},"c":null}`} {
+		v, err := decodeNumbers([]byte(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := jsonText(v)
+		if got == "" {
+			t.Errorf("jsonText(%s) is empty", in)
+		}
+		for _, lit := range []string{"12345678901234567890", "1e400", "1.50"} {
+			if strings.Contains(in, lit) && !strings.Contains(got, lit) {
+				t.Errorf("jsonText(%s) = %q lost %s", in, got, lit)
+			}
+		}
+	}
+}
