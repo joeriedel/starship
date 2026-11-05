@@ -247,5 +247,9 @@ func cmdCatchUp(args []string, out io.Writer) error {
 	}
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "End of brief.")
+	if note := focalNote(bridge, "briefs/catch-up.md"); note != "" {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, note)
+	}
 	return nil
 }

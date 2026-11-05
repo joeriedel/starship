@@ -474,8 +474,12 @@ func cmdDocument(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if _, err := findDeclaredDocument(bridge, name); err != nil {
+	decl, err := findDeclaredDocument(bridge, name)
+	if err != nil {
 		return err
+	}
+	if evidence == "" && isFocalDocument(bridge, decl) {
+		return fmt.Errorf("document %s is a focal sheet: every claim on it traces to a source, so a proposal needs --evidence", name)
 	}
 	var rnd [4]byte
 	if _, err := rand.Read(rnd[:]); err != nil {

@@ -81,6 +81,18 @@ func focalFile(bridge, rel string) (string, error) {
 	return string(data), err
 }
 
+// focalNote is the trimmed text of a focal-sheet file for a hook to print: empty when the bridge doesn't use the extension, and a one-line notice when the file can't be read.
+func focalNote(bridge, rel string) string {
+	if !bridgeUses(bridge, focalExtension) {
+		return ""
+	}
+	text, err := focalFile(bridge, rel)
+	if err != nil {
+		return fmt.Sprintf("the focal-sheet extension's %s can't be read: %v", rel, err)
+	}
+	return strings.TrimSpace(text)
+}
+
 // focalThemes is the document's themes: its rubric's headings, or the shipped defaults when it declares none. An empty list is an error.
 func focalThemes(bridge string, d DeclaredDocument) ([]string, error) {
 	var text string

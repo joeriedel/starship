@@ -13,4 +13,7 @@ help:
   - say: '"add this to my focal sheet"'
     does: propose an entry for the sheet, using your own account of your part in it
     run: >-
-      ensign document propose <document> "<what happened>; why it mattered, if known; my part: <the user's part>" --evidence "<link>"   (ask the user for their part and never guess it; the sheet's content never goes in a brief, commit message, report or command output)
+      ensign document propose <document> "<what happened>; why it mattered, if known; my part: <the user's part>" --evidence "<link, or user, <date> when the user is the only source; several in one string separated by ; >"   (--evidence is required; ask the user for their part and never guess it; the sheet's content never goes in a brief, commit message, report or command output)
+
+events:
+  task.close: [{ augment: briefs/task-close.md }]

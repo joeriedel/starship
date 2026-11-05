@@ -1164,6 +1164,8 @@ Themes are the `## ` headings of the document's rubric, in order. Without a rubr
 
 Entries carry `theme`, `why` and `part` besides `text` and `evidence` (all omitted when empty, so other documents are unchanged). The curator is given `briefs/entry-format.md` for each focal document. A rewrite is refused when an entry has no `part`, no evidence or a `theme` that is not a listed one; refusals name the entry id and the field, never a value. A valid rewrite is written grouped by theme order, with ids unchanged. The sheet's content stays out of briefs, commit messages, reports and command output like any declared document's.
 
+Work reaches the sheet as proposals from four routes. A task closing comes from the extension's `task.close` augment (`briefs/task-close.md`), which has the session ask who benefited, ask once for an easy metric, and propose with the user's part. A linked ticket resolving and a catch-up pass come from two hooks that print the extension's `briefs/ticket-resolved.md` after the reader line of `task open` (when a link is a ticket) and `briefs/catch-up.md` after the catch-up brief, outside the reader's brief. No Go detects a ticket resolving: the reader's report is the signal, so without a reader that route is the user saying so, which is the fourth route. `ensign document propose` refuses a proposal with no evidence for a focal document, since every claim on a sheet traces to a source.
+
 ---
 
 ## 10. Commits the system makes

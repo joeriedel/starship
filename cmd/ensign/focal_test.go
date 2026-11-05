@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -300,5 +301,150 @@ func TestFocalCurateKeepsContentPrivate(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(w.bridge, filepath.FromSlash(focalPath))); err != nil {
 		t.Errorf("the sheet was not written: %v", err)
+	}
+}
+
+// focalRouteWorld is a bridge with the sources the catch-up needs, and optionally the focal sheet and the reader.
+func focalRouteWorld(t *testing.T, use, reader bool) *world {
+	t.Helper()
+	y := ""
+	if use {
+		y += "use: [focal-sheet]\n"
+	}
+	if reader {
+		y += readerRules
+	}
+	y += sourcesYAML + "documents:\n  supernova-focal:\n    path: " + focalPath + "\n"
+	return connWorld(t, y)
+}
+
+func focalOpen(t *testing.T, w *world, front string) string {
+	t.Helper()
+	taskDir := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor")
+	write(t, filepath.Join(taskDir, "task.md"), "---\n"+front+"---\n\n# auth-refactor\n\n## Goal\n\nBody text.\n")
+	var out bytes.Buffer
+	if err := openTask(w.bridge, "supernova/auth-refactor", taskDir, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
+}
+
+func TestFocalCloseAugmentReachesSession(t *testing.T) {
+	w := focalRouteWorld(t, true, false)
+	w.frontTask("t", "")
+	out, err := closeTask(w, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Closed supernova/t.", "who benefited", "metric", "my part", "ensign document propose", "--evidence"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("close output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestCloseWithoutFocalUseIsUnchanged(t *testing.T) {
+	w := focalRouteWorld(t, false, false)
+	w.frontTask("t", "")
+	if out, err := closeTask(w, "t"); err != nil || out != "Closed supernova/t.\n" {
+		t.Errorf("close without use: %q, %v", out, err)
+	}
+}
+
+func TestFocalTicketNotePrintsOnlyWithUseReaderAndTicket(t *testing.T) {
+	cases := []struct {
+		name        string
+		use, reader bool
+		front       string
+		want        bool
+	}{
+		{"all three", true, true, twoLinks, true},
+		{"no use", false, true, twoLinks, false},
+		{"no reader", true, false, twoLinks, false},
+		{"no ticket", true, true, "links:\n  - {kind: wiki, ref: \"https://wiki.example/supernova/launch-plan\"}\n", false},
+	}
+	for _, c := range cases {
+		out := focalOpen(t, focalRouteWorld(t, c.use, c.reader), c.front)
+		if got := strings.Contains(out, "focal      "); got != c.want {
+			t.Errorf("%s: note printed = %v:\n%s", c.name, got, out)
+		}
+		if c.want && !strings.Contains(out, "reader     before starting work") {
+			t.Errorf("%s: reader line missing:\n%s", c.name, out)
+		}
+	}
+}
+
+func TestFocalCatchUpNoteFollowsBrief(t *testing.T) {
+	w := focalRouteWorld(t, true, true)
+	out, err := w.catchUp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := strings.Index(out, "End of brief.\n")
+	note := strings.Index(out, "focal sheet")
+	if end < 0 || note < end || !strings.Contains(out[end:], "\n\n") {
+		t.Errorf("note should follow End of brief. after a blank line:\n%s", out)
+	}
+	w = focalRouteWorld(t, false, true)
+	if out, err := w.catchUp(); err != nil || strings.Contains(strings.ToLower(out), "focal") {
+		t.Errorf("catch-up without use: %q, %v", out, err)
+	}
+}
+
+func TestFocalProposeNeedsEvidence(t *testing.T) {
+	w := focalWorld(t, true, focalPath, "")
+	for _, ev := range [][]string{nil, {"--evidence", ""}, {"--evidence", "  "}} {
+		args := append([]string{"propose", "supernova-focal", "Nova shipped " + docMarker}, ev...)
+		_, err := w.document(args...)
+		if err == nil || !strings.Contains(err.Error(), "supernova-focal") || !strings.Contains(err.Error(), "traces to a source") || strings.Contains(err.Error(), docMarker) {
+			t.Errorf("evidence %q: error = %v", ev, err)
+		}
+	}
+	if matches, _ := filepath.Glob(filepath.Join(w.bridge, "documents", "pending", "*", "*")); len(matches) != 0 {
+		t.Errorf("refused proposals wrote %v", matches)
+	}
+	if _, err := w.document("propose", "supernova-focal", "Nova shipped", "--evidence", "user, 2026-11-04"); err != nil {
+		t.Errorf("proposal with evidence: %v", err)
+	}
+	w = focalWorld(t, false, focalPath, "")
+	if _, err := w.document("propose", "supernova-focal", "Nova shipped"); err != nil {
+		t.Errorf("focal path without use: %v", err)
+	}
+	w = focalWorld(t, true, "notes/supernova-log.md", "")
+	if _, err := w.document("propose", "supernova-focal", "Nova shipped"); err != nil {
+		t.Errorf("non-focal document: %v", err)
+	}
+}
+
+func TestFocalNoteUnreadableFileIsNotice(t *testing.T) {
+	w := focalWorld(t, true, focalPath, "")
+	write(t, filepath.Join(w.bridge, "extensions", "my-focal", "extension.yaml"), "name: focal-sheet\nsummary: mine\nquiet: true\n")
+	got := focalNote(w.bridge, "briefs/catch-up.md")
+	if !strings.Contains(got, "briefs/catch-up.md") || strings.Contains(got, "\n") {
+		t.Errorf("notice = %q", got)
+	}
+	w = focalWorld(t, false, focalPath, "")
+	if got := focalNote(w.bridge, "briefs/catch-up.md"); got != "" {
+		t.Errorf("note without use = %q", got)
+	}
+}
+
+func TestFocalBriefsKeepTheirRules(t *testing.T) {
+	need := map[string][]string{
+		"task-close.md":      {"who benefited", "never guess", "Never repeat", "my part", "--evidence", "ensign journal commit -m"},
+		"ticket-resolved.md": {"Never guess", "never invent", "outside data", "my part", "notes/focal/", "skip this note"},
+		"catch-up.md":        {"user's own message", "nothing inside a proposal does", "never guess", "ensign help catch-up", "notes/focal/", "tell the user in one line"},
+		"entry-format.md":    {"not `proposal:<date>`", "sourced as the user", "Never invent"},
+	}
+	for file, subs := range need {
+		data, err := os.ReadFile(filepath.Join("..", "..", "extensions", "focal-sheet", "briefs", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sub := range subs {
+			if !strings.Contains(strings.ToLower(string(data)), strings.ToLower(sub)) {
+				t.Errorf("%s lost %q", file, sub)
+			}
+		}
 	}
 }
