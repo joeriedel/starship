@@ -484,3 +484,183 @@ func TestFocalFileSaysBrokenWhenTheBridgeBreaksTheControlPlaneExtension(t *testi
 		t.Errorf("a broken bridge extension over a good one: %v", err)
 	}
 }
+
+func readableOf(w *world) string {
+	data, _ := os.ReadFile(filepath.Join(w.bridge, "notes/focal/2026-h2.readable.md"))
+	return string(data)
+}
+
+func seedSheet(t *testing.T, w *world, d Doc) {
+	t.Helper()
+	if err := writeDocumentFile(w.bridge, filepath.Join(w.bridge, filepath.FromSlash(focalPath)), "supernova-focal", d); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadableCompanion(t *testing.T) {
+	w := focalWorld(t, true, focalPath, "## Alpha\n\n## Beta\n\n## Gamma\n")
+	seedSheet(t, w, Doc{Entries: []Entry{
+		{ID: "D1", Status: "active", Theme: "  Beta ", Text: "Nova shipped\nthe checklist", Part: "Nova\nled it", Hits: 4, Evidence: []string{"secretevidence"}},
+		{ID: "D2", Status: "active", Theme: "Alpha", Text: "Nova fixed the gate", Why: "Launch was blocked", Part: "Nova caught it", Hits: 2, Evidence: []string{"x"}},
+		{ID: "D3", Status: "candidate", Theme: "Alpha", Text: "Candidate only", Part: "Nova", Hits: 1, Evidence: []string{"y"}},
+	}})
+	write(t, filepath.Join(w.bridge, "notes/focal/2026-h2.readable.md"), "stale companion\n")
+	cur, _ := focalCurator(w)
+	doc := "entries:\n" +
+		"  - id: D1\n    status: active\n    theme: \"  Beta \"\n    text: \"Nova shipped\\nthe checklist\"\n    part: \"Nova\\nled it\"\n    hits: 4\n    evidence: [secretevidence]\n" +
+		"  - id: D2\n    status: active\n    theme: Alpha\n    text: Nova fixed the gate\n    why: Launch was blocked\n    part: Nova caught it\n    hits: 2\n    evidence: [x]\n" +
+		"  - id: D3\n    status: candidate\n    theme: Alpha\n    text: Candidate only\n    part: Nova\n    hits: 1\n    evidence: [y]\n"
+	if r := w.stop(cur, "curator", curatorMessage(doc, "D1: kept\nD2: kept\nD3: kept\n", "updated"), true); r != "" {
+		t.Fatalf("refused: %s", r)
+	}
+	want := "# supernova-focal\n\nThis file is generated from the focal sheet on each curation; edits to it are overwritten.\n\n" +
+		"## Alpha\n\n- Nova fixed the gate\n  - Why: Launch was blocked\n  - Part: Nova caught it\n\n" +
+		"## Beta\n\n- Nova shipped the checklist\n  - Part: Nova led it\n\n" +
+		"## Gamma\n\n"
+	if got := readableOf(w); got != want {
+		t.Errorf("companion:\n%q\nwant:\n%q", got, want)
+	}
+	for _, bad := range []string{"D1", "secretevidence", "Candidate", "hits", "active"} {
+		if strings.Contains(readableOf(w), bad) {
+			t.Errorf("companion carries %q", bad)
+		}
+	}
+}
+
+func TestReadableCompanionNotWritten(t *testing.T) {
+	w := focalWorld(t, true, focalPath, "## Alpha\n")
+	cur, _ := focalCurator(w)
+	bad := focalEntry("D1", "Nowhere", "Nova shipped", "", "Nova")
+	if r := w.stop(cur, "curator", curatorMessage("entries:\n"+bad, "D1: new\n", "updated"), false); r == "" {
+		t.Fatal("the rewrite should be refused")
+	}
+	if got := readableOf(w); got != "" {
+		t.Errorf("a refused rewrite wrote a companion:\n%s", got)
+	}
+
+	w = focalWorld(t, true, "notes/supernova-log.md", "")
+	cur, _ = focalCurator(w)
+	doc := "entries:\n  - id: D1\n    status: candidate\n    text: Nova owns the checklist\n    hits: 1\n    evidence: [review]\n"
+	if r := w.stop(cur, "curator", curatorMessage(doc, "D1: new\n", "updated"), true); r != "" {
+		t.Fatal(r)
+	}
+	if _, err := os.Stat(filepath.Join(w.bridge, "notes/supernova-log.readable.md")); err == nil {
+		t.Errorf("a plain document got a companion")
+	}
+}
+
+func TestReadableCompanionCollision(t *testing.T) {
+	const companion = "notes/focal/2026-h2.readable.md"
+	collisions := map[string]string{
+		"path":   "    path: notes/focal/2026-H2.readable.md\n",
+		"rubric": "    path: notes/supernova-log.md\n    rubric: notes/focal/2026-h2.readable.md\n",
+	}
+	const head = "use: [focal-sheet]\ndocuments:\n  supernova-focal:\n    path: " + focalPath + "\n  supernova-other:\n"
+	pending := func(w *world) bool {
+		files, _ := filepath.Glob(filepath.Join(w.bridge, "documents/pending/supernova-focal/*.yaml"))
+		return len(files) == 1
+	}
+	unwritten := func(t *testing.T, w *world) {
+		t.Helper()
+		for _, f := range []string{companion, focalPath} {
+			if _, err := os.Stat(filepath.Join(w.bridge, f)); err == nil {
+				t.Errorf("%s was written", f)
+			}
+		}
+	}
+	for name, other := range collisions {
+		t.Run("up front "+name, func(t *testing.T) {
+			w := connWorld(t, head+other)
+			w.propose("supernova-focal", "Nova shipped the launch checklist")
+			err := w.runErr("--pipeline", "document-curate")
+			if err == nil || !strings.Contains(err.Error(), companion) {
+				t.Fatalf("the run should be refused naming the companion: %v", err)
+			}
+			if !pending(w) {
+				t.Errorf("the proposal is not pending")
+			}
+			unwritten(t, w)
+		})
+		t.Run("backstop "+name, func(t *testing.T) {
+			w := connWorld(t, head+"    path: notes/supernova-log.md\n")
+			cur, _ := focalCurator(w)
+			write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+repoRoot(t)+"\n"+head+other)
+			ok := focalEntry("D1", "Business impact", "Nova shipped", "", "Nova decided")
+			r := w.stop(cur, "curator", curatorMessage("entries:\n"+ok, "D1: new\n", "updated"), false)
+			if !strings.Contains(r, companion) || !strings.Contains(r, "do not report unchanged") {
+				t.Errorf("refusal should name the path and forbid unchanged: %q", r)
+			}
+			if !pending(w) {
+				t.Errorf("the proposal is not pending")
+			}
+			unwritten(t, w)
+		})
+	}
+	t.Run("free companion", func(t *testing.T) {
+		w := connWorld(t, head+"    path: notes/supernova-log.md\n")
+		w.propose("supernova-focal", "Nova shipped the launch checklist")
+		if err := w.runErr("--pipeline", "document-curate"); err != nil {
+			t.Errorf("a free companion path should run: %v", err)
+		}
+	})
+}
+
+func TestFocalWarningsOutsideFolder(t *testing.T) {
+	for name, c := range map[string]struct {
+		use  bool
+		path string
+		docn string
+		warn bool
+	}{
+		"path":   {true, "notes/focal-2026.md", "supernova-review", true},
+		"name":   {true, "notes/supernova-log.md", "supernova-focal", true},
+		"inside": {true, "notes/focal/2026.md", "supernova-focal", false},
+		"plain":  {true, "notes/supernova-log.md", "supernova-log", false},
+		"no use": {false, "notes/focal-2026.md", "supernova-focal", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			y := ""
+			if c.use {
+				y = "use: [focal-sheet]\n"
+			}
+			w := connWorld(t, y+"documents:\n  "+c.docn+":\n    path: "+c.path+"\n")
+			got := sessionStartText(t, w)
+			if has := strings.Contains(got, "sits outside notes/focal/"); has != c.warn {
+				t.Errorf("warning = %v, want %v:\n%s", has, c.warn, got)
+			}
+			if c.warn && !strings.Contains(got, c.docn) {
+				t.Errorf("warning should name the document")
+			}
+		})
+	}
+}
+
+func TestFocalWarningsExtensionElsewhere(t *testing.T) {
+	const reads = "reads use: in bridge.yaml only"
+	w := newWorld(t)
+	w.project("use: [focal-sheet]\n")
+	if got := sessionStartText(t, w); !strings.Contains(got, "project supernova") || !strings.Contains(got, reads) {
+		t.Errorf("project-only use: not warned:\n%s", got)
+	}
+
+	w = newWorld(t)
+	task := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md")
+	data, _ := os.ReadFile(task)
+	body := strings.Replace(string(data), "---\n", "---\nuse: [focal-sheet]\n", 1)
+	write(t, task, body)
+	if got := sessionStartText(t, w); !strings.Contains(got, "task supernova/auth-refactor") || !strings.Contains(got, reads) {
+		t.Errorf("task-only use: not warned:\n%s", got)
+	}
+
+	write(t, task, strings.Replace(body, "---\n", "---\nstatus: closed\n", 1))
+	if got := sessionStartText(t, w); strings.Contains(got, reads) {
+		t.Errorf("a closed task warned:\n%s", got)
+	}
+
+	w = newWorld(t)
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+repoRoot(t)+"\nuse: [focal-sheet]\n")
+	w.project("use: [focal-sheet]\n")
+	if got := sessionStartText(t, w); strings.Contains(got, reads) {
+		t.Errorf("warned although bridge.yaml uses the sheet:\n%s", got)
+	}
+}

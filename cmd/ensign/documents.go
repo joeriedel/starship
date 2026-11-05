@@ -371,6 +371,12 @@ func documentProblems(bridge string, docs []DeclaredDocument) []string {
 			if _, ferr := focalFile(bridge, "briefs/entry-format.md"); err != nil || len(themes) == 0 || ferr != nil {
 				out = append(out, fmt.Sprintf("document %s (%s): its themes or entry format cannot be read", d.Name, d.Path))
 			}
+			declared, err := loadDeclaredDocuments(bridge)
+			if err != nil {
+				out = append(out, fmt.Sprintf("document %s: %v", d.Name, err))
+			} else if rel, other := focalCollision(d, declared); other != "" {
+				out = append(out, fmt.Sprintf("document %s: its readable companion %s is declared as the path or rubric of document %s; move that declaration in bridge.yaml", d.Name, rel, other))
+			}
 		}
 	}
 	return out

@@ -326,6 +326,10 @@ func validateCurationAs(private bool, prefix string, old, next Doc, ledger map[s
 		case "kept", "reworded":
 			if !kept {
 				add("%s is %s but missing from the document", shown(id), verb)
+			} else if verb == "kept" {
+				for _, f := range keptChanges(e, after[id]) {
+					add("%s is kept but its %s changed; mark it reworded, or promoted for a status change", shown(id), f)
+				}
 			}
 		case "promoted":
 			n := after[id]
@@ -377,6 +381,57 @@ func validateCurationAs(private bool, prefix string, old, next Doc, ledger map[s
 	}
 	sort.Strings(errs)
 	return errs
+}
+
+// keptChanges names the fields of an entry that a kept entry may not change: everything but hits, which may rise, and evidence, which may grow.
+func keptChanges(old, next Entry) []string {
+	var out []string
+	for _, f := range []struct {
+		name     string
+		old, new string
+	}{{"text", old.Text, next.Text}, {"theme", old.Theme, next.Theme}, {"why", old.Why, next.Why}, {"part", old.Part, next.Part}, {"status", old.Status, next.Status}} {
+		if f.old != f.new {
+			out = append(out, f.name)
+		}
+	}
+	if next.Hits < old.Hits {
+		out = append(out, "hits")
+	}
+	have := map[string]int{}
+	for _, ev := range next.Evidence {
+		have[ev]++
+	}
+	for _, ev := range old.Evidence {
+		if have[ev]--; have[ev] < 0 {
+			out = append(out, "evidence")
+			break
+		}
+	}
+	return out
+}
+
+// focalCollision returns a focal sheet's readable companion path and the declared document that owns that path as its path or rubric, if any.
+func focalCollision(decl DeclaredDocument, declared []DeclaredDocument) (rel, other string) {
+	rel = decl.Path[:len(decl.Path)-len(".md")] + ".readable.md"
+	for _, o := range declared {
+		if strings.EqualFold(rel, o.Path) || strings.EqualFold(rel, o.Rubric) {
+			return rel, o.Name
+		}
+	}
+	return rel, ""
+}
+
+// focalCompanion returns the file for a focal sheet's readable companion, or a problem when another declared document owns that path.
+func focalCompanion(bridge string, decl DeclaredDocument) (string, string) {
+	docs, err := loadDeclaredDocuments(bridge)
+	if err != nil {
+		return "", "Writing the document failed: " + err.Error()
+	}
+	rel, other := focalCollision(decl, docs)
+	if other != "" {
+		return "", fmt.Sprintf("The rewrite can't be applied: its readable companion %s is declared as the path or rubric of document %s, and only the user can move that declaration in bridge.yaml. Keep reporting updated and do not report unchanged, which would discard the proposals; repeating updated exhausts the stop budget and fails the run with the proposals left in place.", rel, other)
+	}
+	return filepath.Join(bridge, filepath.FromSlash(rel)), ""
 }
 
 // applyCuration validates a curator's report and writes the document. It returns a
@@ -457,6 +512,13 @@ func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 		}
 		if focal {
 			sortByTheme(&next, themes)
+			file, problem := focalCompanion(r.Snap.Bridge, decl)
+			if problem != "" {
+				return problem
+			}
+			if err := writeFileAtomic(r.Snap.Bridge, file, renderFocalReadable(d.Dim, themes, next)); err != nil {
+				return "Writing the document failed: " + err.Error()
+			}
 		}
 		if private {
 			if err := writeDocumentFile(r.Snap.Bridge, path, d.Dim, next); err != nil {

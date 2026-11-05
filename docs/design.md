@@ -249,7 +249,7 @@ defaults in the same way: they apply when the layer enables it, and that layer o
 later one can replace them.
 
 The control plane ships generic extensions (no project names). A bridge may ship its own
-in the same format. A project or task enables extensions with `use: [<name>, ...]`. A
+in the same format. A project or task enables extensions with `use: [<name>, ...]`. An
 extension declares the bindings it requires, so it cannot be enabled where it doesn't fit.
 
 An extension with `quiet: true` in its `extension.yaml` leaves no trace in a bridge whose own `bridge.yaml` `use:` does not name it: its `help:` entries and its pipelines' help are left out of the `help` word, `ensign help requests` and the session-start pointer.

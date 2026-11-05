@@ -557,6 +557,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			fmt.Fprintln(&ctx, l)
 		}
 	}
+	for _, l := range focalWarnings(bridge) {
+		fmt.Fprintln(&ctx, l)
+	}
 	if requestCommands(bridge) != "" {
 		fmt.Fprint(&ctx, "\nTo carry out a request like squashing commits or curating skills: read `ensign help requests` for the requests this bridge answers and the command for each.\n")
 	}

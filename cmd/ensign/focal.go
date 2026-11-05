@@ -146,3 +146,70 @@ func sortByTheme(d *Doc, themes []string) {
 	rank := func(e Entry) int { return slices.Index(themes, strings.TrimSpace(e.Theme)) }
 	sort.SliceStable(d.Entries, func(i, j int) bool { return rank(d.Entries[i]) < rank(d.Entries[j]) })
 }
+
+// renderFocalReadable is the shareable Markdown copy of a sorted focal sheet: every theme in order, each with its active entries.
+func renderFocalReadable(name string, themes []string, d Doc) []byte {
+	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n\nThis file is generated from the focal sheet on each curation; edits to it are overwritten.\n", name)
+	for _, th := range themes {
+		fmt.Fprintf(&b, "\n## %s\n\n", th)
+		for _, e := range d.Entries {
+			if e.Status != "active" || strings.TrimSpace(e.Theme) != th {
+				continue
+			}
+			fmt.Fprintf(&b, "- %s\n", oneLine(e.Text))
+			if why := oneLine(e.Why); why != "" {
+				fmt.Fprintf(&b, "  - Why: %s\n", why)
+			}
+			fmt.Fprintf(&b, "  - Part: %s\n", oneLine(e.Part))
+		}
+	}
+	return []byte(b.String())
+}
+
+// focalWarnings are session-start notes about a focal-sheet setup that has no effect.
+func focalWarnings(bridge string) []string {
+	var out []string
+	if bridgeUses(bridge, focalExtension) {
+		docs, err := loadDeclaredDocuments(bridge)
+		if err != nil {
+			return nil
+		}
+		for _, d := range docs {
+			path := strings.ToLower(d.Path)
+			if !strings.HasPrefix(path, focalPrefix) && (strings.Contains(path, "focal") || strings.Contains(strings.ToLower(d.Name), "focal")) {
+				out = append(out, fmt.Sprintf("the document %s (%s) sits outside %s, so it is curated as a plain document with no focal rules.", d.Name, d.Path, focalPrefix))
+			}
+		}
+		return out
+	}
+	loaded := func(who string) {
+		out = append(out, fmt.Sprintf("%s lists the %s extension in use:, which has no focal effect there: the sheet reads use: in bridge.yaml only.", who, focalExtension))
+	}
+	projects, _ := os.ReadDir(filepath.Join(bridge, "projects"))
+	for _, p := range projects {
+		if !p.IsDir() {
+			continue
+		}
+		var pl Layer
+		if readYAML(filepath.Join(bridge, "projects", p.Name(), "project.yaml"), &pl) == nil && slices.Contains(pl.Use, focalExtension) {
+			loaded("project " + p.Name())
+		}
+		tasks, _ := os.ReadDir(filepath.Join(bridge, "projects", p.Name(), "tasks"))
+		for _, t := range tasks {
+			front, _, err := splitFrontmatter(filepath.Join(bridge, "projects", p.Name(), "tasks", t.Name(), "task.md"))
+			if err != nil {
+				continue
+			}
+			var tf struct {
+				Use    []string `yaml:"use"`
+				Status string   `yaml:"status"`
+			}
+			if decodeFrontmatter(front, &tf) == nil && tf.Status != "closed" && slices.Contains(tf.Use, focalExtension) {
+				loaded("task " + p.Name() + "/" + t.Name())
+			}
+		}
+	}
+	return out
+}

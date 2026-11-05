@@ -29,6 +29,7 @@ validates it and writes it.
 
 - **Every existing id appears in the ledger** as `kept`, `reworded`, `promoted`,
   `merged-into <id>` or `dropped — <reason>`. Nothing disappears silently.
+- **`kept` means unchanged:** the entry's fields stay as they were, except that hits may rise and evidence may grow (a merge target gaining hits and evidence stays `kept`). Any other change is `reworded`, or `promoted` for a status change.
 - **A merge keeps the lower id;** add the merged entry's hits and evidence to it.
 - **New entries start as `candidate`**, with evidence. One becomes `active` on its second
   independent sighting (hits ≥ 2), or at once if its evidence cites an authoritative

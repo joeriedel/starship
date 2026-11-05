@@ -140,6 +140,56 @@ func TestSkillCurate(t *testing.T) {
 	}
 }
 
+func TestKeptMeansUnchanged(t *testing.T) {
+	base := Entry{ID: "D1", Status: "active", Text: "t", Theme: "th", Why: "w", Part: "p", Hits: 3, Evidence: []string{"a", "a", "b"}}
+	old := Doc{Entries: []Entry{base}}
+	with := func(f func(e *Entry)) Entry {
+		e := base
+		e.Evidence = append([]string{}, base.Evidence...)
+		f(&e)
+		return e
+	}
+	cases := []struct {
+		name   string
+		e      Entry
+		ledger string
+		want   string
+	}{
+		{"text", with(func(e *Entry) { e.Text = "SECRET" }), "kept", "text"},
+		{"theme", with(func(e *Entry) { e.Theme = "SECRET" }), "kept", "theme"},
+		{"why", with(func(e *Entry) { e.Why = "SECRET" }), "kept", "why"},
+		{"part", with(func(e *Entry) { e.Part = "SECRET" }), "kept", "part"},
+		{"status", with(func(e *Entry) { e.Status = "candidate" }), "kept", "status"},
+		{"hits fall", with(func(e *Entry) { e.Hits = 2 }), "kept", "hits"},
+		{"evidence loses an element", with(func(e *Entry) { e.Evidence = []string{"a", "a"} }), "kept", "evidence"},
+		{"evidence loses a duplicate", with(func(e *Entry) { e.Evidence = []string{"a", "b", "c"} }), "kept", "evidence"},
+		{"hits rise", with(func(e *Entry) { e.Hits = 5 }), "kept", ""},
+		{"evidence grows", with(func(e *Entry) { e.Evidence = []string{"b", "a", "c", "a"} }), "kept", ""},
+		{"reworded is free", with(func(e *Entry) { e.Text = "SECRET"; e.Hits = 1 }), "reworded", ""},
+	}
+	for _, c := range cases {
+		for _, private := range []bool{false, true} {
+			errs := strings.Join(validateCurationAs(private, "D", old, Doc{Entries: []Entry{c.e}}, map[string]string{"D1": c.ledger}, nil), "; ")
+			if c.want == "" && errs != "" {
+				t.Errorf("%s: unexpected errors: %s", c.name, errs)
+			}
+			if c.want != "" && (!strings.Contains(errs, "D1 is kept but its "+c.want) || strings.Contains(errs, "SECRET")) {
+				t.Errorf("%s: want a refusal naming %q and no value, got %q", c.name, c.want, errs)
+			}
+		}
+	}
+	empty := Doc{Entries: []Entry{{ID: "D1", Status: "active", Text: "t", Hits: 1, Evidence: []string{}}}}
+	nilEv := Doc{Entries: []Entry{{ID: "D1", Status: "active", Text: "t", Hits: 1}}}
+	if errs := validateCuration("D", empty, nilEv, map[string]string{"D1": "kept"}, nil); len(errs) != 0 {
+		t.Errorf("nil and empty evidence differ: %v", errs)
+	}
+	cand := Doc{Entries: []Entry{{ID: "D1", Status: "candidate", Text: "t", Hits: 2, Evidence: []string{"a"}}}}
+	act := Doc{Entries: []Entry{{ID: "D1", Status: "active", Text: "t", Hits: 2, Evidence: []string{"a"}}}}
+	if errs := validateCuration("D", cand, act, map[string]string{"D1": "kept"}, nil); len(errs) == 0 {
+		t.Errorf("candidate to active under kept was allowed")
+	}
+}
+
 func TestValidateCuration(t *testing.T) {
 	old := Doc{Entries: []Entry{
 		{ID: "S1", Status: "active", Text: "a", Hits: 3, Evidence: []string{"x"}},

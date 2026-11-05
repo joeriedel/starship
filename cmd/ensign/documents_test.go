@@ -498,6 +498,26 @@ func TestDocumentRefusalsQuoteNoLedgerValue(t *testing.T) {
 	}
 }
 
+func TestDocumentKeptChangeRefusalQuotesNoText(t *testing.T) {
+	const newText = "ZZ-NEW-TEXT-91C2"
+	w := docWorld(t, "notes/supernova-log.md")
+	seedDocument(t, w, "notes/supernova-log.md")
+	w.propose("supernova-log", "Nova owns the launch checklist")
+	w.run("--pipeline", "document-curate")
+	cur, _ := w.spawn("", "", "curator")
+	msg := curatorMessage("entries:\n  - id: D1\n    status: active\n    text: "+newText+"\n    hits: 1\n    evidence: [standup]\n", "D1: kept\n", "updated")
+	r := w.stop(cur, "curator", msg, false)
+	if !strings.Contains(r, "D1 is kept but its text") {
+		t.Errorf("want a kept refusal naming the field: %q", r)
+	}
+	st, _ := json.Marshal(w.state())
+	for _, v := range []string{newText, "Launch slipped to spring"} {
+		if strings.Contains(r, v) || strings.Contains(string(st), v) {
+			t.Errorf("%q leaked into the refusal or the run log", v)
+		}
+	}
+}
+
 func TestDocumentProposalWithoutEvidenceCitesItsDate(t *testing.T) {
 	w := docWorld(t, "notes/supernova-log.md")
 	seedDocument(t, w, "notes/supernova-log.md")
