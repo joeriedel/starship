@@ -297,6 +297,8 @@ func cmdSelftest(out io.Writer) error {
 	}
 	checks = append(checks, restartChecks(restart, out)...)
 	checks = append(checks, selftestCheck{"Stop background_tasks lists a background command, with the id PostToolUse saw", stopListsBackground(stopBgEvents)})
+	fmt.Fprintln(out, "running a connector probe against a stub MCP server…")
+	checks = append(checks, mcpChecks(runMCPProbe(self))...)
 	if askedBackground {
 		checks = append(checks, struct {
 			name string
@@ -632,6 +634,11 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 	switch event {
 	case "PreToolUse":
 		ti, _ := in["tool_input"].(map[string]any)
+		if in["tool_name"] == "mcp__stub__write_note" && strings.Contains(eventStr(ti, "text"), mcpDenyMark) {
+			return reply(map[string]any{"hookSpecificOutput": map[string]any{
+				"hookEventName": "PreToolUse", "permissionDecision": "deny",
+				"permissionDecisionReason": "this write is refused on purpose by the selftest"}})
+		}
 		if msg, _ := ti["message"].(string); in["tool_name"] == "SubagentHandback" && strings.Contains(msg, redoFirst) {
 			return reply(map[string]any{"hookSpecificOutput": map[string]any{
 				"hookEventName": "PreToolUse", "permissionDecision": "deny",

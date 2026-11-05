@@ -77,6 +77,10 @@ func main() {
 		if len(os.Args) == 3 {
 			os.Exit(cmdSelftestHook(os.Args[2], os.Stdin, os.Stdout))
 		}
+	case "selftest-mcp":
+		if len(os.Args) == 3 {
+			os.Exit(cmdSelftestMCP(os.Args[2], os.Stdin, os.Stdout))
+		}
 	case "style":
 		err = cmdStyle(os.Args[2:], os.Stdout)
 	case "skill":
