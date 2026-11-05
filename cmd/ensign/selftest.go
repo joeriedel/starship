@@ -4,7 +4,10 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -328,20 +331,43 @@ func cmdSelftest(out io.Writer) error {
 	return nil
 }
 
+// probeHookCommand is the command line of a probe hook for the given event. It runs through a shell, which splits or mangles a spaced or backslashed path, so the path is forward-slashed and double-quoted, escaping only backslash, double quote, dollar and backtick: the four characters a POSIX shell treats specially inside double quotes. Go's strconv.Quote would leave $ and backtick live and emit \x escapes no shell reads.
+func probeHookCommand(self, ev string) string {
+	return `"` + hookPathQuoter.Replace(filepath.ToSlash(self)) + `" selftest-hook ` + ev
+}
+
+var hookPathQuoter = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`")
+
+// probeHookGroups is the JSON array holding one hook group that runs command, for the matcher if it is not empty.
+func probeHookGroups(matcher, command string) string {
+	group := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command}}}
+	if matcher != "" {
+		group["matcher"] = matcher
+	}
+	data, _ := json.Marshal([]any{group})
+	return string(data)
+}
+
+// probeStopSettings is the settings.local.json body that hooks the Stop event.
+func probeStopSettings(self string) string {
+	data, _ := json.Marshal(map[string]any{"hooks": map[string]any{"Stop": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": probeHookCommand(self, "Stop")}}}}}})
+	return string(data)
+}
+
 // newProbeDir makes a throwaway project holding the probe hooks and the given agent files, and returns its folder. The caller removes it once every session in it has finished.
 func newProbeDir(self, token string, agents map[string]string) (string, error) {
 	dir, err := os.MkdirTemp("", "ensign-selftest-")
 	if err != nil {
 		return "", err
 	}
-	hook := func(ev string) string {
-		return fmt.Sprintf(`[{"hooks": [{"type": "command", "command": %q}]}]`, self+" selftest-hook "+ev)
+	hook := func(matcher, ev string) string {
+		return probeHookGroups(matcher, probeHookCommand(self, ev))
 	}
 	settings := `{"hooks": {
-  "SessionStart": ` + hook("SessionStart") + `,
-  "PreToolUse": [{"matcher": "Agent|Task|SubagentHandback", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", self+" selftest-hook PreToolUse") + `}]}],
-  "PostToolUse": [{"matcher": "Bash|Agent|Task", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", self+" selftest-hook PostToolUse") + `}]}],
-  "SubagentStop": ` + hook("SubagentStop") + `
+  "SessionStart": ` + hook("", "SessionStart") + `,
+  "PreToolUse": ` + hook("Agent|Task|SubagentHandback", "PreToolUse") + `,
+  "PostToolUse": ` + hook("Bash|Agent|Task", "PostToolUse") + `,
+  "SubagentStop": ` + hook("", "SubagentStop") + `
 }}`
 	files := map[string]string{".claude/settings.json": settings}
 	for rel, content := range agents {
@@ -374,16 +400,41 @@ func readProbeLog(dir string) []map[string]any {
 	return events
 }
 
+// probeTimeout bounds one probe session; a variable so a test can shorten it.
+var probeTimeout = 10 * time.Minute
+
 // runProbeSession runs one claude -p in a probe folder and returns the hook events it logged, the session's reply and its session id. Pass --resume in claudeArgs to continue an earlier session in the same folder.
 func runProbeSession(dir, prompt string, claudeArgs ...string) ([]map[string]any, string, string, error) {
 	before := len(readProbeLog(dir))
-	cmd := exec.Command("claude", append([]string{"-p", "--model", "haiku", "--output-format", "json"}, claudeArgs...)...)
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "claude", append([]string{"-p", "--model", "haiku", "--output-format", "json"}, claudeArgs...)...)
 	cmd.Dir, cmd.Env = dir, cleanClaudeEnv()
 	cmd.Stdin = strings.NewReader(prompt)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	raw, err := cmd.Output()
+	started, finish := killTreeOnCancel(cmd, cancel)
+	cmd.WaitDelay = killWaitDelay
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Start()
+	if err == nil {
+		started()
+		err = cmd.Wait()
+	}
+	sigErr := finish()
+	raw := stdout.Bytes()
+	switch {
+	case sigErr != nil:
+		err = sigErr
+	case ctx.Err() != nil:
+		err = fmt.Errorf("the probe session timed out after %s: %s", probeTimeout.Round(time.Second), lastLines(string(raw)+stderr.String(), 5))
+	case errors.Is(err, exec.ErrWaitDelay):
+		// The session exited 0; a background child only held the output pipe open.
+		err = nil
+	}
 	if err != nil {
+		if ctx.Err() != nil && sigErr == nil {
+			return nil, "", "", err
+		}
 		return nil, "", "", fmt.Errorf("the probe session failed: %v: %s", err, lastLines(string(raw)+stderr.String(), 5))
 	}
 	result, sessionID, err := parseProbeSession(raw)
@@ -750,8 +801,7 @@ func runRestartProbe(self, token string) (*restartProbe, error) {
 
 // runStopBackgroundProbe runs a session whose main agent starts a background command and ends its turn, and returns the hook events. The Stop hook lives in settings.local.json so the other probe folders keep their settings. A failure is noted on stderr and returns no events, so the check always fails without aborting the others.
 func runStopBackgroundProbe(self, token string) []map[string]any {
-	stopHook := fmt.Sprintf(`{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": %q}]}]}}`, self+" selftest-hook Stop")
-	dir, err := newProbeDir(self, token, map[string]string{".claude/settings.local.json": stopHook})
+	dir, err := newProbeDir(self, token, map[string]string{".claude/settings.local.json": probeStopSettings(self)})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stop background probe: %v\n", err)
 		return nil

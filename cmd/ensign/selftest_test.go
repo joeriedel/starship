@@ -5,8 +5,14 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func stopEv(agentType, id string, extra map[string]any) map[string]any {
@@ -414,5 +420,151 @@ func TestParseProbeSession(t *testing.T) {
 	}
 	if _, _, err := parseProbeSession(nil); err == nil {
 		t.Error("empty output should fail")
+	}
+}
+
+func TestNewProbeDirQuotesTheHookCommands(t *testing.T) {
+	self := `/opt/super nova/ensign`
+	dir, err := newProbeDir(self, "tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("settings are not JSON: %v\n%s", err, data)
+	}
+	if len(settings.Hooks) != 4 {
+		t.Fatalf("want 4 hook events, got %d", len(settings.Hooks))
+	}
+	for ev, groups := range settings.Hooks {
+		want := `"/opt/super nova/ensign" selftest-hook ` + ev
+		if len(groups) != 1 || len(groups[0].Hooks) != 1 || groups[0].Hooks[0].Command != want {
+			t.Errorf("%s: want command %q, got %+v", ev, want, groups)
+		}
+	}
+}
+
+func TestProbeStopSettingsQuotesTheHookCommand(t *testing.T) {
+	var settings struct {
+		Hooks struct {
+			Stop []struct {
+				Hooks []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			}
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal([]byte(probeStopSettings(`/opt/super nova/ensign`)), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if got := settings.Hooks.Stop[0].Hooks[0].Command; got != `"/opt/super nova/ensign" selftest-hook Stop` {
+		t.Errorf("command = %q", got)
+	}
+}
+
+func TestProbeHookJSONIsValidForAnyPath(t *testing.T) {
+	self := "/opt/super\x01nova\n/ensign\\"
+	var groups []struct {
+		Hooks []struct {
+			Command string `json:"command"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal([]byte(probeHookGroups("Bash", probeHookCommand(self, "PreToolUse"))), &groups); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := groups[0].Hooks[0].Command, probeHookCommand(self, "PreToolUse"); got != want {
+		t.Errorf("command = %q, want %q", got, want)
+	}
+}
+
+func fakeClaude(t *testing.T, script string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake claude is a POSIX shell script")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestRunProbeSessionTimeoutKillsChildren(t *testing.T) {
+	heartbeat := filepath.Join(t.TempDir(), "beat")
+	fakeClaude(t, "echo started\n(while :; do echo x >> "+heartbeat+"; sleep 0.1; done) &\nwait\n")
+	old := probeTimeout
+	probeTimeout = time.Second
+	defer func() { probeTimeout = old }()
+	start := time.Now()
+	_, _, _, err := runProbeSession(t.TempDir(), "supernova")
+	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "started") {
+		t.Fatalf("err = %v, want timed out with the output", err)
+	}
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Fatalf("took %s, want well under the wait delay plus limit", elapsed)
+	}
+	before, _ := os.Stat(heartbeat)
+	time.Sleep(600 * time.Millisecond)
+	after, _ := os.Stat(heartbeat)
+	if before == nil || after == nil || before.Size() != after.Size() {
+		t.Errorf("the child is still writing: %v then %v", before, after)
+	}
+}
+
+func TestRunProbeSessionLeftoverPipeHolderIsSuccess(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	fakeClaude(t, `echo '{"result":"supernova","session_id":"s1"}'`+"\nsleep 8 &\necho $! > "+pidFile+"\nexit 0\n")
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				if p, err := os.FindProcess(pid); err == nil {
+					p.Kill()
+				}
+			}
+		}
+	})
+	_, result, sessionID, err := runProbeSession(t.TempDir(), "supernova")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if result != "supernova" || sessionID != "s1" {
+		t.Errorf("result %q session %q", result, sessionID)
+	}
+}
+
+func TestProbeHookCommandSurvivesShellSpecialPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("such directory names are not valid on Windows")
+	}
+	dir := filepath.Join(t.TempDir(), "sp ace $HOME `x` \"q\" back\\$slash")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "args")
+	script := filepath.Join(dir, "ensign")
+	body := "#!/bin/sh\necho \"$@\" > '" + out + "'\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := exec.Command("sh", "-c", probeHookCommand(script, "Stop")).CombinedOutput(); err != nil {
+		t.Fatalf("hook command failed: %v: %s", err, b)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != "selftest-hook Stop" {
+		t.Fatalf("script args = %q", got)
 	}
 }

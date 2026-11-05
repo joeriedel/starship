@@ -2271,71 +2271,67 @@ func TestSequenceSkipAndAcceptWorkAfterRetries(t *testing.T) {
 }
 
 func TestSequenceDecideTextOffersRetrySkipHaltInOrder(t *testing.T) {
-	for _, mode := range []string{"stop"} {
-		w := newWorld(t)
-		w.mustSeq("run", "supernova/auth-refactor")
-		w.mustSeq("mode", mode)
-		w.approve()
-		lead, _ := w.spawn("", "", "orchestrator")
-		w.failRun(lead)
-		text, _ := w.stopHook()["reason"].(string)
-		var lines []string
-		for _, l := range strings.Split(text, "\n") {
-			if strings.HasPrefix(l, "- ") {
-				lines = append(lines, l)
-			}
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("mode", "stop")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	text, _ := w.stopHook()["reason"].(string)
+	var lines []string
+	for _, l := range strings.Split(text, "\n") {
+		if strings.HasPrefix(l, "- ") {
+			lines = append(lines, l)
 		}
-		if len(lines) != 3 || !strings.HasPrefix(lines[0], "- retry: `ensign sequence retry 1.1 --diagnosis") || !strings.HasPrefix(lines[1], "- skip: ") || !strings.HasPrefix(lines[2], "- halt: ") {
-			t.Fatalf("%s mode: want retry, skip, halt in that order:\n%s", mode, text)
+	}
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "- retry: `ensign sequence retry 1.1 --diagnosis") || !strings.HasPrefix(lines[1], "- skip: ") || !strings.HasPrefix(lines[2], "- halt: ") {
+		t.Fatalf("want retry, skip, halt in that order:\n%s", text)
+	}
+	wantSkip, wantHalt := "`ensign sequence skip 1.1`", "`ensign sequence accept 1.1`"
+	if !strings.Contains(lines[1], wantSkip) || !strings.Contains(lines[2], wantHalt) {
+		t.Errorf("wrong commands:\n%s", text)
+	}
+	bare := text
+	for {
+		i := strings.Index(bare, "`")
+		if i < 0 {
+			break
 		}
-		wantSkip, wantHalt := "`ensign sequence skip 1.1`", "`ensign sequence accept 1.1`"
-		if !strings.Contains(lines[1], wantSkip) || !strings.Contains(lines[2], wantHalt) {
-			t.Errorf("%s mode: wrong commands:\n%s", mode, text)
-		}
-		bare := text
-		for {
-			i := strings.Index(bare, "`")
-			if i < 0 {
-				break
-			}
-			j := strings.Index(bare[i+1:], "`")
-			bare = bare[:i] + bare[i+1+j+1:]
-		}
-		if strings.Contains(bare, "accept") {
-			t.Errorf("%s mode: the word accept is said outside a command:\n%s", mode, text)
-		}
+		j := strings.Index(bare[i+1:], "`")
+		bare = bare[:i] + bare[i+1+j+1:]
+	}
+	if strings.Contains(bare, "accept") {
+		t.Errorf("the word accept is said outside a command:\n%s", text)
 	}
 }
 
 func TestSequenceDecideTextRequiresAFullBriefEveryTime(t *testing.T) {
 	var briefs []string
-	for _, mode := range []string{"stop"} {
-		w := newWorld(t)
-		w.mustSeq("run", "supernova/auth-refactor")
-		w.mustSeq("mode", mode)
-		w.approve()
-		lead, _ := w.spawn("", "", "orchestrator")
-		w.failRun(lead)
-		text, _ := w.stopHook()["reason"].(string)
-		for _, want := range []string{
-			"full brief, every time, even if an earlier message already said the same thing",
-			"what failed and why, in plain words",
-			"what state the work is in",
-			"what each of retry, skip and halt would do",
-			"every decision a retry needs, with each option spelled out and a recommendation",
-			"Never refer to an option by letter or by pointing at an earlier message",
-		} {
-			if !strings.Contains(text, want) {
-				t.Errorf("%s mode: missing %q:\n%s", mode, want, text)
-			}
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("mode", "stop")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	text, _ := w.stopHook()["reason"].(string)
+	for _, want := range []string{
+		"full brief, every time, even if an earlier message already said the same thing",
+		"what failed and why, in plain words",
+		"what state the work is in",
+		"what each of retry, skip and halt would do",
+		"every decision a retry needs, with each option spelled out and a recommendation",
+		"Never refer to an option by letter or by pointing at an earlier message",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
 		}
-		for _, l := range strings.Split(text, "\n") {
-			if strings.HasPrefix(l, "- ") && strings.Contains(l, "full brief") {
-				t.Errorf("%s mode: the brief must be a plain paragraph: %s", mode, l)
-			}
-			if strings.Contains(l, "full brief") {
-				briefs = append(briefs, l)
-			}
+	}
+	for _, l := range strings.Split(text, "\n") {
+		if strings.HasPrefix(l, "- ") && strings.Contains(l, "full brief") {
+			t.Errorf("the brief must be a plain paragraph: %s", l)
+		}
+		if strings.Contains(l, "full brief") {
+			briefs = append(briefs, l)
 		}
 	}
 	if len(briefs) != 1 || briefs[0] != decideBriefText[:len(decideBriefText)-1] {
@@ -2916,22 +2912,20 @@ func TestSequenceSkippedBeforeSurvivesADeletedRunFolder(t *testing.T) {
 }
 
 func TestSequenceDecideTextListsTheTasksOwnStepsInStopMode(t *testing.T) {
-	for _, mode := range []string{"stop"} {
-		w := releaseWorld(t, 0)
-		w.mustSeq("run", "supernova/auth-refactor")
-		w.mustSeq("run", "supernova/auth-refactor")
-		w.mustSeq("release", "supernova", "1.2.3")
-		w.mustSeq("mode", mode)
-		w.approve()
-		lead, _ := w.spawn("", "", "orchestrator")
-		w.failRun(lead)
-		text, _ := w.stopHook()["reason"].(string)
-		if !strings.Contains(text, "step 1.3, release") {
-			t.Errorf("%s mode: the release step should be listed:\n%s", mode, text)
-		}
-		if !strings.Contains(text, "step 1.2, run") {
-			t.Errorf("%s mode: own pending run step should be listed:\n%s", mode, text)
-		}
+	w := releaseWorld(t, 0)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("release", "supernova", "1.2.3")
+	w.mustSeq("mode", "stop")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	text, _ := w.stopHook()["reason"].(string)
+	if !strings.Contains(text, "step 1.3, release") {
+		t.Errorf("the release step should be listed:\n%s", text)
+	}
+	if !strings.Contains(text, "step 1.2, run") {
+		t.Errorf("own pending run step should be listed:\n%s", text)
 	}
 }
 
@@ -3276,7 +3270,7 @@ func TestSequencePromptReportsAFailedPublishAdvancedByResumeOnce(t *testing.T) {
 	wantFailedPublishReportedOnce(t, w, task, true)
 }
 
-// failedPublishBesideAnOpenSequence is failedPublishAdvancedByTheRun with a second sequence added after the go, so that sequence 1 closes while sequence 2 stays open.
+// failedPublishBesideAnOpenSequence sets up the same failed publish as failedPublishAdvancedByTheRun, with a second sequence added after the go, so that sequence 1 closes while sequence 2 stays open.
 func failedPublishBesideAnOpenSequence(t *testing.T) (*world, string) {
 	w, ws, remote, _ := githubWorld(t, "success", localTest)
 	task := "supernova/auth-refactor"
@@ -4157,7 +4151,9 @@ func TestSequenceHaltNotesAFailedRetireOnTheStepAndRetriesItAtTheNextAdvance(t *
 	if got := takeSequenceReports(w.bridge, w.sid); strings.Count(got, "was retired on retry") != 1 || !strings.Contains(got, pending) {
 		t.Errorf("the retry should be reported once: %q", got)
 	}
-	advanceSequence(w.bridge, w.sid)
+	if _, err := advanceSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
 	if got := takeSequenceReports(w.bridge, w.sid); got != "" {
 		t.Errorf("nothing more to report: %q", got)
 	}

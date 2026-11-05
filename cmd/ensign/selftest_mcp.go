@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -134,10 +133,8 @@ func newMCPProbeDir(self string) (dir, config string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	// The hook command runs through a shell, which mangles a backslashed or spaced Windows path.
-	hookSelf := strconv.Quote(filepath.ToSlash(self))
 	hook := func(matcher, ev string) []any {
-		group := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": hookSelf + " selftest-hook " + ev}}}
+		group := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": probeHookCommand(self, ev)}}}
 		if matcher != "" {
 			group["matcher"] = matcher
 		}

@@ -273,7 +273,7 @@ func (s *seqStep) outcomeKey(status, reason string) string {
 	return line[:len(line)-len(reason)-1]
 }
 
-// notes returns a line for each failed or cancelled step, in step order, and the key that identifies each. A publish whose outcome is queued for the session, or will be when its keep-going sequence closes halted, is left out.
+// notes returns two parallel slices: a line for each failed or cancelled step, in step order, and the key that identifies each. A publish step is left out when st.Queued, or when the sequence is keep-going and s.Halted, because its outcome reaches the session by another route.
 func (s *sequence) notes() (lines, keys []string) {
 	for _, st := range s.Steps {
 		if st.Status != "failed" && st.Status != "cancelled" {
@@ -1041,8 +1041,8 @@ func retireIf(bridge, id, reason string, states ...string) error {
 func (sf *seqFile) advance(bridge, session string) (string, error) {
 	text, err := sf.advanceText(bridge, session)
 	if text != "" {
-		if _, held := sf.held(); held != nil {
-			text += "\n\n" + sf.nowAt(held)
+		if _, heldStep := sf.held(); heldStep != nil {
+			text += "\n\n" + sf.nowAt(heldStep)
 		}
 		text += "\n\n" + sf.listing(bridge)
 	}
