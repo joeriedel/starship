@@ -1508,14 +1508,14 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 		text = fmt.Sprintf("%s approved (%d steps).", seq.label(), len(seq.Steps))
 		parts, err := sf.advanceParts(bridge, session)
 		reports := sf.takeReports()
-		heldSeq, held := sf.held()
+		heldSeq, heldStep := sf.held()
 		if len(parts) > 0 {
 			text += " " + strings.Join(parts, "\n")
-		} else if held != nil {
+		} else if heldStep != nil {
 			text += " It starts when the step in progress finishes."
 		}
-		if held != nil {
-			text += "\n\n" + sf.nowAt(held)
+		if heldStep != nil {
+			text += "\n\n" + sf.nowAt(heldStep)
 			for _, n := range heldSeq.unreportedNotes(parts) {
 				text += "\n" + n
 			}

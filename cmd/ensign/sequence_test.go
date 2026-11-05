@@ -3017,6 +3017,126 @@ func TestSequencePromptReportsAFailedPublishInTheLastStepOnce(t *testing.T) {
 	}
 }
 
+// wantFailedPublishReportedOnce checks that sequence 1 is closed, that the next Stop or prompt carries the failure once, and that nothing repeats it.
+func wantFailedPublishReportedOnce(t *testing.T, w *world, task string, atPrompt bool) {
+	t.Helper()
+	if !readSeq(w.bridge, w.sid).Sequences[0].Closed {
+		t.Errorf("sequence 1 should be closed:\n%s", sequenceListing(w.bridge, w.sid))
+	}
+	line := "step 1.2 (publish " + task + ") failed: "
+	if atPrompt {
+		res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "what happened?"})
+		if ctx := dig(res, "hookSpecificOutput", "additionalContext"); strings.Count(ctx, line) != 1 {
+			t.Fatalf("the prompt should carry the failure once: %v", res)
+		}
+	} else {
+		res := w.stopHook()
+		if reason := dig(res, "reason"); res["decision"] != "block" || strings.Count(reason, line) != 1 {
+			t.Fatalf("the stop should carry the failure once: %v", res)
+		}
+	}
+	if res := w.stopHook(); strings.Contains(fmt.Sprint(res), line) {
+		t.Errorf("a further stop repeats the failure: %v", res)
+	}
+	res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "and now?"})
+	if strings.Contains(fmt.Sprint(res), line) {
+		t.Errorf("a further prompt repeats the failure: %v", res)
+	}
+}
+
+// failedPublishAdvancedByResume is a stop-mode run, publish sequence whose run passed with the publish still pending, so that `ensign resume` is the advance that runs the publish. The resumed run is saved as running before the advance, so the publish is refused because that run is still going.
+func failedPublishAdvancedByResume(t *testing.T) (*world, string) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	w.runStage()
+	if got := w.step(2).Status; got != "done" {
+		t.Fatalf("the publish should land first, it is %s", got)
+	}
+	runID := w.state().Run
+	err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		seq := sf.Sequences[0]
+		seq.Closed, seq.Report = false, ""
+		seq.Steps[1].Status, seq.Steps[1].Reason, seq.Steps[1].Queued = "pending", "", false
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := openRun(w.bridge, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status, r.State.Reason = "ask-user", "which way?"
+	r.State.Resume = &ResumePoint{Scope: "run", Stage: "code"}
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+	wd, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(wd) })
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	if err := cmdResume([]string{"--answer", "left", "--run", runID}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.step(2).Status; got != "failed" {
+		t.Fatalf("the resume's advance should fail the publish, it is %s", got)
+	}
+	if got := w.step(2).Reason; !strings.Contains(got, "still going") {
+		t.Fatalf("the publish should be refused because the resumed run is live, its reason is %q", got)
+	}
+	return w, task
+}
+
+func TestSequenceStopReportsAFailedPublishAdvancedByResumeOnce(t *testing.T) {
+	w, task := failedPublishAdvancedByResume(t)
+	wantFailedPublishReportedOnce(t, w, task, false)
+}
+
+func TestSequencePromptReportsAFailedPublishAdvancedByResumeOnce(t *testing.T) {
+	w, task := failedPublishAdvancedByResume(t)
+	wantFailedPublishReportedOnce(t, w, task, true)
+}
+
+// failedPublishBesideAnOpenSequence is failedPublishAdvancedByTheRun with a second sequence added after the go, so that sequence 1 closes while sequence 2 stays open.
+func failedPublishBesideAnOpenSequence(t *testing.T) (*world, string) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.approve()
+	w.mustSeq("do", "later supernova chore")
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	divergeRemote(t, remote)
+	w.runStage()
+	if got := w.step(2).Status; got != "failed" {
+		t.Fatalf("the publish should fail, it is %s", got)
+	}
+	return w, task
+}
+
+func TestSequenceStopReportsAFailedPublishWhenALaterSequenceIsOpenOnce(t *testing.T) {
+	w, task := failedPublishBesideAnOpenSequence(t)
+	wantFailedPublishReportedOnce(t, w, task, false)
+	if seq := readSeq(w.bridge, w.sid).Sequences[1]; seq.Closed {
+		t.Errorf("sequence 2 should stay open")
+	}
+}
+
+func TestSequencePromptReportsAFailedPublishWhenALaterSequenceIsOpenOnce(t *testing.T) {
+	w, task := failedPublishBesideAnOpenSequence(t)
+	wantFailedPublishReportedOnce(t, w, task, true)
+	if seq := readSeq(w.bridge, w.sid).Sequences[1]; seq.Closed {
+		t.Errorf("sequence 2 should stay open")
+	}
+}
+
 func TestSequenceFailedPublishWithALaterStepKeepsThePositionItWasShown(t *testing.T) {
 	w, task := failedPublishAdvancedByTheRun(t, "last supernova chore")
 	reason := dig(w.stopHook(), "reason")
