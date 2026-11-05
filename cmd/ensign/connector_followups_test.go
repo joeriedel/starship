@@ -138,6 +138,7 @@ func TestRestartNoteLastsUntilProcessRestarts(t *testing.T) {
 	if err := link(w.bridge, false, nil); err != nil {
 		t.Fatal(err)
 	}
+	write(t, filepath.Join(w.bridge, ".claude", "settings.json"), hookSettings())
 	for _, pid := range []string{"111", "222"} {
 		if w.restartNote(pid, "startup") {
 			t.Fatalf("pid %s: nothing declared, so no note", pid)
@@ -260,5 +261,43 @@ func TestReplacingReaderNeedsNoShell(t *testing.T) {
 		w = connWorld(t, "")
 		write(t, filepath.Join(w.bridge, "roles", file+".md"), scoutRole(fmName, c.front+"replaces: reader\n", "\n"))
 		w.generated()
+	}
+}
+
+func TestHasKey(t *testing.T) {
+	for name, c := range map[string]struct {
+		doc  string
+		want bool
+	}{
+		"plain":            {"connectors:\n  a: b\n", true},
+		"null value":       {"connectors:\n", true},
+		"empty value":      {"connectors: []\n", true},
+		"other key":        {"name: x\n", false},
+		"nested only":      {"a:\n  connectors: x\n", false},
+		"unparsable":       {"connectors: [\n", false},
+		"empty document":   {"", false},
+		"comments only":    {"# nothing\n", false},
+		"merged alias":     {"base: &b {connectors: x}\n<<: *b\n", true},
+		"merged mapping":   {"<<: {connectors: x}\n", true},
+		"merged sequence":  {"base: &b {connectors: x}\n<<: [{a: b}, *b]\n", true},
+		"merge misses":     {"<<: {other: x}\n", false},
+		"unhashable key":   {"? {a: b}\n: c\nconnectors: x\n", true},
+		"unhashable merge": {"bindings:\n  build:\n    1: y\n    <<:\n      ? {a: b}\n      : c\n", false},
+		"unhashable top":   {"<<:\n  ? {a: b}\n  : c\n", false},
+		"alias cycle":      {"a: &a [*a]\n<<: *a\n", false},
+		"sequence root":    {"- connectors: x\n", false},
+		"nested merge seq": {"<<: [[{connectors: x}]]\n", false},
+		"merge seq alias":  {"s: &s [{connectors: x}]\n<<: *s\n", false},
+		"nested bad merge": {"<<: [{<<: 5}, {connectors: x}]\n", false},
+		"key before bad":   {"connectors: x\n<<: 5\n", true},
+		"alias merge key":  {"x: &m <<\n*m : {connectors: y}\n", false},
+		"merge alias seq":  {"s: &s [[{connectors: x}]]\n<<: *s\n", false},
+		"alias key":        {"x-k: &k connectors\n*k :\n  a: b\n", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := hasKey([]byte(c.doc), "connectors"); got != c.want {
+				t.Errorf("hasKey(%q) = %v, want %v", c.doc, got, c.want)
+			}
+		})
 	}
 }

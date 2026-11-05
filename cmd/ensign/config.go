@@ -1390,14 +1390,57 @@ func setPipelineField(p *Pipeline, key string, val *yaml.Node, kind string) erro
 	return fmt.Errorf("unknown pipeline field")
 }
 
-// hasKey reports whether a YAML document has a top-level key, whatever its value (a null or empty value leaves no trace in the decoded struct).
+// hasKey reports whether a YAML document has a top-level key, whatever its value (a null or empty value leaves no trace in the decoded struct). A document whose root is not a mapping has no keys, and neither does one where the decoder would reject a merge (a merge value that is not a mapping or a list of mappings) before the key is reached, so the caller reports the decode error instead. A key declared before a bad merge still counts.
 func hasKey(data []byte, key string) bool {
-	var keys map[string]any
-	if yaml.Unmarshal(data, &keys) != nil {
+	var doc yaml.Node
+	if yaml.Unmarshal(data, &doc) != nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return false
 	}
-	_, has := keys[key]
-	return has
+	found, _ := mappingHasKey(doc.Content[0], key, map[*yaml.Node]bool{})
+	return found
+}
+
+// mappingHasKey walks a mapping's scalar keys (following alias keys), and the mappings a merge key (<<) pulls in, without decoding any values, mirroring yaml.v3's decoder: a merge is a key written as a scalar <<, and its value is judged as written. valid is false when the walk reached a merge the decoder would reject before finding the key. seen guards against alias cycles.
+func mappingHasKey(n *yaml.Node, key string, seen map[*yaml.Node]bool) (found, valid bool) {
+	if seen[n] {
+		return false, true
+	}
+	seen[n] = true
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k := n.Content[i]
+		if !(k.Kind == yaml.ScalarNode && k.Value == "<<" && (k.Tag == "" || k.Tag == "!" || k.Tag == "!!merge")) {
+			if k.Kind == yaml.AliasNode {
+				k = k.Alias
+			}
+			if k.Kind == yaml.ScalarNode && k.Value == key {
+				return true, true
+			}
+			continue
+		}
+		m := n.Content[i+1]
+		var sources []*yaml.Node
+		switch m.Kind {
+		case yaml.MappingNode, yaml.AliasNode:
+			sources = []*yaml.Node{m}
+		case yaml.SequenceNode:
+			sources = m.Content
+		default:
+			return false, false
+		}
+		for _, src := range sources {
+			if src.Kind == yaml.AliasNode {
+				src = src.Alias
+			}
+			if src == nil || src.Kind != yaml.MappingNode {
+				return false, false
+			}
+			found, valid := mappingHasKey(src, key, seen)
+			if found || !valid {
+				return found, valid
+			}
+		}
+	}
+	return false, true
 }
 
 // connectorKey returns the first of connectors: and connector_writes: a YAML document declares at its top level, or "" when it declares neither.
