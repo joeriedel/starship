@@ -240,7 +240,7 @@ func sessionRuns(bridge, session string) ([]string, error) {
 	if session == "" {
 		return nil, nil
 	}
-	data, err := os.ReadFile(sessionFile(bridge, session))
+	data, err := readFileRetry(sessionFile(bridge, session))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -264,19 +264,24 @@ func liveSessionRuns(bridge, session string) ([]string, error) {
 		return nil, err
 	}
 	for _, id := range ids {
-		var st State
-		if readJSON(filepath.Join(runsDir(bridge), id, "state.json"), &st) == nil && !st.terminal() {
+		if runIsLive(bridge, id) {
 			live = append(live, id)
 		}
 	}
 	return live, nil
 }
 
+// runIsLive says whether a run exists and is not over, reading through readRun so a deleted run fails at once and a state.json mid-save is retried.
+func runIsLive(bridge, id string) bool {
+	r, err := readRun(bridge, id)
+	return err == nil && !r.State.terminal()
+}
+
 // writeSessionRuns replaces a session's run ids; an empty list removes the file.
 func writeSessionRuns(bridge, session string, ids []string) error {
 	f := sessionFile(bridge, session)
 	if len(ids) == 0 {
-		err := os.Remove(f)
+		err := retry(retryWindow, isTransientFileError, func() error { return os.Remove(f) })
 		if os.IsNotExist(err) {
 			return nil
 		}
@@ -286,7 +291,7 @@ func writeSessionRuns(bridge, session string, ids []string) error {
 	if err := os.WriteFile(tmp, []byte(strings.Join(ids, "\n")+"\n"), 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, f)
+	return renameRetry(tmp, f)
 }
 
 // editSessionRuns changes a session's run ids under the session file's lock.
@@ -552,7 +557,7 @@ func markRetired(r *RunFiles, reason string) error {
 // removeRun deletes a retired run's folder. A failed delete leaves a run that is already
 // terminal, so it is only a warning.
 func removeRun(dir string) {
-	if err := os.RemoveAll(dir); err != nil {
+	if err := retry(retryWindow, isTransientFileError, func() error { return os.RemoveAll(dir) }); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not delete run folder %s: %v\n", dir, err)
 	}
 }
@@ -587,8 +592,7 @@ func bindSession(bridge, session, run string) error {
 	err := editSessionRuns(bridge, session, func(ids []string) []string {
 		keep := []string{}
 		for _, id := range ids {
-			var st State
-			if id != run && readJSON(filepath.Join(runsDir(bridge), id, "state.json"), &st) == nil && !st.terminal() {
+			if id != run && runIsLive(bridge, id) {
 				keep = append(keep, id)
 			}
 		}

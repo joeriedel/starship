@@ -103,8 +103,8 @@ func TestReadRunSucceedsWhileStateAbsent(t *testing.T) {
 	w := newWorld(t)
 	id := "20240101-000001-supernova"
 	state := filepath.Join(fabricate(t, w, id, "running", true), "state.json")
-	data, err := os.ReadFile(state)
-	if err != nil {
+	var st State
+	if err := readJSON(state, &st); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(state); err != nil {
@@ -112,7 +112,7 @@ func TestReadRunSucceedsWhileStateAbsent(t *testing.T) {
 	}
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		os.WriteFile(state, data, 0o644)
+		writeJSON(state, &st)
 	}()
 	if _, err := readRun(w.bridge, id); err != nil {
 		t.Fatal(err)
@@ -132,5 +132,137 @@ func TestReadRunMissingPipelineFailsFast(t *testing.T) {
 	}
 	if time.Since(start) > retryWindow/2 {
 		t.Fatalf("missing pipeline took %v", time.Since(start))
+	}
+}
+
+func TestLiveSessionRunsSucceedsWhileStateAbsent(t *testing.T) {
+	w := newWorld(t)
+	id := "20240101-000001-supernova"
+	state := filepath.Join(fabricate(t, w, id, "running", true), "state.json")
+	if err := bindSession(w.bridge, "s1", id); err != nil {
+		t.Fatal(err)
+	}
+	var st State
+	if err := readJSON(state, &st); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(state); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		writeJSON(state, &st)
+	}()
+	ids, err := liveSessionRuns(w.bridge, "s1")
+	if err != nil || len(ids) != 1 || ids[0] != id {
+		t.Fatalf("want the run kept, got %v err=%v", ids, err)
+	}
+}
+
+func TestBindSessionSucceedsWhileStateAbsent(t *testing.T) {
+	w := newWorld(t)
+	first := "20240101-000001-supernova"
+	second := "20240101-000002-supernova"
+	state := filepath.Join(fabricate(t, w, first, "running", true), "state.json")
+	fabricate(t, w, second, "running", true)
+	if err := bindSession(w.bridge, "s1", first); err != nil {
+		t.Fatal(err)
+	}
+	var st State
+	if err := readJSON(state, &st); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(state); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		writeJSON(state, &st)
+	}()
+	if err := bindSession(w.bridge, "s1", second); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := sessionRuns(w.bridge, "s1")
+	if err != nil || len(ids) != 2 || ids[0] != first {
+		t.Fatalf("want both runs bound, got %v err=%v", ids, err)
+	}
+}
+
+func TestLiveSessionRunsFailsFastPastDeletedRun(t *testing.T) {
+	w := newWorld(t)
+	id := "20240101-000001-supernova"
+	dir := fabricate(t, w, id, "running", true)
+	if err := bindSession(w.bridge, "s1", id); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	ids, err := liveSessionRuns(w.bridge, "s1")
+	if err != nil || len(ids) != 0 {
+		t.Fatalf("want no live runs, got %v err=%v", ids, err)
+	}
+	if time.Since(start) > retryWindow/2 {
+		t.Fatalf("deleted run took %v", time.Since(start))
+	}
+}
+
+func TestSessionRunsSucceedsWhileSessionFileHeld(t *testing.T) {
+	w := newWorld(t)
+	id := "20240101-000001-supernova"
+	fabricate(t, w, id, "running", true)
+	if err := bindSession(w.bridge, "s1", id); err != nil {
+		t.Fatal(err)
+	}
+	hold(t, sessionFile(w.bridge, "s1"))
+	ids, err := sessionRuns(w.bridge, "s1")
+	if err != nil || len(ids) != 1 || ids[0] != id {
+		t.Fatalf("want the bound run, got %v err=%v", ids, err)
+	}
+}
+
+func TestWriteSessionRunsSucceedsWhileSessionFileHeld(t *testing.T) {
+	w := newWorld(t)
+	if err := os.MkdirAll(filepath.Dir(sessionFile(w.bridge, "s1")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSessionRuns(w.bridge, "s1", []string{"20240101-000001-supernova"}); err != nil {
+		t.Fatal(err)
+	}
+	hold(t, sessionFile(w.bridge, "s1"))
+	if err := writeSessionRuns(w.bridge, "s1", []string{"20240101-000002-supernova"}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := sessionRuns(w.bridge, "s1")
+	if err != nil || len(ids) != 1 || ids[0] != "20240101-000002-supernova" {
+		t.Fatalf("want the new run bound, got %v err=%v", ids, err)
+	}
+}
+
+func TestWriteSessionRunsEmptySucceedsWhileSessionFileHeld(t *testing.T) {
+	w := newWorld(t)
+	if err := os.MkdirAll(filepath.Dir(sessionFile(w.bridge, "s1")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSessionRuns(w.bridge, "s1", []string{"20240101-000001-supernova"}); err != nil {
+		t.Fatal(err)
+	}
+	hold(t, sessionFile(w.bridge, "s1"))
+	if err := writeSessionRuns(w.bridge, "s1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if exists(sessionFile(w.bridge, "s1")) {
+		t.Fatal("want the session file removed")
+	}
+}
+
+func TestRemoveRunSucceedsWhilePipelineHeld(t *testing.T) {
+	w := newWorld(t)
+	dir := fabricate(t, w, "20240101-000001-supernova", "error", true)
+	hold(t, filepath.Join(dir, "pipeline.json"))
+	removeRun(dir)
+	if exists(dir) {
+		t.Fatal("want the run folder removed")
 	}
 }
