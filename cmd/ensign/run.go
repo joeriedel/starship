@@ -475,12 +475,17 @@ func rebindRun(bridge string, r *RunFiles, session, how string) error {
 		r.close()
 		return bindErr
 	}
+	finishRebind(bridge, r, session, how)
+	r.warn = bindErr
+	return nil
+}
+
+// finishRebind makes the session the owner of the open run r, which the session's file already lists. It does not touch the session's file or setup file.
+func finishRebind(bridge string, r *RunFiles, session, how string) {
 	copySessionTask(bridge, r.State.Session, session)
 	r.State.log("rebound", "", "", fmt.Sprintf("%s%s, %s", reboundPrefix(r.State.Session), session, how))
 	r.State.Session = session
-	r.warn = bindErr
 	r.rebound = true
-	return nil
 }
 
 // openSpawnRun finds the run the session's own spawn of a lead belongs to: the one named by the tag the prompt begins with, when it is one of the session's live runs. It returns nil, nil when there is none.
@@ -514,7 +519,7 @@ func openSpawnRun(bridge string, in *HookInput) (*RunFiles, error) {
 	return r, nil
 }
 
-// openHookRun opens the run a hook call is checked against. An agent's own live run comes first, even when its session is bound to another run, and that binding is left alone; the session is rebound when it has no live run, or when its one live run has the agent but is owned by another session that the history doesn't show it was rebound away from. Otherwise it is the session's run, when it has just one live run. The session's run is closed before another is opened, so no two run locks are held.
+// openHookRun opens the run a hook call is checked against. An agent's own live run comes first, even when its session is bound to another run, and that binding is left alone; the session is rebound when it has no live run, or when its one live run has the agent but is owned by another session that the history doesn't show it was rebound away from. When the session has several live runs, the agent's run is likewise given the session as owner if the session's file lists it, without touching the session's file or setup file. Otherwise it is the session's run, when it has just one live run. The session's run is closed before another is opened, so no two run locks are held.
 func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
 	live, err := liveSessionRuns(bridge, in.SessionID)
 	if err != nil {
@@ -524,7 +529,14 @@ func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
 		if in.AgentID == "" {
 			return openSpawnRun(bridge, in)
 		}
-		return findAgentRun(bridge, in)
+		r, err := findAgentRun(bridge, in)
+		if r == nil || err != nil {
+			return r, err
+		}
+		if slices.Contains(live, r.State.Run) && r.State.Session != in.SessionID && !r.State.reboundAwayFrom(in.SessionID) {
+			finishRebind(bridge, r, in.SessionID, fmt.Sprintf("found through agent %s", in.AgentID))
+		}
+		return r, nil
 	}
 	r, err := openSoleSessionRun(bridge, in.SessionID)
 	if err != nil || in.AgentID == "" {

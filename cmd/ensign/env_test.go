@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -766,5 +767,129 @@ func TestFinishedRunWithAMismatchedOwnerIsNotRebound(t *testing.T) {
 	leadBash(w, lead)
 	if st := w.runState(run); st.Session != "s9" || countRebound(st) != 0 {
 		t.Errorf("session %q, rebound entries %d; want s9 and none", st.Session, countRebound(st))
+	}
+}
+
+// failedRebindWithSecondRun leaves a run owned by s1 but listed in s2's file after a failed rebind save, then starts a second live run in s2. The returned blocker still makes the first run's save fail.
+func failedRebindWithSecondRun(t *testing.T, viaEdit bool) (w *world, lead, run, run2, allowed, blocker string) {
+	t.Helper()
+	w, lead, run, allowed = agentOnNewSession(t)
+	blocker = blockStateSave(t, w, run)
+	if viaEdit {
+		editHook(w, lead, filepath.Join(allowed, "x.txt"))
+	} else if res, code := w.hook("PostToolUse", map[string]any{"agent_id": lead, "agent_type": "orchestrator",
+		"tool_name": "Bash", "tool_response": map[string]any{"backgroundTaskId": "bash1"}}); code != 2 {
+		t.Fatalf("PostToolUse with a failing save exited %d, want 2: %v", code, res)
+	}
+	if st := w.runState(run); st.Session != "s1" {
+		t.Fatalf("the save should have failed, session %q", st.Session)
+	}
+	run2 = w.liveStepRun(t.TempDir(), "")
+	if got := mustLive(t, w.bridge, "s2"); len(got) != 2 {
+		t.Fatalf("s2 live runs %v, want two", got)
+	}
+	return
+}
+
+func TestFailedRebindSaveIsRepairedWithSeveralLiveRuns(t *testing.T) {
+	for _, viaEdit := range []bool{true, false} {
+		w, lead, run, run2, allowed, blocker := failedRebindWithSecondRun(t, viaEdit)
+		if err := os.Remove(blocker); err != nil {
+			t.Fatal(err)
+		}
+		run2Path := filepath.Join(runsDir(w.bridge), run2, "state.json")
+		run2Before, err := os.ReadFile(run2Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		setup := setupFile(w.bridge, "s2")
+		known := []byte("export SUPERNOVA_KNOWN=1\n")
+		if err := os.WriteFile(setup, known, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		listBefore := mustLive(t, w.bridge, "s2")
+		hook := func() {
+			if viaEdit {
+				editHook(w, lead, filepath.Join(allowed, "x.txt"))
+			} else {
+				leadBash(w, lead)
+			}
+		}
+		for i := 0; i < 2; i++ {
+			hook()
+			if st := w.runState(run); st.Session != "s2" || countRebound(st) != 1 {
+				t.Fatalf("edit %v hook %d: session %q, rebound entries %d; want s2 and one", viaEdit, i, st.Session, countRebound(st))
+			}
+		}
+		run2After, err := os.ReadFile(run2Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(run2Before, run2After) {
+			t.Errorf("edit %v: the second run's state changed", viaEdit)
+		}
+		if got, err := os.ReadFile(setup); err != nil || !bytes.Equal(got, known) {
+			t.Errorf("edit %v: setup file is %q (err %v), want it unchanged", viaEdit, got, err)
+		}
+		if got := mustLive(t, w.bridge, "s2"); !slices.Equal(got, listBefore) {
+			t.Errorf("edit %v: s2 runs %v, want %v", viaEdit, got, listBefore)
+		}
+	}
+}
+
+func TestFailedRepairWithSeveralLiveRunsIsRetried(t *testing.T) {
+	w, lead, run, _, _, blocker := failedRebindWithSecondRun(t, false)
+	if res, code := w.hook("PostToolUse", map[string]any{"agent_id": lead, "agent_type": "orchestrator",
+		"tool_name": "Bash", "tool_response": map[string]any{"backgroundTaskId": "bash1"}}); code != 2 {
+		t.Fatalf("repair with a failing save exited %d, want 2: %v", code, res)
+	}
+	if st := w.runState(run); st.Session != "s1" {
+		t.Fatalf("session %q, want s1", st.Session)
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	leadBash(w, lead)
+	if st := w.runState(run); st.Session != "s2" || countRebound(st) != 1 {
+		t.Fatalf("session %q, rebound entries %d; want s2 and one", st.Session, countRebound(st))
+	}
+}
+
+func TestRunReboundAwayIsNotTakenBackWithSeveralLiveRuns(t *testing.T) {
+	w, lead, run, _ := agentOnNewSession(t)
+	leadBash(w, lead)
+	mutateRun(t, w, run, func(st *State) {
+		st.Session = "s3"
+		st.log("rebound", "", "", "session s2 -> s3, found through agent "+lead)
+	})
+	w.liveStepRun(t.TempDir(), "")
+	listBefore := mustLive(t, w.bridge, "s2")
+	if len(listBefore) != 2 {
+		t.Fatalf("s2 live runs %v, want two", listBefore)
+	}
+	leadBash(w, lead)
+	st := w.runState(run)
+	if st.Session != "s3" || countRebound(st) != 2 {
+		t.Fatalf("session %q, rebound entries %d; want s3 and two", st.Session, countRebound(st))
+	}
+	if got := mustLive(t, w.bridge, "s2"); !slices.Equal(got, listBefore) {
+		t.Errorf("s2 runs %v, want %v", got, listBefore)
+	}
+}
+
+func TestAgentRunOutsideTheSessionFileIsKeptWithSeveralLiveRuns(t *testing.T) {
+	w, lead, run, _ := agentOnNewSession(t)
+	w.liveStepRun(t.TempDir(), "")
+	w.liveStepRun(t.TempDir(), "")
+	listBefore := mustLive(t, w.bridge, "s2")
+	if len(listBefore) != 2 || slices.Contains(listBefore, run) {
+		t.Fatalf("s2 live runs %v, want two without %s", listBefore, run)
+	}
+	leadBash(w, lead)
+	if st := w.runState(run); st.Session != "s1" || countRebound(st) != 0 {
+		t.Fatalf("session %q, rebound entries %d; want s1 and none", st.Session, countRebound(st))
+	}
+	if got := mustLive(t, w.bridge, "s2"); !slices.Equal(got, listBefore) {
+		t.Errorf("s2 runs %v, want %v", got, listBefore)
 	}
 }
