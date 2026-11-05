@@ -601,7 +601,7 @@ func TestSequenceDecisionKeepsALaterSequencesStepFromHoldingTheTurn(t *testing.T
 					t.Errorf("the later step never started, so it spent %d blocks", st.Blocks)
 				}
 				if kind == "do" {
-					w.mustSeq("accept", "1")
+					w.mustSeq("accept", "1.1")
 					w.wantStatus("failed", "active")
 				}
 			})
