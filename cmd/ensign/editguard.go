@@ -212,6 +212,15 @@ func lastDocsDispatch(r *RunFiles) *Dispatch {
 	return nil
 }
 
+// literalPathspecs prefixes each path with :(literal), so a name with glob or magic characters matches only itself. The global --literal-pathspecs option would set GIT_LITERAL_PATHSPECS for the commit's hooks, which would then silently match nothing.
+func literalPathspecs(paths []string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = ":(literal)" + p
+	}
+	return out
+}
+
 // commitDocsPaths adds the changed @docs paths to the index and commits just them; it does nothing when none differ from HEAD.
 func commitDocsPaths(root string, paths []string, noVerify bool, args ...string) error {
 	var present []string
@@ -221,7 +230,7 @@ func commitDocsPaths(root string, paths []string, noVerify bool, args ...string)
 			abs = filepath.Join(root, p)
 		}
 		if _, err := os.Lstat(abs); err != nil {
-			known, kerr := gitOut(root, "ls-files", "--", p)
+			known, kerr := gitOut(root, "ls-files", "--", ":(literal)"+p)
 			if kerr != nil {
 				return fmt.Errorf("git ls-files: %v", kerr)
 			}
@@ -231,10 +240,10 @@ func commitDocsPaths(root string, paths []string, noVerify bool, args ...string)
 		}
 		present = append(present, p)
 	}
-	paths = present
-	if len(paths) == 0 {
+	if len(present) == 0 {
 		return nil
 	}
+	paths = literalPathspecs(present)
 	if err := git(root, append([]string{"add", "--"}, paths...)...); err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -897,5 +898,76 @@ func TestDocsRunThatChangesNothingKeepsTheTestedCommit(t *testing.T) {
 	}
 	if _, _, got, err := tested(w.bridge, authTask, ""); err != nil || got != sha {
 		t.Errorf("the tested commit should be unchanged: %s %v", got, err)
+	}
+}
+
+func TestCommitDocsPathsStagesOnlyLiteralNames(t *testing.T) {
+	needGit(t)
+	cases := []struct{ name, path, sibling string }{
+		{"bracket", "a[b].md", "ab.md"},
+		{"star", "a*.md", "ab.md"},
+		{"colon", ":(glob)x.md", "x.md"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.name != "bracket" && runtime.GOOS == "windows" {
+				t.Skip("the name can't exist on Windows")
+			}
+			ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+			write(t, filepath.Join(ws, c.path), "old\n")
+			write(t, filepath.Join(ws, c.sibling), "old\n")
+			runGit(t, ws, "add", ".")
+			runGit(t, ws, "commit", "-q", "-m", "more")
+			write(t, filepath.Join(ws, c.path), "new\n")
+			write(t, filepath.Join(ws, c.sibling), "new\n")
+			if err := commitDocsPaths(ws, []string{c.path}, true, "-m", "docs"); err != nil {
+				t.Fatal(err)
+			}
+			if got := runGit(t, ws, "-c", "core.quotepath=off", "show", "--name-only", "--format=", "HEAD"); got != c.path {
+				t.Errorf("committed %q, want only %q", got, c.path)
+			}
+			if got := runGit(t, ws, "-c", "core.quotepath=off", "status", "--porcelain"); !strings.Contains(got, c.sibling) {
+				t.Errorf("the sibling should stay uncommitted: %q", got)
+			}
+
+			// A tracked name deleted from disk is found through ls-files.
+			if err := os.Remove(filepath.Join(ws, c.path)); err != nil {
+				t.Fatal(err)
+			}
+			if err := commitDocsPaths(ws, []string{c.path}, true, "-m", "drop"); err != nil {
+				t.Fatal(err)
+			}
+			if got := runGit(t, ws, "-c", "core.quotepath=off", "show", "--name-only", "--format=", "HEAD"); got != c.path {
+				t.Errorf("deletion committed %q, want only %q", got, c.path)
+			}
+			if _, err := os.Stat(filepath.Join(ws, c.sibling)); err != nil {
+				t.Errorf("the sibling should remain: %v", err)
+			}
+		})
+	}
+}
+
+func TestCommitDocsPathsHookDoesNotSeeLiteralPathspecs(t *testing.T) {
+	needGit(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("hook scripts need a POSIX shell, unreliable on Windows")
+	}
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	marker := filepath.Join(t.TempDir(), "env.txt")
+	hook := filepath.Join(ws, ".git", "hooks", "pre-commit")
+	write(t, hook, "#!/bin/sh\necho \"[${GIT_LITERAL_PATHSPECS-unset}]\" > '"+marker+"'\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(ws, "a.md"), "new\n")
+	if err := commitDocsPaths(ws, []string{"a.md"}, false, "-m", "docs"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("the hook should have run: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "[unset]" {
+		t.Errorf("hook saw GIT_LITERAL_PATHSPECS = %s", got)
 	}
 }

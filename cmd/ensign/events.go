@@ -260,6 +260,20 @@ func journalPath(ws, f string) string {
 	return filepath.ToSlash(filepath.Clean(f))
 }
 
+// workspaceRelative converts a repo-root-relative name to one relative to the workspace, whose repo-root-relative folder is prefix (empty at the root, else ending in a slash). A name outside the workspace becomes a ../ name. It works on slash paths so it behaves the same on every platform.
+func workspaceRelative(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	dirs := strings.Split(strings.TrimSuffix(prefix, "/"), "/")
+	parts := strings.Split(name, "/")
+	common := 0
+	for common < len(dirs) && common < len(parts)-1 && dirs[common] == parts[common] {
+		common++
+	}
+	return strings.Repeat("../", len(dirs)-common) + strings.Join(parts[common:], "/")
+}
+
 // runEntry is the line a finished run adds to its task's history: what happened, in
 // facts only. The session writes the account under it.
 func runEntry(r *RunFiles) string {
@@ -287,14 +301,19 @@ func runEntry(r *RunFiles) string {
 	gitAnswered := false
 	if st.StartHead != "" {
 		head, _ = gitOut(ws, "rev-parse", "HEAD")
-		changed, err1 := gitZ(ws, "diff", "--name-only", "--no-renames", "-z", st.StartHead)
+		// User config must not narrow or re-base this listing; git's names are root-relative, so they are converted to workspace-relative below.
+		prefix, err0 := gitOut(ws, "rev-parse", "--show-prefix")
+		changed, err1 := gitZ(ws, "diff", "--name-only", "--no-renames", "--no-relative", "--ignore-submodules=none", "-z", st.StartHead)
+		for i, f := range changed {
+			changed[i] = workspaceRelative(prefix, f)
+		}
 		untracked, err2 := gitZ(ws, "ls-files", "--others", "--exclude-standard", "-z")
 		for _, list := range [][]string{changed, untracked} {
 			for _, f := range list {
 				files[journalPath(ws, f)] = true
 			}
 		}
-		gitAnswered = err1 == nil && err2 == nil
+		gitAnswered = err0 == nil && err1 == nil && err2 == nil
 	}
 	for f := range reported {
 		// The report splits file names at commas, so a name with a comma arrives as pieces that are not files. With git's answer in, keep a reported name only if git listed it or it exists; without git a deleted file can't be told from a piece.

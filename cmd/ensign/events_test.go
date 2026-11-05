@@ -200,3 +200,55 @@ func TestRunEntryReportedMissingNameKeptWithoutGit(t *testing.T) {
 		t.Errorf("bad StartHead: got %q, want it to contain %q", got, want)
 	}
 }
+
+func TestWorkspaceRelative(t *testing.T) {
+	for _, c := range []struct{ prefix, name, want string }{
+		{"", "a/b.txt", "a/b.txt"},
+		{"sub/", "sub/a.txt", "a.txt"},
+		{"sub/", "sub/d/a.txt", "d/a.txt"},
+		{"sub/", "top.txt", "../top.txt"},
+		{"sub/", "subway/x", "../subway/x"},
+		{"sub/", "other/x", "../other/x"},
+		{"a/b/", "a/b/c.txt", "c.txt"},
+		{"a/b/", "a/c.txt", "../c.txt"},
+		{"a/b/", "a/bc/c.txt", "../bc/c.txt"},
+		{"a/b/", "top.txt", "../../top.txt"},
+		{"a/b/", "x/y.txt", "../../x/y.txt"},
+	} {
+		if got := workspaceRelative(c.prefix, c.name); got != c.want {
+			t.Errorf("workspaceRelative(%q, %q) = %q, want %q", c.prefix, c.name, got, c.want)
+		}
+	}
+}
+
+func runEntrySubfolder(t *testing.T, relative bool) {
+	needGit(t)
+	repo := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	ws := filepath.Join(repo, "sub")
+	write(t, filepath.Join(ws, "a.txt"), "a\n")
+	write(t, filepath.Join(ws, "gone.txt"), "a\n")
+	write(t, filepath.Join(repo, "top.txt"), "a\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-q", "-m", "more")
+	head := runGit(t, repo, "rev-parse", "HEAD")
+	if relative {
+		runGit(t, repo, "config", "diff.relative", "true")
+	}
+	write(t, filepath.Join(ws, "a.txt"), "b\n")
+	write(t, filepath.Join(repo, "top.txt"), "b\n")
+	write(t, filepath.Join(ws, "new.txt"), "c\n")
+	runGit(t, repo, "rm", "-q", "sub/gone.txt")
+	runGit(t, repo, "commit", "-q", "-am", "drop")
+	want := " Changed: ../top.txt, a.txt, gone.txt, new.txt."
+	if got := runEntryReported(t, ws, head, "gone.txt, a.txt"); !strings.Contains(got, want) {
+		t.Errorf("got %q, want it to contain %q", got, want)
+	}
+}
+
+func TestRunEntrySubfolderWorkspaceListsWorkspaceRelativeNames(t *testing.T) {
+	runEntrySubfolder(t, false)
+}
+
+func TestRunEntrySubfolderWorkspaceIgnoresDiffRelativeConfig(t *testing.T) {
+	runEntrySubfolder(t, true)
+}

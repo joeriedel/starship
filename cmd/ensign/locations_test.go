@@ -873,6 +873,36 @@ func TestLocationsRefusePlatformsInSortedOrder(t *testing.T) {
 	}
 }
 
+func TestLocationsRefuseDocumentation(t *testing.T) {
+	for _, value := range []string{"[docs]", "[]", "", "~"} {
+		w := locationsWorld(t)
+		file := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
+		write(t, file, strings.Replace(locationsProject, "  server:\n", "  server:\n    documentation: "+value+"\n", 1))
+		_, err := loadLocations(w.bridge, "supernova")
+		if err == nil || !strings.Contains(err.Error(), `location "server": documentation:`) || !strings.Contains(err.Error(), "projects/supernova/project.yaml") {
+			t.Errorf("loadLocations with location documentation: %s should be refused: %v", value, err)
+		}
+		_, err = loadConfig(w.bridge, "supernova/auth-refactor")
+		if err == nil || !strings.Contains(err.Error(), `location "server": documentation:`) {
+			t.Errorf("loadConfig with location documentation: %s should be refused: %v", value, err)
+		}
+	}
+}
+
+func TestLocationsRefuseDocumentationInSortedOrder(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		w := locationsWorld(t)
+		file := filepath.Join(w.bridge, "projects", "supernova", "project.yaml")
+		body := strings.Replace(locationsProject, "  server:\n", "  server:\n    documentation: [docs]\n", 1)
+		body = strings.Replace(body, "  client:\n", "  client:\n    documentation: [docs]\n", 1)
+		write(t, file, body)
+		_, err := loadLocations(w.bridge, "supernova")
+		if err == nil || !strings.Contains(err.Error(), `"client"`) {
+			t.Fatalf("the first bad location in sorted order should be named: %v", err)
+		}
+	}
+}
+
 func TestProjectNewRefusesWindowsReservedLocation(t *testing.T) {
 	b := newBridge(t)
 	var out bytes.Buffer

@@ -944,14 +944,20 @@ func shippedProject(dir string) (string, []string, error) {
 	}
 	yamlUnmarshal(data, &locs)
 	declared := map[string]yaml.Node{}
+	documented := map[string]yaml.Node{}
 	for name, node := range locs.Locations {
 		var loc struct {
-			Platforms yaml.Node `yaml:"platforms"`
+			Platforms     yaml.Node `yaml:"platforms"`
+			Documentation yaml.Node `yaml:"documentation"`
 		}
 		guardedDecode(func() error { return node.Decode(&loc) })
 		declared[name] = loc.Platforms
+		documented[name] = loc.Documentation
 	}
 	if err := refuseLocationPlatforms(fmt.Sprintf("%s in %s", shippedProjectFile, dir), declared); err != nil {
+		return "", nil, err
+	}
+	if err := refuseLocationDocumentation(fmt.Sprintf("%s in %s", shippedProjectFile, dir), documented); err != nil {
 		return "", nil, err
 	}
 	for _, name := range sortedKeys(declared) {

@@ -445,6 +445,22 @@ func TestProjectNewRefusesPlatformsInShippedLocation(t *testing.T) {
 	}
 }
 
+func TestProjectNewRefusesShippedLocationDocumentation(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	newBridge(t)
+	var out bytes.Buffer
+	for i, value := range []string{"[docs]", "[]", "", "~"} {
+		ws := t.TempDir()
+		write(t, filepath.Join(ws, ".starship", "project.yaml"), "platforms: [linux]\nlocations:\n  web:\n    documentation: "+value+"\n  api:\n    documentation: "+value+"\n")
+		err := cmdProject([]string{"new", fmt.Sprintf("doc%d", i), "--workspace", ws, "--platforms", "linux"}, &out)
+		if err == nil || !strings.Contains(err.Error(), `location "api": documentation:`) || !strings.Contains(err.Error(), shippedProjectFile) {
+			t.Errorf("documentation: %s in a shipped location should be refused: %v", value, err)
+		}
+	}
+}
+
 func TestProjectNewRefusesShippedPlatformProblems(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")

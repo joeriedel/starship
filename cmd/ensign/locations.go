@@ -22,9 +22,10 @@ type Locations struct {
 
 type projectLocationsFile struct {
 	Locations map[string]struct {
-		DependsOn []string  `yaml:"depends-on"`
-		Bindings  yaml.Node `yaml:"bindings"`
-		Platforms yaml.Node `yaml:"platforms"`
+		DependsOn     []string  `yaml:"depends-on"`
+		Bindings      yaml.Node `yaml:"bindings"`
+		Platforms     yaml.Node `yaml:"platforms"`
+		Documentation yaml.Node `yaml:"documentation"`
 	} `yaml:"locations"`
 	CrossLocation struct {
 		Bindings yaml.Node `yaml:"bindings"`
@@ -41,6 +42,16 @@ func refuseLocationPlatforms(where string, declared map[string]yaml.Node) error 
 	return nil
 }
 
+// refuseLocationDocumentation refuses the first location, in sorted order, that declares documentation: in any form. declared maps each location to its documentation node.
+func refuseLocationDocumentation(where string, declared map[string]yaml.Node) error {
+	for _, name := range sortedKeys(declared) {
+		if declared[name].Kind != 0 {
+			return fmt.Errorf("%s: location %q: documentation: is a bridge, project or task setting, not a location's; a location can carry a docs binding", where, name)
+		}
+	}
+	return nil
+}
+
 // loadLocations reads a project's locations and cross-location bindings from project.yaml. A project that declares none gets an empty Locations.
 func loadLocations(bridge, project string) (*Locations, error) {
 	file := filepath.Join(bridge, "projects", project, "project.yaml")
@@ -51,10 +62,15 @@ func loadLocations(bridge, project string) (*Locations, error) {
 	l := &Locations{deps: map[string][]string{}, bindings: map[string]yaml.Node{}, Cross: map[string]Binding{}}
 	label := relTo(bridge, file)
 	declared := map[string]yaml.Node{}
+	documented := map[string]yaml.Node{}
 	for name, loc := range pf.Locations {
 		declared[name] = loc.Platforms
+		documented[name] = loc.Documentation
 	}
 	if err := refuseLocationPlatforms(label, declared); err != nil {
+		return nil, err
+	}
+	if err := refuseLocationDocumentation(label, documented); err != nil {
 		return nil, err
 	}
 	for name, loc := range pf.Locations {
