@@ -693,9 +693,9 @@ func TestSequenceKeepGoingReportRidesOnALaterSequencesTodo(t *testing.T) {
 	w.mustSeq("mode", "keep-going")
 	w.approve()
 	lead, _ := w.spawn("", "", "orchestrator")
-	w.failRun(lead)
 	w.mustSeq("do", "next supernova chore")
 	w.approve()
+	w.failRun(lead)
 	first := dig(w.stopHook(), "reason")
 	if !strings.Contains(first, "next supernova chore") || strings.Count(first, "ran in keep-going mode") != 1 {
 		t.Errorf("the report goes in the todo block once:\n%s", first)
@@ -703,6 +703,24 @@ func TestSequenceKeepGoingReportRidesOnALaterSequencesTodo(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		if again := dig(w.stopHook(), "reason"); strings.Contains(again, "ran in keep-going mode") {
 			t.Errorf("stop %d repeats the report:\n%s", i+2, again)
+		}
+	}
+}
+
+func TestSequenceKeepGoingReportRidesOnAGoReply(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.mustSeq("do", "next supernova chore")
+	if n := strings.Count(w.goContext(), "ran in keep-going mode"); n != 1 {
+		t.Errorf("the go reply carries the report once, got %d", n)
+	}
+	for i := 0; i < 3; i++ {
+		if again := dig(w.stopHook(), "reason"); strings.Contains(again, "ran in keep-going mode") {
+			t.Errorf("stop %d repeats the report:\n%s", i+1, again)
 		}
 	}
 }
