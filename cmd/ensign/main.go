@@ -152,6 +152,7 @@ func usage() {
   ensign run <project>/<task> [--subtask <name>] [--start <stage>] [--sync] [--dependency <location>=<branch>] [--dry-run]
   ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
   ensign run retire <run>
+  ensign run stop <run>
   ensign sequence [run <project>/<task> [run flags, e.g. --location <name> --sides <a,b>] | publish <project>/<task> | release <project> <version> [--location <name>] | do <instruction> | mode stop|keep-going | halt [--reason <text>] | discard [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | skip <n> | done <n> [--note <text>] | fail <n> --reason <text>]
   ensign writes [add --tool <name> (tool input as one JSON object on stdin) | drop <n>... | drop --all]
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] [--location <name>]

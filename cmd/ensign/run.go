@@ -843,6 +843,9 @@ func cmdRun(args []string, out io.Writer) error {
 	if len(args) > 0 && args[0] == "retire" {
 		return cmdRunRetire(args[1:], out)
 	}
+	if len(args) > 0 && args[0] == "stop" {
+		return cmdRunStop(args[1:], out, os.Stderr)
+	}
 	o, err := parseRunArgs("ensign run", args)
 	if err != nil {
 		return err
@@ -889,7 +892,7 @@ func cmdRunRetire(args []string, out io.Writer) error {
 		return fmt.Errorf("run %s has finished (%s); there is nothing to retire", args[0], r.State.Status)
 	case r.State.Session == session:
 		r.close()
-		return fmt.Errorf("run %s belongs to this session; only a run of another session can be retired", args[0])
+		return fmt.Errorf("run %s belongs to this session; only a run of another session can be retired. To end this session's own run, use `ensign run stop %s`", args[0], args[0])
 	}
 	owner, id := r.State.Session, r.State.Run
 	works, _ := folderHolds(r.Snap)
@@ -908,6 +911,67 @@ func cmdRunRetire(args []string, out io.Writer) error {
 	for _, f := range works {
 		fmt.Fprintf(out, "Free now: %s\n", f)
 	}
+	return nil
+}
+
+// cmdRunStop is `ensign run stop <run>`: the session ends its own live run at once. Agents still working are ignored: every open dispatch is marked done so their late reports are dropped, and the session is unbound so their hooks find no run. The run's folder and the code folders are left as they are.
+func cmdRunStop(args []string, out, stderr io.Writer) error {
+	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
+		return errors.New("usage: ensign run stop <run>")
+	}
+	session := os.Getenv("STARSHIP_SESSION")
+	if session == "" {
+		return errors.New("stopping a run needs the session it is called from, and STARSHIP_SESSION is not set")
+	}
+	bridge, err := cwdBridge()
+	if err != nil {
+		return err
+	}
+	r, err := openRun(bridge, args[0])
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("no run %s", args[0])
+	}
+	if err != nil {
+		return err
+	}
+	defer r.close()
+	switch {
+	case r.State.terminal():
+		return fmt.Errorf("run %s has finished (%s); there is nothing to stop", args[0], r.State.Status)
+	case r.State.Session != session:
+		return fmt.Errorf("run %s belongs to another session; only this session's own run can be stopped", args[0])
+	case r.State.queued():
+		return fmt.Errorf("run %s has not started; `ensign sequence halt` or `ensign sequence drop` ends it", args[0])
+	}
+	id := r.State.Run
+	works, _ := folderHolds(r.Snap)
+	if !r.State.Approved {
+		works = nil
+	}
+	m := &machine{snap: r.Snap, st: r.State}
+	m.fail("cancelled", fmt.Sprintf("stopped at the user's request by session %s", session))
+	if err := r.save(); err != nil {
+		return err
+	}
+	if err := unbindSession(bridge, session, id); err != nil {
+		fmt.Fprintln(stderr, "ensign: could not unbind the session from the stopped run:", err)
+	}
+	// Before the dispatches are marked done: only a running dispatch has an owner to check.
+	stopOrphanedServices(r, m, time.Now().Add(recoveryDownLimit))
+	for _, d := range r.State.Dispatches {
+		d.Done = true
+	}
+	if err := finishIfTerminal(r, false, stderr); err != nil {
+		fmt.Fprintln(stderr, "ensign: could not finish the stopped run:", err)
+	}
+	if err := r.save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Stopped run %s. Its work in the code folders was left as it is.\n", id)
+	for _, f := range works {
+		fmt.Fprintf(out, "Free now: %s\n", f)
+	}
+	fmt.Fprintln(out, "Agents still working are ignored and their reports are dropped, but a stray agent may touch files briefly after the stop: check the workspace before the next run there.")
 	return nil
 }
 

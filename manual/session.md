@@ -94,4 +94,4 @@ Workspace commits, pushes and submits need the user's explicit approval **every 
 - To improve starship itself: read `ensign help starship`.
 - Declared documents: read `ensign help document`.
 - A note from the user, a catch-up request, or items in the notes inbox: read `ensign help notes`.
-- Before cleaning up or asking about old runs, or when blocked by another session's run: read `ensign help runs`.
+- Before cleaning up or asking about old runs, when blocked by another session's run, or when the user says stop during a run: read `ensign help runs`.

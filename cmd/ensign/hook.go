@@ -126,13 +126,17 @@ func callerDispatch(r *RunFiles, in *HookInput) *Dispatch {
 	if d := r.State.byAgent(in.AgentID); d != nil {
 		return d
 	}
-	if run, id := readTag(agentTranscript(in.TranscriptPath, in.AgentID)); run == r.State.Run {
+	run, id := agentTag(in)
+	if run == r.State.Run {
 		if d := r.State.dispatch(id); d != nil {
 			d.AgentID = in.AgentID
 			return d
 		}
 	}
-	// Fallback: exactly one unbound, unfinished dispatch of this role.
+	if run != "" && run != r.State.Run {
+		return nil // a stray of another run, such as a stopped one, never takes a dispatch here
+	}
+	// Fallback, when the tag names no other run: exactly one unbound, unfinished dispatch of this role.
 	var match *Dispatch
 	for _, d := range r.State.Dispatches {
 		if d.AgentID == "" && !d.Done && d.Role == in.AgentType {

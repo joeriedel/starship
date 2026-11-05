@@ -25,6 +25,6 @@ When the project declares locations:
 
 Drop pending steps of an approved sequence with `ensign sequence drop <seq>.<step>... --reason <why>` only when the user asks; it keeps the rest running, and dropping a run step drops its task's publish step.
 
-Before `go` the sequence is yours to rebuild: `ensign sequence drop <seq>.<step>...` removes steps (the rest renumber; publish rule as above), `ensign sequence discard` removes the whole sequence so the next step starts a fresh one. To reorder or insert a step (say a `supernova` publish step between two runs), drop the later steps and add them again in the new order. `halt` stops work that has begun; don't use it to rebuild.
+Before `go` the sequence is yours to rebuild: `ensign sequence drop <seq>.<step>...` removes steps (the rest renumber; publish rule as above), `ensign sequence discard` removes the whole sequence so the next step starts a fresh one. To reorder or insert a step (say a `supernova` publish step between two runs), drop the later steps and add them again in the new order. `halt` stops work that has begun; don't use it to rebuild. Halt leaves a run with a lead running; end it with `ensign run stop <run>`.
 
 - `ensign sequence` shows the open sequences; `ensign sequence --all` shows every sequence in the session, finished ones included.

@@ -10,5 +10,12 @@
 - A run that only reads a folder is refused while another live run works in it.
 - When a run is refused because a live run of another session holds the folder, tell the user another session is doing work, name the run and the folder, and stop. Never suggest retiring that run or speculate that it is dead.
 - Run `ensign run retire <run>` only when the user tells you to: only the user knows a run is hung or stuck.
-- Retire refuses a run of your own session, a finished run and an unknown run.
+- Retire refuses a run of your own session (end that with `ensign run stop <run>`), a finished run and an unknown run. Retire is only for another session's run.
 - Retiring marks the run as error and frees its folders. It leaves the work in the code folder as it is: look at that work before you start work there.
+
+## Stopping your own run
+
+- When the user says stop during a run of your session, run `ensign run stop <run>` at once. Do not wait for, resume or message the lead or its agents.
+- In a sequence, run `ensign sequence halt --reason <why>` first, then stop each running run of the step, so the step ends cancelled. Without the halt the step waits for a decision.
+- Stop ends the run as error and frees its folders. It leaves the work in the code folder as it is. Agents still working are ignored and their reports dropped.
+- A stray agent may touch files briefly after the stop: check the workspace before the next run there.
