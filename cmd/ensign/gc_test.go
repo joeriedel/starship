@@ -557,7 +557,7 @@ func TestSessionLeftoversSweptWithOldSession(t *testing.T) {
 	dir := filepath.Join(w.bridge, ".starship", "sessions")
 	files := sessFiles(t, w, "old.id", oldAge, "")
 	var left []string
-	for _, n := range []string{"old.id.lock", "old.id.sequence.lock", "old.id.tmp"} {
+	for _, n := range []string{"old.id.lock", "old.id.sequence.lock", "old.id.tmp", "old.id.sequence.tmp"} {
 		oldFile(t, filepath.Join(dir, n), oldAge)
 		left = append(left, filepath.Join(dir, n))
 	}
@@ -584,17 +584,60 @@ func TestSessionLeftoversOrphansSwept(t *testing.T) {
 	}
 }
 
+func TestSessionLeftoversSequenceTmpOrphanSwept(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	oldFile(t, filepath.Join(dir, "s1.sequence.tmp"), oldAge)
+	dropDeadLinks(w.bridge)
+	for _, n := range []string{"s1.sequence.tmp", "s1.sequence.lock", "s1.lock", "s1.sequence.sequence.lock"} {
+		if exists(filepath.Join(dir, n)) {
+			t.Errorf("%s must not exist", n)
+		}
+	}
+}
+
+func TestSessionLeftoversSequenceTmpAndTmpBothSwept(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	files := sessFiles(t, w, "s1", oldAge, "")
+	var left []string
+	for _, n := range []string{"s1.tmp", "s1.sequence.tmp"} {
+		oldFile(t, filepath.Join(dir, n), oldAge)
+		left = append(left, filepath.Join(dir, n))
+	}
+	dropDeadLinks(w.bridge)
+	if !noneExist(files) || !noneExist(left) {
+		t.Error("an old session loses both tmp files")
+	}
+}
+
+func TestSessionLeftoversFreshSequenceTmpKept(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	files := sessFiles(t, w, "s1", oldAge, "")
+	write(t, filepath.Join(dir, "s1.sequence.tmp"), "")
+	oldFile(t, filepath.Join(dir, "s1.sequence.lock"), oldAge)
+	dropDeadLinks(w.bridge)
+	if !noneExist(files) {
+		t.Error("old session files must go despite a fresh sequence tmp")
+	}
+	if !exists(filepath.Join(dir, "s1.sequence.tmp")) || !exists(filepath.Join(dir, "s1.sequence.lock")) {
+		t.Error("a fresh sequence tmp and its lock must stay")
+	}
+}
+
 func TestSessionLeftoversKeptForYoungSession(t *testing.T) {
 	w := newWorld(t)
 	dir := filepath.Join(w.bridge, ".starship", "sessions")
 	oldFile(t, filepath.Join(dir, "a.lock"), oldAge)
 	oldFile(t, filepath.Join(dir, "a.sequence.lock"), oldAge)
 	oldFile(t, filepath.Join(dir, "a.tmp"), oldAge)
+	oldFile(t, filepath.Join(dir, "a.sequence.tmp"), oldAge)
 	write(t, filepath.Join(dir, "a.task"), "x\n")
 	oldFile(t, filepath.Join(dir, "b.lock"), oldAge)
 	write(t, filepath.Join(dir, "b"), "20240101-000009-supernova\n")
 	dropDeadLinks(w.bridge)
-	for _, n := range []string{"a.lock", "a.sequence.lock", "a.tmp", "b.lock"} {
+	for _, n := range []string{"a.lock", "a.sequence.lock", "a.tmp", "a.sequence.tmp", "b.lock"} {
 		if !exists(filepath.Join(dir, n)) {
 			t.Errorf("%s must stay for a young session", n)
 		}
@@ -626,7 +669,7 @@ func TestSessionLeftoversKeptWhenBusy(t *testing.T) {
 	oldFile(t, seq, oldAge)
 	var left []string
 	for _, id := range []string{"s1", "s2"} {
-		for _, n := range []string{".lock", ".sequence.lock", ".tmp"} {
+		for _, n := range []string{".lock", ".sequence.lock", ".tmp", ".sequence.tmp"} {
 			oldFile(t, filepath.Join(dir, id+n), oldAge)
 			left = append(left, filepath.Join(dir, id+n))
 		}
@@ -642,7 +685,7 @@ func TestSessionLeftoversKeptWhenLockHeld(t *testing.T) {
 		w := newWorld(t)
 		dir := filepath.Join(w.bridge, ".starship", "sessions")
 		var left []string
-		for _, n := range []string{"s1.lock", "s1.sequence.lock", "s1.tmp"} {
+		for _, n := range []string{"s1.lock", "s1.sequence.lock", "s1.tmp", "s1.sequence.tmp"} {
 			oldFile(t, filepath.Join(dir, n), oldAge)
 			left = append(left, filepath.Join(dir, n))
 		}
@@ -681,7 +724,7 @@ func TestSessionLeftoversCreateNoSequenceLock(t *testing.T) {
 func TestSessionLeftoversSparesSweepLockAndSessionTmp(t *testing.T) {
 	w := newWorld(t)
 	dir := filepath.Join(w.bridge, ".starship", "sessions")
-	keep := []string{".sweep.lock", "s1.sequence.tmp", "s1.task.tmp"}
+	keep := []string{".sweep.lock", "s1.task.tmp", "s1.writes.tmp"}
 	for _, n := range keep {
 		oldFile(t, filepath.Join(dir, n), oldAge)
 	}

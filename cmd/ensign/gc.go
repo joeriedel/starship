@@ -156,7 +156,7 @@ const staleGCAge = 5 * time.Minute
 // pidRecordAge is how old a <pid>.pid record must be before a sweep removes it. Age, not liveness, because a session idle past it loses only the link to its earlier id, which is how /clear behaved before the record existed.
 const pidRecordAge = 30 * 24 * time.Hour
 
-// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .writes, .topic-*, .lock, .sequence.lock, .writes.lock and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
+// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .writes, .topic-*, .lock, .sequence.lock, .writes.lock, .sequence.tmp and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
 const sessionFileAge = 30 * 24 * time.Hour
 
 // deadLink reports whether a session link names at least one run, none of the names is a path, and every named run's folder is gone. A link that is empty, unreadable or names a path is not dead. Links hold one run id per line.
@@ -272,17 +272,17 @@ func sweepSessionFiles(bridge string, entries []os.DirEntry) {
 	})
 }
 
-// leftoverOfFile returns the session id a <id>.lock, <id>.sequence.lock, <id>.writes.lock or <id>.tmp file name belongs to. Names of the swept types, the bridge-wide .sweep.lock and files such as <id>.sequence.tmp (whose stem is itself a session file) are not leftovers.
+// leftoverOfFile returns the session id a <id>.lock, <id>.sequence.lock, <id>.writes.lock, <id>.sequence.tmp or <id>.tmp file name belongs to. Names of the swept types, the bridge-wide .sweep.lock and files such as <id>.task.tmp and <id>.writes.tmp (whose stem is itself a session file) are not leftovers.
 func leftoverOfFile(name string) (string, bool) {
 	if _, ok := sessionOfFile(name); ok || name == ".sweep.lock" {
 		return "", false
 	}
-	for _, suf := range []string{".sequence.lock", ".writes.lock", ".lock", ".tmp"} {
+	for _, suf := range []string{".sequence.lock", ".writes.lock", ".sequence.tmp", ".lock", ".tmp"} {
 		id, found := strings.CutSuffix(name, suf)
 		if !found {
 			continue
 		}
-		if _, isSession := sessionOfFile(id); isSession && suf != ".sequence.lock" && suf != ".writes.lock" {
+		if _, isSession := sessionOfFile(id); isSession && suf != ".sequence.lock" && suf != ".writes.lock" && suf != ".sequence.tmp" {
 			return "", false
 		}
 		return id, id != ""
@@ -292,9 +292,9 @@ func leftoverOfFile(name string) (string, bool) {
 
 // sweptLeftovers is one session's lock and tmp files.
 type sweptLeftovers struct {
-	seqLock, writesLock, lock, tmp bool
-	newest                         time.Time
-	failed                         bool
+	seqLock, writesLock, lock, tmp, seqTmp bool
+	newest                                 time.Time
+	failed                                 bool
 }
 
 // leftoverGroups finds the sessions with lock or tmp files in the snapshot and reads their ages. It runs before the swept files are renamed, because an entry's Info fails once its file is gone.
@@ -324,6 +324,8 @@ func leftoverGroups(entries []os.DirEntry) map[string]*sweptLeftovers {
 			groups[id] = g
 		}
 		switch {
+		case strings.HasSuffix(e.Name(), ".sequence.tmp"):
+			g.seqTmp = true
 		case strings.HasSuffix(e.Name(), ".sequence.lock"):
 			g.seqLock = true
 		case strings.HasSuffix(e.Name(), ".writes.lock"):
@@ -350,7 +352,7 @@ func leftoverGroups(entries []os.DirEntry) map[string]*sweptLeftovers {
 	return groups
 }
 
-// sweepLeftovers removes the <id>.lock, <id>.sequence.lock and <id>.tmp files of sessions whose newest file, link included, is older than sessionFileAge and that are not busy. A lock's own mtime is its creation time, so the session's other files and link show its use. Every lock is taken without blocking and the session is left for a later sweep if one is held; <id>.lock is also taken for a <id>.tmp, because its only writer holds it. A .sequence.lock is taken only if it exists.
+// sweepLeftovers removes the <id>.lock, <id>.sequence.lock, <id>.sequence.tmp and <id>.tmp files of sessions whose newest file, link included, is older than sessionFileAge and that are not busy. A lock's own mtime is its creation time, so the session's other files and link show its use. Every lock is taken without blocking and the session is left for a later sweep if one is held; <id>.lock is also taken for a <id>.tmp, because its only writer holds it. <id>.sequence.lock is taken for a <id>.sequence.tmp as well, because its only writer holds it; it is created if missing and removed again with the other locks, and a .sequence.tmp alone never takes <id>.lock.
 func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, listRunsOnce func() []runInfo) {
 	dir := filepath.Join(bridge, ".starship", "sessions")
 	for id, g := range groups {
@@ -359,7 +361,7 @@ func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, listRunsOn
 		}
 		var locks []*flock.Flock
 		var paths []string
-		if g.seqLock {
+		if g.seqLock || g.seqTmp {
 			paths = append(paths, filepath.Join(dir, id+".sequence.lock"))
 		}
 		if g.writesLock {
@@ -385,6 +387,9 @@ func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, listRunsOn
 		}
 		if g.tmp {
 			os.Remove(filepath.Join(dir, id+".tmp"))
+		}
+		if g.seqTmp {
+			os.Remove(filepath.Join(dir, id+".sequence.tmp"))
 		}
 		var left []string
 		for _, path := range paths {
