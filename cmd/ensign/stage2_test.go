@@ -1092,7 +1092,7 @@ func TestGitStatusFailuresAreNotACleanTree(t *testing.T) {
 		}
 		var buf bytes.Buffer
 		t.Chdir(b)
-		write(t, filepath.Join(b, "bridge.yaml"), "name: supernova\n")
+		write(t, filepath.Join(b, "bridge.yaml"), "keep-runs: 3\n")
 		if err := cmdJournal([]string{"commit", "-m", "x"}, &buf); err == nil || !strings.Contains(err.Error(), "git status") {
 			t.Errorf("journal commit got %v", err)
 		}

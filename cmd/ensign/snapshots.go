@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -33,9 +34,27 @@ func readerDeclared(bridge string) (bool, error) {
 	return declared, nil
 }
 
+// claudeToolPath is a path as Claude Code's Read expands it before opening it: trimmed, with ~ and ~/ taken from home (~user is not expanded), and on Windows /c/x taken as C:/x. resolveEditTarget does none of this, so without it such a path would resolve under the cwd. With no home, ~ is left alone.
+func claudeToolPath(p, home, goos string) string {
+	p = strings.TrimFunc(p, func(r rune) bool { return (unicode.IsSpace(r) && r != 0x85) || r == 0xFEFF })
+	if home != "" {
+		if p == "~" {
+			return home
+		}
+		if rest, ok := strings.CutPrefix(p, "~/"); ok {
+			return strings.TrimRight(home, `/\`) + "/" + rest
+		}
+	}
+	if goos == "windows" && len(p) >= 3 && p[0] == '/' && p[2] == '/' && (p[1]|0x20 >= 'a' && p[1]|0x20 <= 'z') {
+		return strings.ToUpper(p[1:2]) + ":" + p[2:]
+	}
+	return p
+}
+
 // inSourcesFolder reports whether a tool target is <bridge>/reader/sources or below it, and the resolved target.
 func inSourcesFolder(bridge, target, cwd, goos string) (resolved string, in bool) {
-	resolved = resolveEditTarget(target, cwd, goos)
+	home, _ := os.UserHomeDir()
+	resolved = resolveEditTarget(claudeToolPath(target, home, goos), cwd, goos)
 	return resolved, pathWithin(resolved, resolveEditFolder(filepath.Join(bridge, "reader", "sources"), goos), goos)
 }
 

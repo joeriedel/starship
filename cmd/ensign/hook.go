@@ -1084,6 +1084,18 @@ func pidRecord(bridge, pid string) string {
 	return filepath.Join(bridge, ".starship", "sessions", pid+".pid")
 }
 
+// processBaseline returns the connector and agents signatures the claude process pid started with: those recorded by its first SessionStart, or the given current ones, which it records, when there is no record or the source is startup (a new process that reused an old pid). A new process that reuses an old pid and starts with source resume reads the stale record, so it gets a false restart note until its next restart; telling that apart from an in-process /resume needs a process-instance identity.
+func processBaseline(bridge, pid, source, connectors, agents string) (string, string) {
+	file := filepath.Join(bridge, ".starship", "sessions", pid+".connectors")
+	var base struct{ Connectors, Agents string }
+	if data, err := os.ReadFile(file); err == nil && source != "startup" && json.Unmarshal(data, &base) == nil {
+		return base.Connectors, base.Agents
+	}
+	data, _ := json.Marshal(struct{ Connectors, Agents string }{connectors, agents})
+	writeFile(file, string(data))
+	return connectors, agents
+}
+
 // carryOverSession binds a restarted session to the live run of the session it continues.
 // It assumes a resumed or compacted session's transcript still holds records
 // stamped with the earlier session's id; a cleared session's does not, see below. A failure to read the earlier session's runs is

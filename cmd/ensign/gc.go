@@ -512,7 +512,7 @@ func dropDeadLinks(bridge string) int {
 			if !swept {
 				continue
 			}
-		case strings.HasSuffix(e.Name(), ".pid"):
+		case strings.HasSuffix(e.Name(), ".pid"), strings.HasSuffix(e.Name(), ".connectors"):
 			maxAge = pidRecordAge
 		default:
 			continue

@@ -424,6 +424,13 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		prev = strings.TrimSpace(string(data))
 		writeFile(pidRecord(bridge, pid), in.SessionID+"\n")
 	}
+	// A running claude keeps the settings and agents it started with, so they are read before the sync can change them, and ahead of every not-ready return.
+	settingsFile := filepath.Join(bridge, ".claude", "settings.json")
+	before, _ := os.ReadFile(settingsFile)
+	connectorsFrom, agentsFrom := connectorSignature(string(before)), agentsSignature(bridge)
+	if pid := claudePID(); pid != "" {
+		connectorsFrom, agentsFrom = processBaseline(bridge, pid, in.Source, connectorsFrom, agentsFrom)
+	}
 	carryErr := carryOverSession(bridge, in, prev)
 	var envNote string
 	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
@@ -470,10 +477,6 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			clearTopicMarkers(bridge, in.SessionID)
 		}
 	}
-	// A running claude keeps the settings it started with, so the file is read before the sync can change it.
-	settingsFile := filepath.Join(bridge, ".claude", "settings.json")
-	before, _ := os.ReadFile(settingsFile)
-	agentsBefore := agentsSignature(bridge)
 	// Hand edits to notes/ are committed first: a dirty tracked file would stop the sync. A compaction happens mid-session, when the session's own filing may be half done.
 	synced := false
 	if in.Source != "compact" {
@@ -512,9 +515,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			fmt.Sprintf("starship: this bridge is not ready: %v", err))
 	}
 	after, _ := os.ReadFile(settingsFile)
-	restart := connectorSignature(string(before)) != connectorSignature(string(after))
+	restart := connectorsFrom != connectorSignature(string(after))
 	_, writesDeclared, _ := bf.connectorWrites()
-	if rules, err := bf.connectorRules(); err == nil && (rules != nil || writesDeclared) && agentsBefore != agentsSignature(bridge) {
+	if rules, err := bf.connectorRules(); err == nil && (rules != nil || writesDeclared) && agentsFrom != agentsSignature(bridge) {
 		restart = true
 	}
 	removeOldExe(bridge)

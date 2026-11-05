@@ -331,3 +331,83 @@ func TestJournalCoversReaderFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeToolPath(t *testing.T) {
+	for _, c := range []struct {
+		in, goos, want string
+	}{
+		{"~", "linux", "/home/u"},
+		{"~", "darwin", "/home/u"},
+		{"~", "windows", "/home/u"},
+		{"~/a/b.md", "linux", "/home/u/a/b.md"},
+		{"~/a/b.md", "darwin", "/home/u/a/b.md"},
+		{"~/a/b.md", "windows", "/home/u/a/b.md"},
+		{"  ~/a/b.md\t", "linux", "/home/u/a/b.md"},
+		{" /tmp/x ", "linux", "/tmp/x"},
+		{"~other/a", "linux", "~other/a"},
+		{"~a", "windows", "~a"},
+		{"/c/x/y", "linux", "/c/x/y"},
+		{"/c/x/y", "darwin", "/c/x/y"},
+		{"/c/x/y", "windows", "C:/x/y"},
+		{"/D/x", "windows", "D:/x"},
+		{" /c/x ", "windows", "C:/x"},
+		{"/c", "windows", "/c"},
+		{"/cygdrive/c/x", "windows", "/cygdrive/c/x"},
+		{"/1/x", "windows", "/1/x"},
+		{`C:\x`, "windows", `C:\x`},
+		{"rel/x", "windows", "rel/x"},
+		{"\uFEFF/tmp/x\uFEFF", "linux", "/tmp/x"},
+		{"\u0085/tmp/x\u0085", "linux", "\u0085/tmp/x\u0085"},
+	} {
+		if got := claudeToolPath(c.in, "/home/u", c.goos); got != c.want {
+			t.Errorf("claudeToolPath(%q, %s) = %q, want %q", c.in, c.goos, got, c.want)
+		}
+	}
+	if got := claudeToolPath("~/a", "", "linux"); got != "~/a" {
+		t.Errorf("with no home ~ stays: %q", got)
+	}
+	if got := claudeToolPath("~/a", `C:\Users\u\`, "windows"); got != "C:\\Users\\u/a" {
+		t.Errorf("a trailing separator on home is not doubled: %q", got)
+	}
+}
+
+func TestReadGuardExpandsPathsAsReadDoes(t *testing.T) {
+	w, _ := declaredGuardWorld(t)
+	home := filepath.Dir(w.bridge)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	write(t, filepath.Join(w.bridge, "reader", "sources", "mail-m1-2026-11-04.md"), goodSnapshot)
+	paths := []string{
+		"~/bridge/reader/sources/mail-m1-2026-11-04.md",
+		"  " + filepath.Join(w.bridge, "reader", "sources", "mail-m1-2026-11-04.md") + "  ",
+		" ~/bridge/reader/sources ",
+	}
+	if runtime.GOOS == "windows" {
+		vol := filepath.VolumeName(w.bridge)
+		paths = append(paths, "/"+strings.ToLower(vol[:1])+filepath.ToSlash(w.bridge[len(vol):])+"/reader/sources/mail-m1-2026-11-04.md")
+	}
+	for _, p := range paths {
+		for _, c := range []struct{ tool, key string }{{"Read", "file_path"}, {"Grep", "path"}} {
+			res, denied := w.toolCall2("", "", c.tool, map[string]any{c.key: p}, w.bridge)
+			if !denied {
+				t.Errorf("%s %q should be denied: %v", c.tool, p, res)
+			}
+			if _, denied := w.toolCall2("r1", "reader", c.tool, map[string]any{c.key: p}, w.bridge); denied {
+				t.Errorf("the reader reads its own sources through %q", p)
+			}
+		}
+	}
+	// A write through ~/ is checked as the pin it is.
+	pin := "~/bridge/reader/sources/mail-m2-2026-11-04.md"
+	in := &HookInput{ToolName: "Write", AgentID: "c1", AgentType: "coder", ToolInput: map[string]any{"content": goodSnapshot}}
+	if snapshotGuard(w.bridge, in, pin, runtime.GOOS) == "" {
+		t.Error("only the reader pins, through ~/ as well")
+	}
+	in.AgentID, in.AgentType = "r1", "reader"
+	if why := snapshotGuard(w.bridge, in, pin, runtime.GOOS); why != "" {
+		t.Errorf("the reader's pin through ~/ is accepted: %s", why)
+	}
+	if res, denied := w.toolCall2("", "", "Read", map[string]any{"file_path": "~/bridge/reader/facts.md"}, w.bridge); denied || res != nil {
+		t.Errorf("a target outside sources stays open: %v", res)
+	}
+}

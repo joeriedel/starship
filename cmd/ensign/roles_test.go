@@ -39,7 +39,7 @@ func TestRoleAndBriefDocumentationRules(t *testing.T) {
 		"roles/reviewer.md":            {`(?i)review code only, not documentation`, `(?i)even when it is in the diff`},
 		"briefs/review/correctness.md": {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},
 		"briefs/review/public.md":      {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},
-		"roles/orchestrator.md":        {`(?i)documentation isn't reviewed`, `(?i)even when it is in the diff`},
+		"roles/orchestrator.md":        {`(?i)documentation isn't reviewed`, `(?i)even when it is in the diff`, `(?i)fact from outside the project names its source and date`, `(?i)quotes and snapshots stay out`},
 	}
 	for rel, res := range checks {
 		body := read(rel)

@@ -355,6 +355,70 @@ func withDeclaredTools(label string, data []byte, declared []string) ([]byte, er
 	return append(out, data[m[5]:]...), nil
 }
 
+// splitToolTokens splits a tools: value as Claude Code does: on commas and on spaces outside parentheses, so `Read Bash` is two tools and `Bash(git status)` is one.
+func splitToolTokens(v string) []string {
+	var tokens []string
+	var cur strings.Builder
+	depth := 0
+	flush := func() {
+		if t := strings.TrimSpace(cur.String()); t != "" {
+			tokens = append(tokens, t)
+		}
+		cur.Reset()
+	}
+	for _, r := range v {
+		switch {
+		case r == '(':
+			depth++
+		case r == ')' && depth > 0:
+			depth--
+		case (r == ',' || r == ' ') && depth == 0:
+			flush()
+			continue
+		}
+		cur.WriteRune(r)
+	}
+	flush()
+	return tokens
+}
+
+// readerToolsProblem says why a role's own frontmatter tools: can't stand in for the reader's: it grants a shell or everything, or it doesn't list tools at all (a role with no list gets every tool). It is "" when the list is fine.
+func readerToolsProblem(label string, data []byte) string {
+	value, err := frontmatterToolsValue(label, data)
+	var tools []string
+	switch v := value.(type) {
+	case string:
+		tools = splitToolTokens(v)
+	case []any:
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return "its frontmatter tools: can't be read as a list of tool names"
+			}
+			tools = append(tools, splitToolTokens(s)...)
+		}
+	}
+	if err != nil {
+		return "its frontmatter tools: can't be read as a list of tool names"
+	}
+	listed := false
+	for _, t := range tools {
+		name, _, _ := strings.Cut(strings.TrimSpace(t), "(")
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		listed = true
+		if name == "*" || strings.EqualFold(name, "Bash") || strings.EqualFold(name, "PowerShell") {
+			return fmt.Sprintf("its frontmatter tools: grants %s", strings.TrimSpace(t))
+		}
+	}
+	if !listed {
+		return "it needs a frontmatter tools: line listing its tools, without Bash"
+	}
+	return ""
+}
+
 // generatedFiles is everything link writes into a bridge, by path relative to it.
 func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte, error) {
 	files := map[string][]byte{}
@@ -421,6 +485,16 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 			m := frontmatterField("replaces").FindSubmatch(data)
 			if m == nil || strings.TrimSpace(string(m[1])) != name {
 				return nil, fmt.Errorf("%s: a role named %q already exists; declare `replaces: %s` to replace it", f, name, name)
+			}
+		}
+		// The hook matches agent_type, which is the frontmatter name; an unreadable frontmatter falls back to the file name and is reported by the check below.
+		agentType := name
+		if _, fmName, err := frontmatterMcpServers(f, data); err == nil && fmName != "" {
+			agentType = fmName
+		}
+		if _, declared := bf.Connectors["reader"]; declared && agentType == "reader" {
+			if why := readerToolsProblem(f, data); why != "" {
+				return nil, fmt.Errorf("%s: role %q replaces the reader, whose write limit holds only because it has no shell: %s", f, name, why)
 			}
 		}
 		roles[name], sources[name] = data, f

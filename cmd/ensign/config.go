@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -402,12 +403,23 @@ type BridgeFile struct {
 	Connectors map[string][]string `yaml:"connectors"`
 	// ConnectorWrites lists the exact connector tools the session may call once the user has approved the call with go. Its presence, even as an empty list, turns approved connector writes on; connectorWrites reads it.
 	ConnectorWrites yaml.Node `yaml:"connector_writes"`
+	// Sources and Documents are read from bridge.yaml by loadDeclaredSources and loadDeclaredDocuments; they are here so strict decoding accepts them.
+	Sources   yaml.Node `yaml:"sources"`
+	Documents yaml.Node `yaml:"documents"`
 }
 
 func loadBridgeFile(bridge string) (*BridgeFile, error) {
 	var bf BridgeFile
-	if err := readYAML(filepath.Join(bridge, "bridge.yaml"), &bf); err != nil {
+	path := filepath.Join(bridge, "bridge.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return nil, err
+	}
+	// An unknown key is refused so a misspelled declaration can't quietly do nothing. An empty file decodes to io.EOF.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&bf); err != nil && err != io.EOF {
+		return nil, fmt.Errorf("%s: %v", path, err)
 	}
 	return &bf, nil
 }
@@ -710,8 +722,11 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 		if err := yaml.Unmarshal(append([]byte("\n"), front...), &tf); err != nil {
 			return nil, fmt.Errorf("%s: %v", taskFile, err)
 		}
-		if hasPlatformsKey(front) {
+		if hasKey(front, "platforms") {
 			return nil, fmt.Errorf("%s: platforms: is a project setting; declare it in projects/%s/project.yaml", taskFile, c.Project)
+		}
+		if key := connectorKey(front); key != "" {
+			return nil, fmt.Errorf("%s: %s: is a bridge setting; declare it in bridge.yaml", taskFile, key)
 		}
 		if c.Location, err = taskLocation(c.Locations, c.Project, t.Task, tf.Locations, t.Location); err != nil {
 			return nil, err
@@ -865,7 +880,7 @@ func (c *Config) bridgeLayer(bridge string) (layerEntry, error) {
 	if err != nil {
 		return layerEntry{}, err
 	}
-	if data, rerr := os.ReadFile(bridgeFile); rerr == nil && hasPlatformsKey(data) {
+	if data, rerr := os.ReadFile(bridgeFile); rerr == nil && hasKey(data, "platforms") {
 		return layerEntry{}, fmt.Errorf("%s: platforms: is a project setting; declare it in projects/<project>/project.yaml", bridgeFile)
 	}
 	if c.ControlPlane, err = controlPlaneDir(bridge, bfp); err != nil {
@@ -880,6 +895,11 @@ func (c *Config) projectLayer(bridge string) (layerEntry, error) {
 	projectFile := filepath.Join(bridge, "projects", c.Project, "project.yaml")
 	if err := readYAML(projectFile, &pf); err != nil {
 		return layerEntry{}, fmt.Errorf("project %q: %v", c.Project, err)
+	}
+	if data, rerr := os.ReadFile(projectFile); rerr == nil {
+		if key := connectorKey(data); key != "" {
+			return layerEntry{}, fmt.Errorf("%s: %s: is a bridge setting; declare it in bridge.yaml", projectFile, key)
+		}
 	}
 	var err error
 	if c.Locations, err = loadLocations(bridge, c.Project); err != nil {
@@ -916,7 +936,7 @@ func (c *Config) enableExtension(l layerEntry, use string, extensions map[string
 	b, ok := extensions[use]
 	if berr, isBroken := broken[use]; isBroken {
 		file = berr.(*brokenExtension).file
-		if data, rerr := os.ReadFile(file); rerr != nil || !hasPlatformsKey(data) {
+		if data, rerr := os.ReadFile(file); rerr != nil || (!hasKey(data, "platforms") && connectorKey(data) == "") {
 			return nil, fmt.Errorf("%s: extension %q: %v", l.label, use, berr)
 		}
 	} else if !ok {
@@ -924,12 +944,17 @@ func (c *Config) enableExtension(l layerEntry, use string, extensions map[string
 	} else {
 		file = filepath.Join(b.dir, "extension.yaml")
 	}
-	if data, rerr := os.ReadFile(file); rerr == nil && hasPlatformsKey(data) {
+	if data, rerr := os.ReadFile(file); rerr == nil && hasKey(data, "platforms") {
 		project := c.Project
 		if project == "" {
 			project = "<project>"
 		}
 		return nil, fmt.Errorf("%s: platforms: is a project setting; declare it in projects/%s/project.yaml", file, project)
+	}
+	if data, rerr := os.ReadFile(file); rerr == nil {
+		if key := connectorKey(data); key != "" {
+			return nil, fmt.Errorf("%s: %s: is a bridge setting; declare it in bridge.yaml", file, key)
+		}
 	}
 	c.Extensions = append(c.Extensions, use)
 	return b, nil
@@ -1365,14 +1390,24 @@ func setPipelineField(p *Pipeline, key string, val *yaml.Node, kind string) erro
 	return fmt.Errorf("unknown pipeline field")
 }
 
-// hasPlatformsKey reports whether a YAML document has a top-level platforms: key, whatever its value (a null or empty list leaves no trace in Layer.Platforms).
-func hasPlatformsKey(data []byte) bool {
+// hasKey reports whether a YAML document has a top-level key, whatever its value (a null or empty value leaves no trace in the decoded struct).
+func hasKey(data []byte, key string) bool {
 	var keys map[string]any
 	if yaml.Unmarshal(data, &keys) != nil {
 		return false
 	}
-	_, has := keys["platforms"]
+	_, has := keys[key]
 	return has
+}
+
+// connectorKey returns the first of connectors: and connector_writes: a YAML document declares at its top level, or "" when it declares neither.
+func connectorKey(data []byte) string {
+	for _, key := range []string{"connectors", "connector_writes"} {
+		if hasKey(data, key) {
+			return key
+		}
+	}
+	return ""
 }
 
 // platformName normalises a platform name for comparison: surrounding space and case do not matter.
