@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -679,5 +680,178 @@ func TestShippedTaskFrontmatterErrorNamesTrueLine(t *testing.T) {
 	err = cmdProject([]string{"reviewed", "supernova/auth-refactor"}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "line "+want) {
 		t.Errorf("reviewed should name the same line as a run (%q): %v", want, err)
+	}
+}
+
+// otherOS is a platform key that is not this machine's, so the tests hold on every platform the suite runs on.
+func otherOS() string {
+	for _, g := range []string{"linux", "windows", "darwin"} {
+		if g != runtime.GOOS {
+			return g
+		}
+	}
+	return ""
+}
+
+// invalidBindingCases are binding values a run refuses, each with text its error holds. The report must refuse every one too.
+func invalidBindingCases() []struct{ name, value, want string } {
+	o, g := otherOS(), runtime.GOOS
+	return []struct{ name, value, want string }{
+		{"scalar", "plain", "a binding must be a mapping"},
+		{"null", "null", "a binding must be a mapping"},
+		{"list", "[a, b]", "a binding must be a mapping"},
+		{"unknown-key", "{ cmd: ./x.sh }", `unknown binding key "cmd"`},
+		{"plain-maybe", "{ command: ./x.sh, plain: maybe }", "plain must be true or false"},
+		{"timeout-soon", "{ command: ./x.sh, timeout: soon }", "timeout must be a positive duration"},
+		{"timeout-zero", "{ command: ./x.sh, timeout: 0s }", "timeout must be a positive duration"},
+		{"timeout-negative", "{ command: ./x.sh, timeout: -5m }", "timeout must be a positive duration"},
+		{"plain-without-command", "{ plain: true }", "a plain binding needs a command"},
+		{"paths-and-command", "{ paths: [docs], command: ./x.sh }", "cannot also have a command or guidance"},
+		{"paths-not-a-list", "{ paths: docs }", "paths must be a list of strings"},
+		{"only-another-platform-nested", "{ " + g + ": { " + o + ": { command: ./x.sh } } }", "has platform variants but none for " + g},
+		{"bad-value-under-this-platform", "{ " + g + ": { timeout: soon } }", "timeout must be a positive duration"},
+	}
+}
+
+func TestBindingsInvalidValuesRefusedOnBothPaths(t *testing.T) {
+	for _, tc := range invalidBindingCases() {
+		body := "bindings:\n  build: " + tc.value + "\n"
+		if _, err := loadBindings(t, newWorld(t), body); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: run: %v, want %q", tc.name, err, tc.want)
+		}
+		if _, err := reportBindings(t, body); err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "line 2: ") {
+			t.Errorf("%s: report: %v, want line 2 and %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestBindingsValidValuesAcceptedOnBothPaths(t *testing.T) {
+	for name, value := range map[string]string{
+		"command":        "{ command: ./x.sh }",
+		"guidance":       "{ guidance: look at it }",
+		"not-applicable": "{ not-applicable: no build }",
+		"paths":          "{ paths: [docs] }",
+		"plain":          "{ command: ./x.sh, plain: true }",
+		"timeout":        "{ command: ./x.sh, timeout: 5m }",
+		"this-platform":  "{ " + runtime.GOOS + ": { command: ./x.sh } }",
+	} {
+		body := "bindings:\n  build: " + value + "\n"
+		if _, err := loadBindings(t, newWorld(t), body); err != nil {
+			t.Errorf("%s: run: %v", name, err)
+		}
+		if _, err := reportBindings(t, body); err != nil {
+			t.Errorf("%s: report: %v", name, err)
+		}
+	}
+}
+
+func TestBindingsOnlyAnotherPlatformIsComparedByTheReport(t *testing.T) {
+	body := "bindings:\n  build: { " + otherOS() + ": { command: ./x.sh } }\n"
+	m, err := reportBindings(t, body)
+	if err != nil || m["build"] == nil {
+		t.Errorf("report should compare a variant missing only for this machine: %v %v", m, err)
+	}
+	if _, err := loadBindings(t, newWorld(t), body); err == nil || !strings.Contains(err.Error(), "has platform variants but none for "+runtime.GOOS) {
+		t.Errorf("a run on this machine should refuse it: %v", err)
+	}
+}
+
+// A run reads only this machine's variant, and the report checks no more than a run does.
+func TestBindingsBadOtherPlatformVariantAcceptedOnBothPaths(t *testing.T) {
+	body := "bindings:\n  build: { " + runtime.GOOS + ": { command: ./x.sh }, " + otherOS() + ": { timeout: soon } }\n"
+	if _, err := loadBindings(t, newWorld(t), body); err != nil {
+		t.Errorf("a run on this machine reads only its own variant: %v", err)
+	}
+	if _, err := reportBindings(t, body); err != nil {
+		t.Errorf("the report should not look at another platform's key: %v", err)
+	}
+}
+
+// A variant for this machine that is itself only a variant for another platform is unusable, though another platform's key sits beside it.
+func TestBindingsNestedOtherPlatformVariantRefusedOnBothPaths(t *testing.T) {
+	g, o := runtime.GOOS, otherOS()
+	body := "bindings:\n  build: { " + g + ": { " + o + ": { command: x } }, " + o + ": { command: y } }\n"
+	want := "has platform variants but none for " + g
+	if _, err := loadBindings(t, newWorld(t), body); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("run: %v", err)
+	}
+	if _, err := reportBindings(t, body); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("report: %v", err)
+	}
+}
+
+// With a platform key beside an unknown key the refusal is always the unknown key, whatever the order the keys are visited in.
+func TestBindingsPlatformKeyBesideUnknownKeyIsDeterministic(t *testing.T) {
+	body := "bindings:\n  build: { " + otherOS() + ": { command: ./x.sh }, bogus: 1 }\n"
+	for i := 0; i < 50; i++ {
+		if _, err := loadBindings(t, newWorld(t), body); err == nil || !strings.Contains(err.Error(), `unknown binding key "bogus"`) {
+			t.Fatalf("run: %v", err)
+		}
+		if _, err := reportBindings(t, body); err == nil || !strings.Contains(err.Error(), `unknown binding key "bogus"`) {
+			t.Fatalf("report: %v", err)
+		}
+	}
+}
+
+func TestBindingsMergedInvalidValueNamesTheTrueLine(t *testing.T) {
+	_, err := reportBindings(t, "x-m: &m\n  build: plain\nbindings:\n  <<: *m\n")
+	if err == nil || !strings.Contains(err.Error(), "line 2: ") {
+		t.Errorf("a merged entry should be named by the line of its key: %v", err)
+	}
+}
+
+func TestShippedInvalidBindingSaysItCannotCompare(t *testing.T) {
+	bad := "bindings:\n  build: { command: ./build.sh }\n  test: plain\n"
+	w, _ := shippedWorld(t, bridgeSettings, bad)
+	got := openShipped(t, w)
+	if !strings.Contains(got, "shipped    can't compare:") || !strings.Contains(got, ".starship") || !strings.Contains(got, "project.yaml: line 3: ") {
+		t.Errorf("an invalid shipped binding should say it can't compare:\n%s", got)
+	}
+	if err := cmdProject([]string{"reviewed", "supernova/auth-refactor"}, &bytes.Buffer{}); err == nil {
+		t.Error("project reviewed should fail on an invalid shipped file")
+	}
+	if _, err := os.Stat(reviewedFile(w.bridge, "supernova")); err == nil {
+		t.Error("project reviewed should write nothing for an invalid shipped file")
+	}
+
+	w, _ = shippedWorld(t, "platforms: [linux]\nbindings:\n  build: { command: ./build.sh }\n  test: plain\n", bridgeSettings)
+	got = openShipped(t, w)
+	if !strings.Contains(got, "shipped    can't compare:") || !strings.Contains(got, "projects"+string(filepath.Separator)+"supernova"+string(filepath.Separator)+"project.yaml: line 4: ") {
+		t.Errorf("an invalid binding in the bridge's project.yaml should say it can't compare:\n%s", got)
+	}
+}
+
+func TestShippedInvalidLocationOverlaySaysItCannotCompare(t *testing.T) {
+	w := locationsWorld(t)
+	body := strings.Replace(locationsProject, `test: { command: "./client-test.sh" }`, "test: plain", 1)
+	line := 1 + strings.Count(body[:strings.Index(body, "test: plain")], "\n")
+	write(t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"), body)
+	task := locTask(t, w, "both", "client,server")
+	locShipped(t, w, "client", locShippedClient)
+	locShipped(t, w, "server", locShippedServer)
+	got := openLocShipped(t, w, task)
+	if !strings.Contains(got, "shipped    location client: can't compare:") || !strings.Contains(got, fmt.Sprintf("project.yaml: line %d: ", line)) {
+		t.Errorf("an invalid location overlay should say it can't compare, naming line %d:\n%s", line, got)
+	}
+}
+
+// The reviewed record is only compared for equality with shipped values, which are checked first, so an invalid recorded value is not refused.
+func TestShippedReviewedRecordIsNotChecked(t *testing.T) {
+	changed := strings.Replace(bridgeSettings, "./test.sh", "./other.sh", 1)
+	w, _ := shippedWorld(t, changed, bridgeSettings)
+	write(t, reviewedFile(w.bridge, "supernova"), "bindings:\n  build: plain\n  deploy: 7\n")
+	got := openShipped(t, w)
+	if strings.Contains(got, "can't compare") || !strings.Contains(got, "binding test: changed") {
+		t.Errorf("an invalid recorded value should not blank the report:\n%s", got)
+	}
+
+	w = locationsWorld(t)
+	task := locTask(t, w, "both", "client,server")
+	locShipped(t, w, "client", strings.Replace(locShippedClient, "./client-test.sh", "./other.sh", 1))
+	locShipped(t, w, "server", locShippedServer)
+	write(t, reviewedFile(w.bridge, "supernova"), "locations:\n  client:\n    bindings:\n      build: plain\n")
+	got = openLocShipped(t, w, task)
+	if strings.Contains(got, "can't compare") || !strings.Contains(got, "binding test: changed") {
+		t.Errorf("an invalid recorded location value should not blank the report:\n%s", got)
 	}
 }

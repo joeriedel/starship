@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -239,6 +240,11 @@ type Binding struct {
 	Source  string        `json:"source"`
 }
 
+// noVariantError says a binding has platform variants but none for the platform asked about.
+type noVariantError struct{ msg string }
+
+func (e *noVariantError) Error() string { return e.msg }
+
 // parseBinding resolves platform variants for this machine. An alias is followed wherever a value is read.
 func parseBinding(n *yaml.Node, source string) (Binding, error) {
 	b := Binding{Source: source}
@@ -257,8 +263,14 @@ func parseBinding(n *yaml.Node, source string) (Binding, error) {
 		return b, fmt.Errorf("%s: %v", source, err)
 	}
 	if v, ok := m[runtime.GOOS]; ok {
-		return parseBinding(&v, source)
+		b, err := parseBinding(&v, source)
+		var nv *noVariantError
+		if errors.As(err, &nv) {
+			err = errors.New(nv.msg)
+		}
+		return b, err
 	}
+	platformKey := false
 	for k, v := range m {
 		if v.Kind == yaml.AliasNode {
 			v = *v.Alias
@@ -285,10 +297,14 @@ func parseBinding(n *yaml.Node, source string) (Binding, error) {
 			}
 			b.Timeout = d
 		case "linux", "windows", "darwin":
-			return b, fmt.Errorf("%s: has platform variants but none for %s", source, runtime.GOOS)
+			platformKey = true
 		default:
 			return b, fmt.Errorf("%s: unknown binding key %q", source, k)
 		}
+	}
+	// Returned after the loop, not from it: the loop ranges over a map, so returning mid-loop would make this error and another key's error a matter of map order.
+	if platformKey {
+		return b, &noVariantError{fmt.Sprintf("%s: has platform variants but none for %s", source, runtime.GOOS)}
 	}
 	if b.Plain && b.Command == "" {
 		return b, fmt.Errorf("%s: a plain binding needs a command", source)
@@ -297,6 +313,16 @@ func parseBinding(n *yaml.Node, source string) (Binding, error) {
 		return b, fmt.Errorf("%s: a binding with paths cannot also have a command or guidance", source)
 	}
 	return b, nil
+}
+
+// checkBinding refuses what parseBinding refuses on this machine, so the drift report is never stricter than a run: the per-name `@docs` rules in Config validation (a command or guidance, path checks) are not applied, because they judge the merged config after all layers, not one file's value. A bad value under another platform's key is not looked at, as a run doesn't look at it. The one thing it lets through is a binding with no variant for this machine at its top level, because the settings file serves every platform and one windows-only binding must not blank the whole report on Linux. A variant for this machine that is itself unusable (`{linux: {windows: {command: x}}}` on Linux) is refused. Cycles anywhere are refused by parseBinding's decodeAny.
+func checkBinding(n *yaml.Node, source string) error {
+	_, err := parseBinding(n, source)
+	var nv *noVariantError
+	if errors.As(err, &nv) {
+		return nil
+	}
+	return err
 }
 
 // Rule is one standing run rule and where it was declared.

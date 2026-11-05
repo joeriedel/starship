@@ -41,6 +41,11 @@ type settingsBlock struct {
 
 // readSettings reads a settings file; a missing file reads as empty with ok false.
 func readSettings(path string) (s shippedSettings, ok bool, err error) {
+	return readSettingsAs(path, true)
+}
+
+// readSettingsAs is readSettings with the bindings checked or only decoded. Only the reviewed record is read unchecked: a run never reads it and it is only compared for equality with shipped values, which are checked first, so an invalid recorded value silences nothing, and records written by older versions may hold such values.
+func readSettingsAs(path string, check bool) (s shippedSettings, ok bool, err error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return s, false, nil
@@ -52,7 +57,7 @@ func readSettings(path string) (s shippedSettings, ok bool, err error) {
 	if err := yamlUnmarshal(data, &raw); err != nil {
 		return s, true, fmt.Errorf("%s: %v", path, err)
 	}
-	s, err = decodeSettings(path, raw)
+	s, err = decodeSettings(path, raw, check)
 	return s, true, err
 }
 
@@ -86,6 +91,7 @@ func bindingEntries(n *yaml.Node) ([]bindingEntry, error) {
 	return expandBindings(n, map[*yaml.Node]bool{})
 }
 
+// expandBindings returns the entries of mapping n with @-stripped names; a repeated name keeps the later explicit entry, and merge sources add only names not already present, so an explicit key beats a merged one wherever it sits and an earlier source in a list beats a later one. active holds the mappings being expanded: a mapping that contains itself is an error, as is a merge value that is not a mapping or a list of mappings. Nodes are not copied, so a key's Line stays its true line in the file. The order of the entries is not significant.
 func expandBindings(n *yaml.Node, active map[*yaml.Node]bool) ([]bindingEntry, error) {
 	if active[n] {
 		return nil, fmt.Errorf("line %d: bindings merge contains itself", n.Line)
@@ -150,14 +156,24 @@ func decodeAny(n *yaml.Node) (v any, err error) {
 	return v, err
 }
 
-// bindingsOf decodes a bindings node with names normalised as Config.addBindings does, through bindingEntries.
+// bindingsOf decodes a bindings node with names normalised as Config.addBindings does, through bindingEntries, and refuses through checkBinding any value parseBinding refuses, except a binding with no variant for this machine (see checkBinding).
 func bindingsOf(n *yaml.Node) (map[string]any, error) {
+	return bindingsFrom(n, true)
+}
+
+// bindingsFrom is bindingsOf with the check optional; only the reviewed record is decoded unchecked.
+func bindingsFrom(n *yaml.Node, check bool) (map[string]any, error) {
 	entries, err := bindingEntries(n)
 	if err != nil {
 		return nil, err
 	}
 	m := map[string]any{}
 	for _, e := range entries {
+		if check {
+			if err := checkBinding(e.val, fmt.Sprintf("line %d", e.key.Line)); err != nil {
+				return nil, err
+			}
+		}
 		v, err := decodeAny(e.val)
 		if err != nil {
 			return nil, err
@@ -232,8 +248,8 @@ func driftOf(kind string, shipped, bridge, reviewed map[string]any) []string {
 }
 
 // decodeSettings turns the generic bindings/pipelines/use/rules of one settings block into shippedSettings.
-func decodeSettings(path string, blk settingsBlock) (shippedSettings, error) {
-	b, err := bindingsOf(&blk.Bindings)
+func decodeSettings(path string, blk settingsBlock, check bool) (shippedSettings, error) {
+	b, err := bindingsFrom(&blk.Bindings, check)
 	if err != nil {
 		return shippedSettings{}, fmt.Errorf("%s: %v", path, err)
 	}
@@ -296,7 +312,7 @@ func effectiveSettings(bridge, project, location string) (shippedSettings, error
 func readReviewed(bridge, project, location string) (shippedSettings, error) {
 	path := reviewedFile(bridge, project)
 	if location == "" {
-		s, _, err := readSettings(path)
+		s, _, err := readSettingsAs(path, false)
 		return s, err
 	}
 	data, err := os.ReadFile(path)
@@ -313,7 +329,7 @@ func readReviewed(bridge, project, location string) (shippedSettings, error) {
 		return shippedSettings{}, fmt.Errorf("%s: %v", path, err)
 	}
 	e := raw.Locations[location]
-	return decodeSettings(path, e)
+	return decodeSettings(path, e, false)
 }
 
 // shippedDrift lists what the code's shipped settings have that the bridge's copy lacks
