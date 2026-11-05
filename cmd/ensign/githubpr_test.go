@@ -364,3 +364,105 @@ func TestGithubPRUpdateConflictAwkwardNames(t *testing.T) {
 		}
 	}
 }
+
+// emptyBranch makes task/auth-refactor with no commits of its own, then moves origin's main on by one commit that writes file with content. The workspace ends on main, or on the task branch if onTask. It returns the branch's tip.
+func emptyBranch(t *testing.T, ws, remote, file, content string, onTask bool) string {
+	t.Helper()
+	runGit(t, ws, "branch", "task/auth-refactor")
+	other := filepath.Join(t.TempDir(), "other")
+	runGit(t, ".", "clone", "-q", remote, other)
+	write(t, filepath.Join(other, file), content)
+	runGit(t, other, "add", file)
+	runGit(t, other, "commit", "-q", "-m", "meanwhile")
+	runGit(t, other, "push", "-q", "origin", "main")
+	if onTask {
+		runGit(t, ws, "switch", "-q", "task/auth-refactor")
+	}
+	return runGit(t, ws, "rev-parse", "task/auth-refactor")
+}
+
+// startEmpty starts a run and returns the lead (empty if refused) and the reason.
+func startEmpty(w *world, args ...string) (string, string) {
+	w.run(append([]string{"supernova/auth-refactor"}, args...)...)
+	w.approve()
+	return w.spawn("", "", "orchestrator")
+}
+
+func TestGithubPRFastForwardsEmptyBranch(t *testing.T) {
+	for _, onTask := range []bool{false, true} {
+		w, ws, remote, _ := githubWorld(t, "success", localTest)
+		emptyBranch(t, ws, remote, "news.txt", "meanwhile\n", onTask)
+		if lead, why := startEmpty(w); lead == "" {
+			t.Fatalf("an empty branch should be fast-forwarded (on task: %v): %s", onTask, why)
+		}
+		if b := currentBranch(ws); b != "task/auth-refactor" {
+			t.Errorf("the run should be on the task branch, it is on %q", b)
+		}
+		if tip, main := runGit(t, ws, "rev-parse", "task/auth-refactor"), runGit(t, ws, "rev-parse", "origin/main"); tip != main {
+			t.Errorf("the branch should be at origin/main (on task: %v): %s != %s", onTask, tip, main)
+		}
+	}
+}
+
+func TestGithubPRStaleBranchOverrideKeepsEmptyBranch(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	old := emptyBranch(t, ws, remote, "news.txt", "meanwhile\n", false)
+	if lead, why := startEmpty(w, "--stale-branch"); lead == "" {
+		t.Fatalf("--stale-branch should let the run start: %s", why)
+	}
+	if tip := runGit(t, ws, "rev-parse", "task/auth-refactor"); tip != old {
+		t.Errorf("--stale-branch takes the branch as it is, but it moved: %s != %s", tip, old)
+	}
+}
+
+func TestGithubPREmptyBranchNotMovedOverDirtyOtherBranch(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	old := emptyBranch(t, ws, remote, "news.txt", "meanwhile\n", false)
+	write(t, filepath.Join(ws, "lib.txt"), "half done\n")
+	if lead, why := startEmpty(w); lead != "" || !strings.Contains(why, "uncommitted changes on main") {
+		t.Fatalf("a run should not start over uncommitted work on another branch: %q %s", lead, why)
+	}
+	if tip := runGit(t, ws, "rev-parse", "task/auth-refactor"); tip != old {
+		t.Errorf("the branch should not move: %s != %s", tip, old)
+	}
+}
+
+func TestGithubPRFastForwardKeepsUncommittedWork(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	emptyBranch(t, ws, remote, "news.txt", "meanwhile\n", true)
+	write(t, filepath.Join(ws, "lib.txt"), "half done\n")
+	if lead, why := startEmpty(w); lead == "" {
+		t.Fatalf("uncommitted work that doesn't overlap should not stop the fast-forward: %s", why)
+	}
+	if tip, main := runGit(t, ws, "rev-parse", "task/auth-refactor"), runGit(t, ws, "rev-parse", "origin/main"); tip != main {
+		t.Errorf("the branch should be at origin/main: %s != %s", tip, main)
+	}
+	if got, _ := os.ReadFile(filepath.Join(ws, "lib.txt")); string(got) != "half done\n" {
+		t.Errorf("the uncommitted change should survive: %q", got)
+	}
+}
+
+func TestGithubPRFastForwardRefusesOverlappingWork(t *testing.T) {
+	for _, autoStash := range []string{"", "true"} {
+		t.Run("autoStash="+autoStash, func(t *testing.T) {
+			w, ws, remote, _ := githubWorld(t, "success", localTest)
+			if autoStash != "" {
+				runGit(t, ws, "config", "merge.autoStash", autoStash)
+			}
+			old := emptyBranch(t, ws, remote, "lib.txt", "upstream\n", true)
+			write(t, filepath.Join(ws, "lib.txt"), "half done\n")
+			if lead, why := startEmpty(w); lead != "" || !strings.Contains(why, "task/auth-refactor couldn't be fast-forwarded to origin/main") {
+				t.Fatalf("overlapping uncommitted work should refuse the run: %q %s", lead, why)
+			}
+			if tip := runGit(t, ws, "rev-parse", "task/auth-refactor"); tip != old {
+				t.Errorf("the branch should not move: %s != %s", tip, old)
+			}
+			if got, _ := os.ReadFile(filepath.Join(ws, "lib.txt")); string(got) != "half done\n" {
+				t.Errorf("the uncommitted change should survive: %q", got)
+			}
+			if stash := runGit(t, ws, "stash", "list"); stash != "" {
+				t.Errorf("nothing should be stashed: %q", stash)
+			}
+		})
+	}
+}

@@ -108,13 +108,15 @@ func githubBranch(r *RunFiles) error {
 	cur := currentBranch(ws)
 	_, verr := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want)
 	exists := verr == nil
+	ffBase := ""
 	if exists && !r.State.StaleOK {
-		if err := checkNotBehind(ws, want); err != nil {
+		var err error
+		if ffBase, err = checkNotBehind(ws, want); err != nil {
 			return err
 		}
 	}
 	if cur == want {
-		return nil
+		return fastForward(ws, want, ffBase)
 	}
 	if d, err := dirty(ws); err != nil {
 		return err
@@ -122,7 +124,10 @@ func githubBranch(r *RunFiles) error {
 		return fmt.Errorf("the workspace has uncommitted changes on %s; commit or stash them, then start the run again", orDetached(cur))
 	}
 	if exists {
-		return git(ws, "switch", "-q", want)
+		if err := git(ws, "switch", "-q", want); err != nil {
+			return err
+		}
+		return fastForward(ws, want, ffBase)
 	}
 	base, err := defaultBranch(ws)
 	if err != nil {
@@ -153,14 +158,30 @@ func branchBehind(ws, branch string) (base string, behind bool, err error) {
 	return base, false, nil
 }
 
-// checkNotBehind refuses a task branch that lacks commits of the remote's default branch.
-func checkNotBehind(ws, branch string) error {
+// checkNotBehind refuses a task branch that lacks commits of the remote's default branch and has commits of its own. A behind branch with none of its own is no work to protect: it returns the default branch's name so the caller can fast-forward it.
+func checkNotBehind(ws, branch string) (ffBase string, err error) {
 	base, behind, err := branchBehind(ws, branch)
-	if err != nil {
-		return err
+	if err != nil || !behind {
+		return "", err
 	}
-	if behind {
-		return fmt.Errorf("task branch %s is behind %s: origin/%s has commits it doesn't contain. Ask to update the branch (rebases it onto %s), or start the run again with --stale-branch to run on it as it is", branch, base, base, base)
+	own, err := gitOut(ws, "rev-list", "--count", "origin/"+base+"..refs/heads/"+branch)
+	if err != nil {
+		return "", fmt.Errorf("counting the commits of %s beyond origin/%s: %v", branch, base, err)
+	}
+	if own != "0" {
+		return "", fmt.Errorf("task branch %s is behind %s: origin/%s has commits it doesn't contain. Ask to update the branch (rebases it onto %s), or start the run again with --stale-branch to run on it as it is", branch, base, base, base)
+	}
+	return base, nil
+}
+
+// fastForward moves the checked-out task branch to origin/base. It does nothing when base is empty. Git refuses, and changes nothing, if uncommitted work overlaps the incoming commits.
+func fastForward(ws, branch, base string) error {
+	if base == "" {
+		return nil
+	}
+	// merge.autoStash=true makes git exit 0 on a conflicting stash pop instead of refusing.
+	if err := git(ws, "-c", "merge.autoStash=false", "merge", "-q", "--ff-only", "origin/"+base); err != nil {
+		return fmt.Errorf("task branch %s couldn't be fast-forwarded to origin/%s: %v", branch, base, err)
 	}
 	return nil
 }

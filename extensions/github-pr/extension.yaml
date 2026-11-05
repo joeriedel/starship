@@ -10,7 +10,8 @@ summary: Each task works on its own branch; once it passes, you choose a pull re
 #                      from the default branch the first time. A run won't start on top
 #                      of uncommitted work on another branch. An existing task branch
 #                      that is behind the default branch (doesn't contain it) is
-#                      refused; set the run up again with --stale-branch to run on it
+#                      fast-forwarded if it has no commits of its own, and refused if
+#                      it has; set the run up again with --stale-branch to run on it
 #                      as it is.
 #   before the test    what the run changed is committed on the task branch.
 #   test               the project's own @test, as always.
