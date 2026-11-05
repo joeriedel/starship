@@ -135,7 +135,7 @@ release (a tag), then each bridge updates
   fast-forward, and removes the task branch; if the default branch moved meanwhile it
   refuses and nothing is pushed. Either one refuses unless the task branch still holds
   the commit that passed (or only later commits that touch `@docs` paths, which keep it tested and are what lands), with nothing uncommitted on it, and a new run of the
-  task has to pass again first. The marker is recorded only by a run whose test stage passed; a `--start docs` run commits its docs pass and neither records a marker nor clears one, so a tested task stays tested, while a task with no marker still needs `--start test`. Any other started run also removes the marker at once, before `@sync` and run.start, so a run that dies early leaves none; and both refuse when a run of the task in that location failed after its last pass, or none passed (a run cancelled, dropped, discarded, skipped, withdrawn or replaced before it started is ignored; end times are compared to the second, then by run id), which covers a marker that survives a run that failed before starting.
+  task has to pass again first. The marker is recorded when a run succeeds with its test stage passed, or with no `test` stage in its pipeline; a `--start docs` run never clears it, and records one only on a pipeline with no `test` stage, so on a pipeline with a test stage a tested task stays tested while a task with no marker still needs `--start test`. A successful merge removes it too. Any other started run also removes the marker at once, before `@sync` and run.start, so a run that dies early leaves none; and both refuse when a run of the task in that location ended without success after the last run that finished `success` (whatever its start stage, so a successful `--start docs` run counts; ask-user ends count as not successful), or the marker is missing. A run cancelled, dropped, discarded, skipped, withdrawn or replaced before it started is ignored. Finish times are compared at full precision when both runs have one and they differ; otherwise the failed run's last history time is compared with the pass's finish to the second, then run id decides. which covers a marker that survives a run that failed before starting.
 - **What keeps project knowledge out is structural.** The bridge holds everything about
   its projects and starship never reads a bridge, so nothing crosses on its own. What
   remains is an agent with project context writing a detail into a role or doc. The
@@ -497,7 +497,7 @@ ensign run <task> --sync --start test
 This covers "commits came in from another machine — pull them and make sure they compile
 and pass": the coding pipeline started at `test`. `pass` ends the run as `success`;
 `fail`, including a failed compile, goes back to `code` and the normal loop fixes it.
-`ensign run <task> --start docs` runs the documentation stage by itself and tests nothing: a github-pr task already tested stays tested, and one that isn't needs `--start test` before it is published.
+`ensign run <task> --start docs` runs the documentation stage by itself and tests nothing: a github-pr task already tested stays tested, and one that isn't needs `--start test` before it is published (on a pipeline with no `test` stage the run records the marker itself).
 
 ### 5.3 Extending a pipeline
 
@@ -529,7 +529,7 @@ bindings:
   build: { command: "./build.sh --fast" }
   test:  { not-applicable: "proto-only repo, no suite" }
 
-documentation: off                   # bridge, project or task (not a location, which can carry a `docs` binding); the documentation stage is on unless a layer says off, and a later layer wins
+documentation: off                   # bridge, project or task (a `documentation:` key under a location is refused with an error; a location can carry a `docs` binding); the documentation stage is on unless a layer says off, and a later layer wins
 
 rules:
   - Never touch the vault.
