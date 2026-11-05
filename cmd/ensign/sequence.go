@@ -685,11 +685,19 @@ func (sf *seqFile) endKeepGoingFailure(bridge string, seq *sequence, st *seqStep
 
 // groupHeadline is the line a run step shows: its work item's headline, and the subtasks it works on.
 func groupHeadline(snaps []*Snapshot) string {
-	h := headline(snaps[0].WorkItem)
 	var names []string
 	for _, snap := range snaps {
-		if snap.Subtask != "" {
-			names = append(names, snap.Subtask)
+		names = append(names, snap.Subtask)
+	}
+	return headlineWithSubtasks(headline(snaps[0].WorkItem), names)
+}
+
+// headlineWithSubtasks adds the non-empty subtask names to a headline text.
+func headlineWithSubtasks(h string, subtasks []string) string {
+	var names []string
+	for _, name := range subtasks {
+		if name != "" {
+			names = append(names, name)
 		}
 	}
 	switch len(names) {
@@ -2261,6 +2269,11 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			st.Prev, st.Retries, st.Diagnosis = failed[0].Prev, st.attempt(), diagnosis
 			st.setRuns(st.Runs)
+			var subtasks []string
+			for _, ru := range st.Runs {
+				subtasks = append(subtasks, ru.Subtask)
+			}
+			st.Headline = headlineWithSubtasks(headline(fresh[0].WorkItem), subtasks)
 			st.Status, st.Reason, st.Blocks, st.WaitBlocks = "pending", "", 0, 0
 			text, err := sf.advance(bridge, session)
 			if text == "" {

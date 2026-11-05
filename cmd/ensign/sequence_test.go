@@ -3922,3 +3922,17 @@ func TestSequenceDoneOnADoStepNamesTheNextRunStep(t *testing.T) {
 		t.Errorf("done on the last step should not name a step:\n%s", out)
 	}
 }
+
+func TestSequenceRetryListingShowsTheNewGoal(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.writeTaskFile("auth-refactor", "## Goal\n\nBrand new goal.\n")
+	w.retryStep("1")
+	got := sequenceListing(w.bridge, w.sid)
+	if !strings.Contains(got, "Brand new goal.") || strings.Contains(got, "Add a multiply function") {
+		t.Errorf("the listing should show the retry's goal:\n%s", got)
+	}
+}

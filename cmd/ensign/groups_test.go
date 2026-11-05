@@ -296,3 +296,31 @@ func TestSequenceWaitingRunShowsItsReasonAndPausedStepStillNamesItsLead(t *testi
 		t.Errorf("the step should be paused: %s", st.Status)
 	}
 }
+
+func TestSequenceRetryListingKeepsEveryGroupSubtask(t *testing.T) {
+	w := groupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	w.failRun(w.leadOf(ids[0]))
+	w.passLoc(w.leadOf(ids[1]))
+	write(t, filepath.Join(w.bridge, "projects/supernova/tasks/t/task.md"), "---\npipeline: coding\nlocations: [models, client, server]\n---\n\n# t\n\n## Goal\n\nEdited goal.\n")
+	w.retryStep("1")
+	got := sequenceListing(w.bridge, w.sid)
+	if !strings.Contains(got, "Edited goal. (subtasks 01-client, 02-server)") || strings.Contains(got, "Do it.") {
+		t.Errorf("the line should show the new goal and both subtasks:\n%s", got)
+	}
+}
+
+func TestSequenceRetryListingKeepsASingleSubtask(t *testing.T) {
+	w := groupWorld(t, "01-client")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	w.failRun(w.leadOf(w.stepRuns(1)[0]))
+	write(t, filepath.Join(w.bridge, "projects/supernova/tasks/t/task.md"), "---\npipeline: coding\nlocations: [models, client, server]\n---\n\n# t\n\n## Goal\n\nEdited goal.\n")
+	w.retryStep("1")
+	got := sequenceListing(w.bridge, w.sid)
+	if !strings.Contains(got, "Edited goal. (subtask 01-client)") {
+		t.Errorf("the line should show the new goal and the subtask:\n%s", got)
+	}
+}
