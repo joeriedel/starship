@@ -47,7 +47,7 @@ stages:
           error: { error: test-error }
       - id: docs
         role: documentation
-        report-fields: [files]
+        report-fields: [files, checked]
         outcomes:
           updated:   { finish: success }
           unchanged: { finish: success }

@@ -4,6 +4,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -83,5 +85,43 @@ func TestReportInstructionsStateTheFilesForm(t *testing.T) {
 	got := reportInstructions(&Stage{Outcomes: Outcomes{{Name: "compiled"}}, ReportFields: []string{"files"}})
 	if !strings.Contains(got, "double quotes") || !strings.Contains(got, `""`) {
 		t.Errorf("instructions should state the quoting form: %s", got)
+	}
+}
+
+func TestParseReportChecked(t *testing.T) {
+	stage := &Stage{Outcomes: Outcomes{{Name: "updated"}, {Name: "unchanged"}, {Name: "blocked"}}, ReportFields: []string{"files", "checked"}}
+	for _, outcome := range []string{"updated", "unchanged"} {
+		if _, _, _, problem := parseReport(reportWith("outcome: "+outcome, "summary: s", "files: a.md"), stage); !strings.Contains(problem, "no checked line") {
+			t.Errorf("%s without checked: %q", outcome, problem)
+		}
+	}
+	if _, _, _, problem := parseReport(reportWith("outcome: blocked", "summary: s"), stage); problem != "" {
+		t.Errorf("blocked needs no checked: %q", problem)
+	}
+	_, _, fields, problem := parseReport(reportWith("outcome: updated", "summary: s", "files: a.md", "checked: a.go F", "checked: b.go G"), stage)
+	if problem != "" || !reflect.DeepEqual(fields["checked"], []string{"a.go F", "b.go G"}) {
+		t.Errorf("checked lines: %v %q", fields["checked"], problem)
+	}
+}
+
+func TestReportInstructionsStateTheCheckedForm(t *testing.T) {
+	got := reportInstructions(&Stage{Outcomes: Outcomes{{Name: "updated"}}, ReportFields: []string{"files", "checked"}})
+	if !strings.Contains(got, "checked: <the code you read") || !strings.Contains(got, "repeat this line") {
+		t.Errorf("instructions should state the checked form: %s", got)
+	}
+}
+
+func TestShippedDocsStageRequiresFilesAndChecked(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "pipelines", "coding.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p Pipeline
+	if err := yamlUnmarshal(data, &p); err != nil {
+		t.Fatal(err)
+	}
+	s, _, _ := p.find("docs")
+	if s == nil || !reflect.DeepEqual(s.ReportFields, []string{"files", "checked"}) {
+		t.Errorf("docs stage report fields: %+v", s)
 	}
 }

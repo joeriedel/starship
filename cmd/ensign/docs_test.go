@@ -44,7 +44,7 @@ func (w *world) docsWith(lead, outcome, files string, edit func()) (string, stri
 	if edit != nil {
 		edit()
 	}
-	return id, w.stop(id, "documentation", coderReport(outcome, files), false)
+	return id, w.stop(id, "documentation", strings.Replace(coderReport(outcome, files), "\n```\n", "\nchecked: cmd/ensign/hook.go parseReport\n```\n", 1), false)
 }
 
 func (w *world) hasNote(sub string) bool {
@@ -342,7 +342,7 @@ func TestDocumentationEditGuard(t *testing.T) {
 	if _, why := w.tryEdit(id, "documentation", filepath.Join(ws, "main.go")); !strings.Contains(why, filepath.Join(ws, "docs")) {
 		t.Errorf("the refusal should name the allowed paths: %s", why)
 	}
-	w.stop(id, "documentation", coderReport("unchanged", ""), false)
+	w.stop(id, "documentation", "Done.\n\n```starship-report\noutcome: unchanged\nsummary: none\nchecked: none, no code bears on the docs\n```\n", false)
 	w.expectEdit(id, "documentation", filepath.Join(ws, "docs", "guide.md"), true)
 }
 
@@ -394,7 +394,11 @@ func TestDocsReportFiles(t *testing.T) {
 	if r := w.stop(id, "documentation", report("updated"), false); !strings.Contains(r, "no files line") {
 		t.Errorf("updated without files should be refused: %q", r)
 	}
-	if r := w.stop(id, "documentation", report("unchanged"), false); r != "" {
+	if r := w.stop(id, "documentation", report("unchanged"), false); !strings.Contains(r, "no checked line") {
+		t.Errorf("unchanged without checked should be refused: %q", r)
+	}
+	unchanged := "Done.\n\n```starship-report\noutcome: unchanged\nsummary: none\nchecked: none, no code bears on the docs\n```\n"
+	if r := w.stop(id, "documentation", unchanged, false); r != "" {
 		t.Errorf("unchanged without files should be accepted: %q", r)
 	}
 }

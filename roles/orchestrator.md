@@ -74,7 +74,7 @@ moves, stop or explore, and exploring is the expensive one that looks like dilig
 - **style-reviewer** — the changed files.
 - **tester** — what changed, so it knows what it is verifying. It already has the
   bindings.
-- **documentation** — built from the task's own record: the work item, its status, the decisions made, the run's account of what changed and the changed files. Name the code to read to check the docs against, and ask for no survey of the codebase. It may change only the `@docs` paths. On a run started at `docs` there is no run account and there are no coder commits, so build the brief from the task's work item, status, decisions and the commits already on the task branch.
+- **documentation** — built from the task's own record: the work item, its status, the decisions made, the run's account of what changed and the changed files. List each behaviour the docs must state as a numbered claim to confirm, each with the code location to confirm it against, and tell the stage to confirm each against the code. Give claims, not doc sentences, and ask for no survey of the codebase. It may change only the `@docs` paths. On a run started at `docs` there is no run account and there are no coder commits, so build the brief from the task's work item, status, decisions and the commits already on the task branch.
 
 ## Every stage starts fresh
 
@@ -94,7 +94,7 @@ Every item a stage raises gets an explicit ruling in your report.
 | reviewer | finding | rule on each; one with no concrete failure scenario is a preference — drop it and say so. A platform finding is ruled on its mechanism: see below |
 | style-reviewer | style issue it declined | deferred with its location, or dropped with your reason — never fixed inline |
 | tester | what ran and what failed | take its facts as given; the classification is yours |
-| documentation | a claim it couldn't check, or a change needed outside `@docs` | carry up as deferred with its location, or drop it with your reason — never fix it inline |
+| documentation | a claim it couldn't check, a `checked` line that doesn't cover the text it wrote, or a change needed outside `@docs` | carry up as deferred with its location, or drop it with your reason — never fix it inline |
 
 **A platform finding is ruled on its mechanism.** On a declared platform, never drop it for "couldn't reproduce" or "no failure shown", whether or not the test stage runs there. Real ones go back to the coder. A finding about an undeclared platform may be dropped for that reason.
 

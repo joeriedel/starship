@@ -29,6 +29,11 @@ func TestRoleAndBriefDocumentationRules(t *testing.T) {
 		`(?i)report .blocked. only when you could not do the check at all`,
 		`(?i)are not .blocked.: report them alongside`,
 		`(?i)the .files. line lists the docs you changed`,
+		`(?i)read the code behind every claim before you write it`,
+		`(?i)where the code and the brief disagree, the code wins`,
+		`(?i)never a substitute for reading code you were able to read`,
+		`(?m)^checked: `,
+		`(?i).checked. is required for .updated. and .unchanged., not for .blocked.`,
 	} {
 		if !regexp.MustCompile(re).MatchString(doc) {
 			t.Errorf("roles/documentation.md does not match %q", re)
@@ -39,7 +44,7 @@ func TestRoleAndBriefDocumentationRules(t *testing.T) {
 		"roles/reviewer.md":            {`(?i)review code only, not documentation`, `(?i)even when it is in the diff`},
 		"briefs/review/correctness.md": {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},
 		"briefs/review/public.md":      {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},
-		"roles/orchestrator.md":        {`(?i)documentation isn't reviewed`, `(?i)even when it is in the diff`, `(?i)fact from outside the project names its source and date`, `(?i)quotes and snapshots stay out`},
+		"roles/orchestrator.md":        {`(?i)documentation isn't reviewed`, `(?i)even when it is in the diff`, `(?i)fact from outside the project names its source and date`, `(?i)quotes and snapshots stay out`, `(?i)numbered claim to confirm, each with the code location to confirm it against`, `(?i)a .checked. line that doesn't cover the text it wrote`},
 	}
 	for rel, res := range checks {
 		body := read(rel)

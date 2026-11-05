@@ -619,7 +619,7 @@ var reportRe = regexp.MustCompile("(?s)```starship-report\\s*\\n(.*?)```")
 
 // parseReport extracts the outcome, summary and other fields from the last report block
 // in an agent's report. Each line is "key: value", split at the first colon, so a
-// summary may contain colons. A key may repeat; files is a comma-separated list whose entries may be double-quoted (see parseFileNames).
+// summary may contain colons. A key may repeat (checked entries each take a line); files is a comma-separated list whose entries may be double-quoted (see parseFileNames). A required field may be missing for some outcomes (see reportFieldOptional).
 func parseReport(msg string, s *Stage) (outcome, summary string, fields map[string][]string, problem string) {
 	all := reportRe.FindAllStringSubmatch(msg, -1)
 	if len(all) == 0 {
@@ -658,11 +658,22 @@ func parseReport(msg string, s *Stage) (outcome, summary string, fields map[stri
 		return "", "", nil, fmt.Sprintf("Your report's outcome %q is not one of this stage's outcomes.", outcome)
 	}
 	for _, f := range s.ReportFields {
-		if len(fields[f]) == 0 && !(f == "files" && outcome != "compiled" && outcome != "broken" && outcome != "updated") {
+		if len(fields[f]) == 0 && !reportFieldOptional(f, outcome) {
 			return "", "", nil, fmt.Sprintf("Your report has no %s line, which this stage requires.", f)
 		}
 	}
 	return outcome, summary, fields, ""
+}
+
+// reportFieldOptional reports whether a stage's required report field may be missing for this outcome. files is required only for compiled, broken and updated; checked is required except when blocked.
+func reportFieldOptional(field, outcome string) bool {
+	switch field {
+	case "files":
+		return outcome != "compiled" && outcome != "broken" && outcome != "updated"
+	case "checked":
+		return outcome == "blocked"
+	}
+	return false
 }
 
 // parseFileNames splits the value of a files line. An entry may be wrapped in double quotes, inside which a double quote is written doubled and every other byte is literal; backslash is not an escape because reported Windows paths contain backslashes. Other entries run to the next comma and lose surrounding quotes. Empty names are dropped.
@@ -722,6 +733,8 @@ func reportInstructions(s *Stage) string {
 	for _, f := range s.ReportFields {
 		if f == "files" {
 			extra += "files: <every file you changed, comma-separated; wrap a name that contains a comma in double quotes, writing a double quote inside it as \"\">\n"
+		} else if f == "checked" {
+			extra += "checked: <the code you read to confirm the docs, as path and function; repeat this line for each entry, each starting with checked:; or, when no code bears on the docs, one line saying why>\n"
 		} else {
 			extra += f + ": <" + f + ">\n"
 		}
