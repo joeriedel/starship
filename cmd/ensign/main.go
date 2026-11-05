@@ -208,6 +208,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return failHook(&in, nil, err, stderr)
 		}
 		if handled {
+			if reports := takeSequenceReports(bridge, in.SessionID); reports != "" {
+				writesText += "\n\n" + reports
+			}
 			json.NewEncoder(stdout).Encode(promptReply(voided, writesText))
 			return 0
 		}
@@ -296,8 +299,13 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return failHook(&in, nil, err, stderr)
 		}
 	} else if r == nil {
-		if event == "UserPromptSubmit" && voided != "" {
-			json.NewEncoder(stdout).Encode(contextNote(nil, voided))
+		if event == "UserPromptSubmit" {
+			if reports := takeSequenceReports(bridge, in.SessionID); reports != "" {
+				voided = strings.TrimSpace(voided + "\n\nstarship: " + reports)
+			}
+			if voided != "" {
+				json.NewEncoder(stdout).Encode(contextNote(nil, voided))
+			}
 		}
 		role, _ := in.ToolInput["subagent_type"].(string)
 		if event == "PreToolUse" && in.AgentID != "" && stageRoleAnywhere(bridge, role) {
@@ -363,8 +371,13 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			out = m
 		}
 	}
-	if event == "UserPromptSubmit" && voided != "" {
-		out = contextNote(out, voided)
+	if event == "UserPromptSubmit" {
+		if reports := takeSequenceReports(bridge, in.SessionID); reports != "" {
+			voided = strings.TrimSpace(voided + "\n\nstarship: " + reports)
+		}
+		if voided != "" {
+			out = contextNote(out, voided)
+		}
 	}
 	if out != nil {
 		if err := json.NewEncoder(stdout).Encode(out); err != nil {

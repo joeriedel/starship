@@ -54,6 +54,8 @@ type seqStep struct {
 	Retries     int       `json:"retries,omitempty"`     // how many times the current group has been retried; a file from before this field has Prev set and 0 here
 	SkippedAt   int64     `json:"skipped_at,omitempty"`  // unix nanoseconds when the step was skipped, by the user or because a keep-going run step failed; 0 for a skip from before this field
 	Diagnosis   string    `json:"diagnosis,omitempty"`   // why the previous run failed, as the session wrote it
+	Position    string    `json:"position,omitempty"`    // publish: its Step X/Y when it ran, taken before it and before any cancelling; "" for a cancelled one
+	Queued      bool      `json:"queued,omitempty"`      // publish: its outcome line went into the sequence's Report, so it is not also a note
 }
 
 // attempt is the number of the attempt the step is on, counting the first as 1.
@@ -119,7 +121,7 @@ type sequence struct {
 	// QueueStart marks a sequence approved when no earlier approved sequence was still open, so it starts a new queue for the Step X/Y count
 	QueueStart bool       `json:"queue_start,omitempty"`
 	Steps      []*seqStep `json:"steps"`
-	Report     string     `json:"report,omitempty"` // a keep-going sequence's failure report, built when it closed; cleared once the Stop hook has delivered it
+	Report     string     `json:"report,omitempty"` // one-shot text for the session: publish outcomes as they happen and a keep-going sequence's failure report when it closes; cleared once a Stop hook or prompt has delivered it
 }
 
 type seqFile struct {
@@ -263,10 +265,13 @@ func (s *seqStep) outcomeKey(status, reason string) string {
 	return line[:len(line)-len(reason)-1]
 }
 
-// notes returns a line for each failed or cancelled step, in step order, and the key that identifies each.
+// notes returns a line for each failed or cancelled step, in step order, and the key that identifies each. A publish whose outcome is queued for the session, or will be when its keep-going sequence closes halted, is left out.
 func (s *sequence) notes() (lines, keys []string) {
 	for _, st := range s.Steps {
 		if st.Status != "failed" && st.Status != "cancelled" {
+			continue
+		}
+		if st.Kind == "publish" && (st.Queued || (s.Mode == modeKeepGoing && s.Halted)) {
 			continue
 		}
 		reason := firstLine(st.Reason)
@@ -961,6 +966,13 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 				seq.Closed = true
 				if seq.Halted {
 					parts = append(parts, fmt.Sprintf("%s halted: %s", seq.label(), seq.Reason))
+					if seq.Mode == modeKeepGoing {
+						for _, st := range seq.Steps {
+							if st.Kind == "publish" && (st.Status == "failed" || st.Status == "cancelled") {
+								parts = publishReport(seq, st, parts, st.publishLine(st.Status, st.Reason), true)
+							}
+						}
+					}
 				} else {
 					keepGoing := seq.Mode == modeKeepGoing
 					var skips []string
@@ -970,7 +982,7 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 						}
 					}
 					if keepGoing {
-						seq.Report = sf.failureReport(bridge, seq)
+						seq.Report = joinReport(seq.Report, sf.failureReport(bridge, seq))
 					}
 					switch {
 					case len(skips) == 0:
@@ -1014,17 +1026,20 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 			case "publish":
 				if sk := sf.skippedBefore(bridge, seq, st); sk != nil {
 					cancelStep(bridge, st, "cancelled", fmt.Sprintf("step %s was skipped", sk.ref()))
-					parts = append(parts, st.outcomeLine("cancelled", fmt.Sprintf("step %s was skipped", sk.ref())))
+					st.Position = ""
+					parts = publishReport(seq, st, parts, st.publishLine("cancelled", fmt.Sprintf("step %s was skipped", sk.ref())), false)
 					continue
 				}
+				st.Position = sf.position(st)
 				out, err := runPublish(bridge, seq, st)
 				if err != nil {
 					st.Status, st.Reason = "failed", err.Error()
 					sf.failed(bridge, seq, st)
-					parts = append(parts, st.outcomeLine("failed", err.Error()))
+					parts = publishReport(seq, st, parts, st.publishLine("failed", err.Error()), false)
 					continue
 				}
 				st.Status, st.Reason = "done", out
+				parts = publishReport(seq, st, parts, st.publishLine("done", out), true)
 			case "do":
 				st.Status = "active"
 				parts = append(parts, fmt.Sprintf("step %s: %s", st.ref(), doText(st)))
@@ -1037,6 +1052,60 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 		}
 	}
 	return parts, nil
+}
+
+// publishLine is a publish's outcome line led by the position it had when it ran, when it has one.
+func (s *seqStep) publishLine(status, reason string) string {
+	line := s.outcomeLine(status, reason)
+	if s.Position == "" || status == "cancelled" {
+		return line
+	}
+	return s.Position + ": " + line
+}
+
+// joinReport adds text to a queued report on a new line.
+func joinReport(report, text string) string {
+	if report == "" || text == "" {
+		return report + text
+	}
+	return report + "\n" + text
+}
+
+// publishReport routes a publish's outcome line: a keep-going failure stays in parts, since its sequence's failure report lists it once at close; every other outcome is queued in the sequence's report, the one way out, so no caller that also prints parts delivers it twice.
+func publishReport(seq *sequence, st *seqStep, parts []string, line string, queue bool) []string {
+	if seq.Mode == modeKeepGoing && !queue {
+		return append(parts, line)
+	}
+	st.Queued = true
+	seq.Report = joinReport(seq.Report, line)
+	return parts
+}
+
+// takeReports collects and clears the queued reports of every sequence.
+func (sf *seqFile) takeReports() []string {
+	var reports []string
+	for _, seq := range sf.Sequences {
+		if seq.Report != "" {
+			reports = append(reports, seq.Report)
+			seq.Report = ""
+		}
+	}
+	return reports
+}
+
+// takeSequenceReports is what a prompt delivers: the session's queued reports, cleared. It looks without the lock first, since a publish holds the lock, so a prompt with nothing queued never waits for one.
+func takeSequenceReports(bridge, session string) string {
+	if !seqExists(bridge, session) || !slices.ContainsFunc(readSeq(bridge, session).Sequences, func(s *sequence) bool { return s.Report != "" }) {
+		return ""
+	}
+	var reports []string
+	if err := withSeq(bridge, session, func(sf *seqFile) error {
+		reports = sf.takeReports()
+		return nil
+	}); err != nil {
+		return ""
+	}
+	return strings.Join(reports, "\n\n")
 }
 
 // skippedBefore returns the latest skipped run step of the publish's task, before the publish step in any sequence, that ran in the location the publish will act in; it is nil when the publish may go ahead. When that location can't be resolved, any skipped step of the task counts and the clear check looks at the locations of its runs. A successful run of the task in the location that finished after the step was skipped clears the skip, whether it came from a sequence or from a plain `ensign run`. Run ids are stamped at creation and a retry is created after the steps queued behind it, so only finish times against SkippedAt say what came after; a step skipped before SkippedAt existed has none, and its skip stands.
@@ -1159,7 +1228,7 @@ func (sf *seqFile) failureReport(bridge string, seq *sequence) string {
 		if st.Status != "failed" {
 			continue
 		}
-		lines = append(lines, "- "+st.outcomeLine("failed", firstLine(st.Reason)))
+		lines = append(lines, "- "+st.publishLine("failed", firstLine(st.Reason)))
 		if st.Kind == "run" {
 			if len(st.runs()) > 1 {
 				for _, ru := range st.runs() {
@@ -1438,6 +1507,7 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 		ok, seq.Approved = true, true
 		text = fmt.Sprintf("%s approved (%d steps).", seq.label(), len(seq.Steps))
 		parts, err := sf.advanceParts(bridge, session)
+		reports := sf.takeReports()
 		heldSeq, held := sf.held()
 		if len(parts) > 0 {
 			text += " " + strings.Join(parts, "\n")
@@ -1449,6 +1519,9 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 			for _, n := range heldSeq.unreportedNotes(parts) {
 				text += "\n" + n
 			}
+		}
+		if len(reports) > 0 {
+			text += "\n\n" + strings.Join(reports, "\n\n")
 		}
 		text += "\n\nSequence rules: `ensign help sequence`."
 		return err
@@ -1485,13 +1558,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 		if advErr != nil {
 			advNote = "The sequence could not advance: " + advErr.Error()
 		}
-		var reports []string
-		for _, seq := range sf.Sequences {
-			if seq.Report != "" {
-				reports = append(reports, seq.Report)
-				seq.Report = ""
-			}
-		}
+		reports := sf.takeReports()
 		for _, seq := range sf.Sequences {
 			for _, st := range seq.Steps {
 				var todo string

@@ -2366,13 +2366,16 @@ func TestSequencePublishOfASkippedTaskIsCancelledInALaterSequence(t *testing.T) 
 		w.failRun(lead)
 		w.staleMarker(ws)
 		runGit(t, ws, "checkout", "-q", "task/auth-refactor")
-		out := w.mustSeq("skip", "1.1")
-		if !queuedFirst {
+		w.mustSeq("skip", "1.1")
+		var out string
+		if queuedFirst {
+			out = dig(w.stopHook(), "reason")
+		} else {
 			w.mustSeq("publish", task)
 			out = w.goContext()
 		}
-		if !strings.Contains(out, "step 2.1 (publish supernova/auth-refactor) cancelled: step 1.1 was skipped") {
-			t.Errorf("queuedFirst=%v: the output should name the cancel:\n%s", queuedFirst, out)
+		if !strings.Contains(out, "step 2.1 (publish supernova/auth-refactor) cancelled: step 1.1 was skipped") || strings.Contains(out, "Step 0/") {
+			t.Errorf("queuedFirst=%v: the session should be told of the cancel, with no position:\n%s", queuedFirst, out)
 		}
 		w.wantStatus("failed", "cancelled")
 		if got := runGit(t, ".", "--git-dir", remote, "rev-parse", "main"); got != mainBefore {
@@ -2883,7 +2886,19 @@ func TestSequenceStopThatAdvancesReportsAFailedPublishOnce(t *testing.T) {
 	}
 }
 
-func TestSequenceStopGivesASucceededPublishNoNote(t *testing.T) {
+// divergeRemote pushes a commit to the remote's main from another clone, so that a publish of the world's task is refused.
+func divergeRemote(t *testing.T, remote string) {
+	t.Helper()
+	other := filepath.Join(t.TempDir(), "other")
+	runGit(t, ".", "clone", "-q", remote, other)
+	write(t, filepath.Join(other, "news.txt"), "meanwhile\n")
+	runGit(t, other, "add", "news.txt")
+	runGit(t, other, "commit", "-q", "-m", "meanwhile")
+	runGit(t, other, "push", "-q", "origin", "main")
+}
+
+// publishAdvancedByTheRun is a run, publish, do sequence whose run has passed, so that the run's finish advanced the publish and its text was discarded.
+func publishAdvancedByTheRun(t *testing.T) (*world, string) {
 	w, ws, _, _ := githubWorld(t, "success", localTest)
 	task := "supernova/auth-refactor"
 	w.mustSeq("run", task)
@@ -2896,12 +2911,267 @@ func TestSequenceStopGivesASucceededPublishNoNote(t *testing.T) {
 		t.Fatalf("the run should pass: %s", why)
 	}
 	w.wantStatus("done", "done", "active")
+	return w, task
+}
+
+func TestSequenceStopCarriesAPublishTheRunAdvancedWithItsPositionOnce(t *testing.T) {
+	w, task := publishAdvancedByTheRun(t)
+	line := "Step 2/3: step 1.2 (publish " + task + ") done: "
 	reason := dig(w.stopHook(), "reason")
-	if !strings.Contains(reason, "last supernova chore") {
-		t.Errorf("the stop should carry the do step:\n%s", reason)
+	if !strings.Contains(reason, "last supernova chore") || strings.Count(reason, line) != 1 {
+		t.Errorf("the stop should carry the do step and the publish once:\n%s", reason)
 	}
-	if strings.Contains(reason, "(publish ") || strings.Contains(reason, "step 1.2") {
-		t.Errorf("a succeeded publish should get no note:\n%s", reason)
+	if reason := dig(w.stopHook(), "reason"); strings.Contains(reason, "(publish ") {
+		t.Errorf("the publish has been delivered:\n%s", reason)
+	}
+}
+
+func TestSequencePromptDeliversAPublishTheRunAdvancedOnce(t *testing.T) {
+	w, task := publishAdvancedByTheRun(t)
+	line := "Step 2/3: step 1.2 (publish " + task + ") done: "
+	res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "what happened?"})
+	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); strings.Count(ctx, line) != 1 {
+		t.Errorf("the prompt should carry the publish once: %v", res)
+	}
+	if reason := dig(w.stopHook(), "reason"); strings.Contains(reason, "(publish ") {
+		t.Errorf("the stop repeats the publish:\n%s", reason)
+	}
+	res, _ = w.hook("UserPromptSubmit", map[string]any{"prompt": "and now?"})
+	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); strings.Contains(ctx, "(publish ") {
+		t.Errorf("the next prompt repeats the publish: %v", res)
+	}
+}
+
+func TestSequenceSessionWordLeavesTheQueuedReportToTheNextStop(t *testing.T) {
+	w, task := publishAdvancedByTheRun(t)
+	res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "help"})
+	if res["continue"] != false {
+		t.Fatalf("help should be answered by the hook: %v", res)
+	}
+	if strings.Contains(fmt.Sprint(res), "(publish ") {
+		t.Errorf("the session word's reply carries the report: %v", res)
+	}
+	if reason := dig(w.stopHook(), "reason"); strings.Count(reason, "(publish "+task+") done: ") != 1 {
+		t.Errorf("the stop should still deliver the publish:\n%s", reason)
+	}
+}
+
+// failedPublishAdvancedByTheRun is a stop-mode sequence whose publish was refused when the run's finish advanced it.
+func failedPublishAdvancedByTheRun(t *testing.T, then ...string) (*world, string) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	for _, c := range then {
+		w.mustSeq("do", c)
+	}
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	divergeRemote(t, remote)
+	w.runStage()
+	if got := w.step(2).Status; got != "failed" {
+		t.Fatalf("the publish should fail, it is %s", got)
+	}
+	return w, task
+}
+
+func TestSequenceStopReportsAFailedPublishInTheLastStepOnce(t *testing.T) {
+	w, task := failedPublishAdvancedByTheRun(t)
+	res := w.stopHook()
+	reason := dig(res, "reason")
+	if res["decision"] != "block" || strings.Count(reason, "Step 2/2: step 1.2 (publish "+task+") failed: ") != 1 {
+		t.Fatalf("the failed publish should reach the session once with its position: %v", res)
+	}
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Errorf("the failure has been delivered: %v", res)
+	}
+}
+
+func TestSequencePromptReportsAFailedPublishInTheLastStepOnce(t *testing.T) {
+	w, task := failedPublishAdvancedByTheRun(t)
+	res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "what happened?"})
+	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); strings.Count(ctx, "Step 2/2: step 1.2 (publish "+task+") failed: ") != 1 {
+		t.Fatalf("the failed publish should reach the session once with its position: %v", res)
+	}
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Errorf("the failure has been delivered: %v", res)
+	}
+}
+
+func TestSequenceFailedPublishWithALaterStepKeepsThePositionItWasShown(t *testing.T) {
+	w, task := failedPublishAdvancedByTheRun(t, "last supernova chore")
+	reason := dig(w.stopHook(), "reason")
+	if strings.Count(reason, "Step 2/3: step 1.2 (publish "+task+") failed: ") != 1 || strings.Contains(reason, "Step 2/2") {
+		t.Errorf("the position is the one shown when the earlier steps started:\n%s", reason)
+	}
+}
+
+func TestSequenceKeepGoingReportHasAFailedPublishOnceAndKeepsAnEarlierPublish(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.mustSeq("do", "last supernova chore")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	w.runStage()
+	w.wantStatus("done", "done", "active")
+	w.mustSeq("fail", "3", "--reason", "the chore could not be done")
+	if !readSeq(w.bridge, w.sid).Sequences[0].Closed {
+		t.Fatal("the failure closes the sequence")
+	}
+	reason := dig(w.stopHook(), "reason")
+	for _, want := range []string{"Step 2/3: step 1.2 (publish " + task + ") done: ", "step 1.3 (do last supernova chore) failed: the chore could not be done"} {
+		if strings.Count(reason, want) != 1 {
+			t.Errorf("the report should have %q once:\n%s", want, reason)
+		}
+	}
+}
+
+func TestSequenceKeepGoingReportListsAFailedPublishOnceWithItsPosition(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	divergeRemote(t, remote)
+	w.runStage()
+	w.wantStatus("done", "failed")
+	reason := dig(w.stopHook(), "reason")
+	if n := strings.Count(reason, "- Step 2/2: step 1.2 (publish "+task+") failed: "); n != 1 || strings.Count(reason, "ran in keep-going mode") != 1 {
+		t.Errorf("the report should list the failed publish once with its position:\n%s", reason)
+	}
+	if res := w.stopHook(); res["decision"] == "block" {
+		t.Errorf("the report has been delivered: %v", res)
+	}
+}
+
+func TestSequenceCancelledPublishInAStopSequenceIsDeliveredOnce(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	write(t, filepath.Join(ws, "lib.txt"), "two\n")
+	runGit(t, ws, "commit", "-q", "-am", "work")
+	w.failRun(lead)
+	w.staleMarker(ws)
+	runGit(t, ws, "checkout", "-q", "task/auth-refactor")
+	w.mustSeq("skip", "1.1")
+	w.mustSeq("publish", task)
+	w.mustSeq("do", "last supernova chore")
+	got := w.goContext()
+	for i := 0; i < 2; i++ {
+		got += "\n" + dig(w.stopHook(), "reason")
+	}
+	if n := strings.Count(got, "(publish "+task+") cancelled: step 1.1 was skipped"); n != 1 || strings.Contains(got, "Step 0/") {
+		t.Errorf("the cancelled publish should reach the session once, got %d:\n%s", n, got)
+	}
+}
+
+func TestSequenceKeepGoingFailedPublishSurvivesAHaltByHand(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	w.addTask("other")
+	if _, err := setWorkspace(w.bridge, "supernova/other", ws); err != nil {
+		t.Fatal(err)
+	}
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	divergeRemote(t, remote)
+	w.runStage()
+	w.wantStatus("done", "failed", "active")
+	w.spawn("", "", "orchestrator")
+	w.mustSeq("halt", "--reason", "enough")
+	w.mustSeq("do", "later supernova chore")
+	line := "Step 2/3: step 1.2 (publish " + task + ") failed: "
+	if ctx := w.goContext(); strings.Contains(ctx, "(publish ") {
+		t.Errorf("go leaves the halted sequence's publish to the close:\n%s", ctx)
+	}
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		sf.Sequences[0].Steps[2].Status = "cancelled"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if reason := dig(w.stopHook(), "reason"); strings.Count(reason, line) != 1 {
+		t.Errorf("the close should deliver the publish once with its position:\n%s", reason)
+	}
+	if reason := dig(w.stopHook(), "reason"); strings.Contains(reason, "(publish ") {
+		t.Errorf("the publish has been delivered:\n%s", reason)
+	}
+}
+
+func TestSequenceKeepGoingHaltByHandDeliversAFailedPublishOnce(t *testing.T) {
+	w, task := keepGoingFailedPublishWithAHeldDo(t)
+	w.mustSeq("halt", "--reason", "enough")
+	reason := dig(w.stopHook(), "reason")
+	if n := strings.Count(reason, "Step 2/3: step 1.2 (publish "+task+") failed: "); n != 1 || strings.Contains(reason, "ran in keep-going mode") {
+		t.Errorf("the halted sequence should deliver the publish once and give no failure report, got %d:\n%s", n, reason)
+	}
+	if reason := dig(w.stopHook(), "reason"); strings.Contains(reason, "(publish ") {
+		t.Errorf("the publish has been delivered:\n%s", reason)
+	}
+}
+
+// keepGoingFailedPublishWithAHeldDo is a keep-going run, publish, do sequence whose publish was refused when the run's finish advanced it, leaving the do step active.
+func keepGoingFailedPublishWithAHeldDo(t *testing.T) (*world, string) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.mustSeq("do", "last supernova chore")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	divergeRemote(t, remote)
+	w.runStage()
+	w.wantStatus("done", "failed", "active")
+	return w, task
+}
+
+func TestSequenceCLIAdvanceDoesNotPrintAQueuedPublish(t *testing.T) {
+	w, _, _, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("do", "first supernova chore")
+	w.mustSeq("publish", task)
+	w.mustSeq("do", "last supernova chore")
+	w.approve()
+	out := w.mustSeq("done", "1")
+	if strings.Contains(out, "(publish ") {
+		t.Errorf("the CLI should leave the publish to the report:\n%s", out)
+	}
+	if n := strings.Count(dig(w.stopHook(), "reason"), "(publish "+task+") "); n != 1 {
+		t.Errorf("the stop should deliver the publish once, got %d", n)
+	}
+	if reason := dig(w.stopHook(), "reason"); strings.Contains(reason, "(publish ") {
+		t.Errorf("the publish has been delivered:\n%s", reason)
+	}
+}
+
+func TestSequenceGoDeliversAFirstStepPublishOnce(t *testing.T) {
+	w, _, _, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("publish", task)
+	w.mustSeq("do", "last supernova chore")
+	ctx := w.goContext()
+	if n := strings.Count(ctx, "Step 1/2: step 1.1 (publish "+task+") "); n != 1 {
+		t.Errorf("the go reply should carry the publish once, got %d:\n%s", n, ctx)
+	}
+	if reason := dig(w.stopHook(), "reason"); strings.Contains(reason, "(publish ") {
+		t.Errorf("the stop repeats the publish:\n%s", reason)
 	}
 }
 
