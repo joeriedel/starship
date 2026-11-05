@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // HookInput is the part of Claude Code's hook payload that ensign reads.
@@ -612,7 +613,7 @@ var reportRe = regexp.MustCompile("(?s)```starship-report\\s*\\n(.*?)```")
 
 // parseReport extracts the outcome, summary and other fields from the last report block
 // in an agent's report. Each line is "key: value", split at the first colon, so a
-// summary may contain colons. A key may repeat; files is a comma-separated list.
+// summary may contain colons. A key may repeat; files is a comma-separated list whose entries may be double-quoted (see parseFileNames).
 func parseReport(msg string, s *Stage) (outcome, summary string, fields map[string][]string, problem string) {
 	all := reportRe.FindAllStringSubmatch(msg, -1)
 	if len(all) == 0 {
@@ -625,18 +626,19 @@ func parseReport(msg string, s *Stage) (outcome, summary string, fields map[stri
 			continue
 		}
 		key = strings.TrimSpace(strings.TrimLeft(key, "- "))
-		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		raw := strings.TrimSpace(val)
+		val = strings.Trim(raw, `"'`)
 		switch key {
 		case "outcome":
 			outcome = val
 		case "summary":
 			summary = val
 		case "files":
-			for _, f := range strings.Split(strings.Trim(val, "[]"), ",") {
-				if f = strings.Trim(strings.TrimSpace(f), `"'`); f != "" {
-					fields[key] = append(fields[key], f)
-				}
+			names, bad := parseFileNames(raw)
+			if bad != "" {
+				return "", "", nil, bad
 			}
+			fields[key] = append(fields[key], names...)
 		default:
 			if val != "" {
 				fields[key] = append(fields[key], val)
@@ -657,11 +659,63 @@ func parseReport(msg string, s *Stage) (outcome, summary string, fields map[stri
 	return outcome, summary, fields, ""
 }
 
+// parseFileNames splits the value of a files line. An entry may be wrapped in double quotes, inside which a double quote is written doubled and every other byte is literal; backslash is not an escape because reported Windows paths contain backslashes. Other entries run to the next comma and lose surrounding quotes. Empty names are dropped.
+func parseFileNames(val string) (names []string, problem string) {
+	if strings.HasPrefix(val, "[") && strings.HasSuffix(val, "]") {
+		val = val[1 : len(val)-1]
+	}
+	for i := 0; i < len(val); {
+		i = len(val) - len(strings.TrimLeftFunc(val[i:], unicode.IsSpace))
+		if i == len(val) {
+			break
+		}
+		if val[i] != '"' {
+			end := strings.IndexByte(val[i:], ',')
+			if end < 0 {
+				end = len(val) - i
+			}
+			if f := strings.Trim(strings.TrimSpace(val[i:i+end]), `"'`); f != "" {
+				names = append(names, f)
+			}
+			i += end + 1
+			continue
+		}
+		var name strings.Builder
+		i++
+		closed := false
+		for i < len(val) && !closed {
+			switch {
+			case val[i] == '"' && i+1 < len(val) && val[i+1] == '"':
+				name.WriteByte('"')
+				i += 2
+			case val[i] == '"':
+				closed = true
+				i++
+			default:
+				name.WriteByte(val[i])
+				i++
+			}
+		}
+		if !closed {
+			return nil, `Your report's files line has a double quote that is never closed. Wrap a file name in double quotes to include a comma, and write a double quote inside it as "".`
+		}
+		i = len(val) - len(strings.TrimLeftFunc(val[i:], unicode.IsSpace))
+		if i < len(val) && val[i] != ',' {
+			return nil, `Your report's files line has text after a closing double quote. A double-quoted file name must be followed by a comma or the end of the line; write a double quote inside it as "".`
+		}
+		i++
+		if name.Len() > 0 {
+			names = append(names, name.String())
+		}
+	}
+	return names, ""
+}
+
 func reportInstructions(s *Stage) string {
 	var extra string
 	for _, f := range s.ReportFields {
 		if f == "files" {
-			extra += "files: <every file you changed, comma-separated>\n"
+			extra += "files: <every file you changed, comma-separated; wrap a name that contains a comma in double quotes, writing a double quote inside it as \"\">\n"
 		} else {
 			extra += f + ": <" + f + ">\n"
 		}

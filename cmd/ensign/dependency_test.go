@@ -957,6 +957,24 @@ func TestCatalogCommitPassCommitsAFileNeedingQuoting(t *testing.T) {
 	}
 }
 
+func TestCatalogCommitPassCommitsAQuotedCommaName(t *testing.T) {
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	r := unitRun(t, ws)
+	write(t, filepath.Join(ws, "supernova", "a,b.txt"), "work\n")
+	stage := &Stage{Outcomes: Outcomes{{Name: "compiled"}}, ReportFields: []string{"files"}}
+	_, _, fields, problem := parseReport("```starship-report\noutcome: compiled\nfiles: \"supernova/a,b.txt\"\n```", stage)
+	if problem != "" {
+		t.Fatal(problem)
+	}
+	d := &Dispatch{ID: "d1", Summary: "added comma name", Fields: fields}
+	if err := catalogCommitPass(r, d); err != nil {
+		t.Fatal(err)
+	}
+	if got := runGit(t, ws, "show", "--name-only", "--format=", "HEAD"); got != "supernova/a,b.txt" {
+		t.Errorf("committed %q", got)
+	}
+}
+
 func TestCatalogCommitPassSurfacesAGitStatusFailure(t *testing.T) {
 	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
 	r := unitRun(t, ws)

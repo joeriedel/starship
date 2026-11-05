@@ -83,6 +83,18 @@ func TestStrayReportedByCoderIsCommitted(t *testing.T) {
 	committed(t, r, ws, "nova.dat")
 }
 
+func TestStrayReportedInQuotesWithACommaIsCommitted(t *testing.T) {
+	r, ws := strayRun(t)
+	write(t, filepath.Join(ws, "a,b.dat"), "ab\x00cd")
+	stage := &Stage{Outcomes: Outcomes{{Name: "compiled"}}, ReportFields: []string{"files"}}
+	_, _, fields, problem := parseReport("```starship-report\noutcome: compiled\nfiles: \"a,b.dat\"\n```", stage)
+	if problem != "" {
+		t.Fatal(problem)
+	}
+	r.State.Dispatches = []*Dispatch{{Role: "coder", Done: true, Fields: fields}}
+	committed(t, r, ws, "a,b.dat")
+}
+
 func TestStraySmallTextIsCommitted(t *testing.T) {
 	r, ws := strayRun(t)
 	write(t, filepath.Join(ws, "nova.txt"), "plain\n")

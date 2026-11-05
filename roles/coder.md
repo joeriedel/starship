@@ -96,7 +96,7 @@ Dense, not long — a line per item.
   you were told not to run is a deviation.
 - **Concerns** — things you noticed and left alone, with `path:line`
 
-Then the report block. `files` lists every file you changed, comma-separated.
+Then the report block. `files` lists every file you changed, comma-separated. Wrap a name that contains a comma in double quotes (`"a,b.txt"`), and write a double quote inside such a name as `""`; backslash is not an escape.
 
 ```starship-report
 outcome: compiled | broken | blocked
