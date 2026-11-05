@@ -1102,13 +1102,14 @@ func createTaskFiles(bridge, task, taskDir, content string, out io.Writer) error
 // openTask checks a task's workspace and VCS state, records it as the session's task,
 // and prints where it stands.
 func openTask(bridge, task, taskDir string, out io.Writer) error {
-	front, body, err := splitFrontmatter(filepath.Join(taskDir, "task.md"))
+	taskFile := filepath.Join(taskDir, "task.md")
+	front, body, err := splitFrontmatter(taskFile)
 	if err != nil {
 		return err
 	}
 	var tf TaskFile
 	if err := decodeFrontmatter(front, &tf); err != nil {
-		return err
+		return fmt.Errorf("%s: %v", taskFile, err)
 	}
 	fmt.Fprintf(out, "task       %s\n", task)
 	if p := subtaskProgress(bridge, task); p != "" {

@@ -131,7 +131,7 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 		}
 	}
 	if len(files) > 0 {
-		if err := git(ws, append([]string{"add", "--"}, files...)...); err != nil {
+		if err := git(ws, append([]string{"--literal-pathspecs", "add", "--"}, files...)...); err != nil {
 			return err
 		}
 	}

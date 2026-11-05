@@ -105,8 +105,7 @@ func collectLinks(bridge, project, taskFile string, front []byte) (links []Link,
 		}
 	}
 	var lf linksFile
-	// The opening --- line is dropped from front; the leading newline puts node lines back on their file lines.
-	if err := yaml.Unmarshal(append([]byte("\n"), front...), &lf); err != nil {
+	if err := decodeFrontmatter(front, &lf); err != nil {
 		problems = append(problems, fmt.Sprintf("%s: %v", relTo(bridge, taskFile), err))
 	} else if ls, err := parseLinks(&lf.Links, relTo(bridge, taskFile)); err != nil {
 		problems = append(problems, err.Error())

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"gopkg.in/yaml.v3"
 )
 
 // cmdTaskClose implements `ensign task close <project>/<task>`. It needs no run, workspace or pipeline, so it works the same for a task with and without code. The task's frontmatter `status: closed` is the once-only marker.
@@ -49,7 +48,7 @@ func cmdTaskClose(bridge, task string, out io.Writer) error {
 	var tf struct {
 		Status string `yaml:"status"`
 	}
-	if err := yaml.Unmarshal(append([]byte("\n"), front...), &tf); err != nil {
+	if err := decodeFrontmatter(front, &tf); err != nil {
 		return fmt.Errorf("%s: %v", taskFile, err)
 	}
 	if tf.Status == "closed" {

@@ -11,9 +11,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -560,7 +562,33 @@ func (c *Config) addRules(n *yaml.Node, label string) error {
 
 // decodeFrontmatter decodes the front returned by splitFrontmatter; the leading newline stands in for the dropped opening --- line, so node lines are file lines.
 func decodeFrontmatter(front []byte, out any) error {
-	return yaml.Unmarshal(append([]byte("\n"), front...), out)
+	err := yaml.Unmarshal(append([]byte("\n"), front...), out)
+	if err == nil {
+		return nil
+	}
+	m := yamlLineError.FindStringSubmatch(err.Error())
+	if m == nil || !yamlParserProblems[m[2]] {
+		return err
+	}
+	n, _ := strconv.Atoi(m[1])
+	return errors.New("yaml: line " + strconv.Itoa(n+1) + ": " + m[2])
+}
+
+// yamlLineError and yamlParserProblems exist because yaml.v3's parser.fail() formats parser errors from 0-based marks and adds 1 only for scanner errors, so parser errors name the line before the real one. The error carries no kind, only text, so the line is corrected by matching the whole problem string; scanner messages can also begin "did not find expected" and must not match.
+var yamlLineError = regexp.MustCompile(`^yaml: line (\d+): (.*)$`)
+
+var yamlParserProblems = map[string]bool{
+	"did not find expected <stream-start>":   true,
+	"did not find expected <document start>": true,
+	"did not find expected node content":     true,
+	"did not find expected '-' indicator":    true,
+	"did not find expected key":              true,
+	"did not find expected ',' or ']'":       true,
+	"did not find expected ',' or '}'":       true,
+	"found undefined tag handle":             true,
+	"found duplicate %YAML directive":        true,
+	"found duplicate %TAG directive":         true,
+	"found incompatible YAML document":       true,
 }
 
 func splitFrontmatter(path string) (front, body []byte, err error) {
@@ -652,7 +680,7 @@ func taskHasNoCode(bridge, project, task string) (bool, error) {
 		Pipeline string `yaml:"pipeline"`
 	}
 	front, _, err := splitFrontmatter(filepath.Join(bridge, "projects", project, "tasks", task, "task.md"))
-	if err != nil || yaml.Unmarshal(append([]byte("\n"), front...), &tf) != nil {
+	if err != nil || decodeFrontmatter(front, &tf) != nil {
 		return false, nil
 	}
 	if tf.Pipeline != "" {
@@ -718,8 +746,7 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 			return nil, fmt.Errorf("task %q: %v", t.Task, err)
 		}
 		var tf TaskFile
-		// splitFrontmatter drops the opening --- line; the leading newline puts node lines back on their file lines.
-		if err := yaml.Unmarshal(append([]byte("\n"), front...), &tf); err != nil {
+		if err := decodeFrontmatter(front, &tf); err != nil {
 			return nil, fmt.Errorf("%s: %v", taskFile, err)
 		}
 		if hasKey(front, "platforms") {
@@ -1011,7 +1038,7 @@ func loadTaskEvents(bridge, task string) (*Config, error) {
 		return nil, fmt.Errorf("task %q: %v", task, err)
 	}
 	var tf TaskFile
-	if err := yaml.Unmarshal(append([]byte("\n"), front...), &tf); err != nil {
+	if err := decodeFrontmatter(front, &tf); err != nil {
 		return nil, fmt.Errorf("%s: %v", taskFile, err)
 	}
 	if err := c.mergeLayers([]layerEntry{bl, pl, {"task:" + relTo(bridge, taskFile), taskFile, tf.Layer}}); err != nil {
@@ -1495,6 +1522,20 @@ func docsPathProblem(p string) string {
 	return ""
 }
 
+// docsBindingProblems is what a run refuses in the merged @docs binding: a command or guidance, and bad paths.
+func docsBindingProblems(b Binding) []string {
+	var probs []string
+	if b.Command != "" || b.Guidance != "" {
+		probs = append(probs, "binding @docs must list paths or be not-applicable, not a command or guidance")
+	}
+	for _, d := range b.Paths {
+		if why := docsPathProblem(d); why != "" {
+			probs = append(probs, fmt.Sprintf("binding @docs: path %q %s", d, why))
+		}
+	}
+	return probs
+}
+
 // validate checks everything a run depends on before it starts.
 func validate(c *Config) []string {
 	var errs []string
@@ -1537,14 +1578,7 @@ func validate(c *Config) []string {
 		}
 	}
 	if b, ok := c.Bindings["docs"]; ok {
-		if b.Command != "" || b.Guidance != "" {
-			add("binding @docs must list paths or be not-applicable, not a command or guidance")
-		}
-		for _, d := range b.Paths {
-			if why := docsPathProblem(d); why != "" {
-				add("binding @docs: path %q %s", d, why)
-			}
-		}
+		errs = append(errs, docsBindingProblems(b)...)
 	}
 	for _, r := range p.FreeRoles {
 		if !c.roleExists(r) {

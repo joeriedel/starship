@@ -855,3 +855,126 @@ func TestShippedReviewedRecordIsNotChecked(t *testing.T) {
 		t.Errorf("an invalid recorded location value should not blank the report:\n%s", got)
 	}
 }
+
+func shippedDocs(extra, docs string) string {
+	return "bindings:\n  build: { command: \"./build.sh\" }\n  test: { command: \"./" + extra + ".sh\" }\n  docs: " + docs + "\n"
+}
+
+func TestShippedDocsAValueARunRefusesIsReported(t *testing.T) {
+	cases := map[string]string{
+		"command":  "{ command: ./gen.sh }",
+		"guidance": "{ guidance: write them up }",
+		"bad path": "{ paths: [../x] }",
+	}
+	for name, docs := range cases {
+		t.Run(name, func(t *testing.T) {
+			w, ws := shippedWorld(t, bridgeSettings, shippedDocs("other", docs))
+			got := openShipped(t, w)
+			if strings.Contains(got, "can't compare") || !strings.Contains(got, "binding docs: a run would refuse this: binding @docs") || strings.Contains(got, "binding docs: changed") || strings.Contains(got, "binding docs: not in") {
+				t.Errorf("a docs value a run would refuse should say so:\n%s", got)
+			}
+			if !strings.Contains(got, "binding test: changed") {
+				t.Errorf("other drift should still be listed:\n%s", got)
+			}
+			// a reviewed record holding the value does not silence it
+			write(t, reviewedFile(w.bridge, "supernova"), "bindings:\n  docs: "+docs+"\n  test: { command: ./other.sh }\n")
+			got = openShipped(t, w)
+			if !strings.Contains(got, "binding docs: a run would refuse this:") || strings.Contains(got, "binding test:") {
+				t.Errorf("the reviewed record should silence the other drift only:\n%s", got)
+			}
+			// the bridge holding the same value is not drift
+			write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"), "platforms: [linux]\n"+shippedDocs("other", docs))
+			if got := openShipped(t, w); strings.Contains(got, "binding docs") {
+				t.Errorf("a value equal to the bridge's is not drift:\n%s", got)
+			}
+			write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"), bridgeSettings)
+			os.Remove(reviewedFile(w.bridge, "supernova"))
+			err := cmdProject([]string{"reviewed", "supernova/auth-refactor"}, &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), filepath.Join(ws, ".starship", "project.yaml")) || !strings.Contains(err.Error(), "binding @docs") {
+				t.Errorf("project reviewed should refuse, naming the file and the problem: %v", err)
+			}
+			if _, err := os.Stat(reviewedFile(w.bridge, "supernova")); err == nil {
+				t.Error("project reviewed should write nothing")
+			}
+		})
+	}
+}
+
+func TestShippedDocsRefusedTrailerSaysToFixFirst(t *testing.T) {
+	const fix = "Fix the docs binding in the code's .starship/project.yaml first"
+	const review = "ensign project reviewed supernova"
+	w, _ := shippedWorld(t, bridgeSettings, shippedDocs("other", "{ command: ./gen.sh }"))
+	got := openShipped(t, w)
+	if !strings.Contains(got, fix) || strings.Contains(got, "Review these") || strings.Contains(got, review) {
+		t.Errorf("the refused report should say to fix docs first:\n%s", got)
+	}
+	// the bridge holding the same bad value leaves no refused line, but project reviewed still refuses
+	write(t, filepath.Join(w.bridge, "projects/supernova/project.yaml"), "platforms: [linux]\n"+shippedDocs("test", "{ command: ./gen.sh }"))
+	got = openShipped(t, w)
+	if !strings.Contains(got, "binding test: changed") || strings.Contains(got, "a run would refuse") || !strings.Contains(got, fix) || strings.Contains(got, review) {
+		t.Errorf("a bad docs equal to the bridge's plus other drift should say to fix docs first:\n%s", got)
+	}
+
+	w = locationsWorld(t)
+	task := locTask(t, w, "both", "client,server")
+	locShipped(t, w, "client", locShippedClient)
+	locShipped(t, w, "server", locShippedServer+"  docs: { command: ./gen.sh }\n")
+	got = openLocShipped(t, w, task)
+	if !strings.Contains(got, fix) || strings.Contains(got, "Review these") || strings.Contains(got, "--location") {
+		t.Errorf("the location's refused report should say to fix docs first:\n%s", got)
+	}
+}
+
+func TestShippedOrdinaryDriftKeepsReviewTrailer(t *testing.T) {
+	w, _ := shippedWorld(t, bridgeSettings, shippedDocs("other", "{ paths: [docs] }"))
+	got := openShipped(t, w)
+	if !strings.Contains(got, "Review these with the user, then run `ensign project reviewed supernova` to mark them reviewed.") || strings.Contains(got, "Fix the docs binding") {
+		t.Errorf("ordinary drift should keep the review trailer:\n%s", got)
+	}
+}
+
+func TestShippedDocsAValueARunRefusesBlocksReviewedAtLocations(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "both", "client,server")
+	locShipped(t, w, "client", locShippedClient)
+	locShipped(t, w, "server", locShippedServer+"  docs: { command: ./gen.sh }\n")
+	got := openLocShipped(t, w, task)
+	if strings.Contains(got, "can't compare") || !strings.Contains(got, "binding docs: a run would refuse this:") {
+		t.Errorf("the location's docs value should be reported as refused:\n%s", got)
+	}
+	err := cmdProject([]string{"reviewed", task}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "binding @docs") {
+		t.Errorf("project reviewed should refuse: %v", err)
+	}
+	if _, err := os.Stat(reviewedFile(w.bridge, "supernova")); err == nil {
+		t.Error("nothing should be written when any location has the problem")
+	}
+}
+
+func TestShippedDocsPathsAndNotApplicableAreOrdinaryDrift(t *testing.T) {
+	for _, docs := range []string{"{ paths: [docs] }", `{ not-applicable: "no docs" }`} {
+		w, _ := shippedWorld(t, bridgeSettings, shippedDocs("test", docs))
+		got := openShipped(t, w)
+		if !strings.Contains(got, "binding docs: not in the bridge's copy") || strings.Contains(got, "refuse") {
+			t.Errorf("%s should be ordinary drift:\n%s", docs, got)
+		}
+		if err := cmdProject([]string{"reviewed", "supernova/auth-refactor"}, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if got := openShipped(t, w); strings.Contains(got, "shipped") {
+			t.Errorf("recording should silence %s:\n%s", docs, got)
+		}
+	}
+}
+
+func TestShippedDocsOnlyAnotherPlatformsVariantIsNotFlagged(t *testing.T) {
+	docs := "{ " + otherOS() + ": { command: ./gen.sh } }"
+	w, _ := shippedWorld(t, bridgeSettings, shippedDocs("test", docs))
+	got := openShipped(t, w)
+	if strings.Contains(got, "refuse") || strings.Contains(got, "can't compare") {
+		t.Errorf("another platform's variant should not be flagged:\n%s", got)
+	}
+	if err := cmdProject([]string{"reviewed", "supernova/auth-refactor"}, &bytes.Buffer{}); err != nil {
+		t.Error(err)
+	}
+}

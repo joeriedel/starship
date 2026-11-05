@@ -20,6 +20,8 @@ type shippedSettings struct {
 	Pipelines map[string]any
 	Use       []string
 	Rules     []string
+	// docsProblems is what a run would refuse in this file's own docs binding; it is not compared or recorded.
+	docsProblems []string
 }
 
 const reviewedHeader = `# The shipped settings (the code's .starship/project.yaml) last reviewed for this project.
@@ -222,7 +224,8 @@ func containsName(list []string, s string) bool {
 	return false
 }
 
-func driftOf(kind string, shipped, bridge, reviewed map[string]any) []string {
+// driftOf lists the shipped values that differ from the bridge's and are not in the reviewed record. A name in refused is reported with its reason instead, and the reviewed record does not silence it.
+func driftOf(kind string, shipped, bridge, reviewed map[string]any, refused map[string]string) []string {
 	names := make([]string, 0, len(shipped))
 	for n := range shipped {
 		names = append(names, n)
@@ -233,6 +236,10 @@ func driftOf(kind string, shipped, bridge, reviewed map[string]any) []string {
 		v := shipped[n]
 		b, inBridge := bridge[n]
 		if inBridge && reflect.DeepEqual(v, b) {
+			continue
+		}
+		if why, ok := refused[n]; ok {
+			lines = append(lines, fmt.Sprintf("%s %s: a run would refuse this: %s", kind, n, why))
 			continue
 		}
 		if r, ok := reviewed[n]; ok && reflect.DeepEqual(v, r) {
@@ -261,7 +268,30 @@ func decodeSettings(path string, blk settingsBlock, check bool) (shippedSettings
 	if err != nil {
 		return shippedSettings{}, err
 	}
-	return shippedSettings{b, p, blk.Use, r}, nil
+	var docs []string
+	if check {
+		docs = docsProblemsOf(&blk.Bindings)
+	}
+	return shippedSettings{Bindings: b, Pipelines: p, Use: blk.Use, Rules: r, docsProblems: docs}, nil
+}
+
+// docsProblemsOf applies the @docs rules a run enforces to one file's docs binding. Only the shipped file is judged this way: a run judges the merged config, so a bridge layer may be overridden later. A binding with no variant for this machine, or one parseBinding refuses (bindingsFrom has already reported that), has no problem here.
+func docsProblemsOf(n *yaml.Node) []string {
+	entries, err := bindingEntries(n)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if e.name != "docs" {
+			continue
+		}
+		b, err := parseBinding(e.val, fmt.Sprintf("line %d", e.key.Line))
+		if err != nil {
+			return nil
+		}
+		return docsBindingProblems(b)
+	}
+	return nil
 }
 
 // effectiveSettings is what the bridge holds for a location: the project's settings with the location's bindings laid over the project's, as sideBindings does at run time (the location's layer comes after the project's, so it wins), and the location's rules added to the project's.
@@ -335,10 +365,11 @@ func readReviewed(bridge, project, location string) (shippedSettings, error) {
 // shippedDrift lists what the code's shipped settings have that the bridge's copy lacks
 // and the reviewed record doesn't cover. It is nil when the code ships no file.
 // A non-empty location compares against that location's effective settings and reviewed entry.
-func shippedDrift(bridge, project, ws, location string) ([]string, error) {
+// The bool is true when the shipped docs binding has a problem a run would refuse.
+func shippedDrift(bridge, project, ws, location string) ([]string, bool, error) {
 	shipped, ok, err := readSettings(filepath.Join(ws, filepath.FromSlash(shippedProjectFile)))
 	if err != nil || !ok {
-		return nil, err
+		return nil, false, err
 	}
 	var mine shippedSettings
 	if location == "" {
@@ -347,14 +378,18 @@ func shippedDrift(bridge, project, ws, location string) ([]string, error) {
 		mine, err = effectiveSettings(bridge, project, location)
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	reviewed, err := readReviewed(bridge, project, location)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	lines := driftOf("binding", shipped.Bindings, mine.Bindings, reviewed.Bindings)
-	lines = append(lines, driftOf("pipeline", shipped.Pipelines, mine.Pipelines, reviewed.Pipelines)...)
+	var refused map[string]string
+	if len(shipped.docsProblems) > 0 {
+		refused = map[string]string{"docs": strings.Join(shipped.docsProblems, "; ")}
+	}
+	lines := driftOf("binding", shipped.Bindings, mine.Bindings, reviewed.Bindings, refused)
+	lines = append(lines, driftOf("pipeline", shipped.Pipelines, mine.Pipelines, reviewed.Pipelines, nil)...)
 	for _, u := range shipped.Use {
 		if !containsName(mine.Use, u) && !containsName(reviewed.Use, u) {
 			lines = append(lines, fmt.Sprintf("extension %s: not in the bridge's copy", u))
@@ -365,12 +400,12 @@ func shippedDrift(bridge, project, ws, location string) ([]string, error) {
 			lines = append(lines, fmt.Sprintf("rule %q: not in the bridge's copy", r))
 		}
 	}
-	return lines, nil
+	return lines, len(shipped.docsProblems) > 0, nil
 }
 
 // printShippedDrift is the part of `task open` that reports shipped-settings drift; it never fails.
 func printShippedDrift(bridge, project, ws, location string, out io.Writer) {
-	lines, err := shippedDrift(bridge, project, ws, location)
+	lines, docsBad, err := shippedDrift(bridge, project, ws, location)
 	if err != nil {
 		if location != "" {
 			fmt.Fprintf(out, "shipped    location %s: can't compare: %v\n", location, err)
@@ -390,7 +425,9 @@ func printShippedDrift(bridge, project, ws, location string, out io.Writer) {
 	for _, l := range lines {
 		fmt.Fprintf(out, "             %s\n", l)
 	}
-	if location != "" {
+	if docsBad {
+		fmt.Fprintf(out, "           Fix the docs binding in the code's %s first: `ensign project reviewed` refuses until then.\n", shippedProjectFile)
+	} else if location != "" {
 		fmt.Fprintf(out, "           Review these with the user, then run `ensign project reviewed %s --location %s` to mark them reviewed.\n", project, location)
 	} else {
 		fmt.Fprintf(out, "           Review these with the user, then run `ensign project reviewed %s` to mark them reviewed.\n", project)
@@ -448,6 +485,9 @@ func cmdProjectReviewed(arg, onlyLocation string, out io.Writer) error {
 		if !ok {
 			return fmt.Errorf("the code in %s ships no %s", ws, shippedProjectFile)
 		}
+		if len(shipped.docsProblems) > 0 {
+			return fmt.Errorf("%s: a run would refuse this: %s", filepath.Join(ws, filepath.FromSlash(shippedProjectFile)), strings.Join(shipped.docsProblems, "; "))
+		}
 		data, err := yaml.Marshal(settingsRecord(shipped))
 		if err != nil {
 			return err
@@ -466,13 +506,14 @@ func cmdProjectReviewed(arg, onlyLocation string, out io.Writer) error {
 		}
 		names = []string{onlyLocation}
 	} else if task != "" {
-		front, _, err := splitFrontmatter(filepath.Join(bridge, "projects", project, "tasks", task, "task.md"))
+		taskFile := filepath.Join(bridge, "projects", project, "tasks", task, "task.md")
+		front, _, err := splitFrontmatter(taskFile)
 		if err != nil {
 			return err
 		}
 		var tf TaskFile
-		if err := yamlUnmarshal(append([]byte("\n"), front...), &tf); err != nil {
-			return err
+		if err := decodeFrontmatter(front, &tf); err != nil {
+			return fmt.Errorf("%s: %v", taskFile, err)
 		}
 		if len(tf.Locations) > 0 {
 			names = tf.Locations
@@ -486,6 +527,9 @@ func cmdProjectReviewed(arg, onlyLocation string, out io.Writer) error {
 			shipped, ok, rerr := readSettings(filepath.Join(folder, filepath.FromSlash(shippedProjectFile)))
 			if rerr != nil {
 				return rerr
+			}
+			if ok && len(shipped.docsProblems) > 0 {
+				return fmt.Errorf("%s: a run would refuse this: %s", filepath.Join(folder, filepath.FromSlash(shippedProjectFile)), strings.Join(shipped.docsProblems, "; "))
 			}
 			if ok {
 				entries[name] = settingsRecord(shipped)

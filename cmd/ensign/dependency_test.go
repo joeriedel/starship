@@ -957,6 +957,33 @@ func TestCatalogCommitPassCommitsAFileNeedingQuoting(t *testing.T) {
 	}
 }
 
+func TestCatalogCommitPassStagesOnlyLiteralNames(t *testing.T) {
+	cases := []struct{ name, reported, sibling string }{
+		{"bracket", "supernova/a[b].txt", "supernova/ab.txt"},
+		{"star", "supernova/a*.txt", "supernova/ab.txt"},
+		{"colon", ":(glob)x.txt", "x.txt"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.name != "bracket" && runtime.GOOS == "windows" {
+				t.Skip("the name can't exist on Windows")
+			}
+			ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+			r := unitRun(t, ws)
+			write(t, filepath.Join(ws, c.reported), "work\n")
+			write(t, filepath.Join(ws, c.sibling), "other\n")
+			d := &Dispatch{ID: "d1", Summary: "added", Fields: map[string][]string{"files": {c.reported}}}
+			err := catalogCommitPass(r, d)
+			if err == nil || !strings.Contains(err.Error(), "did not report: "+c.sibling) {
+				t.Fatalf("the unreported sibling should be the only stray: %v", err)
+			}
+			if got := runGit(t, ws, "-c", "core.quotepath=off", "diff", "--cached", "--name-only"); got != c.reported {
+				t.Errorf("staged %q, want only %q", got, c.reported)
+			}
+		})
+	}
+}
+
 func TestCatalogCommitPassCommitsAQuotedCommaName(t *testing.T) {
 	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
 	r := unitRun(t, ws)

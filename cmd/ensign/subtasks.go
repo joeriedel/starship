@@ -235,13 +235,14 @@ func pickSubtask(bridge string, o runOpts) (*chosenSubtask, error) {
 		}
 		return nil, nil
 	}
-	front, _, err := splitFrontmatter(filepath.Join(taskDir, "task.md"))
+	taskFile := filepath.Join(taskDir, "task.md")
+	front, _, err := splitFrontmatter(taskFile)
 	if err != nil {
 		return nil, fmt.Errorf("task %q: %v", o.task, err)
 	}
 	var tf TaskFile
 	if err := decodeFrontmatter(front, &tf); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %v", taskFile, err)
 	}
 	if err := checkSubtasks(subs, tf.Locations); err != nil {
 		return nil, err
