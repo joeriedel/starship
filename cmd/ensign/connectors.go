@@ -135,7 +135,11 @@ func mcpServersRefusal(bridge string, in *HookInput) string {
 	if _, writesDeclared, _ := bf.connectorWrites(); err != nil || (rules == nil && !writesDeclared) {
 		return ""
 	}
-	files, _ := filepath.Glob(filepath.Join(bridge, ".claude", "agents", "*.md"))
+	agents := filepath.Join(bridge, ".claude", "agents")
+	files, err := filesIn(agents, ".md")
+	if err != nil {
+		return fmt.Sprintf("role %s can't be dispatched: %s can't be listed to check its roles for mcpServers: %v", role, agents, err)
+	}
 	for _, f := range files {
 		stem := strings.TrimSuffix(filepath.Base(f), ".md")
 		data, err := os.ReadFile(f)
@@ -201,8 +205,8 @@ func connectorSignature(settings string) string {
 
 // agentsSignature is the connector-relevant state of a bridge's role definitions: which files there are and each one's frontmatter tools: value. Other edits to a role's prompt are not part of it.
 func agentsSignature(bridge string) string {
-	files, _ := filepath.Glob(filepath.Join(bridge, ".claude", "agents", "*.md"))
-	slices.Sort(files)
+	// A folder that cannot be listed has no channel here: the signature is compared before and after a sync, and an unreadable folder reads as no roles in both.
+	files, _ := filesIn(filepath.Join(bridge, ".claude", "agents"), ".md")
 	var sig strings.Builder
 	for _, f := range files {
 		data, _ := os.ReadFile(f)

@@ -285,7 +285,7 @@ func TestFactsForAMissingSkillAreHeld(t *testing.T) {
 	if got, _ := filepath.Glob(filepath.Join(w.bridge, "skills/pending/make")); len(got) != 0 {
 		t.Errorf("a fact for a missing skill must not be pending")
 	}
-	if held := proposedSkills(w.bridge); held["make"] != 1 {
+	if held, _ := proposedSkills(w.bridge); held["make"] != 1 {
 		t.Fatalf("held facts: %v", held)
 	}
 	if s := statusText(w.bridge, w.session); !strings.Contains(s, "make: 1 fact.") {
@@ -302,13 +302,13 @@ func TestFactsForAMissingSkillAreHeld(t *testing.T) {
 	if err := cmdSkill([]string{"new", "make", "--description", "GNU make: Makefiles"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !contains(knownSkills(w.bridge, repoRoot(t), ""), "make") {
+	if known, _ := knownSkills(w.bridge, repoRoot(t), ""); !contains(known, "make") {
 		t.Errorf("make should now be a skill")
 	}
 	if got, _ := filepath.Glob(filepath.Join(w.bridge, "skills/pending/make/*.yaml")); len(got) != 1 {
 		t.Errorf("the held fact should now be pending: %v", got)
 	}
-	if len(proposedSkills(w.bridge)) != 0 {
+	if held, _ := proposedSkills(w.bridge); len(held) != 0 {
 		t.Errorf("nothing should be held any more")
 	}
 

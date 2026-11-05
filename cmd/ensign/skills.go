@@ -4,11 +4,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -230,28 +231,40 @@ func proposedSkillDir(bridge, skill string) string {
 }
 
 // knownSkills lists every skill defined in the control plane, the bridge or the project.
-func knownSkills(bridge, cp, project string) []string {
+func knownSkills(bridge, cp, project string) ([]string, error) {
 	names := map[string]bool{}
 	for _, dir := range skillDirs(bridge, cp, project) {
-		found, _ := filepath.Glob(filepath.Join(dir, "*.md"))
+		found, err := filesIn(dir, ".md")
+		if err != nil {
+			return nil, fmt.Errorf("listing skills: %v", err)
+		}
 		for _, f := range found {
 			names[strings.TrimSuffix(filepath.Base(f), ".md")] = true
 		}
 	}
-	return sortedStrings(names)
+	return sortedStrings(names), nil
 }
 
 // proposedSkills counts the held facts for each skill that doesn't exist yet.
-func proposedSkills(bridge string) map[string]int {
+func proposedSkills(bridge string) (map[string]int, error) {
 	out := map[string]int{}
-	dirs, _ := os.ReadDir(filepath.Join(bridge, "skills", "proposed"))
+	dirs, err := os.ReadDir(filepath.Join(bridge, "skills", "proposed"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("listing skills/proposed: %v", err)
+	}
 	for _, d := range dirs {
-		files, _ := filepath.Glob(filepath.Join(bridge, "skills", "proposed", d.Name(), "*.yaml"))
-		if d.IsDir() && len(files) > 0 {
+		if !d.IsDir() {
+			continue
+		}
+		files, err := filesIn(filepath.Join(bridge, "skills", "proposed", d.Name()), ".yaml")
+		if err != nil {
+			return nil, fmt.Errorf("listing skills/proposed/%s: %v", d.Name(), err)
+		}
+		if len(files) > 0 {
 			out[d.Name()] = len(files)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // cmdSkill implements `ensign skill new <name> --description <text>` and
@@ -271,7 +284,11 @@ func cmdSkill(args []string, out io.Writer) error {
 	name, held := args[1], proposedSkillDir(bridge, args[1])
 	switch {
 	case args[0] == "discard" && len(args) == 2:
-		n := proposedSkills(bridge)[name]
+		proposed, err := proposedSkills(bridge)
+		if err != nil {
+			return err
+		}
+		n := proposed[name]
 		if n == 0 {
 			return fmt.Errorf("no facts are held for %q", name)
 		}
@@ -289,7 +306,11 @@ func cmdSkill(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if contains(knownSkills(bridge, cp, ""), name) {
+		known, err := knownSkills(bridge, cp, "")
+		if err != nil {
+			return err
+		}
+		if contains(known, name) {
 			return fmt.Errorf("skill %q already exists", name)
 		}
 		if windowsReserved(name) {
@@ -297,10 +318,13 @@ func cmdSkill(args []string, out io.Writer) error {
 		}
 		body := fmt.Sprintf("---\ndescription: %s\n---\n\n# %s\n\nWhat agents have established about %s, curated from their reports.\n",
 			yamlScalar(args[3]), name, name)
+		files, err := filesIn(held, ".yaml")
+		if err != nil {
+			return fmt.Errorf("listing the facts held for %s: %v", name, err)
+		}
 		if err := writeFile(filepath.Join(bridge, "skills", name+".md"), body); err != nil {
 			return err
 		}
-		files, _ := filepath.Glob(filepath.Join(held, "*.yaml"))
 		for _, f := range files {
 			dest := filepath.Join(pendingSkillDir(bridge, name), filepath.Base(f))
 			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
@@ -353,11 +377,20 @@ func recordFacts(r *RunFiles, d *Dispatch) {
 func generatorItems(c *Config, over string, rebuild bool) ([]string, error) {
 	switch over {
 	case "pending-skills":
-		dirs, _ := os.ReadDir(filepath.Join(c.Bridge, "skills", "pending"))
+		dirs, err := os.ReadDir(filepath.Join(c.Bridge, "skills", "pending"))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("listing skills/pending: %v", err)
+		}
 		var out []string
 		for _, d := range dirs {
-			files, _ := filepath.Glob(filepath.Join(c.Bridge, "skills", "pending", d.Name(), "*.yaml"))
-			if d.IsDir() && len(files) > 0 {
+			if !d.IsDir() {
+				continue
+			}
+			files, err := filesIn(filepath.Join(c.Bridge, "skills", "pending", d.Name()), ".yaml")
+			if err != nil {
+				return nil, fmt.Errorf("listing skills/pending/%s: %v", d.Name(), err)
+			}
+			if len(files) > 0 {
 				out = append(out, d.Name())
 			}
 		}
@@ -384,11 +417,13 @@ func generatorItems(c *Config, over string, rebuild bool) ([]string, error) {
 }
 
 // itemContext is what one branch of a generated parallel stage is given about its item.
-func itemContext(r *RunFiles, s *Stage, item string, d *Dispatch) string {
+func itemContext(r *RunFiles, s *Stage, item string, d *Dispatch) (string, error) {
 	switch s.Parallel.Over {
 	case "pending-skills":
-		files, _ := filepath.Glob(filepath.Join(pendingSkillDir(r.Snap.Bridge, item), "*.yaml"))
-		sort.Strings(files)
+		files, err := filesIn(pendingSkillDir(r.Snap.Bridge, item), ".yaml")
+		if err != nil {
+			return "", fmt.Errorf("listing the facts pending for %s: %v", item, err)
+		}
 		var facts []string
 		for _, f := range files {
 			data, _ := os.ReadFile(f)
@@ -403,7 +438,7 @@ func itemContext(r *RunFiles, s *Stage, item string, d *Dispatch) string {
 		}
 		cur, _ := os.ReadFile(learnedSkillFile(r.Snap.Bridge, item))
 		return fmt.Sprintf("## Skill: %s\n\n%s\n\n## Its learned entries now (K ids)\n\n```yaml\n%s```\n\n## Pending facts reported by agents\n\n```yaml\n%s\n```\n",
-			item, baseText, string(cur), strings.Join(facts, "\n---\n"))
+			item, baseText, string(cur), strings.Join(facts, "\n---\n")), nil
 	case "pending-documents":
 		return documentContext(r.Snap.Bridge, item, d)
 	case "unprocessed-sources":
@@ -429,14 +464,14 @@ func itemContext(r *RunFiles, s *Stage, item string, d *Dispatch) string {
 					p, err := locationPathFor(r.Snap.Bridge, r.Snap.Project, s.Location)
 					if err != nil {
 						text += fmt.Sprintf("This source is code in location %s, which has no folder recorded on this machine, so it cannot be read. Ask the user where that code is, never guess, then record it with `ensign workspace %s --location %s <path>`.\n", s.Location, r.Snap.Project, s.Location)
-						return text
+						return text, nil
 					}
 					ws = p
 				}
 				text += "Read the code at " + resolveRef(ws, s.Ref) + " — the files a person would hold up as the project's style.\n"
 			}
-			return text
+			return text, nil
 		}
 	}
-	return ""
+	return "", nil
 }

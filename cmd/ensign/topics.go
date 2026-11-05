@@ -15,7 +15,10 @@ func topicNames(bridge string) ([]string, error) {
 	if _, err := os.Stat(dir); err != nil {
 		return nil, fmt.Errorf("no help topics in this bridge; run ensign link")
 	}
-	found, _ := filepath.Glob(filepath.Join(dir, "*.md"))
+	found, err := filesIn(dir, ".md")
+	if err != nil {
+		return nil, fmt.Errorf("listing help topics: %v", err)
+	}
 	var names []string
 	for _, f := range found {
 		names = append(names, strings.TrimSuffix(filepath.Base(f), ".md"))

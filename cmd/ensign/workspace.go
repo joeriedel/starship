@@ -229,7 +229,11 @@ func migrateWorkspaces(bridge string) string {
 	var changed []string
 	var stripped []string
 	strip := func(path string) { stripped = append(stripped, path) }
-	projects, _ := filepath.Glob(filepath.Join(bridge, "projects", "*", "project.yaml"))
+	var listNotes []string
+	projects, err := projectFiles(bridge, "project.yaml")
+	if err != nil {
+		listNotes = append(listNotes, fmt.Sprintf("starship: could not list the projects to move their workspace paths: %v", err))
+	}
 	for _, pf := range projects {
 		project := filepath.Base(filepath.Dir(pf))
 		var l Layer
@@ -245,7 +249,10 @@ func migrateWorkspaces(bridge string) string {
 		}
 		strip(pf)
 	}
-	tasks, _ := filepath.Glob(filepath.Join(bridge, "projects", "*", "tasks", "*", "task.md"))
+	tasks, err := taskFiles(bridge)
+	if err != nil {
+		listNotes = append(listNotes, fmt.Sprintf("starship: could not list the tasks to move their workspace paths: %v", err))
+	}
 	for _, tf := range tasks {
 		task := filepath.Base(filepath.Dir(tf))
 		project := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(tf))))
@@ -269,7 +276,11 @@ func migrateWorkspaces(bridge string) string {
 		}
 		strip(tf)
 	}
-	for _, sf := range mustGlob(filepath.Join(bridge, "projects", "*", "style", "sources.yaml")) {
+	sources, err := projectFiles(bridge, "style", "sources.yaml")
+	if err != nil {
+		listNotes = append(listNotes, fmt.Sprintf("starship: could not list the projects to move their style sources: %v", err))
+	}
+	for _, sf := range sources {
 		project := filepath.Base(filepath.Dir(filepath.Dir(sf)))
 		src := loadSources(bridge, project)
 		edited := false
@@ -310,7 +321,7 @@ func migrateWorkspaces(bridge string) string {
 		changed = append(changed, ".gitignore")
 	}
 	if len(changed) == 0 {
-		return ""
+		return strings.Join(listNotes, "\n")
 	}
 	var commit, left []string
 	for _, f := range changed {
@@ -335,12 +346,7 @@ func migrateWorkspaces(bridge string) string {
 	if len(left) > 0 {
 		msg += " Commit these with the journal: " + strings.Join(left, ", ") + "."
 	}
-	return strings.TrimSpace(msg)
-}
-
-func mustGlob(pattern string) []string {
-	m, _ := filepath.Glob(pattern)
-	return m
+	return strings.TrimSpace(strings.Join(append([]string{msg}, listNotes...), "\n"))
 }
 
 // ignoreMachineFile adds machine.yaml to a bridge's .gitignore if it isn't there, and

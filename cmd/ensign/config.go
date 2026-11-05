@@ -1813,7 +1813,7 @@ type brokenExtension struct {
 
 func (e *brokenExtension) Error() string { return e.err.Error() }
 
-// scanExtensions is availableExtensions that also returns the extensions whose file is broken: one that does not decode, by the name it declares or, when none can be recovered, by its folder's name; and one that decodes without a name, by its folder's name unless a good extension or another broken one already has that key. A file that fails to decode has no name from the decode, so the name is recovered from its first column-0 name: line. A later extension of the same name, good or broken, decides the broken entry; the good map is as availableExtensions has always had it.
+// scanExtensions is availableExtensions that also returns the extensions whose file is broken: one that does not decode, by the name it declares or, when none can be recovered, by its folder's name; and one that decodes without a name, by its folder's name unless a good extension or another broken one already has that key. A file that fails to decode has no name from the decode, so the name is recovered from its first column-0 name: line. A later extension of the same name, good or broken, decides the broken entry. A later broken extension whose name was decoded or recovered also removes an earlier good one of that name from the good map, since it replaces it; one keyed only by its folder's name leaves good entries alone, because that name can equal an unrelated extension's.
 func scanExtensions(bridge, cp string) (map[string]*Extension, map[string]error) {
 	out := map[string]*Extension{}
 	broken := map[string]error{}
@@ -1828,7 +1828,11 @@ func scanExtensions(bridge, cp string) (map[string]*Extension, map[string]error)
 			out[b.Name] = &b
 			delete(broken, b.Name)
 		case err != nil:
-			broken[brokenKey(dir, b.Name)] = &brokenExtension{file: filepath.Join(dir, "extension.yaml"), err: err}
+			key, named := brokenKey(dir, b.Name)
+			if named {
+				delete(out, key)
+			}
+			broken[key] = &brokenExtension{file: filepath.Join(dir, "extension.yaml"), err: err}
 		case err == nil:
 			key, file := filepath.Base(dir), filepath.Join(dir, "extension.yaml")
 			_, isGood := out[key]
@@ -1841,15 +1845,15 @@ func scanExtensions(bridge, cp string) (map[string]*Extension, map[string]error)
 	return out, broken
 }
 
-// brokenKey is the name an extension that failed to decode goes by: the decoded name if any, else the name: line, else its folder's name.
-func brokenKey(dir, decoded string) string {
+// brokenKey is the name an extension that failed to decode goes by: the decoded name if any, else the name: line, else its folder's name. named is false for the folder's name, which no extension declared.
+func brokenKey(dir, decoded string) (key string, named bool) {
 	if decoded != "" {
-		return decoded
+		return decoded, true
 	}
 	if name := declaredName(filepath.Join(dir, "extension.yaml")); name != "" {
-		return name
+		return name, true
 	}
-	return filepath.Base(dir)
+	return filepath.Base(dir), false
 }
 
 // declaredName reads the name: line of a file that failed to decode as a whole, or "" when there is none or the file cannot be read. It accepts a UTF-8 BOM and UTF-16, with or without a BOM, which Windows editors write.
@@ -1955,6 +1959,65 @@ func filesIn(dir, suffix string) ([]string, error) {
 	return out, nil
 }
 
+// subDirs lists the folders in dir as paths, in name order, following symlinks to folders and skipping files. A missing dir has none.
+func subDirs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		p := filepath.Join(dir, e.Name())
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// projectFiles lists projects/*/<rel> that exist, in project order. A dangling symlink exists.
+func projectFiles(bridge string, rel ...string) ([]string, error) {
+	projects, err := subDirs(filepath.Join(bridge, "projects"))
+	var out []string
+	for _, p := range projects {
+		f := filepath.Join(append([]string{p}, rel...)...)
+		if _, lerr := os.Lstat(f); lerr == nil {
+			out = append(out, f)
+		}
+	}
+	return out, err
+}
+
+// taskFiles lists projects/*/tasks/*/task.md that exist, in project then task order. A project whose tasks is not a folder has none.
+func taskFiles(bridge string) ([]string, error) {
+	projects, err := subDirs(filepath.Join(bridge, "projects"))
+	var out []string
+	var errs []error
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, p := range projects {
+		tasks, terr := subDirs(filepath.Join(p, "tasks"))
+		if terr != nil {
+			if fi, serr := os.Stat(filepath.Join(p, "tasks")); serr == nil && !fi.IsDir() {
+				continue
+			}
+			errs = append(errs, terr)
+			continue
+		}
+		for _, t := range tasks {
+			f := filepath.Join(t, "task.md")
+			if _, lerr := os.Lstat(f); lerr == nil {
+				out = append(out, f)
+			}
+		}
+	}
+	return out, errors.Join(errs...)
+}
+
 // flatLine collapses all whitespace, newlines included, to single spaces.
 func flatLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
@@ -1987,7 +2050,7 @@ func brokenRoleLines(bridge, cp string) []string {
 			name = filepath.Base(dir)
 			err = fmt.Errorf("%s declares no name", file)
 		default:
-			name = brokenKey(dir, b.Name)
+			name, _ = brokenKey(dir, b.Name)
 			if _, ok := broken[name]; !ok {
 				continue
 			}

@@ -567,7 +567,7 @@ func TestTesterPromptListsSides(t *testing.T) {
 	if tester == nil {
 		t.Fatal("no test stage")
 	}
-	prompt := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil)
+	prompt, _ := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil)
 	client := loadMachine(w.bridge).Locations["supernova"]["client"]
 	for _, want := range []string{"side models: ", "side client: " + filepath.FromSlash(client), "side server: ",
 		"- @test: `cd " + shellQuote(filepath.FromSlash(client)) + " && ./client-test.sh`", "cross-location test", "./cross-test.sh"} {
@@ -580,7 +580,7 @@ func TestTesterPromptListsSides(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Snap = single
-	if p := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil); strings.Contains(p, "## Sides") {
+	if p, _ := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil); strings.Contains(p, "## Sides") {
 		t.Errorf("a single side needs no sides section")
 	}
 }
@@ -616,7 +616,7 @@ func TestTesterPromptShowsGuidanceSideBindings(t *testing.T) {
 	}
 	r := &RunFiles{Dir: filepath.Join(w.bridge, "run"), Snap: snap, State: &State{Run: snap.Run}}
 	tester, _, _ := snap.Pipeline.find("test")
-	prompt := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil)
+	prompt, _ := stagePrompt(r, &Dispatch{ID: "d1", Stage: "test"}, tester, "brief", nil)
 	if !strings.Contains(prompt, "- @test: run the client suite by hand") {
 		t.Errorf("tester prompt lacks the guidance binding:\n%s", prompt)
 	}
@@ -735,7 +735,7 @@ func TestStyleSourceInAnUnrecordedLocation(t *testing.T) {
 	src := loadSources(w.bridge, "supernova").Sources
 	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Project: "supernova", Workspace: client}, State: &State{Run: "r1"}}
 	st := &Stage{Parallel: &Parallel{Over: "unprocessed-sources"}}
-	text := itemContext(r, st, src[0].ID, &Dispatch{Fields: map[string][]string{}})
+	text, _ := itemContext(r, st, src[0].ID, &Dispatch{Fields: map[string][]string{}})
 	if strings.Contains(text, resolveRef(client, src[0].Ref)) {
 		t.Errorf("prompt points at the run's workspace:\n%s", text)
 	}
@@ -763,7 +763,7 @@ func TestStyleAbsoluteSourceIgnoresLocation(t *testing.T) {
 	}
 	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Project: "supernova", Workspace: client}, State: &State{Run: "r1"}}
 	st := &Stage{Parallel: &Parallel{Over: "unprocessed-sources"}}
-	text := itemContext(r, st, src.ID, &Dispatch{Fields: map[string][]string{}})
+	text, _ := itemContext(r, st, src.ID, &Dispatch{Fields: map[string][]string{}})
 	if !strings.Contains(text, filepath.ToSlash(outside)) || strings.Contains(text, "cannot be read") {
 		t.Errorf("prompt should point at the absolute path:\n%s", text)
 	}

@@ -437,7 +437,10 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 		return nil, err
 	}
 	files[".starship/session.md"] = manual
-	topics, _ := filepath.Glob(filepath.Join(cp, "manual", "topics", "*.md"))
+	topics, err := filesIn(filepath.Join(cp, "manual", "topics"), ".md")
+	if err != nil {
+		return nil, err
+	}
 	for _, f := range topics {
 		data, err := os.ReadFile(f)
 		if err != nil {

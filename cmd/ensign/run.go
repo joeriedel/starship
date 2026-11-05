@@ -1121,6 +1121,10 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		}
 	}
 
+	known, err := knownSkills(bridge, c.ControlPlane, c.Project)
+	if err != nil {
+		return nil, err
+	}
 	label := strings.ReplaceAll(c.Task, "/", "-")
 	if label == "" {
 		label = strings.Trim(c.Project+"-"+c.Pipeline.Name, "-")
@@ -1150,7 +1154,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		Events:        c.Events,
 		Extensions:    c.Extensions,
 		Skills:        c.Skills,
-		KnownSkills:   knownSkills(bridge, c.ControlPlane, c.Project),
+		KnownSkills:   known,
 		Project:       c.Project,
 		Platforms:     c.Platforms,
 		Documentation: c.Documentation,

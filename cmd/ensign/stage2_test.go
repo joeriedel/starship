@@ -1458,8 +1458,8 @@ func TestScanExtensionsBridgeBrokenControlPlaneGood(t *testing.T) {
 	if broken["house"] == nil || broken["other"] == nil {
 		t.Errorf("broken = %v; want house (by its name) and other (by its folder)", broken)
 	}
-	if got := availableExtensions(bridge, cp); got["house"] == nil || got["house"].dir != filepath.Join(cp, "extensions", "house") {
-		t.Errorf("availableExtensions should keep the control-plane entry: %v (good=%v)", got, good)
+	if got := availableExtensions(bridge, cp); got["house"] != nil {
+		t.Errorf("availableExtensions should drop the control-plane entry the broken bridge extension replaces: %v (good=%v)", got, good)
 	}
 }
 

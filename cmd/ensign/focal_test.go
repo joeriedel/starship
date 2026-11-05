@@ -466,3 +466,18 @@ func TestFocalFileNamesABrokenExtension(t *testing.T) {
 		t.Errorf("readable extension: %q, %v", got, err)
 	}
 }
+
+func TestFocalFileSaysBrokenWhenTheBridgeBreaksTheControlPlaneExtension(t *testing.T) {
+	w := newWorld(t)
+	cp := t.TempDir()
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+cp+"\n")
+	write(t, filepath.Join(cp, "extensions", "focal-sheet", "extension.yaml"), "name: focal-sheet\n")
+	write(t, filepath.Join(cp, "extensions", "focal-sheet", "briefs", "x.md"), "text\n")
+	if got, err := focalFile(w.bridge, "briefs/x.md"); err != nil || got != "text\n" {
+		t.Fatalf("control-plane extension: %q, %v", got, err)
+	}
+	write(t, filepath.Join(w.bridge, "extensions", "my-focal", "extension.yaml"), "name: focal-sheet\nsummary: [a\n")
+	if _, err := focalFile(w.bridge, "briefs/x.md"); err == nil || !strings.Contains(err.Error(), "is broken") {
+		t.Errorf("a broken bridge extension over a good one: %v", err)
+	}
+}

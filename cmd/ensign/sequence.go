@@ -1998,7 +1998,10 @@ func releaseRun(bridge, session, arg string, out io.Writer) error {
 	if found, werr := finish(session); found || werr != nil {
 		return werr
 	}
-	files, _ := filepath.Glob(filepath.Join(filepath.Dir(seqPath(bridge, session)), "*.sequence"))
+	files, lerr := filesIn(filepath.Dir(seqPath(bridge, session)), ".sequence")
+	if lerr != nil {
+		return fmt.Errorf("listing the sessions' sequences: %v", lerr)
+	}
 	for _, f := range files {
 		owner := strings.TrimSuffix(filepath.Base(f), ".sequence")
 		if owner == session {

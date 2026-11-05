@@ -711,8 +711,11 @@ func updateHeartbeat(bridge string) {
 // the session needs to be told.
 func splitHistory(bridge string) string {
 	tracked := isGit(bridge)
-	files, _ := filepath.Glob(filepath.Join(bridge, "projects", "*", "tasks", "*", "task.md"))
+	files, lerr := taskFiles(bridge)
 	var moved, notes []string
+	if lerr != nil {
+		notes = append(notes, fmt.Sprintf("starship: could not list every task to split its progress log: %v", lerr))
+	}
 	for _, tf := range files {
 		func() {
 			dir := filepath.Dir(tf)

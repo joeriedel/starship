@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -386,12 +387,21 @@ func pendingDocuments(bridge string) ([]string, error) {
 	for _, d := range declared {
 		byName[d.Name] = d
 	}
-	dirs, _ := os.ReadDir(filepath.Join(bridge, "documents", "pending"))
+	dirs, err := os.ReadDir(filepath.Join(bridge, "documents", "pending"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("listing documents/pending: %v", err)
+	}
 	var out []string
 	var picked []DeclaredDocument
 	for _, e := range dirs {
-		files, _ := filepath.Glob(filepath.Join(pendingDocumentDir(bridge, e.Name()), "*.yaml"))
-		if !e.IsDir() || len(files) == 0 {
+		if !e.IsDir() {
+			continue
+		}
+		files, err := filesIn(pendingDocumentDir(bridge, e.Name()), ".yaml")
+		if err != nil {
+			return nil, fmt.Errorf("listing documents/pending/%s: %v", e.Name(), err)
+		}
+		if len(files) == 0 {
 			continue
 		}
 		d, ok := byName[e.Name()]
@@ -412,27 +422,32 @@ func pendingDocuments(bridge string) ([]string, error) {
 }
 
 // pendingDocumentInputs reads a document's waiting proposals: their text in file order, and their bridge-relative paths.
-func pendingDocumentInputs(bridge, name string) (texts, rels []string) {
-	files, _ := filepath.Glob(filepath.Join(pendingDocumentDir(bridge, name), "*.yaml"))
-	sort.Strings(files)
+func pendingDocumentInputs(bridge, name string) (texts, rels []string, err error) {
+	files, err := filesIn(pendingDocumentDir(bridge, name), ".yaml")
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing documents/pending/%s: %v", name, err)
+	}
 	for _, f := range files {
 		data, _ := os.ReadFile(f)
 		texts = append(texts, strings.TrimSpace(string(data)))
 		rel, _ := filepath.Rel(bridge, f)
 		rels = append(rels, filepath.ToSlash(rel))
 	}
-	return texts, rels
+	return texts, rels, nil
 }
 
 // documentContext is what the curator is given about one declared document.
-func documentContext(bridge, name string, d *Dispatch) string {
+func documentContext(bridge, name string, d *Dispatch) (string, error) {
 	decl, err := findDeclaredDocument(bridge, name)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	cur, _ := loadDocumentFile(decl.file(bridge))
 	entries, _ := yaml.Marshal(cur)
-	texts, rels := pendingDocumentInputs(bridge, name)
+	texts, rels, err := pendingDocumentInputs(bridge, name)
+	if err != nil {
+		return "", err
+	}
 	d.Fields["inputs"] = append(d.Fields["inputs"], rels...)
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Document: %s\n\n", name)
@@ -449,7 +464,7 @@ func documentContext(bridge, name string, d *Dispatch) string {
 		fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(format))
 	}
 	fmt.Fprintf(&b, "## Its entries now (D ids)\n\n```yaml\n%s```\n\n## Pending proposals\n\n```yaml\n%s\n```\n", entries, strings.Join(texts, "\n---\n"))
-	return b.String()
+	return b.String(), nil
 }
 
 // cmdDocument implements `ensign document propose <name> <text> [--evidence <text>]`. It prints the document's name, never the text.

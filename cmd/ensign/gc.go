@@ -164,7 +164,10 @@ func emptyDir(dir string) bool {
 // heldRuns returns the runs that open sequence steps still need: a failed step waits on its run for a retry, and a step left active points at its run. ok is false when a sequence file can't be read, and then gc must not delete anything because it can't tell which runs are needed.
 func heldRuns(bridge string) (held map[string]bool, ok bool) {
 	held = map[string]bool{}
-	files, _ := filepath.Glob(filepath.Join(bridge, ".starship", "sessions", "*.sequence"))
+	files, err := filesIn(filepath.Join(bridge, ".starship", "sessions"), ".sequence")
+	if err != nil {
+		return nil, false
+	}
 	for _, f := range files {
 		var sf seqFile
 		if err := readJSON(f, &sf); err != nil {

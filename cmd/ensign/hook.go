@@ -289,7 +289,11 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 		}
 		prompt = leadPrompt(r, d, s, original, extra)
 	} else {
-		prompt = stagePrompt(r, d, s, original, extra)
+		var perr error
+		if prompt, perr = stagePrompt(r, d, s, original, extra); perr != nil {
+			m.fail("ensign", perr.Error())
+			return deny(r, s.ID, "stage "+s.ID+" could not start: "+r.State.Reason), nil
+		}
 	}
 	updated := map[string]any{}
 	for k, v := range in.ToolInput {
@@ -845,13 +849,17 @@ func leadPrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []str
 	return b.String()
 }
 
-func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []string) string {
+func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []string) (string, error) {
 	var b strings.Builder
 	b.WriteString(tagLine(r.State.Run, d) + "\n\n## Stage: " + s.ID + "\n\n")
 	if d.Dim != "" && s.Parallel != nil && s.Parallel.Over == "dimensions" {
 		fmt.Fprintf(&b, "Your focus: **%s**.\n\n%s\n", d.Dim, r.Snap.Briefs["briefs/review/"+d.Dim+".md"])
 	} else if d.Dim != "" {
-		b.WriteString(itemContext(r, s, d.Dim, d) + "\n")
+		ctx, err := itemContext(r, s, d.Dim, d)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(ctx + "\n")
 	}
 	if s.Brief != "" {
 		b.WriteString(r.Snap.Briefs[s.Brief] + "\n")
@@ -879,7 +887,7 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 			"The skills are: " + strings.Join(r.Snap.KnownSkills, ", ") + ". " +
 			"If none fits, name the technology anyway; the fact is held for the user to decide whether it gets a skill.\n")
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // openRunByFlags opens the run named by --run, or the session's, from pairwise --bridge/--run flags. It returns nil when there is no such run.
