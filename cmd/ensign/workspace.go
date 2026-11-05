@@ -258,7 +258,7 @@ func migrateWorkspaces(bridge string) string {
 		project := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(tf))))
 		front, _, err := splitFrontmatter(tf)
 		var l Layer
-		if err != nil || yamlUnmarshal(front, &l) != nil || l.Workspace == "" {
+		if err != nil || decodeFrontmatter(front, &l) != nil || l.Workspace == "" {
 			continue
 		}
 		key := project + "/" + task

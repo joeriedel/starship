@@ -382,7 +382,7 @@ func splitToolTokens(v string) []string {
 	return tokens
 }
 
-// readerToolsProblem says why a role's own frontmatter tools: can't stand in for the reader's: it grants a shell or everything, or it doesn't list tools at all (a role with no list gets every tool). It is "" when the list is fine.
+// readerToolsProblem says why a role's own frontmatter tools: can't stand in for the reader's: it grants a shell, everything, or the Agent or Task tool (which can start a role that has a shell), or it doesn't list tools at all (a role with no list gets every tool). It is "" when the list is fine.
 func readerToolsProblem(label string, data []byte) string {
 	value, err := frontmatterToolsValue(label, data)
 	var tools []string
@@ -409,7 +409,7 @@ func readerToolsProblem(label string, data []byte) string {
 			continue
 		}
 		listed = true
-		if name == "*" || strings.EqualFold(name, "Bash") || strings.EqualFold(name, "PowerShell") {
+		if name == "*" || strings.EqualFold(name, "Bash") || strings.EqualFold(name, "PowerShell") || strings.EqualFold(name, "Agent") || strings.EqualFold(name, "Task") {
 			return fmt.Sprintf("its frontmatter tools: grants %s", strings.TrimSpace(t))
 		}
 	}
@@ -455,6 +455,8 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 	}
 	roles := map[string][]byte{}
 	sources := map[string]string{}
+	// effective is the name Claude Code knows each role by: its frontmatter name, or its file stem when there is none or it can't be read.
+	effective := map[string]string{}
 	cpRoles, err := filesIn(filepath.Join(cp, "roles"), ".md")
 	if err != nil {
 		return nil, err
@@ -469,6 +471,10 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 			continue
 		}
 		roles[name], sources[name] = data, f
+		effective[name] = name
+		if _, fmName, err := frontmatterMcpServers(f, data); err == nil && fmName != "" {
+			effective[name] = fmName
+		}
 	}
 	var bridgeRoles []string
 	for _, d := range append([]string{filepath.Join(bridge, "roles")}, extensionRoleDirs(bridge, cp)...) {
@@ -484,23 +490,44 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 			return nil, err
 		}
 		name := strings.TrimSuffix(filepath.Base(f), ".md")
-		if _, clash := roles[name]; clash {
-			m := frontmatterField("replaces").FindSubmatch(data)
-			if m == nil || strings.TrimSpace(string(m[1])) != name {
-				return nil, fmt.Errorf("%s: a role named %q already exists; declare `replaces: %s` to replace it", f, name, name)
-			}
-		}
 		// The hook matches agent_type, which is the frontmatter name; an unreadable frontmatter falls back to the file name and is reported by the check below.
 		agentType := name
 		if _, fmName, err := frontmatterMcpServers(f, data); err == nil && fmName != "" {
 			agentType = fmName
 		}
-		if _, declared := bf.Connectors["reader"]; declared && agentType == "reader" {
-			if why := readerToolsProblem(f, data); why != "" {
-				return nil, fmt.Errorf("%s: role %q replaces the reader, whose write limit holds only because it has no shell: %s", f, name, why)
+		// hits maps each existing role this file collides with to the names (file stem, frontmatter name) that hit it.
+		hits := map[string][]string{}
+		if _, ok := roles[name]; ok {
+			hits[name] = append(hits[name], name)
+		}
+		for _, k := range sortedKeys(roles) {
+			if effective[k] == agentType && !slices.Contains(hits[k], agentType) {
+				hits[k] = append(hits[k], agentType)
 			}
 		}
-		roles[name], sources[name] = data, f
+		replaced := sortedKeys(hits)
+		switch len(replaced) {
+		case 0:
+		case 1:
+			m := frontmatterField("replaces").FindSubmatch(data)
+			names := hits[replaced[0]]
+			if m == nil || !slices.Contains(names, strings.TrimSpace(string(m[1]))) {
+				return nil, fmt.Errorf("%s: a role named %q already exists; declare `replaces: %s` to replace it", f, names[0], names[0])
+			}
+		default:
+			return nil, fmt.Errorf("%s: roles named %q and %q already exist, and one replaces: can't replace both", f, hits[replaced[0]][0], hits[replaced[1]][0])
+		}
+		for _, k := range replaced {
+			delete(roles, k)
+			delete(sources, k)
+			delete(effective, k)
+		}
+		if _, declared := bf.Connectors["reader"]; declared && agentType == "reader" {
+			if why := readerToolsProblem(f, data); why != "" {
+				return nil, fmt.Errorf("%s: role %q replaces the reader, whose write limit holds only because it has no shell, and a role that can start other roles can reach one with a shell: %s", f, name, why)
+			}
+		}
+		roles[name], sources[name], effective[name] = data, f, agentType
 	}
 	if _, writesDeclared, _ := bf.connectorWrites(); len(rules) > 0 || writesDeclared {
 		for _, name := range sortedKeys(roles) {
@@ -900,7 +927,9 @@ func shippedProject(dir string) (string, []string, error) {
 		return "", nil, fmt.Errorf("%s in %s sets a workspace; that is the bridge's to decide", shippedProjectFile, dir)
 	}
 	var keys map[string]any
-	yamlUnmarshal(data, &keys)
+	if err := yamlUnmarshal(data, &keys); err != nil {
+		return "", nil, fmt.Errorf("%s in %s is not valid YAML: %v", shippedProjectFile, dir, err)
+	}
 	if _, has := keys["platforms"]; has && len(l.Platforms) == 0 {
 		return "", nil, fmt.Errorf("%s in %s declares an empty platforms:; fill it in there, e.g. platforms: [linux, macos, windows]", shippedProjectFile, dir)
 	}
@@ -913,7 +942,7 @@ func shippedProject(dir string) (string, []string, error) {
 		var loc struct {
 			Platforms yaml.Node `yaml:"platforms"`
 		}
-		node.Decode(&loc)
+		guardedDecode(func() error { return node.Decode(&loc) })
 		declared[name] = loc.Platforms
 	}
 	if err := refuseLocationPlatforms(fmt.Sprintf("%s in %s", shippedProjectFile, dir), declared); err != nil {

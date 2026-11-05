@@ -230,6 +230,10 @@ func TestReplacingReaderNeedsNoShell(t *testing.T) {
 		"Read Bash":              {front: "tools: Read Bash\n", refused: true},
 		"Read Bash(git:*)":       {front: "tools: Read Bash(git:*)\n", refused: true},
 		"Read *":                 {front: "tools: Read *\n", refused: true},
+		"Agent":                  {front: "tools: Agent\n", refused: true},
+		"task":                   {front: "tools: task\n", refused: true},
+		"Agent scoped":           {front: "tools: Agent(explorer)\n", refused: true},
+		"Read Agent":             {front: "tools: Read, Agent\n", refused: true},
 		"shell named reader":     {front: "tools: Bash, Read\n", refused: true, file: "shell", fmName: "reader"},
 		"reader named librarian": {front: "tools: Bash, Read\n", refused: false, file: "reader", fmName: "librarian"},
 	} {
@@ -297,6 +301,99 @@ func TestHasKey(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got := hasKey([]byte(c.doc), "connectors"); got != c.want {
 				t.Errorf("hasKey(%q) = %v, want %v", c.doc, got, c.want)
+			}
+		})
+	}
+}
+
+func TestReplacingByAgentName(t *testing.T) {
+	for name, c := range map[string]struct {
+		file, fmName, replaces string
+		rules                  string // bridge.yaml connectors; readerRules when empty
+		refused                bool
+		gone                   string // a stem that must not be generated
+		want                   string // the one stem generated under the agent name
+	}{
+		"name clash needs replaces":     {file: "shell", fmName: "reader", refused: true},
+		"name clash replaces":           {file: "shell", fmName: "reader", replaces: "reader", want: "shell", gone: "reader"},
+		"name clash replaces coder":     {file: "shell", fmName: "coder", rules: "use: []\n", replaces: "coder", want: "shell", gone: "coder"},
+		"name clash coder needs":        {file: "shell", fmName: "coder", rules: "use: []\n", refused: true},
+		"stem clash only":               {file: "reader", fmName: "librarian", replaces: "reader", want: "reader"},
+		"stem and other name clash":     {file: "coder", fmName: "reviewer", replaces: "coder", rules: "use: []\n", refused: true},
+		"undeclared reader, no clash":   {file: "shell", fmName: "reader", rules: "use: []\n", want: "shell"},
+		"wrong replaces for name clash": {file: "shell", fmName: "reader", replaces: "shell", refused: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rules := c.rules
+			if rules == "" {
+				rules = readerRules
+			}
+			w := connWorld(t, rules)
+			front := "tools: Read, Grep\n"
+			if c.replaces != "" {
+				front += "replaces: " + c.replaces + "\n"
+			}
+			write(t, filepath.Join(w.bridge, "roles", c.file+".md"), scoutRole(c.fmName, front, "\n"))
+			bf, err := loadBridgeFile(w.bridge)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files, err := generatedFiles(w.bridge, bf, repoRoot(t))
+			if (err != nil) != c.refused {
+				t.Fatalf("err=%v, want refused=%v", err, c.refused)
+			}
+			if c.refused {
+				return
+			}
+			named := 0
+			for path, data := range files {
+				if !strings.HasPrefix(path, ".claude/agents/") {
+					continue
+				}
+				if strings.Contains(string(data), "name: "+c.fmName+"\n") {
+					named++
+					if path != ".claude/agents/"+c.want+".md" {
+						t.Errorf("agent %q generated as %s, want stem %s", c.fmName, path, c.want)
+					}
+				}
+			}
+			if named != 1 {
+				t.Errorf("%d files named %q, want exactly one", named, c.fmName)
+			}
+			if _, ok := files[".claude/agents/"+c.gone+".md"]; c.gone != "" && ok && c.gone != c.want {
+				t.Errorf("the replaced role %s should not be generated", c.gone)
+			}
+		})
+	}
+}
+
+func TestReplacingOneRoleByStemAndName(t *testing.T) {
+	for name, c := range map[string]struct {
+		replaces string
+		refused  bool
+	}{
+		"no replaces":      {"", true},
+		"replaces stem":    {"scout", false},
+		"replaces name":    {"supernova-scout", false},
+		"replaces neither": {"other", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := connWorld(t, readerRules)
+			write(t, filepath.Join(w.bridge, "roles", "scout.md"), scoutRole("supernova-scout", "tools: Read, Grep\n", "\n"))
+			write(t, filepath.Join(w.bridge, "extensions", "house", "extension.yaml"), "name: house\n")
+			front := "tools: Read, Grep\n"
+			if c.replaces != "" {
+				front += "replaces: " + c.replaces + "\n"
+			}
+			write(t, filepath.Join(w.bridge, "extensions", "house", "roles", "scout.md"), scoutRole("supernova-scout", front, "\n"))
+			useExtension(t, w, "house")
+			bf, err := loadBridgeFile(w.bridge)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = generatedFiles(w.bridge, bf, repoRoot(t))
+			if (err != nil) != c.refused {
+				t.Fatalf("err=%v, want refused=%v", err, c.refused)
 			}
 		})
 	}

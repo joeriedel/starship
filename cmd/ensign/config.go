@@ -418,9 +418,12 @@ func loadBridgeFile(bridge string) (*BridgeFile, error) {
 		return nil, err
 	}
 	// An unknown key is refused so a misspelled declaration can't quietly do nothing. An empty file decodes to io.EOF.
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(&bf); err != nil && err != io.EOF {
+	err = guardedDecode(func() error {
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		return dec.Decode(&bf)
+	})
+	if err = correctParserLine(err); err != nil && err != io.EOF {
 		return nil, fmt.Errorf("%s: %v", path, err)
 	}
 	return &bf, nil
@@ -507,7 +510,7 @@ func readYAML(path string, out any) error {
 	if err != nil {
 		return err
 	}
-	if err := yaml.Unmarshal(data, out); err != nil {
+	if err := yamlUnmarshal(data, out); err != nil {
 		return fmt.Errorf("%s: %v", path, err)
 	}
 	return nil
@@ -560,9 +563,23 @@ func (c *Config) addRules(n *yaml.Node, label string) error {
 	return nil
 }
 
-// decodeFrontmatter decodes the front returned by splitFrontmatter; the leading newline stands in for the dropped opening --- line, so node lines are file lines.
+// decodeFrontmatter decodes the front returned by splitFrontmatter; the leading newline stands in for the dropped opening --- line, so node lines are file lines. The line correction is applied once, by yamlUnmarshal, to the prefixed text.
 func decodeFrontmatter(front []byte, out any) error {
-	err := yaml.Unmarshal(append([]byte("\n"), front...), out)
+	return yamlUnmarshal(append([]byte("\n"), front...), out)
+}
+
+// guardedDecode runs a decode and turns a panic into an error. yaml.v3 re-panics some malformed mappings (an unhashable key beside a merge key) rather than returning an error.
+func guardedDecode(decode func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("malformed mapping: %v", r)
+		}
+	}()
+	return decode()
+}
+
+// correctParserLine rewrites a parser-class yaml error to name the real line; other errors pass unchanged.
+func correctParserLine(err error) error {
 	if err == nil {
 		return nil
 	}
@@ -1776,7 +1793,10 @@ func (c *Config) roleExists(role string) bool {
 	return false
 }
 
-func yamlUnmarshal(data []byte, out any) error { return yaml.Unmarshal(data, out) }
+// yamlUnmarshal decodes a whole file, guarded against yaml.v3 panics and with parser-class line numbers corrected. Frontmatter goes through decodeFrontmatter, which supplies the line the dropped --- would have taken.
+func yamlUnmarshal(data []byte, out any) error {
+	return correctParserLine(guardedDecode(func() error { return yaml.Unmarshal(data, out) }))
+}
 
 func writeYAML(path string, v any) error {
 	data, err := yaml.Marshal(v)

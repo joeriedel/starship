@@ -149,12 +149,7 @@ func expandBindings(n *yaml.Node, active map[*yaml.Node]bool) ([]bindingEntry, e
 
 // decodeAny decodes a node into any. yaml.v3 re-panics some malformed mappings (an unhashable merge key under a non-string key) rather than returning an error, so a panic from the decode becomes one.
 func decodeAny(n *yaml.Node) (v any, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			v, err = nil, fmt.Errorf("malformed mapping: %v", r)
-		}
-	}()
-	err = n.Decode(&v)
+	err = guardedDecode(func() error { return n.Decode(&v) })
 	return v, err
 }
 
