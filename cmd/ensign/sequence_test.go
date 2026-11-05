@@ -4593,6 +4593,120 @@ func TestCarrySequenceSkipsAQueuedRunWhoseFolderIsGone(t *testing.T) {
 	}
 }
 
+func TestCarrySequenceMovesTheSequenceUnderTheOldSessionLock(t *testing.T) {
+	w, _ := carryWorld(t)
+	old := carryLockWait
+	t.Cleanup(func() { carryLockWait = old })
+	carryLockWait = 30 * time.Second
+	carried := make(chan error, 1)
+	err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		go func() { carried <- carrySequence(w.bridge, w.sid, "s2", map[string]bool{}) }()
+		select {
+		case err := <-carried:
+			carried <- err
+		case <-time.After(500 * time.Millisecond):
+		}
+		sf.Sequences[0].Report = "holder's update"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-carried:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("carrySequence did not finish after the lock was released")
+	}
+	if seqExists(w.bridge, w.sid) {
+		t.Error("the old session should have no sequence file: the holder's save recreated it")
+	}
+	if got := readSeq(w.bridge, "s2").Sequences[0].Report; got != "holder's update" {
+		t.Errorf("the new session's sequence should hold the holder's change: %q", got)
+	}
+}
+
+func TestCarrySequenceLeavesTheSequenceWhenTheOldSessionLockIsHeldPastTheBound(t *testing.T) {
+	w, ids := carryWorld(t)
+	old := carryLockWait
+	t.Cleanup(func() { carryLockWait = old })
+	carryLockWait = 200 * time.Millisecond
+	l := flock.New(seqPath(w.bridge, w.sid) + ".lock")
+	if err := l.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer l.Unlock()
+	err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{})
+	if err == nil || !strings.Contains(err.Error(), "stays on the earlier session") || !strings.Contains(err.Error(), "the old session's sequence lock is held") {
+		t.Fatalf("the held lock should be returned: %v", err)
+	}
+	if !seqExists(w.bridge, w.sid) || seqExists(w.bridge, "s2") {
+		t.Error("the sequence should stay on the old session")
+	}
+	for _, id := range ids[1:] {
+		if got := w.runState(id).Session; got != w.sid {
+			t.Errorf("run %s should not be rebound: %s", id, got)
+		}
+	}
+}
+
+func TestCarrySequenceDoesNothingWhenTheNewSessionGainsASequenceDuringTheWait(t *testing.T) {
+	w, _ := carryWorld(t)
+	old := carryLockWait
+	t.Cleanup(func() { carryLockWait = old })
+	carryLockWait = 30 * time.Second
+	l := flock.New(seqPath(w.bridge, w.sid) + ".lock")
+	if err := l.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer l.Unlock()
+	before, err := os.ReadFile(seqPath(w.bridge, w.sid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	carried := make(chan error, 1)
+	go func() { carried <- carrySequence(w.bridge, w.sid, "s2", map[string]bool{}) }()
+	time.Sleep(200 * time.Millisecond)
+	write(t, seqPath(w.bridge, "s2"), `{"sequences":[]}`)
+	l.Unlock()
+	select {
+	case err := <-carried:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("carrySequence did not finish after the lock was released")
+	}
+	after, err := os.ReadFile(seqPath(w.bridge, w.sid))
+	if err != nil || string(after) != string(before) {
+		t.Errorf("the old session's sequence should be unchanged: %v", err)
+	}
+	if got, err := os.ReadFile(seqPath(w.bridge, "s2")); err != nil || string(got) != `{"sequences":[]}` {
+		t.Errorf("the new session's sequence should be unchanged: %q %v", got, err)
+	}
+}
+
+func TestCarrySequenceDoesNotReportARunWhoseSaveFailedAndAnEarlierPriorReported(t *testing.T) {
+	w, ids := carryWorld(t)
+	w.blockSave(ids[1])
+	if err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{ids[1]: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, seq := range readSeq(w.bridge, "s2").Sequences {
+		if seq.Report != "" {
+			t.Errorf("no failure should be reported for a run already reported:\n%s", seq.Report)
+		}
+	}
+	if got := w.runState(ids[2]).Session; got != "s2" {
+		t.Errorf("the third run should still be carried: %s", got)
+	}
+	if got := w.runState(ids[1]).Session; got != w.sid {
+		t.Errorf("the run whose save failed stays on the old session: %s", got)
+	}
+}
+
 func failRename(t *testing.T) {
 	t.Helper()
 	old := seqRename

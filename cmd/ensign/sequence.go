@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -1808,6 +1809,9 @@ func sequenceStop(bridge string, in *HookInput) any {
 // seqRename moves a sequence file to the session that continues it; a variable so a test can fail it.
 var seqRename = renameRetry
 
+// carryLockWait bounds how long carrySequence waits for the old session's sequence lock, since a publish command can hold it for long and SessionStart must not wait it out; a variable so a test can shorten it.
+var carryLockWait = 5 * time.Second
+
 // rebindHow says what can still move a run whose move to the new session failed, which decides what its report tells the user.
 type rebindHow int
 
@@ -1851,12 +1855,32 @@ func reportRebindFailures(bridge, session string, fails []rebindFail) error {
 	return errors.Join(errs...)
 }
 
+// renameSequenceLocked renames the old session's sequence to the new session's under the old session's lock, and releases it before returning so no other lock is taken under it. It returns fs.ErrNotExist without renaming when the state changed while it waited.
+func renameSequenceLocked(bridge, old, session string) error {
+	l := flock.New(seqPath(bridge, old) + ".lock")
+	ctx, cancel := context.WithTimeout(context.Background(), carryLockWait)
+	defer cancel()
+	if _, err := l.TryLockContext(ctx, 10*time.Millisecond); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return errors.New("the old session's sequence lock is held")
+		}
+		return fmt.Errorf("locking the old session's sequence: %w", err)
+	}
+	defer l.Unlock()
+	if !seqExists(bridge, old) || seqExists(bridge, session) {
+		return fs.ErrNotExist
+	}
+	return seqRename(seqPath(bridge, old), seqPath(bridge, session))
+}
+
 // carrySequence moves a session's sequence to the session that continues it, and points the runs that are not bound to the old session at the new one. A sequence that could not be moved stays on the old session and is returned, not retried. A run that could not be opened or whose rebind could not be saved is reported to the session and the rest are still rebound; a run whose folder is gone is skipped. Each run it reports is marked in reported, and a run already in reported is not reported again, so a run is reported once per carry.
+//
+// The rename happens under the old session's sequence lock, so a holder that read the file before the move can't save it back over the old session afterwards. A reader that takes no lock is covered by the rename's retry, not by this lock.
 func carrySequence(bridge, old, session string, reported map[string]bool) error {
 	if !seqExists(bridge, old) || seqExists(bridge, session) {
 		return nil
 	}
-	if err := seqRename(seqPath(bridge, old), seqPath(bridge, session)); err != nil {
+	if err := renameSequenceLocked(bridge, old, session); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
