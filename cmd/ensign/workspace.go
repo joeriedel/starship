@@ -237,7 +237,7 @@ func migrateWorkspaces(bridge string) string {
 	for _, pf := range projects {
 		project := filepath.Base(filepath.Dir(pf))
 		var l Layer
-		if readYAML(pf, &l) != nil || l.Workspace == "" {
+		if readProjectYAML(pf, &l) != nil || l.Workspace == "" {
 			continue
 		}
 		if m.Workspaces[project] == "" {
@@ -258,7 +258,7 @@ func migrateWorkspaces(bridge string) string {
 		project := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(tf))))
 		front, _, err := splitFrontmatter(tf)
 		var l Layer
-		if err != nil || decodeFrontmatter(front, &l) != nil || l.Workspace == "" {
+		if err != nil || decodeFrontmatter(front, &l) != nil || checkTaskKeys(tf, front) != nil || l.Workspace == "" {
 			continue
 		}
 		key := project + "/" + task

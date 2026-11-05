@@ -78,7 +78,7 @@ func brokenExtensionLines(bridge string) []string {
 	for _, dir := range dirs {
 		file := filepath.Join(dir, "extension.yaml")
 		var x Extension
-		if readYAML(file, &x) == nil && x.Name == "" {
+		if readExtensionYAML(file, &x) == nil && x.Name == "" {
 			out = append(out, flatLine(fmt.Sprintf("%s: %s declares no name", filepath.Base(dir), file)))
 		}
 	}
@@ -323,7 +323,7 @@ func extraHelp(bridge string) (map[string][]HelpEntry, []string) {
 	}
 	for _, dir := range allDirs {
 		var x Extension
-		if readYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && x.Quiet && !bridgeUses(bridge, x.Name) {
+		if readExtensionYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && x.Quiet && !bridgeUses(bridge, x.Name) {
 			continue
 		}
 		dirs = append(dirs, dir)
@@ -344,7 +344,7 @@ func extraHelp(bridge string) (map[string][]HelpEntry, []string) {
 	}
 	for _, dir := range dirs {
 		var x Extension
-		if readYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && x.Name != "" && len(x.Help) > 0 {
+		if readExtensionYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && x.Name != "" && len(x.Help) > 0 {
 			group := strings.ToUpper(x.Name[:1]) + strings.ReplaceAll(x.Name[1:], "-", " ")
 			out[group] = append(out[group], x.Help...)
 		}

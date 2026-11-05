@@ -352,7 +352,7 @@ func TestCloseMalformedHandlerRefuses(t *testing.T) {
 	w.project("events:\n  task.close:\n    - { requires: ./check.sh }\n  " + handlerYAML("observe", helper("mark", filepath.ToSlash(marker))))
 	w.frontTask("t", "")
 	before := w.taskText("t")
-	if _, err := closeTask(w, "t"); err == nil || !strings.Contains(err.Error(), "exactly one of") {
+	if _, err := closeTask(w, "t"); err == nil || !strings.Contains(err.Error(), "requires") {
 		t.Fatalf("close error: %v", err)
 	}
 	if w.taskText("t") != before || w.historyText("t") != "" {
@@ -360,6 +360,15 @@ func TestCloseMalformedHandlerRefuses(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Error("a handler fired")
+	}
+}
+
+func TestCloseHandlerWithTwoFieldsRefuses(t *testing.T) {
+	w := newWorld(t)
+	w.project("events:\n  task.close:\n    - { require: ./check.sh, observe: ./note.sh }\n")
+	w.frontTask("t", "")
+	if _, err := closeTask(w, "t"); err == nil || !strings.Contains(err.Error(), "exactly one of") {
+		t.Fatalf("close error: %v", err)
 	}
 }
 

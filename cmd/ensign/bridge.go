@@ -1163,6 +1163,9 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 	if err := decodeFrontmatter(front, &tf); err != nil {
 		return fmt.Errorf("%s: %v", taskFile, err)
 	}
+	if err := checkTaskKeys(taskFile, front); err != nil {
+		return err
+	}
 	fmt.Fprintf(out, "task       %s\n", task)
 	if p := subtaskProgress(bridge, task); p != "" {
 		fmt.Fprintf(out, "subtasks   %s\n", strings.TrimPrefix(p, "subtasks "))

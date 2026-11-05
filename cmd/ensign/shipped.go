@@ -62,6 +62,12 @@ func readSettingsAs(path string, check bool) (s shippedSettings, ok bool, err er
 	if err := yamlUnmarshal(data, &raw); err != nil {
 		return s, true, fmt.Errorf("%s: %v", path, err)
 	}
+	// The code repo's shipped file is also named project.yaml, in a .starship folder.
+	if dir := filepath.Dir(path); filepath.Base(path) == "project.yaml" && filepath.Base(dir) != ".starship" && filepath.Base(filepath.Dir(dir)) == "projects" {
+		if err := checkKeys(path, data, projectKeys); err != nil {
+			return s, true, err
+		}
+	}
 	s, err = decodeSettings(path, raw, check)
 	return s, true, err
 }
@@ -305,7 +311,7 @@ func effectiveSettings(bridge, project, location string) (shippedSettings, error
 			Rules    yaml.Node `yaml:"rules"`
 		} `yaml:"locations"`
 	}
-	if err := readYAML(file, &pf); err != nil {
+	if err := readProjectYAML(file, &pf); err != nil {
 		return mine, fmt.Errorf("%s: %v", file, err)
 	}
 	loc, ok := pf.Locations[location]
@@ -512,6 +518,9 @@ func cmdProjectReviewed(arg, onlyLocation string, out io.Writer) error {
 		var tf TaskFile
 		if err := decodeFrontmatter(front, &tf); err != nil {
 			return fmt.Errorf("%s: %v", taskFile, err)
+		}
+		if err := checkTaskKeys(taskFile, front); err != nil {
+			return err
 		}
 		if len(tf.Locations) > 0 {
 			names = tf.Locations

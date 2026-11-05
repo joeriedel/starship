@@ -59,7 +59,7 @@ func refuseLocationDocumentation(where string, declared map[string]yaml.Node) er
 func loadLocations(bridge, project string) (*Locations, error) {
 	file := filepath.Join(bridge, "projects", project, "project.yaml")
 	var pf projectLocationsFile
-	if err := readYAML(file, &pf); err != nil {
+	if err := readProjectYAML(file, &pf); err != nil {
 		return nil, fmt.Errorf("project %q: %v", project, err)
 	}
 	l := &Locations{deps: map[string][]string{}, bindings: map[string]yaml.Node{}, Cross: map[string]Binding{}}

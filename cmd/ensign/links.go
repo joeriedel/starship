@@ -101,6 +101,8 @@ func collectLinks(bridge, project, taskFile string, front []byte) (links []Link,
 		var lf linksFile
 		if err := yaml.Unmarshal(data, &lf); err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", label, err))
+		} else if err := checkKeys(label, data, projectKeys); err != nil {
+			problems = append(problems, err.Error())
 		} else if ls, err := parseLinks(&lf.Links, label); err != nil {
 			problems = append(problems, err.Error())
 		} else {
@@ -110,6 +112,8 @@ func collectLinks(bridge, project, taskFile string, front []byte) (links []Link,
 	var lf linksFile
 	if err := decodeFrontmatter(front, &lf); err != nil {
 		problems = append(problems, fmt.Sprintf("%s: %v", relTo(bridge, taskFile), err))
+	} else if err := checkTaskKeys(relTo(bridge, taskFile), front); err != nil {
+		problems = append(problems, err.Error())
 	} else if ls, err := parseLinks(&lf.Links, relTo(bridge, taskFile)); err != nil {
 		problems = append(problems, err.Error())
 	} else {

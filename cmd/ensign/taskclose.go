@@ -51,6 +51,9 @@ func cmdTaskClose(bridge, task string, out io.Writer) error {
 	if err := decodeFrontmatter(front, &tf); err != nil {
 		return fmt.Errorf("%s: %v", taskFile, err)
 	}
+	if err := checkTaskKeys(taskFile, front); err != nil {
+		return err
+	}
 	if tf.Status == "closed" {
 		fmt.Fprintf(out, "Task %s is already closed.\n", task)
 		return nil

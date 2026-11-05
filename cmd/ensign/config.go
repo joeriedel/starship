@@ -685,6 +685,9 @@ func projectPipeline(projectFile string) (string, error) {
 	if readYAML(projectFile, &pp) != nil {
 		return "", nil
 	}
+	if err := checkProjectKeys(projectFile); err != nil {
+		return "", err
+	}
 	if pp.Pipeline != "" && pp.Pipeline != "none" {
 		return "", fmt.Errorf("%s: pipeline: %q is not allowed; the only value a project can set is none (tasks without code)", projectFile, pp.Pipeline)
 	}
@@ -699,6 +702,9 @@ func taskHasNoCode(bridge, project, task string) (bool, error) {
 	front, _, err := splitFrontmatter(filepath.Join(bridge, "projects", project, "tasks", task, "task.md"))
 	if err != nil || decodeFrontmatter(front, &tf) != nil {
 		return false, nil
+	}
+	if err := checkTaskKeys(filepath.Join(bridge, "projects", project, "tasks", task, "task.md"), front); err != nil {
+		return false, err
 	}
 	if tf.Pipeline != "" {
 		return tf.Pipeline == "none", nil
@@ -771,6 +777,9 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 		}
 		if key := connectorKey(front); key != "" {
 			return nil, fmt.Errorf("%s: %s: is a bridge setting; declare it in bridge.yaml", taskFile, key)
+		}
+		if err := checkTaskKeys(taskFile, front); err != nil {
+			return nil, err
 		}
 		if c.Location, err = taskLocation(c.Locations, c.Project, t.Task, tf.Locations, t.Location); err != nil {
 			return nil, err
@@ -937,7 +946,7 @@ func (c *Config) bridgeLayer(bridge string) (layerEntry, error) {
 func (c *Config) projectLayer(bridge string) (layerEntry, error) {
 	var pf Layer
 	projectFile := filepath.Join(bridge, "projects", c.Project, "project.yaml")
-	if err := readYAML(projectFile, &pf); err != nil {
+	if err := readProjectYAML(projectFile, &pf); err != nil {
 		return layerEntry{}, fmt.Errorf("project %q: %v", c.Project, err)
 	}
 	if data, rerr := os.ReadFile(projectFile); rerr == nil {
@@ -1057,6 +1066,9 @@ func loadTaskEvents(bridge, task string) (*Config, error) {
 	var tf TaskFile
 	if err := decodeFrontmatter(front, &tf); err != nil {
 		return nil, fmt.Errorf("%s: %v", taskFile, err)
+	}
+	if err := checkTaskKeys(taskFile, front); err != nil {
+		return nil, err
 	}
 	if err := c.mergeLayers([]layerEntry{bl, pl, {"task:" + relTo(bridge, taskFile), taskFile, tf.Layer}}); err != nil {
 		return nil, err
@@ -1841,7 +1853,7 @@ func scanExtensions(bridge, cp string) (map[string]*Extension, map[string]error)
 	dirs, _ := extensionDirs(bridge, cp)
 	for _, dir := range dirs {
 		var b Extension
-		err := readYAML(filepath.Join(dir, "extension.yaml"), &b)
+		err := readExtensionYAML(filepath.Join(dir, "extension.yaml"), &b)
 		switch {
 		case err == nil && b.Name != "":
 			b.dir = dir
@@ -2065,7 +2077,7 @@ func brokenRoleLines(bridge, cp string) []string {
 	for _, dir := range dirs {
 		file := filepath.Join(dir, "extension.yaml")
 		var b Extension
-		err := readYAML(file, &b)
+		err := readExtensionYAML(file, &b)
 		var name string
 		switch {
 		case err == nil && b.Name != "":

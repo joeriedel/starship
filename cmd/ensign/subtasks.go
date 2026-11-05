@@ -244,6 +244,9 @@ func pickSubtask(bridge string, o runOpts) (*chosenSubtask, error) {
 	if err := decodeFrontmatter(front, &tf); err != nil {
 		return nil, fmt.Errorf("%s: %v", taskFile, err)
 	}
+	if err := checkTaskKeys(taskFile, front); err != nil {
+		return nil, err
+	}
 	if err := checkSubtasks(subs, tf.Locations); err != nil {
 		return nil, err
 	}
