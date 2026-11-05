@@ -10,7 +10,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -90,11 +92,18 @@ func dirty(ws string) (bool, error) {
 	return s != "", nil
 }
 
+// startsAtDocs reports whether the run was started at the documentation stage. It runs nothing the test stage covers, and tested() checks what it committed, so it leaves the tested marker alone.
+func startsAtDocs(r *RunFiles) bool {
+	return r.Snap.Start == "docs"
+}
+
 // githubBranch runs at run.start: the workspace moves to the task's branch, created from
 // the default branch the first time. Work on another branch is never carried along, and
 // whatever passed before has to pass again before it can land.
 func githubBranch(r *RunFiles) error {
-	os.Remove(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)) // a new run has to pass again
+	if !startsAtDocs(r) { // a docs start runs no tests and tested() checks what it commits
+		os.Remove(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)) // a new run has to pass again
+	}
 	ws, want := r.Snap.Workspace, taskBranch(r.Snap.Task)
 	cur := currentBranch(ws)
 	_, verr := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want)
@@ -308,6 +317,18 @@ func githubReady(r *RunFiles) error {
 		return err
 	}
 	if !testPassed(r) {
+		if data, err := os.ReadFile(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)); err == nil {
+			marker := strings.TrimSpace(string(data))
+			if sha == marker {
+				r.State.note(fmt.Sprintf("The task branch %s is at %s, which is still the tested commit", branch, short(sha)))
+				return nil
+			}
+			if docsOnlySince(ws, marker, sha, r.Snap.Bindings["docs"].Paths) {
+				r.State.note(fmt.Sprintf("The task branch %s is at %s and is still tested: only @docs paths changed since %s, which passed its tests",
+					branch, short(sha), short(marker)))
+				return nil
+			}
+		}
 		r.State.note(fmt.Sprintf("The task branch %s is at %s. No test ran in this run, so the branch is not recorded as tested: `ensign run %s --start test` records it before it is published",
 			branch, short(sha), r.Snap.Task))
 		return nil
@@ -323,6 +344,38 @@ func githubReady(r *RunFiles) error {
 	r.State.note(fmt.Sprintf("The tested work is committed on %s (%s). Nothing has been opened yet: the user can ask for a pull request, or for it to go straight to %s",
 		branch, short(sha), orDefault(base)))
 	return nil
+}
+
+// docsOnlySince reports whether marker is an ancestor of head and every path changed between them is inside the declared @docs paths. It compares in git's own path space, lexically, so nothing is resolved on disk. The diff has no rename detection, so moving a code file into a docs folder still lists its source.
+func docsOnlySince(ws, marker, head string, paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	if git(ws, "merge-base", "--is-ancestor", marker, head) != nil {
+		return false
+	}
+	prefix, err := gitOut(ws, "rev-parse", "--show-prefix")
+	if err != nil {
+		return false
+	}
+	// User config must not narrow this listing: an omitted path would pass the gate.
+	changed, err := gitZ(ws, "diff", "--name-only", "--no-renames", "--no-relative", "--ignore-submodules=none", "-z", marker, head)
+	if err != nil {
+		return false
+	}
+	for _, p := range changed {
+		in := false
+		for _, d := range paths {
+			if pathWithin(p, path.Join(prefix, strings.ReplaceAll(d, `\`, "/")), runtime.GOOS) {
+				in = true
+				break
+			}
+		}
+		if !in {
+			return false
+		}
+	}
+	return true
 }
 
 // testPassed reports whether the run's latest test outcome was a pass. A pipeline with no test stage counts as passed. It reads the history, which keeps every outcome for agent and plain stages alike; a dispatch's Outcome is blanked on some paths.
@@ -400,7 +453,7 @@ func latestRunPassed(bridge, task, location string) error {
 	return nil
 }
 
-// tested finds a task's tested commit, and checks the task branch still holds exactly it.
+// tested finds a task's tested commit, and checks the task branch still holds it, or only @docs paths on top of it. It returns the branch head, so what lands includes those docs commits.
 func tested(bridge, task, location string) (c *Config, branch, sha string, err error) {
 	for _, ri := range liveRuns(bridge) {
 		// A queued sequence run has not started, so it does not hold the task.
@@ -426,7 +479,10 @@ func tested(bridge, task, location string) (c *Config, branch, sha string, err e
 		return nil, "", "", fmt.Errorf("the task branch %s is gone", branch)
 	}
 	if head != sha {
-		return nil, "", "", fmt.Errorf("%s has changed since its tests passed (tested %s, now %s); run the task again", branch, short(sha), short(head))
+		if !docsOnlySince(ws, sha, head, c.Bindings["docs"].Paths) {
+			return nil, "", "", fmt.Errorf("%s has changed since its tests passed (tested %s, now %s); run the task again", branch, short(sha), short(head))
+		}
+		sha = head
 	}
 	if currentBranch(ws) == branch {
 		if d, err := dirty(ws); err != nil {

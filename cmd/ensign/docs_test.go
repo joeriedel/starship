@@ -660,3 +660,242 @@ func TestValidateCurates(t *testing.T) {
 		}
 	}
 }
+
+// testedWorld runs a task to a passing run and returns the world, its workspace, the remote and the tested commit.
+func testedWorld(t *testing.T, docsLine string) (*world, string, string, string) {
+	t.Helper()
+	w, ws, remote, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	if docsLine != "" {
+		w.docsBinding(docsLine)
+	}
+	sha := w.markerSha()
+	if sha == "" || sha != runGit(t, ws, "rev-parse", "HEAD") {
+		t.Fatalf("a passing run should record its head, got %q", sha)
+	}
+	return w, ws, remote, sha
+}
+
+func TestDocsStartKeepsTheTestedMarker(t *testing.T) {
+	w, ws, remote, sha := testedWorld(t, `{ paths: [docs] }`)
+	lead := w.startLead("--start", "docs")
+	if got := w.markerSha(); got != sha {
+		t.Fatalf("a docs start must keep the marker: %q", got)
+	}
+	w.docsWith(lead, "updated", "docs/a.md", func() { write(t, filepath.Join(ws, "docs", "a.md"), "doc\n") })
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	head := runGit(t, ws, "rev-parse", "HEAD")
+	if head == sha {
+		t.Fatal("the docs run should have committed")
+	}
+	if got := w.markerSha(); got != sha {
+		t.Errorf("the marker should still name the tested commit: %q", got)
+	}
+	if !w.hasNote("still tested") {
+		t.Errorf("the note should say the branch is still tested: %v", w.state().Notes)
+	}
+	if _, _, got, err := tested(w.bridge, authTask, ""); err != nil || got != head {
+		t.Errorf("tested() should accept and return the branch tip: %s %v", got, err)
+	}
+	if _, err := w.land("merge"); err != nil {
+		t.Fatal(err)
+	}
+	if got := remoteMain(t, remote); got != head {
+		t.Errorf("merge should land the tip with the docs commit: %s, want %s", got, head)
+	}
+}
+
+func TestDocsOnlyHandCommitsStayTested(t *testing.T) {
+	for name, tc := range map[string]struct{ line, file string }{
+		"directory":   {`{ paths: [docs] }`, "docs/a.md"},
+		"single file": {`{ paths: [README.md, docs] }`, "README.md"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w, ws, _, _ := testedWorld(t, tc.line)
+			write(t, filepath.Join(ws, filepath.FromSlash(tc.file)), "doc\n")
+			runGit(t, ws, "add", "-A")
+			runGit(t, ws, "commit", "-qm", "docs")
+			if _, _, got, err := tested(w.bridge, authTask, ""); err != nil || got != runGit(t, ws, "rev-parse", "HEAD") {
+				t.Errorf("a docs-only commit should stay tested: %s %v", got, err)
+			}
+		})
+	}
+}
+
+func TestNonDocsCommitsLoseTheTestedState(t *testing.T) {
+	for name, edit := range map[string]func(t *testing.T, ws string){
+		"code": func(t *testing.T, ws string) {
+			write(t, filepath.Join(ws, "lib.txt"), "three\n")
+		},
+		"both": func(t *testing.T, ws string) {
+			write(t, filepath.Join(ws, "lib.txt"), "three\n")
+			write(t, filepath.Join(ws, "docs", "a.md"), "doc\n")
+		},
+		"rename into docs": func(t *testing.T, ws string) {
+			runGit(t, ws, "mv", "lib.txt", "docs-moved.txt")
+			if err := os.MkdirAll(filepath.Join(ws, "docs"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, ws, "mv", "docs-moved.txt", "docs/lib.txt")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w, ws, _, _ := testedWorld(t, `{ paths: [docs] }`)
+			edit(t, ws)
+			runGit(t, ws, "add", "-A")
+			runGit(t, ws, "commit", "-qm", "change")
+			if _, _, _, err := tested(w.bridge, authTask, ""); err == nil || !strings.Contains(err.Error(), "has changed") {
+				t.Errorf("a commit touching code must be refused: %v", err)
+			}
+		})
+	}
+}
+
+func TestDocsDescendantNeedsADocsBinding(t *testing.T) {
+	w, ws, _, _ := testedWorld(t, "")
+	write(t, filepath.Join(ws, "docs", "a.md"), "doc\n")
+	runGit(t, ws, "add", "-A")
+	runGit(t, ws, "commit", "-qm", "docs")
+	if _, _, _, err := tested(w.bridge, authTask, ""); err == nil || !strings.Contains(err.Error(), "has changed") {
+		t.Errorf("without a docs binding a descendant must be refused: %v", err)
+	}
+}
+
+func TestRewrittenBranchLosesTheTestedState(t *testing.T) {
+	w, ws, _, _ := testedWorld(t, `{ paths: [docs] }`)
+	runGit(t, ws, "commit", "-q", "--amend", "-m", "reworded")
+	if _, _, _, err := tested(w.bridge, authTask, ""); err == nil || !strings.Contains(err.Error(), "has changed") {
+		t.Errorf("a rewritten branch must be refused: %v", err)
+	}
+}
+
+func TestFailedDocsRunRefusesPublishing(t *testing.T) {
+	w, _, _, _ := testedWorld(t, `{ paths: [docs] }`)
+	lead := w.startLead("--start", "docs")
+	w.docsWith(lead, "blocked", "docs/a.md", nil)
+	if st := w.state(); st.Status != "error" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if _, _, _, err := tested(w.bridge, authTask, ""); err == nil || !strings.Contains(err.Error(), "did not pass") {
+		t.Errorf("a failed docs run should refuse publishing: %v", err)
+	}
+}
+
+func TestOtherStartsStillClearTheMarker(t *testing.T) {
+	w, ws, _, _ := testedWorld(t, `{ paths: [docs] }`)
+	r := &RunFiles{Snap: &Snapshot{Bridge: w.bridge, Task: authTask, Workspace: ws, Start: "test"}, State: &State{}}
+	if err := githubBranch(r); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.markerSha(); got != "" {
+		t.Errorf("a non-docs start must clear the marker, got %s", got)
+	}
+}
+
+func TestDocsSymlinkIntoDocsIsNotDocs(t *testing.T) {
+	w, ws, _, _ := testedWorld(t, `{ paths: [docs] }`)
+	write(t, filepath.Join(ws, "docs", "sample.yaml"), "a: 1\n")
+	if err := os.Symlink(filepath.Join("docs", "sample.yaml"), filepath.Join(ws, "config.yaml")); err != nil {
+		t.Skip("no symlinks")
+	}
+	runGit(t, ws, "add", "-A")
+	runGit(t, ws, "commit", "-qm", "link")
+	if _, _, _, err := tested(w.bridge, authTask, ""); err == nil || !strings.Contains(err.Error(), "has changed") {
+		t.Errorf("a committed symlink outside docs must be refused: %v", err)
+	}
+}
+
+func TestDocsOnlySinceInASubfolder(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q")
+	write(t, filepath.Join(repo, "sub", "code.txt"), "one\n")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-qm", "base")
+	base := runGit(t, repo, "rev-parse", "HEAD")
+	ws := filepath.Join(repo, "sub")
+
+	write(t, filepath.Join(repo, "sub", "docs", "a.md"), "doc\n")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-qm", "sub docs")
+	head := runGit(t, repo, "rev-parse", "HEAD")
+	if !docsOnlySince(ws, base, head, []string{"docs"}) {
+		t.Error("sub/docs/a.md should count as docs for a workspace in sub")
+	}
+	if docsOnlySince(ws, base, head, nil) {
+		t.Error("no declared paths should never count")
+	}
+
+	write(t, filepath.Join(repo, "docs", "a.md"), "doc\n")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-qm", "root docs")
+	if docsOnlySince(ws, head, runGit(t, repo, "rev-parse", "HEAD"), []string{"docs"}) {
+		t.Error("docs/a.md at the repo root is outside the workspace's docs")
+	}
+}
+
+func TestDocsOnlySinceIgnoresDiffConfigThatHidesPaths(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q")
+	runGit(t, repo, "config", "diff.relative", "true")
+	write(t, filepath.Join(repo, "sub", "code.txt"), "one\n")
+	write(t, filepath.Join(repo, "other", "o"), "one\n")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-qm", "base")
+	base := runGit(t, repo, "rev-parse", "HEAD")
+	ws := filepath.Join(repo, "sub")
+
+	write(t, filepath.Join(repo, "other", "o"), "two\n")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-qm", "outside")
+	head := runGit(t, repo, "rev-parse", "HEAD")
+	if docsOnlySince(ws, base, head, []string{"docs"}) {
+		t.Error("a change outside the workspace must be refused under diff.relative")
+	}
+
+	write(t, filepath.Join(repo, "sub", "docs", "a.md"), "doc\n")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-qm", "docs")
+	if !docsOnlySince(ws, head, runGit(t, repo, "rev-parse", "HEAD"), []string{"docs"}) {
+		t.Error("sub/docs/a.md should count as docs under diff.relative")
+	}
+}
+
+func TestDocsOnlySinceRefusesAGitlinkChangeUnderIgnoreAll(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q")
+	write(t, filepath.Join(repo, ".gitmodules"), "[submodule \"lib\"]\n\tpath = lib\n\turl = ./lib\n\tignore = all\n")
+	runGit(t, repo, "add", ".gitmodules")
+	runGit(t, repo, "commit", "-qm", "first")
+	first := runGit(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+first+",lib")
+	runGit(t, repo, "commit", "-qm", "base")
+	base := runGit(t, repo, "rev-parse", "HEAD")
+
+	other := runGit(t, repo, "commit-tree", "-m", "other", "HEAD^{tree}")
+	runGit(t, repo, "update-index", "--cacheinfo", "160000,"+other+",lib")
+	runGit(t, repo, "commit", "-qm", "bump")
+	head := runGit(t, repo, "rev-parse", "HEAD")
+	if got := runGit(t, repo, "diff", "--name-only", base, head); got != "" {
+		t.Fatalf("a plain diff should hide the gitlink bump under ignore = all, got %q", got)
+	}
+	if docsOnlySince(repo, base, head, []string{"docs"}) {
+		t.Error("a gitlink change must be refused even when .gitmodules says ignore = all")
+	}
+}
+
+func TestDocsRunThatChangesNothingKeepsTheTestedCommit(t *testing.T) {
+	w, _, _, sha := testedWorld(t, `{ paths: [docs] }`)
+	lead := w.startLead("--start", "docs")
+	w.docsWith(lead, "unchanged", "", nil)
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if !w.hasNote("still the tested commit") || w.hasNote("only @docs paths changed") {
+		t.Errorf("the note should say the branch is still the tested commit: %v", w.state().Notes)
+	}
+	if _, _, got, err := tested(w.bridge, authTask, ""); err != nil || got != sha {
+		t.Errorf("the tested commit should be unchanged: %s %v", got, err)
+	}
+}

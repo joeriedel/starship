@@ -1,5 +1,7 @@
 ## The change catalog
 
+A run started at `docs` has no coder passes, so it has no `wip` commits and the `<first wip commit>^..HEAD` history below does not apply: its one commit is `docs: <summary>`, the documentation pass.
+
 Every coder pass in this run is committed locally by the harness — `wip(c<cycle> p<pass>)`,
 with `BROKEN` in the subject when it didn't compile and the summary in the body. The run
 started at a clean tree. Between passes, read the history with `git -C <workspace> log

@@ -264,6 +264,13 @@ func TestShippedProjectSettings(t *testing.T) {
 		t.Errorf("starship's tests run through CI as a plain @test")
 	}
 
+	if got := c.Bindings["docs"].Paths; strings.Join(got, ",") != "README.md,SETUP.md,docs" {
+		t.Errorf("starship's docs paths: %v", got)
+	}
+	if len(c.Rules) != 1 || c.Rules[0].Text != "A README.md change needs no test pass." {
+		t.Errorf("starship's README rule: %+v", c.Rules)
+	}
+
 	// A shipped file may not choose the workspace.
 	ws := t.TempDir()
 	write(t, filepath.Join(ws, ".starship", "project.yaml"), "workspace: /elsewhere\n")

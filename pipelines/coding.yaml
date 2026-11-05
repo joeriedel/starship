@@ -13,7 +13,7 @@ help:
     does: sync the workspace, test it, and fix anything that fails
     run: ensign run <project>/<task> --sync --start test
   - say: "\"update the docs for this task's work\""
-    does: runs the documentation pass by itself and tests nothing, so the task needs --start test before it is published
+    does: runs the documentation pass by itself and tests nothing, so a task already tested stays tested, and one that isn't needs --start test before it is published
     run: ensign run <project>/<task> --start docs
 
 stages:

@@ -12,7 +12,11 @@ use: [github-pr]
 
 platforms: [linux, macos, windows]
 
+rules:
+  - "A README.md change needs no test pass."
+
 bindings:
+  docs:  { paths: [README.md, SETUP.md, docs] }
   build: { not-applicable: "no Go toolchain is installed locally; CI builds every push" }
   test:  { command: "ensign github-pr ci", plain: true }
   release:

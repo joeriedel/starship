@@ -73,7 +73,7 @@ moves, stop or explore, and exploring is the expensive one that looks like dilig
 - **style-reviewer** — the changed files.
 - **tester** — what changed, so it knows what it is verifying. It already has the
   bindings.
-- **documentation** — built from the task's own record: the work item, its status, the decisions made, the run's account of what changed and the changed files. Name the code to read to check the docs against, and ask for no survey of the codebase. It may change only the `@docs` paths. On a run started at `docs` there is no run account or coder commits, so build the brief from the task's work item, status, decisions and the commits already on the task branch.
+- **documentation** — built from the task's own record: the work item, its status, the decisions made, the run's account of what changed and the changed files. Name the code to read to check the docs against, and ask for no survey of the codebase. It may change only the `@docs` paths. On a run started at `docs` there is no run account and there are no coder commits, so build the brief from the task's work item, status, decisions and the commits already on the task branch.
 
 ## Every stage starts fresh
 
