@@ -62,7 +62,7 @@ outcome: updated | unchanged
 summary: <one line: what changed>
 ```
 
-Report `unchanged`, with no document or ledger, only if nothing should change.
+Report `unchanged`, with no document or ledger, only if nothing should change. The proposals you were given are removed either way, so one you leave out is dropped, not deferred.
 
 ## Where you may edit
 

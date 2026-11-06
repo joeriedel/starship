@@ -185,7 +185,7 @@ func focalWarnings(bridge string) []string {
 		return out
 	}
 	loaded := func(who string) {
-		out = append(out, fmt.Sprintf("%s lists the %s extension in use:, which has no focal effect there: the sheet reads use: in bridge.yaml only.", who, focalExtension))
+		out = append(out, fmt.Sprintf("%s names the %s extension in its use: list, but that has no focal effect there: the sheet reads use: in bridge.yaml only.", who, focalExtension))
 	}
 	projects, _ := os.ReadDir(filepath.Join(bridge, "projects"))
 	for _, p := range projects {

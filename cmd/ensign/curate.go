@@ -427,9 +427,21 @@ func focalCompanion(bridge string, decl DeclaredDocument) (string, string) {
 	}
 	rel, other := focalCollision(decl, docs)
 	if other != "" {
-		return "", fmt.Sprintf("The rewrite can't be applied: its readable companion %s is declared as the path or rubric of document %s, and only the user can move that declaration in bridge.yaml. Keep reporting updated and do not report unchanged, which would discard the proposals; repeating updated exhausts the stop budget and fails the run with the proposals left in place.", rel, other)
+		return "", fmt.Sprintf("The readable companion %s can't be written: it is declared as the path or rubric of document %s, and only the user can move that declaration in bridge.yaml. Repeating the report, updated or unchanged, exhausts the stop budget and fails the run with the proposals left in place.", rel, other)
 	}
 	return filepath.Join(bridge, filepath.FromSlash(rel)), ""
+}
+
+// writeFocalCompanion writes a focal sheet's readable companion from d, which is already sorted by theme. It returns a problem to send back to the curator, or "".
+func writeFocalCompanion(r *RunFiles, decl DeclaredDocument, name string, themes []string, d Doc) string {
+	file, problem := focalCompanion(r.Snap.Bridge, decl)
+	if problem != "" {
+		return problem
+	}
+	if err := writeFileAtomic(r.Snap.Bridge, file, renderFocalReadable(name, themes, d)); err != nil {
+		return "Writing the document failed: " + err.Error()
+	}
+	return ""
 }
 
 // applyCuration validates a curator's report and writes the document. It returns a
@@ -513,12 +525,8 @@ func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 		}
 		if focal {
 			sortByTheme(&next, themes)
-			file, problem := focalCompanion(r.Snap.Bridge, decl)
-			if problem != "" {
+			if problem := writeFocalCompanion(r, decl, d.Dim, themes, next); problem != "" {
 				return problem
-			}
-			if err := writeFileAtomic(r.Snap.Bridge, file, renderFocalReadable(d.Dim, themes, next)); err != nil {
-				return "Writing the document failed: " + err.Error()
 			}
 		}
 		if private {
@@ -532,6 +540,27 @@ func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 				return "Writing the document failed: " + err.Error()
 			}
 			r.State.log("curated", s.ID, d.ID, fmt.Sprintf("%s: %d entries; ledger %v", relTo(r.Snap.Bridge, path), len(next.Entries), ledger))
+		}
+	}
+	if d.Outcome == "unchanged" && private && isFocalDocument(r.Snap.Bridge, decl) {
+		// A collision refuses even with no sheet, so the proposals stay pending.
+		if _, problem := focalCompanion(r.Snap.Bridge, decl); problem != "" {
+			return problem
+		}
+		// A first curation reported unchanged has no sheet yet, so there is nothing to render.
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			sheet, err := loadDocumentFile(path)
+			if err != nil {
+				return "The document " + err.Error()
+			}
+			themes, err := focalThemes(r.Snap.Bridge, decl)
+			if err != nil {
+				return "The document's themes cannot be read: " + err.Error()
+			}
+			sortByTheme(&sheet, themes)
+			if problem := writeFocalCompanion(r, decl, d.Dim, themes, sheet); problem != "" {
+				return problem
+			}
 		}
 	}
 	// The inputs were considered either way.
