@@ -12,9 +12,9 @@ help:
   - say: '"curate the documents"'
     does: fold the proposals made for the bridge's declared documents into them, then write and check the brag file of the documents that have one
     run: ensign run --pipeline document-curate
-  - say: '"curate supernova-focal" (one document)'
+  - say: '"curate <document>" (one document)'
     does: fold the proposals made for that one document into it, then write and check its brag file; nothing else is written or reviewed
-    run: ensign run --pipeline document-curate --document supernova-focal
+    run: ensign run --pipeline document-curate --document <document>
 
 stages:
   - id: curate

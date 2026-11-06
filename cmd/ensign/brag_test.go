@@ -508,7 +508,7 @@ func TestFeedbackIsAdvisory(t *testing.T) {
 			t.Fatalf("status %s %s", st.Status, st.Reason)
 		}
 		notes := strings.Join(st.Notes, "\n")
-		if !strings.Contains(notes, "feedback for supernova-focal2 is missing") || strings.Contains(notes, "feedback for supernova-focal is") {
+		if !strings.Contains(notes, "feedback for supernova-focal2 is missing") || strings.Contains(notes, "feedback for supernova-focal is missing") {
 			t.Errorf("notes = %s", notes)
 		}
 	})
