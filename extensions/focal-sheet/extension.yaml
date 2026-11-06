@@ -9,7 +9,7 @@ help:
   - say: '"start a focal sheet for <period>"'
     does: begin a sheet for a review period, with themes from the default set or from a rubric file you name
     run: >-
-      edit bridge.yaml (use: [focal-sheet], and a documents: entry with path: notes/focal/<period>.md; the path must be under notes/focal/ or the sheet gets no themes or entry checks; optionally rubric: naming a bridge file whose "## " headings replace the default themes)
+      edit bridge.yaml (use: [focal-sheet], and a documents: entry with path: notes/focal/<period>.md; the path must be under notes/focal/ or the sheet gets no themes or entry checks; optionally rubric: naming a bridge file whose "## " headings replace the default themes, and instructions: naming a bridge file that shapes the sheet's brag file; curating writes <sheet>.brag.md beside the sheet, in the voice of notes/focal_style.md)
   - say: '"add this to my focal sheet"'
     does: propose an entry for the sheet, using your own account of your part in it
     run: >-

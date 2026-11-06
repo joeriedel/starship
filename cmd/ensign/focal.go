@@ -18,7 +18,13 @@ import (
 const (
 	focalExtension = "focal-sheet"
 	focalPrefix    = "notes/focal/"
+	// focalStylePath is the bridge-wide style file that sets the voice of every brag file.
+	focalStylePath = "notes/focal_style.md"
 )
+
+func focalStyleFile(bridge string) string {
+	return filepath.Join(bridge, filepath.FromSlash(focalStylePath))
+}
 
 // isFocalDocument reports whether d is a focal document: under notes/focal/ in a bridge whose own bridge.yaml uses focal-sheet.
 func isFocalDocument(bridge string, d DeclaredDocument) bool {
@@ -151,28 +157,7 @@ func sortByTheme(d *Doc, themes []string) {
 	sort.SliceStable(d.Entries, func(i, j int) bool { return rank(d.Entries[i]) < rank(d.Entries[j]) })
 }
 
-// renderFocalReadable is the shareable Markdown copy of a sorted focal sheet: every theme in order, each with its active entries.
-func renderFocalReadable(name string, themes []string, d Doc) []byte {
-	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
-	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\nThis file is generated from the focal sheet on each curation; edits to it are overwritten.\n", name)
-	for _, th := range themes {
-		fmt.Fprintf(&b, "\n## %s\n\n", th)
-		for _, e := range d.Entries {
-			if e.Status != "active" || strings.TrimSpace(e.Theme) != th {
-				continue
-			}
-			fmt.Fprintf(&b, "- %s\n", oneLine(e.Text))
-			if why := oneLine(e.Why); why != "" {
-				fmt.Fprintf(&b, "  - Why: %s\n", why)
-			}
-			fmt.Fprintf(&b, "  - Part: %s\n", oneLine(e.Part))
-		}
-	}
-	return []byte(b.String())
-}
-
-// leftOutEntries are the active entries whose theme is not in themes, which renderFocalReadable skips.
+// leftOutEntries are the active entries whose theme is not in themes, which the brag file leaves out unless the instructions bring them in.
 func leftOutEntries(themes []string, d Doc) []Entry {
 	var out []Entry
 	for _, e := range d.Entries {
@@ -183,10 +168,7 @@ func leftOutEntries(themes []string, d Doc) []Entry {
 	return out
 }
 
-// maxLeftOutIDs keeps the left-out warning short, as the session-start text has a size budget.
-const maxLeftOutIDs = 3
-
-// focalWarnings are session-start notes about a focal-sheet setup that has no effect, and about active entries a focal sheet's readable companion leaves out.
+// focalWarnings are session-start notes about a focal-sheet setup that has no effect.
 func focalWarnings(bridge string) []string {
 	var out []string
 	if bridgeUses(bridge, focalExtension) {
@@ -194,46 +176,11 @@ func focalWarnings(bridge string) []string {
 		if err != nil {
 			return nil
 		}
-		var firstName string
-		var firstLeft []Entry
-		moreDocs := 0
 		for _, d := range docs {
 			path := strings.ToLower(d.Path)
 			if !strings.HasPrefix(path, focalPrefix) && (strings.Contains(path, "focal") || strings.Contains(strings.ToLower(d.Name), "focal")) {
 				out = append(out, fmt.Sprintf("the document %s (%s) sits outside %s, so it is curated as a plain document with no focal rules.", d.Name, d.Path, focalPrefix))
 			}
-			if !isFocalDocument(bridge, d) {
-				continue
-			}
-			sheet, err := loadDocumentFile(d.file(bridge))
-			if err != nil {
-				continue
-			}
-			themes, err := focalThemes(bridge, d)
-			if err != nil {
-				continue
-			}
-			if left := leftOutEntries(themes, sheet); len(left) > 0 {
-				if firstLeft == nil {
-					firstName, firstLeft = d.Name, left
-				} else {
-					moreDocs++
-				}
-			}
-		}
-		if firstLeft != nil {
-			ids := make([]string, min(len(firstLeft), maxLeftOutIDs))
-			for i := range ids {
-				ids[i] = focalEntryID("D", firstLeft[i].ID)
-			}
-			list := strings.Join(ids, ", ")
-			if len(firstLeft) > len(ids) {
-				list += fmt.Sprintf(" and %d more", len(firstLeft)-len(ids))
-			}
-			if moreDocs > 0 {
-				list += fmt.Sprintf("; also in %d more document%s", moreDocs, plural(moreDocs))
-			}
-			out = append(out, fmt.Sprintf("the document %s has active entries left out of the readable companion; an updated rewrite is refused until each has a listed theme: %s.", firstName, list))
 		}
 		return out
 	}

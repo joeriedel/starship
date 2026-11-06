@@ -219,6 +219,7 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 		d.CallerAgent = caller.AgentID
 	}
 	firstOfStage := m.running(scope, s.ID) == 0 && len(sc.Branches) == 0
+	beforeFailed := false
 	if s.isLead() && !r.State.Started {
 		r.State.Started = true
 		// A run that starts has to pass again, even if it dies before run.start's @branch. A run started at docs is the exception: it runs nothing the test stage covers, and tested() checks what it committed.
@@ -244,8 +245,11 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	}
 	if firstOfStage && !(s.isLead() && r.State.Scopes[s.ID] != nil && r.State.Scopes[s.ID].Stage != "") {
 		if err := fire(r, "stage.before:"+s.ID, d); err != nil {
-			m.fail("handler", err.Error())
-			return deny(r, s.ID, "stage "+s.ID+" could not start: "+r.State.Reason), nil
+			if s.Advisory == "" {
+				m.fail("handler", err.Error())
+				return deny(r, s.ID, "stage "+s.ID+" could not start: "+r.State.Reason), nil
+			}
+			beforeFailed = true
 		}
 	}
 	if s.Parallel != nil {
@@ -275,6 +279,14 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	}
 	r.State.Dispatches = append(r.State.Dispatches, d)
 	r.State.log("dispatch", s.ID, d.ID, role+" "+d.Dim)
+	// An advisory stage never fails the run: a dispatch that cannot start takes the advisory outcome and the join goes on.
+	advisoryDeny := func() any {
+		advisoryMissing(r, m, d, s)
+		return deny(r, s.ID, fmt.Sprintf("stage %s could not start an agent for %s; its result is missing and the run goes on. Run `ensign next`.", s.ID, d.Dim))
+	}
+	if beforeFailed {
+		return advisoryDeny(), nil
+	}
 
 	original, _ := in.ToolInput["prompt"].(string)
 	var prompt string
@@ -291,6 +303,9 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	} else {
 		var perr error
 		if prompt, perr = stagePrompt(r, d, s, original, extra); perr != nil {
+			if s.Advisory != "" {
+				return advisoryDeny(), nil
+			}
 			m.fail("ensign", perr.Error())
 			return deny(r, s.ID, "stage "+s.ID+" could not start: "+r.State.Reason), nil
 		}
@@ -341,6 +356,10 @@ func hookHandback(in *HookInput, r *RunFiles) any {
 		return refuse("the pipeline is not finished. "+m.expect(s.ID), "lead-stopped", "the lead stopped before the pipeline finished")
 	} else if s != nil && !s.isLead() && !d.Done {
 		outcome, _, _, problem := parseReport(msg, s)
+		if problem != "" && s.Advisory != "" {
+			advisoryMissing(r, m, d, s)
+			return nil
+		}
 		if problem != "" {
 			return refuse(problem+" "+reportInstructions(s), "bad-report", fmt.Sprintf("%s (%s) never produced a valid report: %s", s.ID, d.ID, problem))
 		}
@@ -453,6 +472,10 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		report = in.LastMessage
 	}
 	outcome, summary, fields, problem := parseReport(report, s)
+	if problem != "" && s.Advisory != "" {
+		advisoryMissing(r, m, d, s)
+		return nil, nil
+	}
 	if problem != "" {
 		if d.spendStop() {
 			d.Done = true
@@ -486,14 +509,14 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 		d.Fields = map[string][]string{}
 	}
 	// A private document's summary and fields can quote it. The report file below stays in the run folder, which is not tracked.
-	if s.Curates != "document" {
+	if !privateStage(s) {
 		for k, v := range fields {
 			d.Fields[k] = v
 		}
 	}
 	d.Done, d.Outcome = true, outcome
 	detail := outcome
-	if s.Curates != "document" {
+	if !privateStage(s) {
 		d.Summary = summary
 		recordFacts(r, d)
 		detail += ": " + summary
@@ -508,20 +531,28 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 	if sc == nil || sc.Stage != s.ID {
 		return // a stale stage; recorded, but it no longer drives the run
 	}
-	if s.Parallel != nil {
+	// joined is the stage's outcome once every branch is done, or false while one is still running.
+	joined := func() (string, bool) {
+		if s.Parallel == nil {
+			return d.Outcome, true
+		}
 		var got []string
 		for _, dim := range s.Dimensions {
 			id, ok := sc.Branches[dim]
 			if !ok {
-				return
+				return "", false
 			}
 			b := r.State.dispatch(id)
 			if !b.Done {
-				return
+				return "", false
 			}
 			got = append(got, b.Outcome)
 		}
-		outcome = join(s, got)
+		return join(s, got), true
+	}
+	outcome, ready := joined()
+	if !ready {
+		return
 	}
 	if d.Role == "documentation" {
 		_, _, stray, err := docsChanged(r, d.DocsBase)
@@ -535,10 +566,24 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 		}
 	}
 	if err := fire(r, "stage.after:"+s.ID, d); err != nil {
-		m.fail("handler", err.Error())
-		return
+		if s.Advisory == "" {
+			m.fail("handler", err.Error())
+			return
+		}
+		d.Outcome = s.Advisory
+		r.State.noteOnce(missingNote(d))
+		outcome, _ = joined()
 	}
 	m.apply(d.Scope, s, outcome)
+}
+
+// missingNote is the run note for a feedback dispatch that produced nothing.
+func missingNote(d *Dispatch) string { return "feedback for " + d.Dim + " is missing" }
+
+// advisoryMissing records that an advisory dispatch produced nothing: it takes the stage's advisory outcome, spends no stop budget, and the join goes on.
+func advisoryMissing(r *RunFiles, m *machine, d *Dispatch, s *Stage) {
+	r.State.noteOnce(missingNote(d))
+	completeDispatch(r, m, d, s, s.Advisory, "", nil, "")
 }
 
 // claimRun binds the newest pending run that no session owns to this session, and opens it.
@@ -656,7 +701,7 @@ func parseReport(msg string, s *Stage) (outcome, summary string, fields map[stri
 		}
 	}
 	if _, ok := s.Outcomes.find(outcome); !ok {
-		if s.Curates == "document" {
+		if privateStage(s) {
 			return "", "", nil, "Your report's outcome is not one of this stage's outcomes."
 		}
 		return "", "", nil, fmt.Sprintf("Your report's outcome %q is not one of this stage's outcomes.", outcome)
@@ -898,7 +943,7 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 		b.WriteString(platformsLine(r))
 	}
 	b.WriteString("\n## Your brief\n\n" + original + "\n\n## Report\n\n" + reportInstructions(s) + "\n")
-	if len(r.Snap.KnownSkills) > 0 && s.Curates != "document" {
+	if len(r.Snap.KnownSkills) > 0 && !privateStage(s) {
 		b.WriteString("\nIf you had to establish a fact about a technology itself — true on any project using it, not just this one — " +
 			"add a line per fact to the report block: `fact: <skill> | <the fact> | <path:line or how you verified it>`. " +
 			"The skills are: " + strings.Join(r.Snap.KnownSkills, ", ") + ". " +

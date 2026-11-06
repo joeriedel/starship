@@ -36,6 +36,9 @@ func (m *machine) enter(scope, id string) {
 	if why := skipReason(s, m.snap.Bindings, m.snap.Documentation); why != "" {
 		m.st.note("stage " + id + " skipped: " + why)
 		m.apply(scope, s, s.Skip.Outcome)
+	} else if s.Parallel != nil && s.Parallel.Empty != "" && len(s.Dimensions) == 0 {
+		m.st.log("empty", id, "", "no items; takes "+s.Parallel.Empty)
+		m.apply(scope, s, s.Parallel.Empty)
 	}
 }
 

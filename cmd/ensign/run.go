@@ -986,7 +986,10 @@ func cmdRunStop(args []string, out, stderr io.Writer) error {
 		works = nil
 	}
 	m := &machine{snap: r.Snap, st: r.State}
-	m.fail("cancelled", fmt.Sprintf("stopped at the user's request by session %s", session))
+	advisory := stopAdvisory(r, m)
+	if !advisory {
+		m.fail("cancelled", fmt.Sprintf("stopped at the user's request by session %s", session))
+	}
 	if err := r.save(); err != nil {
 		return err
 	}
@@ -1004,7 +1007,11 @@ func cmdRunStop(args []string, out, stderr io.Writer) error {
 	if err := r.save(); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Stopped run %s. Its work in the code folders was left as it is.\n", id)
+	if advisory {
+		fmt.Fprintf(out, "Finished run %s: %s %s.\n", id, r.State.Status, strings.Join(r.State.Notes, " "))
+	} else {
+		fmt.Fprintf(out, "Stopped run %s. Its work in the code folders was left as it is.\n", id)
+	}
 	for _, f := range works {
 		fmt.Fprintf(out, "Free now: %s\n", f)
 	}
@@ -1066,11 +1073,22 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		return nil, err
 	}
 	errs := validate(c)
+	// A stage with an empty outcome treats "nothing to do" as no items; the run still needs one stage with something to do.
 	var resolve func(list []*Stage)
+	emptyStages, emptyOnly := 0, 0
 	resolve = func(list []*Stage) {
 		for _, s := range list {
 			if s.Parallel != nil && s.Parallel.Over != "dimensions" {
 				items, err := generatorItems(c, s.Parallel.Over, rebuild)
+				if s.Parallel.Empty != "" {
+					emptyStages++
+					if errors.Is(err, errNothingToCurate) {
+						err = nil
+					}
+					if err == nil && len(items) == 0 {
+						emptyOnly++
+					}
+				}
 				if err != nil {
 					errs = append(errs, err.Error())
 				}
@@ -1080,11 +1098,16 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		}
 	}
 	resolve(c.Pipeline.Stages)
+	if emptyStages > 0 && emptyOnly == emptyStages {
+		errs = append(errs, errNothingToCurate.Error())
+	}
 	if start != "" {
 		if s, _, _ := c.Pipeline.find(start); s == nil {
 			errs = append(errs, fmt.Sprintf("--start: no stage %q", start))
 		} else if why := skipReason(s, c.Bindings, c.Documentation); why != "" {
 			errs = append(errs, fmt.Sprintf("--start: stage %q would be skipped (%s), so the run would have nothing to do", start, why))
+		} else if s.Parallel != nil && s.Parallel.Empty != "" && len(s.Dimensions) == 0 {
+			errs = append(errs, fmt.Sprintf("--start: stage %q has no items, so the run would have nothing to do", start))
 		}
 	}
 	if sync {
@@ -1457,4 +1480,28 @@ func (st *State) canonicalizeBudgets() {
 		st.Resume.Budget = canonicalBudget(st.Resume.Budget)
 		st.Resume.Reset = canonicalBudget(st.Resume.Reset)
 	}
+}
+
+// stopAdvisory finishes a run stopped during an advisory stage through the stage's advisory outcome, since the work before it is done and ensign cannot tell a hung agent from a slow one. Each document with no completed dispatch is noted as missing. It reports false when the current stage is not advisory.
+func stopAdvisory(r *RunFiles, m *machine) bool {
+	sc := r.State.Scopes[leadScope(r)]
+	if sc == nil || sc.Stage == "" {
+		return false
+	}
+	s := m.stage(sc.Stage)
+	if s == nil || s.Advisory == "" || s.Parallel == nil {
+		return false
+	}
+	for _, dim := range s.Dimensions {
+		if id, ok := sc.Branches[dim]; ok {
+			b := r.State.dispatch(id)
+			if b.Done {
+				continue
+			}
+			b.Done, b.Outcome = true, s.Advisory
+		}
+		r.State.noteOnce("feedback for " + dim + " is missing")
+	}
+	m.apply(leadScope(r), s, s.Advisory)
+	return true
 }

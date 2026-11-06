@@ -651,7 +651,7 @@ func TestDocsRemovedFileInDocs(t *testing.T) {
 }
 
 func TestValidateCurates(t *testing.T) {
-	for _, curates := range []string{"", "style", "skill", "document", "styles"} {
+	for _, curates := range []string{"", "style", "skill", "document", "brag", "brag-feedback", "styles"} {
 		c := &Config{ControlPlane: repoRoot(t), Pipeline: &Pipeline{
 			Stages: []*Stage{{ID: "s", Role: "coder", Curates: curates, Outcomes: Outcomes{{Name: "a", Then: Transition{Finish: "success"}}}}},
 		}}

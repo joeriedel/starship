@@ -134,6 +134,8 @@ func (o Outcomes) names() []string {
 type Parallel struct {
 	Over string `yaml:"over" json:"over"`
 	Join string `yaml:"join" json:"join"`
+	// Empty is the outcome a stage takes, without a dispatch, when it has no items.
+	Empty string `yaml:"empty" json:"empty,omitempty"`
 }
 
 // StageSkip says a stage is not run unless a binding declares paths; the stage then takes Outcome's transition.
@@ -154,11 +156,13 @@ type Stage struct {
 	ReportFields []string  `yaml:"report-fields" json:"report_fields,omitempty"`
 	// Skip takes the named outcome without a dispatch when the binding declares nothing.
 	Skip *StageSkip `yaml:"skip" json:"skip,omitempty"`
-	// Curates names the document this stage's agents rewrite: style, skill or document.
-	Curates string   `yaml:"curates" json:"curates,omitempty"`
-	Stages  []*Stage `yaml:"stages" json:"stages,omitempty"`
-	Source  string   `yaml:"-" json:"source"`
-	line    int
+	// Curates names what this stage's agents write: style, skill, document, brag or brag-feedback.
+	Curates string `yaml:"curates" json:"curates,omitempty"`
+	// Advisory is the outcome a dispatch takes when it fails to report: nothing on this stage fails the run or retries.
+	Advisory string   `yaml:"advisory" json:"advisory,omitempty"`
+	Stages   []*Stage `yaml:"stages" json:"stages,omitempty"`
+	Source   string   `yaml:"-" json:"source"`
+	line     int
 }
 
 func (s *Stage) UnmarshalYAML(n *yaml.Node) error {
@@ -1694,9 +1698,16 @@ func validate(c *Config) []string {
 				}
 			}
 			switch s.Curates {
-			case "", "style", "skill", "document":
+			case "", "style", "skill", "document", "brag", "brag-feedback":
 			default:
-				add("%s: curates %q is not supported (style, skill or document)", at, s.Curates)
+				add("%s: curates %q is not supported (style, skill, document, brag or brag-feedback)", at, s.Curates)
+			}
+			if s.Advisory != "" {
+				if o, ok := s.Outcomes.find(s.Advisory); !ok {
+					add("%s: advisory outcome %q is not one of the stage's outcomes", at, s.Advisory)
+				} else if o.Error != "" {
+					add("%s: advisory outcome %q must not be an error", at, s.Advisory)
+				}
 			}
 			if s.isLead() {
 				if depth >= 1 {
@@ -1725,9 +1736,17 @@ func validate(c *Config) []string {
 							add("%s: dimension %q has no brief (briefs/review/%s.md)", at, d, d)
 						}
 					}
-				case "pending-skills", "pending-documents", "unprocessed-sources":
+				case "pending-skills", "pending-documents", "focal-documents", "unprocessed-sources":
 				default:
 					add("%s: parallel over %q is not supported", at, s.Parallel.Over)
+				}
+				if s.Parallel.Empty != "" {
+					if _, ok := s.Outcomes.find(s.Parallel.Empty); !ok {
+						add("%s: empty outcome %q is not one of the stage's outcomes", at, s.Parallel.Empty)
+					}
+					if s.Parallel.Over == "dimensions" {
+						add("%s: empty cannot be used with parallel over dimensions", at)
+					}
 				}
 			}
 			for _, o := range s.Outcomes {

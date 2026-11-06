@@ -1,14 +1,16 @@
 # Copyright (c) 2026 Joseph Riedel
 # Licensed under the MIT License. See LICENSE.
 
+# Three stages: the curator folds proposals into each declared document with pending proposals, then a brag writer writes <sheet>.brag.md beside every declared focal document, then an advisory reviewer checks each brag file against its sheet. A stage with nothing to do takes its empty outcome without a dispatch, so a run with no pending proposals and a focal document goes straight to the brag file, and a run with no focal document ends after the curator.
+
 pipeline: document-curate
 version: 1
 scope: bridge
-summary: Fold the proposals made for the bridge's declared documents into them.
+summary: Fold the proposals made for the bridge's declared documents into them, then write and check the brag file of the documents that have one.
 
 help:
   - say: '"curate the documents"'
-    does: fold the proposals made for the bridge's declared documents into them
+    does: fold the proposals made for the bridge's declared documents into them, then write and check the brag file of the documents that have one
     run: ensign run --pipeline document-curate
 
 stages:
@@ -17,7 +19,25 @@ stages:
     dispatched-by: session
     brief: briefs/curate-document.md
     curates: document
-    parallel: { over: pending-documents, join: all }
+    parallel: { over: pending-documents, join: all, empty: unchanged }
     outcomes:
-      updated:   { finish: success }
-      unchanged: { finish: success }
+      updated:   next
+      unchanged: next
+  - id: brag
+    role: brag-writer
+    dispatched-by: session
+    brief: briefs/brag.md
+    curates: brag
+    parallel: { over: focal-documents, join: all, empty: written }
+    outcomes:
+      written: next
+  - id: feedback
+    role: brag-reviewer
+    dispatched-by: session
+    brief: briefs/brag-feedback.md
+    curates: brag-feedback
+    advisory: missing
+    parallel: { over: focal-documents, join: all, empty: noted }
+    outcomes:
+      noted:   { finish: success }
+      missing: { finish: success }

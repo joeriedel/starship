@@ -283,56 +283,6 @@ func TestSessionStartFitsBudgetWithWorstNotes(t *testing.T) {
 	}
 }
 
-// Left-out entries of focal documents add warnings to the worst-notes session start, and they are capped to stay in the budget.
-func TestSessionStartFitsBudgetWithFocalLeftOut(t *testing.T) {
-	needGit(t)
-	w := linkedWorld(t)
-	y := "use: [focal-sheet]\ndocuments:\n"
-	for _, n := range []string{"first-half", "b", "c", "d"} {
-		path := "notes/focal/2026-" + n + ".md"
-		name := "supernova-focal-" + n
-		if n == "first-half" {
-			name = "supernova-focal-2026-first-half"
-		}
-		y += "  " + name + ":\n    path: " + path + "\n    rubric: notes/focal/rubric.md\n"
-		var es []Entry
-		for i := 0; i < 300; i++ {
-			es = append(es, Entry{ID: fmt.Sprintf("bad-%d", i), Status: "active", Theme: "Gone", Text: "Nova entry", Part: "p", Hits: 1, Evidence: []string{"review"}})
-		}
-		if err := writeDocumentFile(w.bridge, filepath.Join(w.bridge, path), name, Doc{Entries: es}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(t, filepath.Join(w.bridge, "notes/focal/rubric.md"), "## Alpha\n")
-	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+repoRoot(t)+"\n"+y)
-	journalFixture(t, w)
-	write(t, filepath.Join(w.bridge, "notes", "log", "2026-11.md"), "x\n")
-	for i := 0; i < 40; i++ {
-		write(t, filepath.Join(w.bridge, "notes", fmt.Sprintf("topic-%02d.md", i)), "x\n")
-	}
-	write(t, filepath.Join(w.bridge, "notes", "inbox.md"), "call Ada\n")
-	ctx := w.startWithNotes("clear", strings.Repeat("Prefer small commits and explain each one.\n", 400))
-	if !strings.Contains(ctx, "; also in 3 more documents.") {
-		t.Fatalf("the focal warnings should be there:\n%s", ctx)
-	}
-	for _, want := range []string{fmt.Sprintf(notesCommittedFmt, 42), "too long to reprint", "unsorted notes"} {
-		if !strings.Contains(ctx, want) {
-			t.Fatalf("the session start should hold %q:\n%s", want, ctx)
-		}
-	}
-	committed := fmt.Sprintf(notesCommittedFmt, math.MaxInt) + "\n"
-	statusRead := fmt.Sprintf(syncStatusFmt, "exit status 255") + "\n"
-	syncWorst := max(len(syncLocalChangesNote)+1, len(syncDivergedNote)+1, len(statusRead))
-	worst := max(len(notesCommitFailed)+1+syncWorst, len(committed)+syncWorst, len(committed)+len(notesPushFailed))
-	size := len(ctx) - len(fmt.Sprintf(notesCommittedFmt, 42)+"\n") + worst
-	if len(w.bridge) < 200 {
-		size += (200 - len(w.bridge)) * strings.Count(ctx, w.bridge)
-	}
-	if size >= manualLimit {
-		t.Errorf("session start text with focal warnings is %d characters with a 200-character bridge path; the budget is %d", size, manualLimit)
-	}
-}
-
 // Claude Code cuts additionalContext at 10,000 characters; the bridge path is repeated in the text, so the budget is checked as if the path were 200 characters long.
 func TestSessionStartFitsBudgetWithLongBridgePath(t *testing.T) {
 	for _, c := range []struct {

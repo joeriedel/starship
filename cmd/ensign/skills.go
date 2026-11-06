@@ -408,6 +408,8 @@ func generatorItems(c *Config, over string, rebuild bool) ([]string, error) {
 		return out, nil
 	case "pending-documents":
 		return pendingDocuments(c.Bridge)
+	case "focal-documents":
+		return focalDocuments(c.Bridge)
 	case "unprocessed-sources":
 		src := loadSources(c.Bridge, c.Project)
 		var out []string
@@ -449,6 +451,11 @@ func itemContext(r *RunFiles, s *Stage, item string, d *Dispatch) (string, error
 			item, baseText, string(cur), strings.Join(facts, "\n---\n")), nil
 	case "pending-documents":
 		return documentContext(r.Snap.Bridge, item, d)
+	case "focal-documents":
+		if s.Curates == "brag-feedback" {
+			return feedbackContext(r, item, d)
+		}
+		return bragContext(r, item, d)
 	case "unprocessed-sources":
 		src := loadSources(r.Snap.Bridge, r.Snap.Project)
 		for _, s := range src.Sources {
