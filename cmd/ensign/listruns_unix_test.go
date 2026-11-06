@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,13 +28,6 @@ func unlistable(t *testing.T, w *world) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(dir, 0o755) })
-}
-
-func wantListErr(t *testing.T, what string, err error) {
-	t.Helper()
-	if err == nil || !strings.Contains(err.Error(), "reading the runs") {
-		t.Errorf("%s: want the listing error, got %v", what, err)
-	}
 }
 
 func TestUnlistableRunsFolderFailsGuards(t *testing.T) {
@@ -63,11 +57,11 @@ func TestUnlistableRunsFolderFailsGuards(t *testing.T) {
 	_, err = goWaiting(bridge, "s1")
 	wantListErr(t, "goWaiting", err)
 
-	found, unread := stageRoleAnywhere(bridge, "no-such-role")
+	found, unread, _ := stageRoleAnywhere(bridge, "no-such-role")
 	if found || len(unread) == 0 || !strings.Contains(unread[0], "reading the runs") {
 		t.Errorf("stageRoleAnywhere = %v, %v", found, unread)
 	}
-	if found, _ := stageRoleAnywhere(bridge, "reviewer"); !found {
+	if found, _, _ := stageRoleAnywhere(bridge, "reviewer"); !found {
 		t.Error("stageRoleAnywhere missed a role a pipeline file names")
 	}
 }
@@ -95,4 +89,46 @@ func TestUnlistableRunsFolderSweepsNothing(t *testing.T) {
 	if !allExist(paths) {
 		t.Error("session files were swept although the runs could not be listed")
 	}
+}
+
+func TestGCRunsReportsAnUnlistableRunsFolder(t *testing.T) {
+	w := newWorld(t)
+	unlistable(t, w)
+	stderr := captureStderr(t, func() {
+		if res := gcRuns(w.bridge, 500, 0); !res.ListFailed || res.Removed != 0 {
+			t.Errorf("gcRuns = %+v, want ListFailed", res)
+		}
+	})
+	if !strings.Contains(stderr, "warning: could not list the runs") {
+		t.Errorf("stderr = %q", stderr)
+	}
+	var out bytes.Buffer
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	captureStderr(t, func() {
+		if err := cmdGC(nil, &out); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out.String(), ", could not list the runs") {
+		t.Errorf("gc output = %q", out.String())
+	}
+}
+
+// captureStderr returns what fn wrote to os.Stderr.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = wr
+	fn()
+	os.Stderr = old
+	wr.Close()
+	data, _ := io.ReadAll(r)
+	r.Close()
+	return string(data)
 }

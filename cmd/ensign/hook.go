@@ -1284,10 +1284,10 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 }
 
 // stageRoleAnywhere reports whether role is a stage role, not free, in a live run's
-// pipeline or in a pipeline file of the bridge's control plane and extensions. It also returns what it could not read, one line each (the runs, pipeline files, folders, or all of them when the bridge's own files can't be read), which stop it ruling the role out. A bridge with no bridge.yaml has none, except the runs when they can't be listed.
-func stageRoleAnywhere(bridge, role string) (bool, []string) {
+// pipeline or in a pipeline file of the bridge's control plane and extensions. It also returns what it could not read, one line each (the runs, pipeline files, folders, or all of them when the bridge's own files can't be read), which stop it ruling the role out. A bridge with no bridge.yaml has none, except the runs when they can't be listed. The third result says the runs could not be listed, which the caller fails closed on even for a read-only role.
+func stageRoleAnywhere(bridge, role string) (found bool, unread []string, listFailed bool) {
 	if role == "" {
-		return false, nil
+		return false, nil, false
 	}
 	isStage := func(p *Pipeline) bool {
 		for _, fr := range p.FreeRoles {
@@ -1297,26 +1297,26 @@ func stageRoleAnywhere(bridge, role string) (bool, []string) {
 		}
 		return p.hasStageRole(role)
 	}
-	var unread []string
 	live, err := liveRuns(bridge)
 	if err != nil {
+		listFailed = true
 		unread = append(unread, flatLine("the runs: "+err.Error()))
 	}
 	for _, ri := range live {
 		if ri.snap.Pipeline != nil && isStage(ri.snap.Pipeline) {
-			return true, nil
+			return true, nil, listFailed
 		}
 	}
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return false, unread
+			return false, unread, listFailed
 		}
-		return false, append(unread, flatLine("all extensions and pipelines: "+err.Error()))
+		return false, append(unread, flatLine("all extensions and pipelines: "+err.Error())), listFailed
 	}
 	cp, err := controlPlaneDir(bridge, bf)
 	if err != nil {
-		return false, append(unread, flatLine("all extensions and pipelines: "+err.Error()))
+		return false, append(unread, flatLine("all extensions and pipelines: "+err.Error())), listFailed
 	}
 	glob := func(dir string) []string {
 		found, err := filesIn(dir, ".yaml")
@@ -1338,10 +1338,10 @@ func stageRoleAnywhere(bridge, role string) (bool, []string) {
 		if err := readYAML(f, &p); err != nil {
 			unread = append(unread, err.Error())
 		} else if isStage(&p) {
-			return true, nil
+			return true, nil, listFailed
 		}
 	}
-	return false, unread
+	return false, unread, listFailed
 }
 
 // readOnlyRole reports whether the definition in the bridge's .claude/agents, the file Claude Code uses, of the one agent named role, grants only Read, Grep, Glob and Bash. It fails closed: no file, more than one, a file that can't be read, no tools line, an empty list or any other tool is not read-only.

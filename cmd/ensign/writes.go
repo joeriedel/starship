@@ -220,7 +220,11 @@ func (wf *writesFile) digest() string { return sha([]byte(wf.listing())) }
 
 // goWaiting reports whether a run or sequence waits for the user's go in this session, an unclaimed run included.
 func goWaiting(bridge, session string) (bool, error) {
-	if readSeq(bridge, session).openSeq() != nil {
+	sf, err := readSeqErr(bridge, session)
+	if err != nil {
+		return false, err
+	}
+	if sf.openSeq() != nil {
 		return true, nil
 	}
 	runs, err := listRuns(bridge)

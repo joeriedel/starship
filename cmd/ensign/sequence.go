@@ -245,12 +245,24 @@ func withSeq(bridge, session string, fn func(sf *seqFile) error) error {
 
 // readSeq reads the session's sequences without the lock, for display and checks.
 func readSeq(bridge, session string) *seqFile {
+	sf, _ := readSeqErr(bridge, session)
+	return sf
+}
+
+// readSeqErr is readSeq returning the read error. An empty session or a file that does not exist reads as no sequences, with no error.
+func readSeqErr(bridge, session string) (*seqFile, error) {
 	sf := &seqFile{}
+	var err error
 	if session != "" {
-		readJSON(seqPath(bridge, session), sf)
+		if err = readJSON(seqPath(bridge, session), sf); errors.Is(err, fs.ErrNotExist) {
+			err = nil
+		}
+	}
+	if err != nil {
+		sf = &seqFile{}
 	}
 	sf.normalize()
-	return sf
+	return sf, err
 }
 
 // normalize numbers each sequence's steps from 1 in their stored order, which also converts a file written when steps were numbered across the session, and tells each step its sequence.

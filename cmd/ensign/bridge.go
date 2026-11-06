@@ -24,7 +24,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// liveRuns lists the bridge's runs that have not finished.
+// liveRuns lists the bridge's runs that have not finished. It returns listRuns' error, for a failed listing or a run that can't be ruled out as live.
 func liveRuns(bridge string) ([]runInfo, error) {
 	runs, err := listRuns(bridge)
 	if err != nil {

@@ -1746,7 +1746,7 @@ func TestBracketedFoldersAreNotPatterns(t *testing.T) {
 		t.Errorf("findPipeline = %q, %q, %v", got, label, err)
 	}
 	for _, role := range []string{"supernova-cp-stage", "supernova-cpfeed-stage", "supernova-brfeed-stage"} {
-		if found, unread := stageRoleAnywhere(bridge, role); !found || len(unread) > 0 {
+		if found, unread, _ := stageRoleAnywhere(bridge, role); !found || len(unread) > 0 {
 			t.Errorf("stageRoleAnywhere(%s) = %v, %v", role, found, unread)
 		}
 	}
@@ -1843,15 +1843,15 @@ func TestStageRoleAnywhereReportsUnreadableBridgeFiles(t *testing.T) {
 	w := newWorld(t)
 	bf := filepath.Join(w.bridge, "bridge.yaml")
 	write(t, bf, "control-plane: [a\n")
-	if found, unread := stageRoleAnywhere(w.bridge, "supernova-role"); found || len(unread) != 1 || !strings.HasPrefix(unread[0], "all extensions and pipelines: ") {
+	if found, unread, _ := stageRoleAnywhere(w.bridge, "supernova-role"); found || len(unread) != 1 || !strings.HasPrefix(unread[0], "all extensions and pipelines: ") {
 		t.Errorf("broken bridge.yaml: %v, %v", found, unread)
 	}
 	write(t, bf, "control-plane:\n  remote: https://example.invalid/supernova.git\n  tag: v1\n")
-	if found, unread := stageRoleAnywhere(w.bridge, "supernova-role"); found || len(unread) != 1 || !strings.HasPrefix(unread[0], "all extensions and pipelines: ") {
+	if found, unread, _ := stageRoleAnywhere(w.bridge, "supernova-role"); found || len(unread) != 1 || !strings.HasPrefix(unread[0], "all extensions and pipelines: ") {
 		t.Errorf("unresolvable control plane: %v, %v", found, unread)
 	}
 	os.Remove(bf)
-	if found, unread := stageRoleAnywhere(w.bridge, "supernova-role"); found || len(unread) != 0 {
+	if found, unread, _ := stageRoleAnywhere(w.bridge, "supernova-role"); found || len(unread) != 0 {
 		t.Errorf("missing bridge.yaml: %v, %v", found, unread)
 	}
 }

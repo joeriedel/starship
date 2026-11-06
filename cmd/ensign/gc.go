@@ -42,6 +42,7 @@ type gcResult struct {
 	Removed, Scratch, Links int
 	Failed                  int  // delete attempts that left the folder in place
 	ScratchFailed           int  // kept finished runs whose scratch folder could not be read or fully emptied
+	ListFailed              bool // the runs folder could not be listed, so no run was considered for deletion
 	More                    bool // candidates remain because the cap on delete attempts was reached
 }
 
@@ -56,7 +57,11 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		res.Links = dropDeadLinks(bridge)
 		return res
 	}
-	entries, _ := os.ReadDir(runsDir(bridge))
+	entries, err := os.ReadDir(runsDir(bridge))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) && plainFileOnPath(runsDir(bridge)) == "" {
+		fmt.Fprintf(os.Stderr, "warning: could not list the runs in %s: %v\n", runsDir(bridge), err)
+		res.ListFailed = true
+	}
 	var finished []string // newest first
 	var pipelineOnly []string
 	for i := len(entries) - 1; i >= 0; i-- {
@@ -666,6 +671,9 @@ func cmdGC(args []string, out io.Writer) error {
 	}
 	if res.ScratchFailed > 0 {
 		fmt.Fprintf(out, ", could not empty %d scratch folders", res.ScratchFailed)
+	}
+	if res.ListFailed {
+		fmt.Fprint(out, ", could not list the runs")
 	}
 	fmt.Fprintln(out)
 	return nil

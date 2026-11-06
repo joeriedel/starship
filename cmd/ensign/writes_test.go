@@ -912,3 +912,39 @@ func TestJSONText(t *testing.T) {
 		}
 	}
 }
+
+func TestWritesAddFailsWhenGoWaitingCannotBeJudged(t *testing.T) {
+	w := writesWorld(t)
+	write(t, seqPath(w.bridge, w.sid), "{not json")
+	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost); err == nil || !strings.Contains(err.Error(), "sequence") {
+		t.Errorf("a corrupt sequence file: %v", err)
+	}
+	if _, err := os.Stat(writesPath(w.bridge, w.sid)); err == nil {
+		t.Error("nothing should have been added")
+	}
+
+	w = writesWorld(t)
+	dir := plantRun(t, w.bridge, "20240101-000001-supernova", "running")
+	write(t, filepath.Join(dir, "state.json"), "{not json")
+	_, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost)
+	wantListErr(t, "writes add", err)
+	if _, err := os.Stat(writesPath(w.bridge, w.sid)); err == nil {
+		t.Error("nothing should have been added")
+	}
+}
+
+func TestGoApprovesNoWriteWhenGoWaitingCannotBeJudged(t *testing.T) {
+	w := writesWorld(t)
+	w.addWrite(wikiPost, `{"n":1}`)
+	dir := plantRun(t, w.bridge, "20240101-000001-supernova", "running")
+	write(t, filepath.Join(dir, "state.json"), "{not json")
+	res, code := w.hook("UserPromptSubmit", map[string]any{"prompt": "go"})
+	if code != 2 {
+		t.Fatalf("exit %d: %v", code, res)
+	}
+	for _, e := range w.writesState().Entries {
+		if e.Approved {
+			t.Error("a write was approved")
+		}
+	}
+}

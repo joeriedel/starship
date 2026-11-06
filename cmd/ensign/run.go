@@ -273,15 +273,20 @@ func liveSessionRuns(bridge, session string) ([]string, error) {
 
 // runIsLive judges a run by state.json alone, retrying a not-found read only when pipeline.json shows the run exists, so a deleted run fails at once and a state.json mid-save is retried.
 func runIsLive(bridge, id string) bool {
-	dir := filepath.Join(runsDir(bridge), id)
 	var st State
-	err := readJSON(filepath.Join(dir, "state.json"), &st)
+	err := readRunState(filepath.Join(runsDir(bridge), id), &st)
+	return err == nil && !st.terminal()
+}
+
+// readRunState reads a run folder's state.json, retrying a not-found read only when pipeline.json shows the run exists.
+func readRunState(dir string, st *State) error {
+	err := readJSON(filepath.Join(dir, "state.json"), st)
 	if errors.Is(err, fs.ErrNotExist) {
 		if _, serr := os.Stat(filepath.Join(dir, "pipeline.json")); serr == nil {
-			err = readExistingJSON(filepath.Join(dir, "state.json"), &st)
+			err = readExistingJSON(filepath.Join(dir, "state.json"), st)
 		}
 	}
-	return err == nil && !st.terminal()
+	return err
 }
 
 // writeSessionRuns replaces a session's run ids; an empty list removes the file.
@@ -745,7 +750,7 @@ type runInfo struct {
 	state State
 }
 
-// listRuns reads every run in the bridge, newest first, without locking.
+// listRuns reads every run in the bridge, newest first, without locking. It skips what is not a run folder, a folder with no state.json (a creation gap or leftover, which gc owns), and a finished run whose pipeline.json can't be read, because a finished run holds nothing. A run that can't be ruled out as live fails the listing: one whose state.json can't be read, or a non-terminal one whose pipeline.json can't be read (state.json is written second, so that is no creation gap). Skipping it would hide it from the checks that refuse while a run is live.
 func listRuns(bridge string) ([]runInfo, error) {
 	entries, err := os.ReadDir(runsDir(bridge))
 	if err != nil {
@@ -756,13 +761,28 @@ func listRuns(bridge string) ([]runInfo, error) {
 	}
 	var out []runInfo
 	for i := len(entries) - 1; i >= 0; i-- {
+		if !entries[i].IsDir() {
+			continue
+		}
 		dir := filepath.Join(runsDir(bridge), entries[i].Name())
 		var ri runInfo
 		ri.id = entries[i].Name()
-		if readJSON(filepath.Join(dir, "pipeline.json"), &ri.snap) == nil &&
-			readJSON(filepath.Join(dir, "state.json"), &ri.state) == nil {
-			out = append(out, ri)
+		cantRuleOut := func(err error) error {
+			return fmt.Errorf("reading the runs: run %s can't be ruled out as live: %v; repair or delete the folder %s", ri.id, err, dir)
 		}
+		if err := readRunState(dir, &ri.state); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, cantRuleOut(err)
+		}
+		if err := readJSON(filepath.Join(dir, "pipeline.json"), &ri.snap); err != nil {
+			if ri.state.terminal() {
+				continue
+			}
+			return nil, cantRuleOut(err)
+		}
+		out = append(out, ri)
 	}
 	return out, nil
 }

@@ -313,12 +313,12 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		role, _ := in.ToolInput["subagent_type"].(string)
 		if event == "PreToolUse" && in.AgentID != "" {
-			found, unread := stageRoleAnywhere(bridge, role)
+			found, unread, listFailed := stageRoleAnywhere(bridge, role)
 			reason := "starship: this agent's run can't be found: the session restarted and the agent could not be tied to any live run, so it can't dispatch stages"
 			if !found && len(unread) > 0 {
-				reason = "starship: this agent's run can't be found, and " + role + " can't be ruled out as a stage role because a pipeline file could not be read: " + strings.Join(unread, "; ")
+				reason = "starship: this agent's run can't be found, and " + role + " can't be ruled out as a stage role because these could not be read: " + strings.Join(unread, "; ")
 			}
-			if !found && len(unread) > 0 && readOnlyRole(bridge, role) {
+			if !found && len(unread) > 0 && !listFailed && readOnlyRole(bridge, role) {
 				json.NewEncoder(stdout).Encode(map[string]any{"systemMessage": "starship: this agent's run can't be found, and " + role + " is read-only, so it is let through although these could not be read: " + strings.Join(unread, "; ")})
 			} else if found || len(unread) > 0 {
 				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
@@ -605,6 +605,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		}
 		if res.ScratchFailed > 0 {
 			show += fmt.Sprintf(" · could not empty %d scratch folders", res.ScratchFailed)
+		}
+		if res.ListFailed {
+			show += " · could not list the runs"
 		}
 	}
 	return reply(show, ctx.String())
