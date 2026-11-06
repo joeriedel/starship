@@ -431,7 +431,8 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if pid := claudePID(); pid != "" {
 		connectorsFrom, agentsFrom = processBaseline(bridge, pid, in.Source, connectorsFrom, agentsFrom)
 	}
-	carryErr := carryOverSession(bridge, in, prev)
+	clearErr := clearMoved(bridge, in.SessionID)
+	carryErr := errors.Join(clearErr, carryOverSession(bridge, in, prev))
 	var envNote string
 	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
 		env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)

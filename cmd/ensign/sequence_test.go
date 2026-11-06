@@ -4673,8 +4673,8 @@ func TestCarrySequenceDoesNothingWhenTheNewSessionGainsASequenceDuringTheWait(t 
 	l.Unlock()
 	select {
 	case err := <-carried:
-		if err != nil {
-			t.Fatal(err)
+		if err == nil || !strings.Contains(err.Error(), "not driven from this one") {
+			t.Fatalf("the sequence left behind should be reported: %v", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("carrySequence did not finish after the lock was released")
@@ -4806,8 +4806,8 @@ func TestCarrySequenceDoesNotOverwriteASequenceTheNewSessionGainsWhileItsLockIsH
 	l.Unlock()
 	select {
 	case err := <-carried:
-		if err != nil {
-			t.Fatal(err)
+		if err == nil || !strings.Contains(err.Error(), "not driven from this one") {
+			t.Fatalf("the sequence left behind should be reported: %v", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("carrySequence did not finish after the lock was released")
@@ -4900,27 +4900,6 @@ func TestCarrySequenceLeavesTheAdvanceOfARunThatFinishedInTheWindowToTheNextStop
 	sequenceStop(w.bridge, &HookInput{SessionID: "s2"})
 	if got := readSeq(w.bridge, "s2").Sequences[0].Steps[0].Status; got != "done" {
 		t.Errorf("the next Stop on the new session should reconcile the finished run: %s", got)
-	}
-}
-
-func TestSequenceAddKeyedOnTheOldSessionAfterTheMoveCreatesAFreshSequenceThere(t *testing.T) {
-	w, _ := carryWorld(t)
-	if err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{}); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.ReadFile(seqPath(w.bridge, "s2"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := seqAdd(w.bridge, w.sid, io.Discard, "", &seqStep{Kind: "do", Instruction: "tidy up"}); err != nil {
-		t.Fatal(err)
-	}
-	if !seqExists(w.bridge, w.sid) || len(readSeq(w.bridge, w.sid).Sequences) != 1 {
-		t.Error("the add should create a fresh sequence on the old session")
-	}
-	after, err := os.ReadFile(seqPath(w.bridge, "s2"))
-	if err != nil || string(after) != string(before) {
-		t.Errorf("the new session's sequence should not gain the step: %v", err)
 	}
 }
 

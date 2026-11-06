@@ -440,6 +440,9 @@ func cmdWrites(args []string, stdin io.Reader, out io.Writer) error {
 		if len(args) != 3 || args[1] != "--tool" {
 			return usage
 		}
+		if err := movedRefusal(bridge, session); err != nil {
+			return err
+		}
 		return writesAdd(bridge, session, args[2], stdin, show)
 	case args[0] == "drop" && len(args) > 1:
 		return writesDrop(bridge, session, args[1:], show)

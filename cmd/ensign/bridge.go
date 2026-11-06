@@ -1242,7 +1242,13 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 	fmt.Fprint(out, notes)
 	fmt.Fprintf(out, "\n%s\n", strings.TrimSpace(string(body)))
 	if sid := os.Getenv("STARSHIP_SESSION"); sid != "" {
-		writeFile(sessionFile(bridge, sid)+".task", task+"\n")
+		if to, moved, err := movedTo(bridge, sid); err != nil {
+			fmt.Fprintf(out, "\nthe task was not recorded on session %s because it can't be told whether the session moved: %v\n", sid, err)
+		} else if moved {
+			fmt.Fprintf(out, "\nthe task was not recorded on session %s because the session moved to session %s; open it from the current session\n", sid, to)
+		} else {
+			writeFile(sessionFile(bridge, sid)+".task", task+"\n")
+		}
 	}
 	return nil
 }

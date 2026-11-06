@@ -137,6 +137,71 @@ const lockHeldEnv = "STARSHIP_SEQUENCE_LOCK_HELD"
 
 func seqPath(bridge, session string) string { return sessionFile(bridge, session) + ".sequence" }
 
+func movedPath(bridge, session string) string { return sessionFile(bridge, session) + ".moved" }
+
+// markMoved records that the session continues as newSession, so a process that still has the old id can't add work to it.
+func markMoved(bridge, old, newSession string) error {
+	return writeFile(movedPath(bridge, old), newSession+"\n")
+}
+
+// clearMoved forgets that the session moved, for a session id that starts again.
+func clearMoved(bridge, session string) error {
+	if session == "" {
+		return nil
+	}
+	err := retry(retryWindow, isTransientFileError, func() error { return os.Remove(movedPath(bridge, session)) })
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("removing the moved record of session %s: %w", session, err)
+	}
+	return nil
+}
+
+// movedTo returns the session that the session moved to, and whether it moved. Only a missing marker means it did not; any other read error is returned.
+func movedTo(bridge, session string) (string, bool, error) {
+	if session == "" {
+		return "", false, nil
+	}
+	data, err := readFileRetry(movedPath(bridge, session))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(string(data)), true, nil
+}
+
+// movedRefusal is the error for adding work to a session that has moved to a new id, or whose marker can't be read.
+func movedRefusal(bridge, session string) error {
+	to, moved, err := movedTo(bridge, session)
+	if err != nil {
+		return fmt.Errorf("can't tell whether session %s has moved to a new session, so nothing was added: %w", session, err)
+	}
+	if !moved {
+		return nil
+	}
+	return fmt.Errorf("session %s has moved to session %s, so nothing was added; do it from the current session", session, to)
+}
+
+// strandedSequence reports a sequence with unfinished work (or one that can't be read) that stays on a session the carry did not move it from.
+func strandedSequence(bridge, old, session string) error {
+	var sf seqFile
+	if err := readJSON(seqPath(bridge, old), &sf); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+	} else {
+		unfinished := false
+		for _, seq := range sf.Sequences {
+			unfinished = unfinished || seq.unfinished()
+		}
+		if !unfinished {
+			return nil
+		}
+	}
+	return fmt.Errorf("the sequence of session %s was not moved to session %s; it stays on the earlier session and is not driven from this one", old, session)
+}
+
 func seqExists(bridge, session string) bool {
 	if session == "" {
 		return false
@@ -1862,7 +1927,10 @@ func reportRebindFailures(bridge, session string, fails []rebindFail) error {
 	return errors.Join(errs...)
 }
 
-// renameSequenceLocked renames the old session's sequence to the new session's under both sessions' sequence locks, and releases both before returning so no other lock is taken under them. The old lock is taken first and the new one second, within one carryLockWait together, so two carries going opposite ways can't wait on each other. It returns fs.ErrNotExist without renaming when the state changed while it waited.
+// errSequenceTaken is returned by renameSequenceLocked when the new session gained a sequence while it waited.
+var errSequenceTaken = errors.New("the new session already has a sequence")
+
+// renameSequenceLocked renames the old session's sequence to the new session's under both sessions' sequence locks, and releases both before returning so no other lock is taken under them. The old lock is taken first and the new one second, within one carryLockWait together, so two carries going opposite ways can't wait on each other. It returns fs.ErrNotExist without renaming when the old sequence is gone, and errSequenceTaken when the new session has one.
 func renameSequenceLocked(bridge, old, session string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), carryLockWait)
 	defer cancel()
@@ -1882,8 +1950,11 @@ func renameSequenceLocked(bridge, old, session string) error {
 		return fmt.Errorf("locking the new session's sequence: %w", err)
 	}
 	defer nl.Unlock()
-	if !seqExists(bridge, old) || seqExists(bridge, session) {
+	if !seqExists(bridge, old) {
 		return fs.ErrNotExist
+	}
+	if seqExists(bridge, session) {
+		return errSequenceTaken
 	}
 	return seqRename(seqPath(bridge, old), seqPath(bridge, session))
 }
@@ -1892,12 +1963,18 @@ func renameSequenceLocked(bridge, old, session string) error {
 //
 // The rename happens under both sessions' sequence locks, so a holder that read the file before the move can't save it back over the old session afterwards, and a writer that creates the new session's file can't be overwritten by the rename. Both locks are released before anything else is taken, and a run lock is never taken under them. A reader that takes no lock is covered by the rename's retry, not by these locks.
 func carrySequence(bridge, old, session string, reported map[string]bool) error {
-	if !seqExists(bridge, old) || seqExists(bridge, session) {
+	if !seqExists(bridge, old) {
 		return nil
+	}
+	if seqExists(bridge, session) {
+		return strandedSequence(bridge, old, session)
 	}
 	if err := renameSequenceLocked(bridge, old, session); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
+		}
+		if errors.Is(err, errSequenceTaken) {
+			return strandedSequence(bridge, old, session)
 		}
 		return fmt.Errorf("the sequence of session %s could not be moved to session %s and stays on the earlier session: %w", old, session, err)
 	}
@@ -2667,6 +2744,9 @@ var errNameJoins = errors.New("--name can't be used here: the name is set by the
 
 // checkAddable refuses to add steps while the session has a plain run under way.
 func checkAddable(bridge, session, name string) error {
+	if err := movedRefusal(bridge, session); err != nil {
+		return err
+	}
 	if err := writesPendingRefusal(bridge, session); err != nil {
 		return err
 	}
@@ -2689,6 +2769,9 @@ func checkAddable(bridge, session, name string) error {
 // seqAdd appends a step to the session's open sequence and prints the sequence. A plain run waiting for go becomes the sequence's first step.
 func seqAdd(bridge, session string, out io.Writer, name string, st *seqStep) error {
 	return withSeq(bridge, session, func(sf *seqFile) error {
+		if err := movedRefusal(bridge, session); err != nil {
+			return err
+		}
 		if name != "" && sf.openSeq() != nil {
 			return errNameJoins
 		}

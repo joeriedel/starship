@@ -869,3 +869,20 @@ func TestGCStateOnlyFolderTakesKeepSlot(t *testing.T) {
 		t.Fatalf("the state-only folder must hold the keep slot: %+v", res)
 	}
 }
+
+func TestSessionFilesSweepsAnOldMovedMarker(t *testing.T) {
+	w := newWorld(t)
+	marker := movedPath(w.bridge, "old.id")
+	write(t, marker, "new.id\n")
+	past := time.Now().Add(-oldAge)
+	os.Chtimes(marker, past, past)
+	fresh := movedPath(w.bridge, "recent.id")
+	write(t, fresh, "new.id\n")
+	dropDeadLinks(w.bridge)
+	if exists(marker) {
+		t.Error("an old moved marker should be swept")
+	}
+	if !exists(fresh) {
+		t.Error("a recent moved marker should stay")
+	}
+}

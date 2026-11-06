@@ -1143,9 +1143,6 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 	if linked {
 		copySessionTask(bridge, prev, in.SessionID)
 	}
-	if _, err := os.Stat(sessionFile(bridge, in.SessionID)); err == nil {
-		return nil
-	}
 	var priors []string
 	if in.TranscriptPath != "" {
 		priors = priorSessions(in.TranscriptPath, in.SessionID)
@@ -1160,8 +1157,22 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 		priors = kept
 	}
 	var errs []error
-	reported := map[string]bool{}
 	for _, old := range priors {
+		if err := markMoved(bridge, old, in.SessionID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	strand := func(rest []string) {
+		for _, old := range rest {
+			errs = append(errs, strandedSequence(bridge, old, in.SessionID))
+		}
+	}
+	if _, err := os.Stat(sessionFile(bridge, in.SessionID)); err == nil {
+		strand(priors)
+		return errors.Join(errs...)
+	}
+	reported := map[string]bool{}
+	for i, old := range priors {
 		if err := carrySequence(bridge, old, in.SessionID, reported); err != nil {
 			errs = append(errs, err)
 		}
@@ -1169,7 +1180,9 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 		var setupErr error
 		ids, err := sessionRuns(bridge, old)
 		if err != nil {
-			return errors.Join(append(errs, err)...)
+			errs = append(errs, err)
+			strand(priors[i+1:])
+			return errors.Join(errs...)
 		}
 		var failed []rebindFail
 		for _, id := range ids {
@@ -1214,6 +1227,7 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 		// The queue takes the sequence lock, so it is called with no run lock held.
 		errs = append(errs, reportRebindFailures(bridge, in.SessionID, failed))
 		if carried {
+			strand(priors[i+1:])
 			return errors.Join(append(errs, setupErr)...)
 		}
 	}

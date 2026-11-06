@@ -203,7 +203,7 @@ const staleGCAge = 5 * time.Minute
 // pidRecordAge is how old a <pid>.pid record must be before a sweep removes it. Age, not liveness, because a session idle past it loses only the link to its earlier id, which is how /clear behaved before the record existed.
 const pidRecordAge = 30 * 24 * time.Hour
 
-// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .writes, .topic-*, .lock, .sequence.lock, .writes.lock, .sequence.tmp, .writes.tmp and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
+// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .writes, .moved, .topic-*, .lock, .sequence.lock, .writes.lock, .sequence.tmp, .writes.tmp and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
 const sessionFileAge = 30 * 24 * time.Hour
 
 // deadLink reports whether a session link names at least one run, none of the names is a path, and every named run's folder is gone. A link that is empty, unreadable or names a path is not dead. Links hold one run id per line.
@@ -241,7 +241,7 @@ func sessionOfFile(name string) (string, bool) {
 	if strings.HasSuffix(name, ".gc") {
 		return "", false
 	}
-	for _, suf := range []string{".task", ".pin", ".env", ".sequence", ".writes"} {
+	for _, suf := range []string{".task", ".pin", ".env", ".sequence", ".writes", ".moved"} {
 		if strings.HasSuffix(name, suf) {
 			return strings.TrimSuffix(name, suf), true
 		}
@@ -529,7 +529,7 @@ func settleSession(dir, id string, files, renamed []string) {
 	for _, name := range files {
 		stale = stale && !fresh(filepath.Join(dir, name))
 	}
-	for _, suf := range []string{"", ".task", ".pin", ".env", ".sequence", ".writes"} {
+	for _, suf := range []string{"", ".task", ".pin", ".env", ".sequence", ".writes", ".moved"} {
 		stale = stale && !fresh(filepath.Join(dir, id+suf))
 	}
 	for _, orig := range renamed {

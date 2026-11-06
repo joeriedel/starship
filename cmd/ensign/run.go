@@ -1090,6 +1090,11 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	}
 
 	session := os.Getenv("STARSHIP_SESSION")
+	if !queued {
+		if err := movedRefusal(bridge, session); err != nil {
+			return nil, err
+		}
+	}
 	if session != "" {
 		if data, err := os.ReadFile(sessionFile(bridge, session) + ".pin"); err == nil {
 			if started := strings.TrimSpace(string(data)); started != pinnedCommit(bridge) {
