@@ -224,7 +224,7 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 		r.State.Started = true
 		// A run that starts has to pass again, even if it dies before run.start's @branch. A run started at docs is the exception: it runs nothing the test stage covers, and tested() checks what it committed.
 		if !startsAtDocs(r) {
-			if err := os.Remove(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)); err != nil && !os.IsNotExist(err) {
+			if err := removeRecord(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)); err != nil {
 				m.fail("handler", fmt.Sprintf("could not clear the tested marker: %v", err))
 				return deny(r, s.ID, "the run could not start: "+r.State.Reason), nil
 			}

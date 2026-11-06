@@ -5149,3 +5149,22 @@ func TestAStepKeepsTheLocationsOfItsEarlierGroups(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestSequencePublishCommandSeesWhichTaskPublishLockItHolds(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "placeholder")
+	command := "echo held=$STARSHIP_PUBLISH_LOCK_HELD #"
+	if runtime.GOOS == "windows" && gitBashPath() == "" {
+		command = "echo held=%STARSHIP_PUBLISH_LOCK_HELD% & rem"
+	}
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		sf.Sequences[0].Steps[0] = &seqStep{Kind: "publish", Task: "supernova/auth-refactor", Command: command, Status: "pending"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.approve()
+	if st := w.step(1); st.Status != "done" || !strings.Contains(st.Reason, "held=supernova/auth-refactor") {
+		t.Errorf("the publish command should see the task: %s %q", st.Status, st.Reason)
+	}
+}

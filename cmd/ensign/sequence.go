@@ -1852,6 +1852,11 @@ func publishCommand(bridge, task string) (string, error) {
 
 // runPublish carries out a publish step: it lands each of its target locations in turn, stopping at the first failure. While locations are left to land they are kept in the task's publish record, so a new publish step lands only those.
 func runPublish(bridge, session string, seq *sequence, st *seqStep) (string, error) {
+	unlock, err := lockPublish(bridge, st.Task)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	targets := publishTargets(bridge, seq, st.N, st.Task)
 	if len(targets) == 1 && !publishRecorded(bridge, st.Task) {
 		return landLocation(bridge, session, st, targets[0])
@@ -1926,7 +1931,7 @@ func landLocation(bridge, session string, st *seqStep, loc string) (string, erro
 		return "", err
 	}
 	// The command runs under the session's sequence lock; withSeq refuses an ensign child of it for this session at once, where it would wait out the handler timeout.
-	out, err := shell(c.Workspace, st.Command+" "+shellQuote(st.Task), projectEnv(bridge, c.Project, append(os.Environ(), lockHeldEnv+"="+session)))
+	out, err := shell(c.Workspace, st.Command+" "+shellQuote(st.Task), projectEnv(bridge, c.Project, append(os.Environ(), lockHeldEnv+"="+session, publishLockEnv+"="+st.Task)))
 	if err != nil {
 		return "", fmt.Errorf("%v: %s", err, lastLines(out, 5))
 	}

@@ -1043,3 +1043,24 @@ func TestLoadLocationsAcceptsExistingReservedName(t *testing.T) {
 		t.Errorf("locations = %v", got)
 	}
 }
+
+func TestLandingRemovesTheMarkersOfTheSameFolderOnly(t *testing.T) {
+	w := locationsWorld(t)
+	task := "supernova/t"
+	client, err := locationPathFor(w.bridge, "supernova", "client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := setLocationPath(w.bridge, "supernova", "server", client); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range []string{"client", "server", "models", "ghost"} {
+		write(t, testedFile(w.bridge, task, l), "abc\n")
+	}
+	removeSameFolderMarkers(w.bridge, task, "client")
+	for l, gone := range map[string]bool{"client": false, "server": true, "models": false, "ghost": false} {
+		if _, err := os.Stat(testedFile(w.bridge, task, l)); os.IsNotExist(err) != gone {
+			t.Errorf("marker of %s: gone=%v, want %v", l, os.IsNotExist(err), gone)
+		}
+	}
+}

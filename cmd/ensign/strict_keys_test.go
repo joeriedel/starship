@@ -337,3 +337,11 @@ func TestStrictKeysShippedFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestStrictKeysRefuseUseUnderALocation(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "project.yaml")
+	write(t, file, "locations:\n  app:\n    use: [github-pr]\n")
+	if err := checkProjectKeys(file); err == nil || !strings.Contains(err.Error(), "use: unknown key") {
+		t.Fatalf("use under a location should be an unknown key: %v", err)
+	}
+}

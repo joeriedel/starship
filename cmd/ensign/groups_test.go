@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 // groupWorld is a locations world whose task t has one subtask per name, "<number>-<location>" for the locations client, server and models.
@@ -567,5 +569,58 @@ func TestADirectMergeShrinksTheRecordOfWhatIsLeft(t *testing.T) {
 	}
 	if publishRecorded(w.bridge, "supernova/t") {
 		t.Error("nothing is left, so the record is gone")
+	}
+}
+
+func holdPublishLock(t *testing.T, w *world, task string) {
+	t.Helper()
+	lock := taskStateFile(w.bridge, task, "", ".publish.lock")
+	os.MkdirAll(filepath.Dir(lock), 0o755)
+	l := flock.New(lock)
+	if ok, err := l.TryLock(); !ok || err != nil {
+		t.Fatal(ok, err)
+	}
+	t.Cleanup(func() { l.Unlock() })
+}
+
+func TestPublishRefusedWhileThePublishLockIsHeld(t *testing.T) {
+	w, _, restore := failedPublish(t)
+	restore()
+	file := publishRecordFile(w.bridge, "supernova/t")
+	before, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holdPublishLock(t, w, "supernova/t")
+	w.mustSeq("publish", "supernova/t")
+	w.approve()
+	w.wantStatus("done", "failed", "failed")
+	if got := w.step(3).Reason; !strings.Contains(got, "a publish of supernova/t is already under way") {
+		t.Errorf("the step should say why: %q", got)
+	}
+	if after, _ := os.ReadFile(file); string(after) != string(before) {
+		t.Errorf("the record changed: %q -> %q", before, after)
+	}
+}
+
+func TestDirectMergeAndThePublishLock(t *testing.T) {
+	w, _, restore := failedPublish(t)
+	restore()
+	holdPublishLock(t, w, "supernova/t")
+	merge := func() error {
+		w.enter()
+		var out bytes.Buffer
+		return cmdGithubPR([]string{"merge", "supernova/t", "--location", "client"}, &out)
+	}
+	if err := merge(); err == nil || !strings.Contains(err.Error(), "already under way") {
+		t.Errorf("merge with the lock held: %v", err)
+	}
+	t.Setenv(publishLockEnv, "supernova/other")
+	if err := merge(); err == nil || !strings.Contains(err.Error(), "already under way") {
+		t.Errorf("merge under another task's lock: %v", err)
+	}
+	t.Setenv(publishLockEnv, "supernova/t")
+	if err := merge(); err != nil {
+		t.Errorf("merge by the publish command's child: %v", err)
 	}
 }

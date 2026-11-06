@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 // The github-pr extension: each task works on its own branch, task/<name>, and a
@@ -128,7 +130,7 @@ func githubBranch(r *RunFiles) error {
 		return err
 	}
 	if !startsAtDocs(r) { // a docs start runs no tests and tested() checks what it commits
-		os.Remove(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)) // a new run has to pass again
+		removeRecord(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)) // a new run has to pass again
 	}
 	ws, want := r.Snap.Workspace, taskBranch(r.Snap.Task)
 	cur := currentBranch(ws)
@@ -489,13 +491,56 @@ func publishRecordFile(bridge, task string) string {
 	return taskStateFile(bridge, task, "", ".publish")
 }
 
+// removeRecord removes a per-task record, retried while another process briefly holds it on Windows. A record that is not there is removed.
+func removeRecord(f string) error {
+	err := retry(retryWindow, isTransientFileError, func() error { return os.Remove(f) })
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// publishLockEnv names the task whose publish lock a publish command's process tree is running under.
+const publishLockEnv = "STARSHIP_PUBLISH_LOCK_HELD"
+
+// lockPublish takes a task's publish lock without waiting, and returns the func that releases it.
+func lockPublish(bridge, task string) (func(), error) {
+	lock := taskStateFile(bridge, task, "", ".publish.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		return nil, err
+	}
+	l := flock.New(lock)
+	if ok, err := l.TryLock(); err != nil {
+		return nil, fmt.Errorf("locking the publish of %s: %w", task, err)
+	} else if !ok {
+		return nil, fmt.Errorf("a publish of %s is already under way", task)
+	}
+	return func() { l.Unlock() }, nil
+}
+
+// testedFilesOf lists every .tested record of a task: the one with no location, and one per location.
+func testedFilesOf(bridge, task string) []string {
+	entries, _ := os.ReadDir(filepath.Join(bridge, ".starship", "tasks"))
+	e := strings.ReplaceAll(task, "/", "--")
+	var out []string
+	for _, ent := range entries {
+		n := ent.Name()
+		loc, ok := strings.CutPrefix(n, e+"@")
+		loc, ok2 := strings.CutSuffix(loc, ".tested")
+		if n == e+".tested" || (ok && ok2 && validName(loc)) {
+			out = append(out, filepath.Join(bridge, ".starship", "tasks", n))
+		}
+	}
+	return out
+}
+
 func publishRecorded(bridge, task string) bool {
 	_, err := os.Stat(publishRecordFile(bridge, task))
 	return err == nil
 }
 
 func readPublishRecord(bridge, task string) []string {
-	data, _ := os.ReadFile(publishRecordFile(bridge, task))
+	data, _ := readFileRetry(publishRecordFile(bridge, task))
 	return strings.Fields(string(data))
 }
 
@@ -503,15 +548,12 @@ func readPublishRecord(bridge, task string) []string {
 func writePublishRecord(bridge, task string, left []string) error {
 	f := publishRecordFile(bridge, task)
 	if len(left) == 0 {
-		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+		if err := removeRecord(f); err != nil {
 			return fmt.Errorf("could not remove the record of locations still to land: %v", err)
 		}
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
-		return fmt.Errorf("could not record the locations still to land: %v", err)
-	}
-	if err := os.WriteFile(f, []byte(strings.Join(left, "\n")+"\n"), 0o644); err != nil {
+	if err := writeFileAtomic(bridge, f, []byte(strings.Join(left, "\n")+"\n")); err != nil {
 		return fmt.Errorf("could not record the locations still to land: %v", err)
 	}
 	return nil
@@ -529,7 +571,7 @@ func githubReady(r *RunFiles) error {
 	if err != nil {
 		return err
 	}
-	data, markerErr := os.ReadFile(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location))
+	data, markerErr := readFileRetry(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location))
 	noTestStage := false
 	if s, _, _ := r.Snap.Pipeline.find("test"); s == nil {
 		noTestStage = true
@@ -559,10 +601,7 @@ func githubReady(r *RunFiles) error {
 		return nil
 	}
 	f := testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)
-	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(f, []byte(sha+"\n"), 0o644); err != nil {
+	if err := writeFileAtomic(r.Snap.Bridge, f, []byte(sha+"\n")); err != nil {
 		return err
 	}
 	base, _ := defaultBranch(ws)
@@ -775,7 +814,7 @@ func tested(bridge, task, location string) (c *Config, branch, sha string, err e
 	if err != nil {
 		return nil, "", "", err
 	}
-	data, err := os.ReadFile(testedFile(bridge, task, c.Location))
+	data, err := readFileRetry(testedFile(bridge, task, c.Location))
 	if err != nil {
 		return nil, "", "", fmt.Errorf("%s has no passing run on this machine yet; run it first", task)
 	}
@@ -862,12 +901,32 @@ func githubMerge(bridge, task, location string) (string, string, string, error) 
 	}
 	note := deleteLandedRemote(ws, branch)
 	leaveLandedBranch(ws, branch, base, sha)
-	os.Remove(testedFile(bridge, task, c.Location))
+	removeRecord(testedFile(bridge, task, c.Location))
+	removeSameFolderMarkers(bridge, task, c.Location)
 	if left := readPublishRecord(bridge, task); slices.Contains(left, c.Location) {
 		// The landing has happened; a record that can't be shrunk only makes a later publish try this location again.
 		writePublishRecord(bridge, task, slices.DeleteFunc(left, func(l string) bool { return l == c.Location }))
 	}
 	return base, sha, note, nil
+}
+
+// removeSameFolderMarkers removes the .tested of each other location of the task that works in the landed location's folder: the landing deleted the task branch they tested, and collapseFolders may have dropped them from the publish. A location with no recorded folder is not compared.
+func removeSameFolderMarkers(bridge, task, landed string) {
+	project, _, _ := strings.Cut(task, "/")
+	landedPath, err := locationPathFor(bridge, project, landed)
+	if err != nil {
+		return
+	}
+	for _, f := range testedFilesOf(bridge, task) {
+		loc, ok := strings.CutPrefix(filepath.Base(f), strings.ReplaceAll(task, "/", "--")+"@")
+		loc = strings.TrimSuffix(loc, ".tested")
+		if !ok || loc == landed {
+			continue
+		}
+		if p, err := locationPathFor(bridge, project, loc); err == nil && sameFolder(landedPath, p, runtime.GOOS) {
+			removeRecord(f)
+		}
+	}
 }
 
 // deleteLandedRemote removes the landed task branch from origin if its tip is one this workspace holds, and returns a note when it leaves the branch there. The delete is pinned to the tip it checked, so a push arriving in between survives. It must run before the local branch and its reflog are deleted.
@@ -1016,6 +1075,13 @@ func cmdGithubPR(args []string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "Pull request: %s\n", url)
 		return nil
+	}
+	if os.Getenv(publishLockEnv) != args[1] {
+		unlock, err := lockPublish(bridge, args[1])
+		if err != nil {
+			return err
+		}
+		defer unlock()
 	}
 	base, sha, note, err := githubMerge(bridge, args[1], location)
 	if err != nil {

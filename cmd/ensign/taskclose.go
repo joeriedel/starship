@@ -117,9 +117,25 @@ func cmdTaskClose(bridge, task string, out io.Writer) error {
 		}
 	}
 
+	unlockPublish, err := lockPublish(bridge, task)
+	if err != nil {
+		return fmt.Errorf("%v; %s stays open, close it again once the publish is done", err, task)
+	}
+	defer func() {
+		if unlockPublish != nil {
+			unlockPublish()
+		}
+	}()
 	if err := writeClosed(bridge, task, taskFile); err != nil {
 		return err
 	}
+	for _, f := range append(testedFilesOf(bridge, task), publishRecordFile(bridge, task)) {
+		if err := removeRecord(f); err != nil {
+			fmt.Fprintf(out, "warning: task.close could not remove %s: %v\n", f, err)
+		}
+	}
+	unlockPublish()
+	unlockPublish = nil
 	if err := addToJournal(bridge, task, "- "+time.Now().Format("2006-01-02")+": closed."); err != nil {
 		fmt.Fprintf(out, "warning: task.close could not journal the close of %s: %v\n", task, err)
 	}

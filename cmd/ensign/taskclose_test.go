@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -440,5 +441,59 @@ func TestWithoutRunEnvWindowsCase(t *testing.T) {
 	}
 	if got := withoutRunEnv([]string{"Starship_Run_Dir=x"}, false); len(got) != 1 {
 		t.Errorf("unix: %v", got)
+	}
+}
+
+func TestCloseRemovesThePublishAndTestedRecords(t *testing.T) {
+	w := newWorld(t)
+	w.frontTask("b", "")
+	mine := []string{
+		publishRecordFile(w.bridge, "supernova/b"),
+		testedFile(w.bridge, "supernova/b", ""),
+		testedFile(w.bridge, "supernova/b", "client"),
+		testedFile(w.bridge, "supernova/b", "server"),
+	}
+	other := []string{
+		publishRecordFile(w.bridge, "supernova/b--c"),
+		testedFile(w.bridge, "supernova/b--c", ""),
+		testedFile(w.bridge, "supernova/b--c", "client"),
+	}
+	for _, f := range append(slices.Clone(mine), other...) {
+		write(t, f, "x\n")
+	}
+	if _, err := closeTask(w, "b"); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range mine {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Errorf("%s should be gone: %v", f, err)
+		}
+	}
+	for _, f := range other {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s belongs to another task: %v", f, err)
+		}
+	}
+}
+
+func TestCloseHeldPublishLockRefuses(t *testing.T) {
+	w := newWorld(t)
+	w.frontTask("t", "")
+	rec := publishRecordFile(w.bridge, "supernova/t")
+	tested := testedFile(w.bridge, "supernova/t", "client")
+	write(t, rec, "client\n")
+	write(t, tested, "abc\n")
+	holdPublishLock(t, w, "supernova/t")
+	before := w.taskText("t")
+	if _, err := closeTask(w, "t"); err == nil || !strings.Contains(err.Error(), "publish of supernova/t is already under way") {
+		t.Errorf("close with the publish lock held: %v", err)
+	}
+	if w.taskText("t") != before {
+		t.Error("task changed")
+	}
+	for _, f := range []string{rec, tested} {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s should remain: %v", f, err)
+		}
 	}
 }
