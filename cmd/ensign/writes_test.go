@@ -466,7 +466,7 @@ func TestGoWithWritesAndRunApprovesNothing(t *testing.T) {
 	if ctx := w.say("go"); !strings.Contains(ctx, "also waits for go") {
 		t.Fatalf("go with both pending says why it approved nothing: %q", ctx)
 	}
-	for _, ri := range listRuns(w.bridge) {
+	for _, ri := range w.listRuns() {
 		if ri.state.Status != "pending" {
 			t.Fatalf("the run must not be approved: %s", ri.state.Status)
 		}

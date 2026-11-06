@@ -289,6 +289,7 @@ func sweepSessionFiles(bridge string, entries []os.DirEntry) {
 		}
 	}
 	var runs []runInfo
+	var listErr error
 	listed := false
 	for id, g := range groups {
 		if g.failed || time.Since(g.newest) <= sessionFileAge {
@@ -300,22 +301,29 @@ func sweepSessionFiles(bridge string, entries []os.DirEntry) {
 				continue
 			}
 			if !listed {
-				runs, listed = listRuns(bridge), true
+				runs, listErr = listRuns(bridge)
+				listed = true
 			}
-			sweepSession(bridge, id, g, runs)
+			if listErr == nil {
+				sweepSession(bridge, id, g, runs)
+			}
 			l.Unlock()
 			continue
 		}
 		if !listed {
-			runs, listed = listRuns(bridge), true
+			runs, listErr = listRuns(bridge)
+			listed = true
 		}
-		sweepSession(bridge, id, g, runs)
+		if listErr == nil {
+			sweepSession(bridge, id, g, runs)
+		}
 	}
-	sweepLeftovers(bridge, leftovers, func() []runInfo {
+	sweepLeftovers(bridge, leftovers, func() ([]runInfo, error) {
 		if !listed {
-			runs, listed = listRuns(bridge), true
+			runs, listErr = listRuns(bridge)
+			listed = true
 		}
-		return runs
+		return runs, listErr
 	})
 }
 
@@ -402,10 +410,15 @@ func leftoverGroups(entries []os.DirEntry) map[string]*sweptLeftovers {
 }
 
 // sweepLeftovers removes the <id>.lock, <id>.sequence.lock, <id>.writes.lock, <id>.sequence.tmp, <id>.writes.tmp and <id>.tmp files of sessions whose newest file, link included, is older than sessionFileAge and that are not busy. A lock's own mtime is its creation time, so the session's other files and link show its use. Every lock is taken without blocking and the session is left for a later sweep if one is held; <id>.lock is also taken for a <id>.tmp, because its only writer holds it. <id>.sequence.lock is taken for a <id>.sequence.tmp as well, because its only writer holds it; it is created if missing and removed again with the other locks, and a .sequence.tmp alone never takes <id>.lock. <id>.writes.lock is taken the same way for a <id>.writes.tmp, because withWrites holds it across the write.
-func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, listRunsOnce func() []runInfo) {
+func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, listRunsOnce func() ([]runInfo, error)) {
 	dir := filepath.Join(bridge, ".starship", "sessions")
 	for id, g := range groups {
-		if g.failed || time.Since(g.newest) <= sessionFileAge || sessionBusy(bridge, id, listRunsOnce()) {
+		if g.failed || time.Since(g.newest) <= sessionFileAge {
+			continue
+		}
+		// A session is only swept once the runs are known not to hold it.
+		runs, err := listRunsOnce()
+		if err != nil || sessionBusy(bridge, id, runs) {
 			continue
 		}
 		var locks []*flock.Flock

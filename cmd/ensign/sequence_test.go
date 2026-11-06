@@ -194,7 +194,7 @@ func TestSequenceStopModeHaltsAndCancelledRunsAreNotWaiting(t *testing.T) {
 	if !cancelled.terminal() || cancelled.queued() || !strings.HasPrefix(cancelled.Reason, "cancelled:") {
 		t.Errorf("the cancelled run should be terminal: %s %q", cancelled.Status, cancelled.Reason)
 	}
-	for _, ri := range liveRuns(w.bridge) {
+	for _, ri := range w.liveRuns() {
 		t.Errorf("run %s is still live", ri.id)
 	}
 	w.run("supernova/other") // a plain run works again, and replaces nothing
@@ -503,7 +503,7 @@ func TestSequenceHaltCancelsAnActiveDoStep(t *testing.T) {
 func TestLiveRunsCountsQueuedSequenceRuns(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("run", "supernova/auth-refactor")
-	if len(liveRuns(w.bridge)) != 1 {
+	if len(w.liveRuns()) != 1 {
 		t.Error("a queued sequence run should still be live")
 	}
 }
@@ -518,7 +518,7 @@ func TestSequenceStepRefusedByPinMismatchRetiresItsRun(t *testing.T) {
 	if st := w.runState(id); !st.terminal() {
 		t.Errorf("the refused step's run should be terminal: %s", st.Status)
 	}
-	for _, ri := range liveRuns(w.bridge) {
+	for _, ri := range w.liveRuns() {
 		if ri.id == id {
 			t.Error("the refused step's run should not be live")
 		}
@@ -2777,7 +2777,7 @@ func TestSequenceSkippedBeforeWithoutAResolvableLocation(t *testing.T) {
 		}
 	}
 	newRun("error")
-	failed := listRuns(w.bridge)[0].id
+	failed := w.listRuns()[0].id
 	skipped := &seqStep{N: 1, Kind: "run", Task: task, Status: "failed", Reason: skipPrefix + "broken", SkippedAt: time.Now().UnixNano()}
 	skipped.setRuns([]*seqRun{{Run: failed}})
 	pub := &seqStep{N: 1, Kind: "publish", Task: task, Status: "pending"}

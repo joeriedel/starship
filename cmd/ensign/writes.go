@@ -219,16 +219,20 @@ func (wf *writesFile) listing() string {
 func (wf *writesFile) digest() string { return sha([]byte(wf.listing())) }
 
 // goWaiting reports whether a run or sequence waits for the user's go in this session, an unclaimed run included.
-func goWaiting(bridge, session string) bool {
+func goWaiting(bridge, session string) (bool, error) {
 	if readSeq(bridge, session).openSeq() != nil {
-		return true
+		return true, nil
 	}
-	for _, ri := range listRuns(bridge) {
+	runs, err := listRuns(bridge)
+	if err != nil {
+		return false, err
+	}
+	for _, ri := range runs {
 		if ri.state.Status == "pending" && !ri.state.queued() && (ri.state.Session == session || ri.state.Session == "") {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // writesOn reports whether bridge.yaml turns connector writes on.
@@ -358,6 +362,7 @@ func promptWrites(bridge string, in *HookInput) (voided, text string, handled bo
 		return
 	}
 	isGo := strings.TrimSpace(in.Prompt) == "go"
+	var listErr error
 	err = withWrites(bridge, in.SessionID, func(wf *writesFile) (bool, error) {
 		n := wf.voidApproved()
 		changed := n > 0
@@ -369,8 +374,13 @@ func promptWrites(bridge string, in *HookInput) (voided, text string, handled bo
 			return changed, nil
 		}
 		handled = true
+		waiting, lerr := goWaiting(bridge, in.SessionID)
+		if lerr != nil {
+			listErr = lerr
+			return changed, nil
+		}
 		switch {
-		case goWaiting(bridge, in.SessionID):
+		case waiting:
 			text = "connector writes are pending and a run or sequence also waits for go, so this go approved nothing. Tell the user; drop the writes (ensign writes drop --all) or discard the run or sequence, then ask for go again."
 		case wf.ShownDigest != wf.digest():
 			text = "this go approved no connector write: the pending writes were not shown to the user. Run `ensign writes`, reproduce its output verbatim in your reply, and ask the user for go again."
@@ -384,6 +394,9 @@ func promptWrites(bridge string, in *HookInput) (voided, text string, handled bo
 		}
 		return changed, nil
 	})
+	if err == nil {
+		err = listErr
+	}
 	return
 }
 
@@ -480,7 +493,11 @@ func writesAdd(bridge, session, tool string, stdin io.Reader, show func(*writesF
 	if err := json.Compact(&compact, raw); err != nil {
 		return err
 	}
-	if goWaiting(bridge, session) {
+	waiting, err := goWaiting(bridge, session)
+	if err != nil {
+		return err
+	}
+	if waiting {
 		return errors.New("a run or sequence is waiting for go, and connector writes can't wait with it; have the user approve or discard it first")
 	}
 	return withWrites(bridge, session, func(wf *writesFile) (bool, error) {

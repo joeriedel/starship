@@ -191,7 +191,11 @@ func fastForward(ws, branch, base string) error {
 // githubUpdate rebases a task's branch onto the remote's default branch. A conflict leaves
 // the branch exactly as it was.
 func githubUpdate(bridge, task, location string) (base, sha string, upToDate bool, err error) {
-	for _, ri := range liveRuns(bridge) {
+	live, err := liveRuns(bridge)
+	if err != nil {
+		return "", "", false, err
+	}
+	for _, ri := range live {
 		// A queued sequence run has not started, so it does not hold the task.
 		if ri.snap.Task == task && !ri.state.queued() {
 			return "", "", false, fmt.Errorf("a run of %s is still going; wait for it to finish", task)
@@ -519,7 +523,11 @@ func endedAfterPass(failed runInfo, pass runInfo) bool {
 func latestRunPassed(bridge, task, location string) error {
 	var runs []runInfo
 	var pass *runInfo
-	for _, ri := range listRuns(bridge) {
+	all, err := listRuns(bridge)
+	if err != nil {
+		return err
+	}
+	for _, ri := range all {
 		if ri.snap.Task != task || ri.snap.Location != location || !ri.state.terminal() {
 			continue
 		}
@@ -541,7 +549,11 @@ func latestRunPassed(bridge, task, location string) error {
 
 // tested finds a task's tested commit, and checks the task branch still holds it, or only @docs paths on top of it. It returns the branch head, so what lands includes those docs commits.
 func tested(bridge, task, location string) (c *Config, branch, sha string, err error) {
-	for _, ri := range liveRuns(bridge) {
+	live, err := liveRuns(bridge)
+	if err != nil {
+		return nil, "", "", err
+	}
+	for _, ri := range live {
 		// A queued sequence run has not started, so it does not hold the task.
 		if ri.snap.Task == task && !ri.state.queued() {
 			return nil, "", "", fmt.Errorf("a run of %s is still going; wait for it to finish", task)

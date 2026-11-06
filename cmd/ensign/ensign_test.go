@@ -312,7 +312,7 @@ func TestMergeAndProvenance(t *testing.T) {
 	if !strings.Contains(out, "dry run: nothing created") || !strings.Contains(out, "from project:") {
 		t.Errorf("dry run output:\n%s", out)
 	}
-	if len(listRuns(w.bridge)) != 0 {
+	if len(w.listRuns()) != 0 {
 		t.Errorf("dry run created a run")
 	}
 }

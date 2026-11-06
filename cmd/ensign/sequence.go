@@ -1392,7 +1392,9 @@ func (sf *seqFile) skippedBefore(bridge string, seq *sequence, pub *seqStep) *se
 	if skipped.SkippedAt == 0 {
 		return skipped
 	}
-	for _, ri := range listRuns(bridge) {
+	// A failed listing keeps the step skipped, which cancels the publish.
+	runs, _ := listRuns(bridge)
+	for _, ri := range runs {
 		if ri.snap.Task == pub.Task && slices.Contains(locs, ri.snap.Location) && ri.state.Status == "success" && ri.state.FinishedAt > skipped.SkippedAt {
 			return nil
 		}

@@ -283,7 +283,11 @@ func cmdUpdate(args []string, out io.Writer) error {
 	if bf.ControlPlane.Remote == "" || bf.ControlPlane.Tag == "" {
 		return fmt.Errorf("this bridge is not pinned to a release (bridge.yaml: control-plane remote and tag)")
 	}
-	if live := liveRuns(bridge); len(live) > 0 {
+	live, err := liveRuns(bridge)
+	if err != nil {
+		return err
+	}
+	if len(live) > 0 {
 		return fmt.Errorf("run %s is active; update waits until no run is active", live[0].id)
 	}
 	tag := ""

@@ -405,7 +405,11 @@ func findAgentRun(bridge string, in *HookInput) (*RunFiles, error) {
 		r, err = try(run, func(st *State) bool { return st.dispatch(d) != nil })
 	}
 	if r == nil && err == nil {
-		for _, ri := range liveRuns(bridge) {
+		var live []runInfo
+		if live, err = liveRuns(bridge); err != nil {
+			return nil, err
+		}
+		for _, ri := range live {
 			if ri.state.byAgent(in.AgentID) == nil {
 				continue
 			}
@@ -709,7 +713,11 @@ func folderHolder(bridge string, snap *Snapshot, session string, skip ...string)
 		}
 		return ""
 	}
-	for _, ri := range liveRuns(bridge) {
+	live, err := liveRuns(bridge)
+	if err != nil {
+		return err
+	}
+	for _, ri := range live {
 		if !ri.state.Approved || slices.Contains(skip, ri.id) || ri.snap.Workspace == "" {
 			continue
 		}
@@ -738,8 +746,14 @@ type runInfo struct {
 }
 
 // listRuns reads every run in the bridge, newest first, without locking.
-func listRuns(bridge string) []runInfo {
-	entries, _ := os.ReadDir(runsDir(bridge))
+func listRuns(bridge string) ([]runInfo, error) {
+	entries, err := os.ReadDir(runsDir(bridge))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || plainFileOnPath(runsDir(bridge)) != "" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading the runs: %w", err)
+	}
 	var out []runInfo
 	for i := len(entries) - 1; i >= 0; i-- {
 		dir := filepath.Join(runsDir(bridge), entries[i].Name())
@@ -750,7 +764,7 @@ func listRuns(bridge string) []runInfo {
 			out = append(out, ri)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func (r *RunFiles) save() error {
@@ -1109,7 +1123,11 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		return nil, fmt.Errorf("this session has a sequence in progress; add the run with ensign sequence run, or ensign sequence halt first")
 	}
 	var replace []string
-	for _, ri := range listRuns(bridge) {
+	all, err := listRuns(bridge)
+	if err != nil {
+		return nil, err
+	}
+	for _, ri := range all {
 		if queued || ri.state.terminal() || session == "" || ri.state.Session != session || ri.state.queued() {
 			continue
 		}

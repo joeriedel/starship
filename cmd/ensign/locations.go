@@ -322,7 +322,9 @@ func runLocation(bridge, task, want string) string {
 // latestRunLocation is the location of the task's newest run, or of the one that succeeded last. Runs are listed by creation, but a retry is created after the steps queued behind it, so success is ranked by when the run finished; a run with no finish time is oldest.
 func latestRunLocation(bridge, task string, successOnly bool) string {
 	loc, best := "", int64(-1)
-	for _, ri := range listRuns(bridge) {
+	// A failed listing leaves loc "", which takes the task's sole location or asks for --location, so it can't pick a wrong one.
+	runs, _ := listRuns(bridge)
+	for _, ri := range runs {
 		if ri.snap.Task != task {
 			continue
 		}

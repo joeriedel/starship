@@ -544,7 +544,11 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 // claimRun binds the newest pending run that no session owns to this session, and opens it.
 // That is how a run created outside a session (from a terminal) gets approved.
 func claimRun(bridge, session string) (*RunFiles, error) {
-	for _, ri := range listRuns(bridge) {
+	all, err := listRuns(bridge)
+	if err != nil {
+		return nil, err
+	}
+	for _, ri := range all {
 		if ri.state.Status != "pending" || ri.state.Session != "" {
 			continue
 		}
@@ -1235,7 +1239,7 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 }
 
 // stageRoleAnywhere reports whether role is a stage role, not free, in a live run's
-// pipeline or in a pipeline file of the bridge's control plane and extensions. It also returns what it could not read, one line each (pipeline files, folders, or all of them when the bridge's own files can't be read), which stop it ruling the role out. A bridge with no bridge.yaml has none.
+// pipeline or in a pipeline file of the bridge's control plane and extensions. It also returns what it could not read, one line each (the runs, pipeline files, folders, or all of them when the bridge's own files can't be read), which stop it ruling the role out. A bridge with no bridge.yaml has none, except the runs when they can't be listed.
 func stageRoleAnywhere(bridge, role string) (bool, []string) {
 	if role == "" {
 		return false, nil
@@ -1248,7 +1252,12 @@ func stageRoleAnywhere(bridge, role string) (bool, []string) {
 		}
 		return p.hasStageRole(role)
 	}
-	for _, ri := range liveRuns(bridge) {
+	var unread []string
+	live, err := liveRuns(bridge)
+	if err != nil {
+		unread = append(unread, flatLine("the runs: "+err.Error()))
+	}
+	for _, ri := range live {
 		if ri.snap.Pipeline != nil && isStage(ri.snap.Pipeline) {
 			return true, nil
 		}
@@ -1256,15 +1265,14 @@ func stageRoleAnywhere(bridge, role string) (bool, []string) {
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return false, nil
+			return false, unread
 		}
-		return false, []string{flatLine("all extensions and pipelines: " + err.Error())}
+		return false, append(unread, flatLine("all extensions and pipelines: "+err.Error()))
 	}
 	cp, err := controlPlaneDir(bridge, bf)
 	if err != nil {
-		return false, []string{flatLine("all extensions and pipelines: " + err.Error())}
+		return false, append(unread, flatLine("all extensions and pipelines: "+err.Error()))
 	}
-	var unread []string
 	glob := func(dir string) []string {
 		found, err := filesIn(dir, ".yaml")
 		if err != nil {

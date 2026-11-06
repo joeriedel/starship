@@ -25,14 +25,18 @@ import (
 )
 
 // liveRuns lists the bridge's runs that have not finished.
-func liveRuns(bridge string) []runInfo {
+func liveRuns(bridge string) ([]runInfo, error) {
+	runs, err := listRuns(bridge)
+	if err != nil {
+		return nil, err
+	}
 	var out []runInfo
-	for _, ri := range listRuns(bridge) {
+	for _, ri := range runs {
 		if !ri.state.terminal() {
 			out = append(out, ri)
 		}
 	}
-	return out
+	return out, nil
 }
 
 const bridgeClaudeMD = `# Bridge: %s
@@ -582,7 +586,11 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 
 // link generates the bridge's role files and session manual from its control plane.
 func link(bridge string, force bool, out io.Writer) error {
-	if live := liveRuns(bridge); len(live) > 0 {
+	live, err := liveRuns(bridge)
+	if err != nil {
+		return err
+	}
+	if len(live) > 0 {
 		return fmt.Errorf("run %s is active; link changes the roles under it, so it waits until no run is active", live[0].id)
 	}
 	bf, err := loadBridgeFile(bridge)

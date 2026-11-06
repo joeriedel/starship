@@ -503,9 +503,15 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if note := migrateWorkspaces(bridge); note != "" {
 		fmt.Fprintln(&ctx, note)
 	}
-	if linkStale(bridge) && len(liveRuns(bridge)) == 0 {
-		if err := link(bridge, false, nil); err != nil {
+	if linkStale(bridge) {
+		live, err := liveRuns(bridge)
+		if err != nil {
 			return notReady(err)
+		}
+		if len(live) == 0 {
+			if err := link(bridge, false, nil); err != nil {
+				return notReady(err)
+			}
 		}
 	}
 	addGitattributes(bridge)

@@ -263,7 +263,11 @@ func cmdCatalog(args []string, out io.Writer) error {
 		return err
 	}
 	task := args[1]
-	for _, ri := range liveRuns(bridge) {
+	live, err := liveRuns(bridge)
+	if err != nil {
+		return err
+	}
+	for _, ri := range live {
 		// A queued sequence run has not started, so it does not hold the task.
 		if ri.snap.Task == task && !ri.state.queued() {
 			return fmt.Errorf("run %s on this task is still active", ri.id)

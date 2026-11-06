@@ -210,7 +210,7 @@ func TestSequenceAcceptEndsTheLaterGroups(t *testing.T) {
 	w.mustSeq("accept", "1")
 	w.wantStatus("failed")
 	n := 0
-	for _, ri := range listRuns(w.bridge) {
+	for _, ri := range w.listRuns() {
 		if ri.snap.Task == "supernova/t" {
 			n++
 		}
