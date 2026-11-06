@@ -839,3 +839,124 @@ func TestGithubPRDropsStaleTrackingRef(t *testing.T) {
 	}
 	runGit(t, ws, "push", "-q", "--force-with-lease", "--force-if-includes", "origin", "task/auth-refactor")
 }
+
+func TestParseGitVersion(t *testing.T) {
+	cases := []struct {
+		out          string
+		major, minor int
+		ok           bool
+	}{
+		{"git version 2.29.2\n", 2, 29, true},
+		{"git version 2.30.0\n", 2, 30, true},
+		{"git version 2.100.0\n", 2, 100, true},
+		{"git version 3.0.0\n", 3, 0, true},
+		{"git version 1.31.0\n", 1, 31, true},
+		{"git version 2.39.5 (Apple Git-154)\n", 2, 39, true},
+		{"git version 2.43.0.windows.1\n", 2, 43, true},
+		{"git version 2\n", 0, 0, false},
+		{"git version next\n", 0, 0, false},
+		{"something else entirely", 0, 0, false},
+		{"", 0, 0, false},
+	}
+	for _, c := range cases {
+		major, minor, ok := parseGitVersion(c.out)
+		if major != c.major || minor != c.minor || ok != c.ok {
+			t.Errorf("parseGitVersion(%q) = %d, %d, %v; want %d, %d, %v", c.out, major, minor, ok, c.major, c.minor, c.ok)
+		}
+	}
+}
+
+func TestGithubPRPushesFastForwardWithReflogsOff(t *testing.T) {
+	w, ws, remote, gh := githubWorld(t, "success", ciTest)
+	runGit(t, ws, "config", "core.logAllRefUpdates", "false")
+	localTaskCommit(t, ws, "mine.txt")
+	runGit(t, ws, "push", "-q", "-u", "origin", "task/auth-refactor")
+	w.passingRun(ws, gh)
+	local := runGit(t, ws, "rev-parse", "task/auth-refactor")
+	if tip := runGit(t, ".", "--git-dir", remote, "rev-parse", "task/auth-refactor"); tip != local {
+		t.Errorf("origin should hold the fast-forwarded branch %s, got %s", local, tip)
+	}
+}
+
+// rewrittenWithoutReflog leaves origin on a commit this workspace replaced by an amend, with the reflog expired. It returns origin's tip.
+func rewrittenWithoutReflog(t *testing.T, ws string) string {
+	t.Helper()
+	localTaskCommit(t, ws, "mine.txt")
+	runGit(t, ws, "push", "-q", "-u", "origin", "task/auth-refactor")
+	first := runGit(t, ws, "rev-parse", "task/auth-refactor")
+	runGit(t, ws, "switch", "-q", "task/auth-refactor")
+	runGit(t, ws, "commit", "-q", "--amend", "-m", "rewritten")
+	runGit(t, ws, "switch", "-q", "main")
+	runGit(t, ws, "reflog", "expire", "--expire=now", "--all")
+	return first
+}
+
+func TestGithubPRRefusesPushWithoutReflogAndNamesTheRemedy(t *testing.T) {
+	_, ws, remote, _ := githubWorld(t, "success", localTest)
+	first := rewrittenWithoutReflog(t, ws)
+	err := pushTask(ws, "task/auth-refactor")
+	if err == nil {
+		t.Fatal("the push should be refused")
+	}
+	if want := "git push --force-with-lease=task/auth-refactor:" + first + " origin task/auth-refactor"; !strings.Contains(err.Error(), want) {
+		t.Errorf("the error should carry %q: %v", want, err)
+	}
+	if tip := runGit(t, ".", "--git-dir", remote, "rev-parse", "task/auth-refactor"); tip != first {
+		t.Errorf("origin changed to %s, it was %s", tip, first)
+	}
+}
+
+func TestGithubPRStartWithoutReflogNamesTheRemedy(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	first := rewrittenWithoutReflog(t, ws)
+	lead, why := startEmpty(w)
+	if lead != "" {
+		t.Fatal("the start should be refused")
+	}
+	for _, want := range []string{"has commits this workspace doesn't", "reflog", "git push --force-with-lease=task/auth-refactor:" + first + " origin task/auth-refactor"} {
+		if !strings.Contains(why, want) {
+			t.Errorf("the refusal should contain %q: %s", want, why)
+		}
+	}
+}
+
+func TestGithubPRStaleBranchPushesPastTrackingRefOfDeletedBranch(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	localTaskCommit(t, ws, "mine.txt")
+	runGit(t, ws, "push", "-q", "-u", "origin", "task/auth-refactor")
+	runGit(t, cloneRemote(t, remote), "push", "-q", "origin", "--delete", "task/auth-refactor")
+	if lead, why := startEmpty(w, "--stale-branch"); lead == "" {
+		t.Fatalf("--stale-branch should start: %s", why)
+	}
+	if _, err := gitOut(ws, "rev-parse", "-q", "--verify", "refs/remotes/origin/task/auth-refactor"); err != nil {
+		t.Fatal("--stale-branch should leave the tracking ref in place")
+	}
+	if err := pushTask(ws, "task/auth-refactor"); err != nil {
+		t.Fatalf("the push should succeed: %v", err)
+	}
+	if tip, local := runGit(t, ".", "--git-dir", remote, "rev-parse", "task/auth-refactor"), runGit(t, ws, "rev-parse", "task/auth-refactor"); tip != local {
+		t.Errorf("origin should hold %s, got %s", local, tip)
+	}
+}
+
+func TestGithubPRPrePushHookDoesNotRunAtStartOnReflogOnlyTip(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	staleBranch(t, ws, remote, "news.txt", "meanwhile\n")
+	runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+	if out, err := w.land("update"); err != nil {
+		t.Fatalf("update: %q %v", out, err)
+	}
+	hooks := t.TempDir()
+	runGit(t, ws, "config", "core.hooksPath", hooks)
+	log := filepath.Join(t.TempDir(), "hook.log")
+	hook := "#!/bin/sh\necho ran >> '" + filepath.ToSlash(log) + "'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(hooks, "pre-push"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if lead, why := startEmpty(w); lead == "" {
+		t.Fatalf("a failing pre-push hook should not refuse the start: %s", why)
+	}
+	if _, err := os.Stat(log); err == nil {
+		t.Error("the pre-push hook ran during the start")
+	}
+}

@@ -129,6 +129,39 @@ func TestSequenceRunPublishRunInOrder(t *testing.T) {
 	}
 }
 
+func TestSequenceRunPublishNoteOnlyWhenOriginKeepsCommitsWeLack(t *testing.T) {
+	for _, keeps := range []bool{true, false} {
+		t.Run(fmt.Sprintf("origin keeps commits=%v", keeps), func(t *testing.T) {
+			w, ws, remote, _ := githubWorld(t, "success", localTest)
+			task := "supernova/auth-refactor"
+			w.mustSeq("run", task)
+			w.mustSeq("publish", task)
+			w.goContext()
+			lead, why := w.spawn("", "", "orchestrator")
+			if lead == "" {
+				t.Fatalf("lead refused: %s", why)
+			}
+			if keeps {
+				remoteTaskCommit(t, remote, "theirs.txt")
+			}
+			w.codeChange(lead, ws)
+			if why, _ := w.runStage(); !strings.Contains(why, "Outcome: pass") {
+				t.Fatalf("the run should pass: %s", why)
+			}
+			reason := w.step(2).Reason
+			if !strings.HasPrefix(reason, "pushed to main: ") {
+				t.Fatalf("the publish should report its push: %q", reason)
+			}
+			if got := strings.Contains(reason, ". Note: ") && strings.Contains(reason, "left on origin"); got != keeps {
+				t.Errorf("note present = %v, want %v: %q", got, keeps, reason)
+			}
+			if !keeps && strings.Contains(reason, "Note:") {
+				t.Errorf("no note expected: %q", reason)
+			}
+		})
+	}
+}
+
 func TestSequencePublishThatIsNotAFastForwardFails(t *testing.T) {
 	w, ws, remote, gh := githubWorld(t, "success", localTest)
 	task := "supernova/auth-refactor"

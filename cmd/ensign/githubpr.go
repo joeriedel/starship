@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -123,6 +124,9 @@ func startsAtPlainEntry(r *RunFiles) bool {
 // the default branch the first time. Work on another branch is never carried along, and
 // whatever passed before has to pass again before it can land.
 func githubBranch(r *RunFiles) error {
+	if err := checkGitVersion(); err != nil {
+		return err
+	}
 	if !startsAtDocs(r) { // a docs start runs no tests and tested() checks what it commits
 		os.Remove(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)) // a new run has to pass again
 	}
@@ -169,6 +173,38 @@ func githubBranch(r *RunFiles) error {
 		}
 	}
 	return git(ws, "switch", "-q", "-c", want, "origin/"+base)
+}
+
+// gitMinimum is the oldest git with --force-if-includes, which every task-branch push uses.
+var gitMinimum = [2]int{2, 30}
+
+// parseGitVersion reads the major and minor numbers from `git --version` output such as "git version 2.39.5 (Apple Git-154)".
+func parseGitVersion(out string) (major, minor int, ok bool) {
+	f := strings.Fields(out)
+	if len(f) < 3 || f[0] != "git" || f[1] != "version" {
+		return 0, 0, false
+	}
+	parts := strings.Split(f[2], ".")
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	var err1, err2 error
+	major, err1 = strconv.Atoi(parts[0])
+	minor, err2 = strconv.Atoi(parts[1])
+	return major, minor, err1 == nil && err2 == nil
+}
+
+// checkGitVersion refuses a git older than gitMinimum. Output it can't read passes: the guard must not become a false refusal.
+func checkGitVersion() error {
+	out, err := exec.Command("git", "--version").Output()
+	if err != nil {
+		return nil
+	}
+	major, minor, ok := parseGitVersion(string(out))
+	if !ok || major > gitMinimum[0] || (major == gitMinimum[0] && minor >= gitMinimum[1]) {
+		return nil
+	}
+	return fmt.Errorf("git %d.%d is too old: the github-pr extension needs git %d.%d or newer, for push --force-if-includes", major, minor, gitMinimum[0], gitMinimum[1])
 }
 
 // branchBehind fetches the remote's default branch and tells whether it has commits that
@@ -260,7 +296,8 @@ func checkRemoteCopy(ws, branch string, exists bool, base string) error {
 	}
 	held := exists && isAncestor(ws, tip, "refs/heads/"+branch)
 	if !held && exists && inReflog(ws, branch, tip) {
-		held = git(ws, "push", "-q", "--dry-run", "--force-with-lease", "--force-if-includes", "origin", branch) == nil
+		// --no-verify: this only asks git the force-if-includes question, and the hook still runs on the real push.
+		held = git(ws, "push", "-q", "--dry-run", "--no-verify", "--force-with-lease", "--force-if-includes", "origin", branch) == nil
 	}
 	if !held && base != "" {
 		held = isAncestor(ws, tip, "origin/"+base)
@@ -269,7 +306,7 @@ func checkRemoteCopy(ws, branch string, exists bool, base string) error {
 		if !exists {
 			return fmt.Errorf("task branch %s exists on origin but not in this workspace, and starting the run would overwrite it. Fetch it and switch to it, or delete the remote branch if its commits aren't wanted, then start the run again", branch)
 		}
-		return fmt.Errorf("task branch %s on origin has commits this workspace doesn't, and pushing would destroy them. Bring them into the local branch, or delete the remote branch if they aren't wanted, then start the run again", branch)
+		return fmt.Errorf("task branch %s on origin has commits this workspace doesn't, and pushing would destroy them. This can also mean this workspace's reflog for the branch is disabled or expired, so git can't show the commits were pushed from here. Bring them into the local branch, or delete the remote branch if they aren't wanted, or, once you've checked nothing there is needed, run `git push --force-with-lease=%s:%s origin %s` to overwrite it, then start the run again", branch, branch, tip, branch)
 	}
 	// The tip was just proved held, so the lease now only guards what arrives later.
 	if err := git(ws, "update-ref", "refs/remotes/origin/"+branch, tip); err != nil {
@@ -407,6 +444,19 @@ func githubCommitDocs(r *RunFiles) error {
 	return commitDocsPaths(root, inside, false, "-m", name)
 }
 
+// pushTask pushes the task branch to origin. When origin has no such branch or its tip is an ancestor of ours, nothing is forced, so it pushes plainly and git itself rejects a non-fast-forward if origin moves meanwhile: --force-if-includes would refuse that push whenever the local reflog is off or expired, and the lease would fail as stale on a tracking ref left by a branch deleted on origin. Anything else is a forced update, guarded by the lease.
+func pushTask(ws, branch string) error {
+	tip, err := remoteTip(ws, branch)
+	if err == nil && (tip == "" || isAncestor(ws, tip, "refs/heads/"+branch)) {
+		return git(ws, "push", "-q", "-u", "origin", branch)
+	}
+	err = git(ws, "push", "-q", "--force-with-lease", "--force-if-includes", "-u", "origin", branch)
+	if err == nil || tip == "" || inReflog(ws, branch, tip) {
+		return err
+	}
+	return fmt.Errorf("%v\norigin's %s is at %s, which isn't in this branch's history or reflog, so git can't show this workspace has seen it (reflogs that are off or expired can cause this). Once you've checked nothing there is needed, `git push --force-with-lease=%s:%s origin %s` overwrites it", err, branch, tip, branch, tip, branch)
+}
+
 // githubCI is a test stage that is the repository's CI: push the task branch and wait
 // for the checks on its commit. It commits nothing; uncommitted changes mean the commit
 // step didn't run.
@@ -421,7 +471,7 @@ func githubCI(r *RunFiles, deadline time.Time) (string, error) {
 	} else if d {
 		return "", fmt.Errorf("the workspace has uncommitted changes, so CI would not test them")
 	}
-	if err := git(ws, "push", "-q", "--force-with-lease", "--force-if-includes", "-u", "origin", branch); err != nil {
+	if err := pushTask(ws, branch); err != nil {
 		return "", err
 	}
 	sha, _ := gitOut(ws, "rev-parse", "HEAD")
@@ -704,7 +754,7 @@ func githubOpenPR(bridge, task, location string) (string, error) {
 		return "", err
 	}
 	ws := c.Workspace
-	if err := git(ws, "push", "-q", "--force-with-lease", "--force-if-includes", "-u", "origin", branch); err != nil {
+	if err := pushTask(ws, branch); err != nil {
 		return "", err
 	}
 	// Only an open pull request counts: a closed one for the same branch name is history.
