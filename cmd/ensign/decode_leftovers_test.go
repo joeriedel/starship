@@ -21,22 +21,20 @@ func TestGuardedDecodeSites(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// replace swallows the decode error into its own message, so only that it fails is checked.
+			// The op rows extend the fixture's existing ops list, which ends the file. replace folds its decode error into its own message.
 			for name, c := range map[string]struct {
-				add     string
-				malform bool
+				add  string
+				want string
 			}{
-				"skills":   {"\nskills:\n" + indentLines(doc, "  "), true},
-				"insert":   {"\npipelines:\n  coding:\n    ops:\n      - insert:\n" + indentLines(doc, "          "), true},
-				"replace":  {"\npipelines:\n  coding:\n    ops:\n      - replace:\n" + indentLines(doc, "          "), false},
-				"parallel": {"\npipelines:\n  coding:\n    ops:\n      - set:\n          stage: review\n          parallel:\n" + indentLines(doc, "            "), true},
+				"skills":   {"\nskills:\n" + indentLines(doc, "  "), "malformed mapping"},
+				"insert":   {"      - insert:\n" + indentLines(doc, "          "), "malformed mapping"},
+				"replace":  {"      - replace:\n" + indentLines(doc, "          "), "replace needs stage and with"},
+				"parallel": {"      - set:\n          stage: review\n          parallel:\n" + indentLines(doc, "            "), "malformed mapping"},
 			} {
 				write(t, pf, string(orig)+c.add)
 				_, err := loadConfig(w.bridge, "supernova/auth-refactor")
-				if c.malform {
-					wantMalformed(t, name, err)
-				} else if err == nil {
-					t.Errorf("%s: want an error", name)
+				if err == nil || !strings.Contains(err.Error(), c.want) {
+					t.Errorf("%s: want %q, got %v", name, c.want, err)
 				}
 			}
 
