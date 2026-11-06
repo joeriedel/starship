@@ -183,23 +183,71 @@ func movedRefusal(bridge, session string) error {
 	return fmt.Errorf("session %s has moved to session %s, so nothing was added; do it from the current session", session, to)
 }
 
-// strandedSequence reports a sequence with unfinished work (or one that can't be read) that stays on a session the carry did not move it from.
-func strandedSequence(bridge, old, session string) error {
-	var sf seqFile
-	if err := readJSON(seqPath(bridge, old), &sf); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+// leftBehindError is the report of a sequence that stays on the earlier session of a carry; session is that earlier session.
+type leftBehindError struct {
+	session string
+	err     error
+}
+
+func (e *leftBehindError) Error() string { return e.err.Error() }
+func (e *leftBehindError) Unwrap() error { return e.err }
+
+// leftBehindSessions returns the distinct earlier sessions that err reports a sequence left behind on, in order.
+func leftBehindSessions(err error) []string {
+	var ids []string
+	var walk func(error)
+	walk = func(err error) {
+		if err == nil {
+			return
 		}
-	} else {
-		unfinished := false
-		for _, seq := range sf.Sequences {
-			unfinished = unfinished || seq.unfinished()
+		if lb, ok := err.(*leftBehindError); ok && !slices.Contains(ids, lb.session) {
+			ids = append(ids, lb.session)
 		}
-		if !unfinished {
-			return nil
+		switch u := err.(type) {
+		case interface{ Unwrap() []error }:
+			for _, e := range u.Unwrap() {
+				walk(e)
+			}
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
 		}
 	}
-	return fmt.Errorf("the sequence of session %s was not moved to session %s; it stays on the earlier session and is not driven from this one", old, session)
+	walk(err)
+	return ids
+}
+
+// leftBehindShow is the piece of the session start line that tells the user which sessions to resume, or empty when nothing was left behind.
+func leftBehindShow(err error) string {
+	ids := leftBehindSessions(err)
+	switch len(ids) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf(" · the sequence of session %s was left behind: resume that session to drive it", ids[0])
+	}
+	return fmt.Sprintf(" · the sequences of sessions %s were left behind: resume those sessions to drive them", strings.Join(ids, ", "))
+}
+
+// hasOpenWork reports whether the session's sequence file has unfinished work or can't be read, so a missing file or a finished one has none.
+func hasOpenWork(bridge, session string) bool {
+	var sf seqFile
+	if err := readJSON(seqPath(bridge, session), &sf); err != nil {
+		return !errors.Is(err, fs.ErrNotExist)
+	}
+	for _, seq := range sf.Sequences {
+		if seq.unfinished() {
+			return true
+		}
+	}
+	return false
+}
+
+// strandedSequence reports a sequence with unfinished work (or one that can't be read) that stays on a session the carry did not move it from.
+func strandedSequence(bridge, old, session string) error {
+	if !hasOpenWork(bridge, old) {
+		return nil
+	}
+	return &leftBehindError{old, fmt.Errorf("the sequence of session %s was not moved to session %s; it stays on the earlier session and is not driven from this one; resume session %s to drive or halt it", old, session, old)}
 }
 
 func seqExists(bridge, session string) bool {
@@ -1993,7 +2041,10 @@ func carrySequence(bridge, old, session string, reported map[string]bool) error 
 		if errors.Is(err, errSequenceTaken) {
 			return strandedSequence(bridge, old, session)
 		}
-		return fmt.Errorf("the sequence of session %s could not be moved to session %s and stays on the earlier session: %w", old, session, err)
+		if !hasOpenWork(bridge, old) {
+			return fmt.Errorf("the sequence of session %s could not be moved to session %s and stays on the earlier session: %w", old, session, err)
+		}
+		return &leftBehindError{old, fmt.Errorf("the sequence of session %s could not be moved to session %s and stays on the earlier session; resume session %s to drive or halt it: %w", old, session, old, err)}
 	}
 	bound, err := sessionRuns(bridge, old)
 	if err != nil {

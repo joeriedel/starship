@@ -471,7 +471,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		if carryErr != nil {
 			context += fmt.Sprintf("\nstarship: could not carry the earlier session's runs over: %v", carryErr)
 		}
-		return reply("Starship is not ready in this bridge. Ask Claude to set it up.", context)
+		return reply("Starship is not ready in this bridge. Ask Claude to set it up."+leftBehindShow(carryErr), context)
 	}
 	bf, err := loadBridgeFile(bridge)
 	if err == nil {
@@ -556,7 +556,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	manual, err := os.ReadFile(filepath.Join(bridge, ".starship", "session.md"))
 	if err != nil {
 		fmt.Fprintln(&ctx, "starship: the session manual is missing; run ensign link")
-		return reply("Starship is not ready in this bridge. Ask Claude to set it up.", ctx.String())
+		return reply("Starship is not ready in this bridge. Ask Claude to set it up."+leftBehindShow(carryErr), ctx.String())
 	}
 	fmt.Fprintf(&ctx, "\n%s", manual)
 	if cp, err := controlPlaneDir(bridge, bf); err == nil {
@@ -610,7 +610,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			show += " · could not list the runs"
 		}
 	}
-	return reply(show, ctx.String())
+	return reply(show+leftBehindShow(carryErr), ctx.String())
 }
 
 // sessionContextLimit is the length of additionalContext past which Claude Code cuts it

@@ -4,6 +4,8 @@ When the user asks for several steps, build a sequence: `ensign sequence run sup
 
 A retry's work item is the task's current Goal and Scope, and its subtask's, read from the bridge's working tree when `retry` is called (no commit needed); then the first run's project rules; then `--diagnosis` and `--state` as `## Current state`. To carry a changed brief to a retry, edit the task file before running `retry`. A task file left with neither Goal nor Scope refuses the retry. Steps that haven't started keep the work item from when they were added.
 
+When a session has moved, `ensign sequence run|publish|do|release`, a plain `ensign run` and `ensign writes add` are refused and name the new session; do the work from that session. A sequence left behind on an earlier session is not carried over: tell the user to resume that session, which drives it or lets it be halted.
+
 When several runs of the session are live:
 
 - Pass `--run <id>` to `ensign next`, `ensign resume` and `ensign run-stage`; without it they refuse and name the live runs.

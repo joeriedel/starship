@@ -886,3 +886,19 @@ func TestSessionFilesSweepsAnOldMovedMarker(t *testing.T) {
 		t.Error("a recent moved marker should stay")
 	}
 }
+
+func TestSessionFilesKeepsAnOldMovedMarkerWhileItsSessionHasAnUnfinishedSequence(t *testing.T) {
+	w := newWorld(t)
+	files := sessFiles(t, w, "s1", oldAge, "")
+	seq := seqPath(w.bridge, "s1")
+	writeJSON(seq, &seqFile{Sequences: []*sequence{{Steps: []*seqStep{{N: 1, Kind: "run", Run: "r", Status: "pending"}}}}})
+	marker := movedPath(w.bridge, "s1")
+	write(t, marker, "s2\n")
+	past := time.Now().Add(-oldAge)
+	os.Chtimes(seq, past, past)
+	os.Chtimes(marker, past, past)
+	dropDeadLinks(w.bridge)
+	if !exists(marker) || !allExist(append(files, seq)) {
+		t.Error("the marker must stay while its session has an unfinished sequence")
+	}
+}

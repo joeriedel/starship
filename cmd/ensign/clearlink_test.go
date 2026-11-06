@@ -270,6 +270,17 @@ func unfinishedSeq(t *testing.T, w *world, session, status string) {
 	}
 }
 
+func activeSeq(t *testing.T, w *world, session, instruction string) {
+	t.Helper()
+	path := seqPath(w.bridge, session)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(path, &seqFile{Sequences: []*sequence{{N: 1, Approved: true, Steps: []*seqStep{{N: 1, Kind: "do", Instruction: instruction, Status: "active"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (w *world) resumeTo(sid string, prior ...string) string {
 	w.t.Helper()
 	var lines string
@@ -356,5 +367,181 @@ func TestClearBackToALinkedIDReportsTheEarlierSessionsSequence(t *testing.T) {
 	}
 	if _, err := os.Stat(movedPath(w.bridge, "s2")); err != nil {
 		t.Errorf("s2 should be marked moved: %v", err)
+	}
+}
+
+// startReply runs SessionStart for the world's current session and returns the line shown to the user and the context Claude reads.
+func (w *world) startReply(source string, prior ...string) (string, string) {
+	w.t.Helper()
+	var lines string
+	for _, id := range prior {
+		lines += `{"type":"user","sessionId":"` + id + `"}` + "\n"
+	}
+	write(w.t, w.session, lines)
+	res, code := w.hook("SessionStart", map[string]any{"source": source})
+	if code != 0 {
+		w.t.Fatalf("%s exited %d", source, code)
+	}
+	return dig(res, "systemMessage"), dig(res, "hookSpecificOutput", "additionalContext")
+}
+
+func TestCarryShowsTheLeftBehindSequenceToTheUser(t *testing.T) {
+	w := newWorld(t)
+	unfinishedSeq(t, w, "pa", "pending")
+	unfinishedSeq(t, w, "pb", "pending")
+	w.sid = "s2"
+	show, ctx := w.startReply("resume", "pa", "pb")
+	if !strings.Contains(show, "the sequence of session pa was left behind: resume that session to drive it") || strings.Contains(show, "pb") {
+		t.Errorf("the user line should name pa only:\n%s", show)
+	}
+	if !strings.Contains(ctx, "the sequence of session pa was not moved to session s2") || !strings.Contains(ctx, "resume session pa to drive or halt it") {
+		t.Errorf("the context should say how to recover:\n%s", ctx)
+	}
+}
+
+func TestCarryShowsEveryLeftBehindSequence(t *testing.T) {
+	w := newWorld(t)
+	unfinishedSeq(t, w, "pa", "pending")
+	unfinishedSeq(t, w, "pb", "pending")
+	unfinishedSeq(t, w, "pc", "pending")
+	w.sid = "s2"
+	show, _ := w.startReply("resume", "pa", "pb", "pc")
+	if !strings.Contains(show, "the sequences of sessions pb, pa were left behind: resume those sessions to drive them") {
+		t.Errorf("both left-behind sessions should be listed:\n%s", show)
+	}
+}
+
+func TestCarryShowsNothingWhenNothingIsLeftBehind(t *testing.T) {
+	w := newWorld(t)
+	unfinishedSeq(t, w, "pa", "done")
+	unfinishedSeq(t, w, "pb", "pending")
+	w.sid = "s2"
+	show, _ := w.startReply("resume", "pa", "pb")
+	if strings.Contains(show, "left behind") {
+		t.Errorf("nothing was left behind:\n%s", show)
+	}
+	w2 := newWorld(t)
+	w2.sid = "s2"
+	plain, _ := w2.startReply("resume", "s1")
+	if strings.Contains(plain, "left behind") || !strings.HasPrefix(plain, "Starship ready") {
+		t.Errorf("an ordinary carry leaves the line unchanged:\n%s", plain)
+	}
+}
+
+func TestNotReadyShowsTheLeftBehindSequence(t *testing.T) {
+	w := newWorld(t)
+	unfinishedSeq(t, w, "pa", "pending")
+	unfinishedSeq(t, w, "pb", "pending")
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "{not yaml: [")
+	w.sid = "s2"
+	show, ctx := w.startReply("resume", "pa", "pb")
+	if !strings.Contains(show, "Starship is not ready") || !strings.Contains(show, "session pa was left behind") {
+		t.Errorf("the not-ready line should name pa:\n%s", show)
+	}
+	if !strings.Contains(ctx, "resume session pa to drive or halt it") {
+		t.Errorf("the context should say how to recover:\n%s", ctx)
+	}
+}
+
+func TestRenameFailureIsShownToTheUser(t *testing.T) {
+	w := newWorld(t)
+	unfinishedSeq(t, w, "pa", "pending")
+	failRename(t)
+	w.sid = "s2"
+	show, ctx := w.startReply("resume", "pa")
+	if !strings.Contains(show, "the sequence of session pa was left behind") {
+		t.Errorf("the user line should name pa:\n%s", show)
+	}
+	if !strings.Contains(ctx, "the sequence of session pa could not be moved to session s2") || !strings.Contains(ctx, "resume session pa to drive or halt it") || !strings.Contains(ctx, "sharing violation") {
+		t.Errorf("the context should report the failed move:\n%s", ctx)
+	}
+	if !seqExists(w.bridge, "pa") || seqExists(w.bridge, "s2") {
+		t.Error("the sequence should stay on pa")
+	}
+}
+
+func TestRenameFailureOfAFinishedSequenceIsNotLeftBehind(t *testing.T) {
+	w := newWorld(t)
+	unfinishedSeq(t, w, "pa", "done")
+	failRename(t)
+	w.sid = "s2"
+	show, ctx := w.startReply("resume", "pa")
+	if strings.Contains(show, "left behind") {
+		t.Errorf("a finished sequence is not left behind:\n%s", show)
+	}
+	if !strings.Contains(ctx, "the sequence of session pa could not be moved to session s2") || !strings.Contains(ctx, "sharing violation") {
+		t.Errorf("the context should still report the failed move:\n%s", ctx)
+	}
+	if strings.Contains(ctx, "resume session pa") {
+		t.Errorf("the context should not tell the user to resume pa:\n%s", ctx)
+	}
+}
+
+func TestResumingTheEarlierSessionRecoversItsSequence(t *testing.T) {
+	w := newWorld(t)
+	activeSeq(t, w, "pa", "drive me")
+	unfinishedSeq(t, w, "pb", "pending")
+	w.sid = "s2"
+	w.startReply("resume", "pa", "pb")
+	if _, err := os.Stat(movedPath(w.bridge, "pa")); err != nil {
+		t.Fatalf("pa should be marked moved: %v", err)
+	}
+	w.sid = "pa"
+	show, _ := w.startReply("resume")
+	if strings.Contains(show, "left behind") {
+		t.Errorf("nothing is left behind by resuming pa:\n%s", show)
+	}
+	if _, err := os.Stat(movedPath(w.bridge, "pa")); err == nil {
+		t.Error("pa started again, so its marker should be gone")
+	}
+	if !seqExists(w.bridge, "pa") {
+		t.Fatal("the sequence should still be pa's")
+	}
+	if err := movedRefusal(w.bridge, "pa"); err != nil {
+		t.Errorf("pa should no longer be refused: %v", err)
+	}
+	t.Setenv("STARSHIP_SESSION", "pa")
+	if _, err := w.seq("do", "tidy up"); err != nil {
+		t.Errorf("adding to pa again: %v", err)
+	}
+	raw, err := os.ReadFile(seqPath(w.bridge, "pa"))
+	if err != nil || !strings.Contains(string(raw), "tidy up") {
+		t.Errorf("the step should land in pa's sequence file: %v\n%s", err, raw)
+	}
+	res, code := w.hook("Stop", map[string]any{})
+	if code != 0 || dig(res, "decision") != "block" || !strings.Contains(dig(res, "reason"), "drive me") {
+		t.Errorf("Stop on pa should block with its active step: %v", res)
+	}
+}
+
+func TestForkSourceMarksAndMovesNothing(t *testing.T) {
+	w := newWorld(t)
+	unfinishedSeq(t, w, "pa", "pending")
+	w.sid = "f1"
+	show, _ := w.startReply("fork", "pa")
+	if strings.Contains(show, "left behind") {
+		t.Errorf("a fork reports nothing:\n%s", show)
+	}
+	if _, err := os.Stat(movedPath(w.bridge, "pa")); err == nil {
+		t.Error("a fork must not mark its parent moved")
+	}
+	if !seqExists(w.bridge, "pa") || seqExists(w.bridge, "f1") {
+		t.Error("a fork must not move the parent's sequence")
+	}
+}
+
+func TestResumedForkStampedWithItsOwnIDLeavesTheParentAlone(t *testing.T) {
+	w := newWorld(t)
+	unfinishedSeq(t, w, "pa", "pending")
+	w.sid = "f1"
+	show, _ := w.startReply("resume", "f1")
+	if strings.Contains(show, "left behind") {
+		t.Errorf("a fork resume reports nothing:\n%s", show)
+	}
+	if _, err := os.Stat(movedPath(w.bridge, "pa")); err == nil {
+		t.Error("the parent must stay unmarked")
+	}
+	if !seqExists(w.bridge, "pa") || seqExists(w.bridge, "f1") {
+		t.Error("the parent's sequence must stay in place")
 	}
 }
