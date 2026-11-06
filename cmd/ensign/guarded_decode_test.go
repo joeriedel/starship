@@ -59,7 +59,7 @@ func TestShippedProjectSurvivesUnhashableKeyWithMerge(t *testing.T) {
 				dir := t.TempDir()
 				write(t, filepath.Join(dir, filepath.FromSlash(shippedProjectFile)), body)
 				_, _, err := shippedProject(dir)
-				if place != "top level" && (err == nil || !strings.Contains(err.Error(), "is not valid YAML")) {
+				if err == nil || !strings.Contains(err.Error(), "is not valid YAML") {
 					t.Errorf("want a not valid YAML error, got %v", err)
 				}
 			})

@@ -99,7 +99,7 @@ func collectLinks(bridge, project, taskFile string, front []byte) (links []Link,
 		problems = append(problems, fmt.Sprintf("%s: %v", label, err))
 	default:
 		var lf linksFile
-		if err := yaml.Unmarshal(data, &lf); err != nil {
+		if err := yamlUnmarshal(data, &lf); err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", label, err))
 		} else if err := checkKeys(label, data, projectKeys); err != nil {
 			problems = append(problems, err.Error())

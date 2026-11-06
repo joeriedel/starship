@@ -1277,13 +1277,32 @@ func stageRoleAnywhere(bridge, role string) (bool, []string) {
 	return false, unread
 }
 
-// readOnlyRole reports whether the role's definition in the bridge's .claude/agents, the file Claude Code uses, grants only Read, Grep, Glob and Bash. It fails closed: no file, no tools line, an empty list or any other tool is not read-only.
+// readOnlyRole reports whether the definition in the bridge's .claude/agents, the file Claude Code uses, of the one agent named role, grants only Read, Grep, Glob and Bash. It fails closed: no file, more than one, a file that can't be read, no tools line, an empty list or any other tool is not read-only.
 func readOnlyRole(bridge, role string) bool {
 	if role == "" || strings.ContainsAny(role, `/\:`) || strings.Contains(role, "..") {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(bridge, ".claude", "agents", role+".md"))
+	files, err := filesIn(filepath.Join(bridge, ".claude", "agents"), ".md")
 	if err != nil {
+		return false
+	}
+	var data []byte
+	matches := 0
+	for _, f := range files {
+		d, err := os.ReadFile(f)
+		if err != nil {
+			return false
+		}
+		name, err := agentName(f, d)
+		if err != nil {
+			return false
+		}
+		if name == role {
+			data = d
+			matches++
+		}
+	}
+	if matches != 1 {
 		return false
 	}
 	m := frontmatterToolsLoc(data)

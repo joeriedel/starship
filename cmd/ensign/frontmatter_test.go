@@ -87,10 +87,11 @@ func TestDecodeFrontmatterLines(t *testing.T) {
 		same              bool
 	}{
 		{"flow sequence", "# a\n# b\nk: [a\n", "yaml: line 4: did not find expected ',' or ']'", false},
+		{"indent", "a:\n    b: 1\n  c: 2", "yaml: line 4: did not find expected key", false},
 		{"flow sequence on the first line", "k: [a\n", "yaml: line 2: did not find expected ',' or ']'", false},
 		{"flow mapping", "# a\n# b\nk: {a: 1\n", "yaml: line 4: did not find expected ',' or '}'", false},
-		{"block sequence", "- a\nk: b\n", "yaml: line 2: did not find expected '-' indicator", false},
-		{"key", "# a\nk: v\n: x\n", "yaml: line 3: did not find expected key", false},
+		{"block sequence", "- a\nk: b\n", "yaml: line 3: did not find expected '-' indicator", false},
+		{"key", "# a\nk: v\n: x\n", "yaml: line 4: did not find expected key", false},
 		{"scanner", "# a\n# b\n@x\n", "yaml: line 4: found character that cannot start any token", true},
 		{"hex escape", "# a\n# b\nk: \"\\xZZ\"\n", "yaml: line 4: did not find expected hexdecimal number", true},
 		{"type", "# a\n# b\nk: [1]\n", "line 4: cannot unmarshal", true},

@@ -86,7 +86,7 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 		return nil, err
 	}
 	var sf declaredSourcesFile
-	if err := yaml.Unmarshal(data, &sf); err != nil {
+	if err := yamlUnmarshal(data, &sf); err != nil {
 		return nil, fmt.Errorf("bridge.yaml: sources: %v", err)
 	}
 	n := &sf.Sources

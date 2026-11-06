@@ -423,7 +423,7 @@ func loadBridgeFile(bridge string) (*BridgeFile, error) {
 		dec.KnownFields(true)
 		return dec.Decode(&bf)
 	})
-	if err = correctParserLine(err); err != nil && err != io.EOF {
+	if err = correctParserLine(err, data); err != nil && err != io.EOF {
 		return nil, fmt.Errorf("%s: %v", path, err)
 	}
 	return &bf, nil
@@ -578,17 +578,59 @@ func guardedDecode(decode func() error) (err error) {
 	return decode()
 }
 
-// correctParserLine rewrites a parser-class yaml error to name the real line; other errors pass unchanged.
-func correctParserLine(err error) error {
+// decodeNode decodes a stored raw node into out, turning a yaml.v3 panic into an error as guardedDecode does.
+func decodeNode(n *yaml.Node, out any) error {
+	return guardedDecode(func() error { return n.Decode(out) })
+}
+
+// correctParserLine rewrites a yaml error to name the real line; other errors pass unchanged. data is the source that was decoded. yaml.v3 names the context mark's line when there is one, otherwise the problem mark's, and the text doesn't say which, so after the parser-class correction the line is searched for: the first prefix of the source, from that line on, that fails with the same problem text ends at the true line.
+func correctParserLine(err error, data []byte) error {
 	if err == nil {
 		return nil
 	}
 	m := yamlLineError.FindStringSubmatch(err.Error())
-	if m == nil || !yamlParserProblems[m[2]] {
+	if m == nil {
 		return err
 	}
-	n, _ := strconv.Atoi(m[1])
-	return errors.New("yaml: line " + strconv.Itoa(n+1) + ": " + m[2])
+	was, _ := strconv.Atoi(m[1])
+	n := was
+	if yamlParserProblems[m[2]] {
+		n++
+	}
+	lines := bytes.SplitAfter(data, []byte("\n"))
+	end := 0
+	for i, l := range lines {
+		end += len(l)
+		if i+1 < n {
+			continue
+		}
+		if yamlProblemOf(data[:end]) == m[2] {
+			n = i + 1
+			break
+		}
+	}
+	if n == was {
+		return err
+	}
+	return errors.New("yaml: line " + strconv.Itoa(n) + ": " + m[2])
+}
+
+// yamlProblemOf is the problem text of the error from parsing data into nodes, without its position prefix; empty when it parses.
+func yamlProblemOf(data []byte) string {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	for {
+		var node yaml.Node
+		err := dec.Decode(&node)
+		if err == io.EOF {
+			return ""
+		}
+		if err != nil {
+			if m := yamlLineError.FindStringSubmatch(err.Error()); m != nil {
+				return m[2]
+			}
+			return strings.TrimPrefix(err.Error(), "yaml: ")
+		}
+	}
 }
 
 // yamlLineError and yamlParserProblems exist because yaml.v3's parser.fail() formats parser errors from 0-based marks and adds 1 only for scanner errors, so parser errors name the line before the real one. The error carries no kind, only text, so the line is corrected by matching the whole problem string; scanner messages can also begin "did not find expected" and must not match.
@@ -1243,7 +1285,7 @@ func applyOp(p *Pipeline, n *yaml.Node, label string) error {
 			Before string `yaml:"before"`
 			Stage  *Stage `yaml:"stage"`
 		}
-		if err := arg.Decode(&a); err != nil {
+		if err := decodeNode(arg, &a); err != nil {
 			return fmt.Errorf("%s: insert: %v", where, err)
 		}
 		if a.Stage == nil || (a.After == "") == (a.Before == "") {
@@ -1284,7 +1326,7 @@ func applyOp(p *Pipeline, n *yaml.Node, label string) error {
 			Stage string `yaml:"stage"`
 			With  *Stage `yaml:"with"`
 		}
-		if err := arg.Decode(&a); err != nil || a.With == nil {
+		if err := decodeNode(arg, &a); err != nil || a.With == nil {
 			return fmt.Errorf("%s: replace needs stage and with", where)
 		}
 		_, list, _ := p.find(a.Stage)
@@ -1362,7 +1404,7 @@ func setStageField(s *Stage, key string, val *yaml.Node, kind string) error {
 	}
 	if name, ok := strings.CutPrefix(key, "outcomes."); ok {
 		var t Transition
-		if err := val.Decode(&t); err != nil {
+		if err := decodeNode(val, &t); err != nil {
 			return err
 		}
 		for i := range s.Outcomes {
@@ -1377,7 +1419,7 @@ func setStageField(s *Stage, key string, val *yaml.Node, kind string) error {
 	switch key {
 	case "outcomes":
 		var o Outcomes
-		if err := val.Decode(&o); err != nil {
+		if err := decodeNode(val, &o); err != nil {
 			return err
 		}
 		s.Outcomes = o
@@ -1395,7 +1437,7 @@ func setStageField(s *Stage, key string, val *yaml.Node, kind string) error {
 		return val.Decode(&s.ReportFields)
 	case "parallel":
 		s.Parallel = &Parallel{}
-		return val.Decode(s.Parallel)
+		return decodeNode(val, s.Parallel)
 	default:
 		return fmt.Errorf("unknown stage field")
 	}
@@ -1429,7 +1471,7 @@ func setPipelineField(p *Pipeline, key string, val *yaml.Node, kind string) erro
 	if name, ok := strings.CutPrefix(key, "on-exhausted."); ok {
 		name = canonicalBudget(name)
 		var t Transition
-		if err := val.Decode(&t); err != nil {
+		if err := decodeNode(val, &t); err != nil {
 			return err
 		}
 		t = t.canonicalBudgets()
@@ -1807,7 +1849,7 @@ func (c *Config) roleExists(role string) bool {
 
 // yamlUnmarshal decodes a whole file, guarded against yaml.v3 panics and with parser-class line numbers corrected. Frontmatter goes through decodeFrontmatter, which supplies the line the dropped --- would have taken.
 func yamlUnmarshal(data []byte, out any) error {
-	return correctParserLine(guardedDecode(func() error { return yaml.Unmarshal(data, out) }))
+	return correctParserLine(guardedDecode(func() error { return yaml.Unmarshal(data, out) }), data)
 }
 
 func writeYAML(path string, v any) error {

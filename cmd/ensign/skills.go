@@ -131,7 +131,7 @@ func (c *Config) selectSkills(layers []layerEntry) error {
 				return fmt.Errorf("%s: skills: %v", l.label, err)
 			}
 		case yaml.MappingNode:
-			if err := n.Decode(&sel); err != nil {
+			if err := decodeNode(n, &sel); err != nil {
 				return fmt.Errorf("%s: skills: %v", l.label, err)
 			}
 		default:

@@ -275,8 +275,31 @@ type linkManifest struct {
 	Files map[string]string `yaml:"files"` // path relative to the bridge -> sha256 of what link wrote
 }
 
-var frontmatterField = func(name string) *regexp.Regexp {
-	return regexp.MustCompile(`(?m)^` + name + `:\s*(.*)$`)
+var modelLineRe = regexp.MustCompile(`(?m)^(model:[ \t]*)(.*?)(\r?)$`)
+
+// frontmatterReplaces is the role file's declared replaces: from its frontmatter; empty when absent.
+func frontmatterReplaces(label string, data []byte) (string, error) {
+	front, _, err := splitFrontmatterData(label, data)
+	if err != nil {
+		return "", err
+	}
+	var fm struct {
+		Replaces string `yaml:"replaces"`
+	}
+	if err := decodeFrontmatter(front, &fm); err != nil {
+		return "", fmt.Errorf("%s: frontmatter: %v", label, err)
+	}
+	return strings.TrimSpace(fm.Replaces), nil
+}
+
+// agentName is the name Claude Code knows a role file by: its frontmatter name, or the file stem when there is none. An unreadable frontmatter gives the stem and the error.
+func agentName(path string, data []byte) (string, error) {
+	stem := strings.TrimSuffix(filepath.Base(path), ".md")
+	_, name, err := frontmatterMcpServers(path, data)
+	if err != nil || name == "" {
+		return stem, err
+	}
+	return name, nil
 }
 
 // bridgeEnsign is how hooks run the bridge's own ensign: every bridge has its copy, so
@@ -290,6 +313,11 @@ var toolsLineRe = regexp.MustCompile(`(?m)^(tools:[ \t]*)(.*?)(\r?)$`)
 
 // frontmatterToolsLoc finds the tools: line inside a role file's frontmatter, as submatch indices into data; a body line is never found. It is nil when there is no frontmatter or no such line.
 func frontmatterToolsLoc(data []byte) []int {
+	return frontmatterLineLoc(data, toolsLineRe)
+}
+
+// frontmatterLineLoc finds the first line re matches inside a role file's frontmatter, as submatch indices into data.
+func frontmatterLineLoc(data []byte, re *regexp.Regexp) []int {
 	if !bytes.HasPrefix(data, []byte("---\n")) && !bytes.HasPrefix(data, []byte("---\r\n")) {
 		return nil
 	}
@@ -298,7 +326,7 @@ func frontmatterToolsLoc(data []byte) []int {
 	if end < 1 {
 		return nil
 	}
-	m := toolsLineRe.FindSubmatchIndex(data[nl+1 : nl+end])
+	m := re.FindSubmatchIndex(data[nl+1 : nl+end])
 	if m == nil {
 		return nil
 	}
@@ -471,10 +499,7 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 			continue
 		}
 		roles[name], sources[name] = data, f
-		effective[name] = name
-		if _, fmName, err := frontmatterMcpServers(f, data); err == nil && fmName != "" {
-			effective[name] = fmName
-		}
+		effective[name], _ = agentName(f, data)
 	}
 	var bridgeRoles []string
 	for _, d := range append([]string{filepath.Join(bridge, "roles")}, extensionRoleDirs(bridge, cp)...) {
@@ -491,10 +516,7 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 		}
 		name := strings.TrimSuffix(filepath.Base(f), ".md")
 		// The hook matches agent_type, which is the frontmatter name; an unreadable frontmatter falls back to the file name and is reported by the check below.
-		agentType := name
-		if _, fmName, err := frontmatterMcpServers(f, data); err == nil && fmName != "" {
-			agentType = fmName
-		}
+		agentType, _ := agentName(f, data)
 		// hits maps each existing role this file collides with to the names (file stem, frontmatter name) that hit it.
 		hits := map[string][]string{}
 		if _, ok := roles[name]; ok {
@@ -509,9 +531,12 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 		switch len(replaced) {
 		case 0:
 		case 1:
-			m := frontmatterField("replaces").FindSubmatch(data)
+			replaces, err := frontmatterReplaces(f, data)
+			if err != nil {
+				return nil, err
+			}
 			names := hits[replaced[0]]
-			if m == nil || !slices.Contains(names, strings.TrimSpace(string(m[1]))) {
+			if !slices.Contains(names, replaces) {
 				return nil, fmt.Errorf("%s: a role named %q already exists; declare `replaces: %s` to replace it", f, names[0], names[0])
 			}
 		default:
@@ -540,17 +565,11 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 	}
 	for name, data := range roles {
 		if o, ok := bf.Roles[name]; ok && o.Model != "" {
-			re := frontmatterField("model")
-			if re.Match(data) {
-				data = re.ReplaceAll(data, []byte("model: "+o.Model))
+			if m := frontmatterLineLoc(data, modelLineRe); m != nil {
+				data = slices.Concat(data[:m[0]], []byte("model: "+o.Model), data[m[6]:])
 			}
 		}
-		// The hook matches agent_type, which is the frontmatter name; the file name stands in when there is none.
-		key := name
-		if _, fmName, err := frontmatterMcpServers(sources[name], data); err == nil && fmName != "" {
-			key = fmName
-		}
-		if declared := rules[key]; len(declared) > 0 {
+		if declared := rules[effective[name]]; len(declared) > 0 {
 			var err error
 			if data, err = withDeclaredTools(sources[name], data, declared); err != nil {
 				return nil, err

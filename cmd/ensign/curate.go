@@ -14,8 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // A curated document — a project's style guide, or a skill's learned entries — is a list
@@ -43,7 +41,7 @@ func loadDoc(path string) (Doc, error) {
 	if err != nil {
 		return d, err
 	}
-	err = yaml.Unmarshal(data, &d)
+	err = yamlUnmarshal(data, &d)
 	return d, err
 }
 
@@ -475,12 +473,12 @@ func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 			return "is not valid YAML: " + err.Error()
 		}
 		var next Doc
-		if err := yaml.Unmarshal([]byte(docText), &next); err != nil {
+		if err := yamlUnmarshal([]byte(docText), &next); err != nil {
 			return "The starship-document block " + yamlProblem(err)
 		}
 		ledger := map[string]string{}
 		if strings.TrimSpace(ledgerText) != "" {
-			if err := yaml.Unmarshal([]byte(ledgerText), &ledger); err != nil {
+			if err := yamlUnmarshal([]byte(ledgerText), &ledger); err != nil {
 				if private {
 					return "The starship-ledger block " + yamlProblem(err) + " (quote values containing colons)"
 				}

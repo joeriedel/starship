@@ -118,7 +118,7 @@ func loadDeclaredDocuments(bridge string) ([]DeclaredDocument, error) {
 		return nil, err
 	}
 	var df declaredDocumentsFile
-	if err := yaml.Unmarshal(data, &df); err != nil {
+	if err := yamlUnmarshal(data, &df); err != nil {
 		return nil, fmt.Errorf("bridge.yaml: documents: %v", err)
 	}
 	n := &df.Documents
@@ -265,7 +265,7 @@ func parseDocumentFile(data []byte) (Doc, fencedBlock, error) {
 	default:
 		return d, fencedBlock{}, fmt.Errorf("has %d %s blocks, not one", len(blocks), documentFence)
 	}
-	if err := yaml.Unmarshal([]byte(blocks[0].body), &d); err != nil {
+	if err := yamlUnmarshal([]byte(blocks[0].body), &d); err != nil {
 		return Doc{}, fencedBlock{}, fmt.Errorf("%s block %s", documentFence, quietYAMLProblem(err))
 	}
 	return d, blocks[0], nil
