@@ -36,7 +36,7 @@ func readerDeclared(bridge string) (bool, error) {
 	return declared, nil
 }
 
-// claudeToolPath is a path as Claude Code's Read expands it before opening it: trimmed, with ~ and ~/ taken from home (~user is not expanded), and on Windows /c/x taken as C:/x. A hook normally receives this form already, because Claude Code (2.1.316-2.1.318) expands Read, Write, Edit and NotebookEdit paths before PreToolUse for local sessions; the guards apply it anyway as a safeguard, so they judge the same path whether or not it arrives expanded and don't depend on a Claude Code version. resolveEditTarget does none of this itself. With no home, ~ is left alone.
+// claudeToolPath is the path form Claude Code's file tools (Read, Write, Edit, NotebookEdit) share, as read in 2.1.318: trimmed, with ~ and ~/ taken from home (~user is not expanded), and on Windows /c/x taken as C:/x. A hook normally receives this form already, but gets the raw path in diskless sessions, and the guards apply it themselves so they judge the same path whether or not it arrives expanded and don't depend on a Claude Code version. resolveEditTarget does none of this itself. With no home, ~ is left alone.
 func claudeToolPath(p, home, goos string) string {
 	p = strings.TrimFunc(p, func(r rune) bool { return (unicode.IsSpace(r) && r != 0x85) || r == 0xFEFF })
 	if home != "" {

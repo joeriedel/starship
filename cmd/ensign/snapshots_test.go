@@ -349,6 +349,7 @@ func TestClaudeToolPath(t *testing.T) {
 		{" /tmp/x ", "linux", "/tmp/x"},
 		{"~other/a", "linux", "~other/a"},
 		{"~a", "windows", "~a"},
+		{`~\x`, "windows", `~\x`},
 		{"/c/x/y", "linux", "/c/x/y"},
 		{"/c/x/y", "darwin", "/c/x/y"},
 		{"/c/x/y", "windows", "C:/x/y"},
