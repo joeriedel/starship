@@ -879,7 +879,7 @@ func githubOpenPR(bridge, task, location string) (string, error) {
 }
 
 // githubMerge moves the default branch to a task's tested commit, if that is a
-// fast-forward, and removes the task branch. It returns the default branch's name, the commit, and a note that is empty unless the branch was left on origin because it has commits this workspace doesn't.
+// fast-forward, and removes the task branch. It returns the default branch's name, the commit, and a note that is empty unless the branch was left on origin because it has commits this workspace doesn't, or can't show it pushed.
 func githubMerge(bridge, task, location string) (string, string, string, error) {
 	c, branch, sha, err := tested(bridge, task, location)
 	if err != nil {
@@ -939,7 +939,7 @@ func deleteLandedRemote(ws, branch string) string {
 		return ""
 	}
 	if !holdsTip(ws, branch, tip) {
-		return fmt.Sprintf("%s was left on origin: it has commits this workspace doesn't", branch)
+		return fmt.Sprintf("%s was left on origin: it has commits this workspace doesn't (this can also mean this workspace's reflog for the branch is disabled or expired, so git can't show the commits were pushed from here)", branch)
 	}
 	git(ws, "push", "-q", "origin", "--delete", "--force-with-lease="+branch+":"+tip, branch)
 	return ""

@@ -717,7 +717,7 @@ func TestGithubPRMergeLeavesCommitsWeLack(t *testing.T) {
 	w.passingRun(ws, gh)
 	theirs := remoteTaskCommit(t, remote, "theirs.txt")
 	out, err := w.land("merge")
-	if err != nil || !strings.Contains(out, "Pushed to main:") || !strings.Contains(out, "task/auth-refactor was left on origin") {
+	if err != nil || !strings.Contains(out, "Pushed to main:") || !strings.Contains(out, "task/auth-refactor was left on origin") || !strings.Contains(out, "reflog") {
 		t.Fatalf("the landing should succeed and name the branch left behind: %q %v", out, err)
 	}
 	if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got != "two" {
@@ -725,6 +725,18 @@ func TestGithubPRMergeLeavesCommitsWeLack(t *testing.T) {
 	}
 	if tip := runGit(t, ".", "--git-dir", remote, "rev-parse", "task/auth-refactor"); tip != theirs {
 		t.Errorf("origin's commit was deleted: %s != %s", tip, theirs)
+	}
+}
+
+func TestGithubPRMergeNoteMentionsReflogWhenPushedCommitsCantBeShown(t *testing.T) {
+	_, ws, remote, _ := githubWorld(t, "success", localTest)
+	first := rewrittenWithoutReflog(t, ws)
+	note := deleteLandedRemote(ws, "task/auth-refactor")
+	if !strings.Contains(note, "left on origin") || !strings.Contains(note, "reflog") {
+		t.Errorf("the note should say the branch was left and that the reflog may be the cause: %q", note)
+	}
+	if tip := runGit(t, ".", "--git-dir", remote, "rev-parse", "task/auth-refactor"); tip != first {
+		t.Errorf("origin's branch should be untouched: %s != %s", tip, first)
 	}
 }
 
