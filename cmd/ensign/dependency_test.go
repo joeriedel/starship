@@ -1067,26 +1067,148 @@ func TestCatalogCommitPassCommitsAStagedGitlinkHiddenByConfig(t *testing.T) {
 	}
 }
 
-// Pins --no-relative on the staged-change check: the name lib.txt matches both lib.txt at the repository root and sub/lib.txt, and under diff.relative a plain diff run from sub hides the root file. This does not say a file outside the workspace ought to be committed.
-func TestCatalogCommitPassCommitsAStagedChangeOutsideTheWorkspaceUnderDiffRelative(t *testing.T) {
-	repo := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
-	sub := filepath.Join(repo, "sub")
+// subRepo is a repository with lib.txt at the root and in sub, both committed, and the sub folder as the workspace.
+func subRepo(t *testing.T) (repo, sub string) {
+	t.Helper()
+	repo = newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	sub = filepath.Join(repo, "sub")
 	write(t, filepath.Join(repo, "lib.txt"), "one\n")
 	write(t, filepath.Join(sub, "lib.txt"), "one\n")
 	runGit(t, repo, "add", ".")
 	runGit(t, repo, "commit", "-qm", "libs")
+	return repo, sub
+}
+
+func commitPassIn(t *testing.T, ws string, carried []string, files ...string) error {
+	t.Helper()
+	r := unitRun(t, ws)
+	r.State.Carried = carried
+	return catalogCommitPass(r, &Dispatch{ID: "d1", Summary: "changed", Fields: map[string][]string{"files": files}})
+}
+
+func TestCatalogCommitPassCommitsAReportedFileInASubfolderWorkspace(t *testing.T) {
+	for _, abs := range []bool{false, true} {
+		repo, sub := subRepo(t)
+		write(t, filepath.Join(sub, "code.txt"), "x\n")
+		reported := "code.txt"
+		if abs {
+			reported = filepath.Join(sub, "code.txt")
+		}
+		if err := commitPassIn(t, sub, nil, reported); err != nil {
+			t.Fatalf("absolute %v: %v", abs, err)
+		}
+		if got := runGit(t, repo, "show", "--name-only", "--format=", "HEAD"); got != "sub/code.txt" {
+			t.Errorf("absolute %v: committed %q", abs, got)
+		}
+	}
+}
+
+// A staged file outside the workspace is refused even when a file of the same name is reported inside it, and diff.relative must not hide it from the check.
+func TestCatalogCommitPassRefusesAStagedChangeOutsideTheWorkspaceUnderDiffRelative(t *testing.T) {
+	repo, sub := subRepo(t)
 	runGit(t, repo, "config", "diff.relative", "true")
 	write(t, filepath.Join(repo, "lib.txt"), "two\n")
 	runGit(t, repo, "add", "lib.txt")
 	if got := runGit(t, sub, "diff", "--cached", "--name-only"); got != "" {
 		t.Fatalf("a plain diff should hide the staged root file, got %q", got)
 	}
-	r := unitRun(t, sub)
-	d := &Dispatch{ID: "d1", Summary: "changed", Fields: map[string][]string{"files": {"lib.txt"}}}
-	if err := catalogCommitPass(r, d); err != nil {
+	before := runGit(t, repo, "rev-parse", "HEAD")
+	err := commitPassIn(t, sub, nil, "lib.txt")
+	if err == nil || !strings.Contains(err.Error(), "did not report") || !strings.Contains(err.Error(), "../lib.txt") {
+		t.Fatalf("got %v", err)
+	}
+	if after := runGit(t, repo, "rev-parse", "HEAD"); after != before {
+		t.Error("nothing should have been committed")
+	}
+}
+
+func TestCatalogCommitPassRefusesAnUnreportedFileInsideTheSubfolder(t *testing.T) {
+	repo, sub := subRepo(t)
+	write(t, filepath.Join(sub, "code.txt"), "x\n")
+	write(t, filepath.Join(sub, "other.txt"), "x\n")
+	before := runGit(t, repo, "rev-parse", "HEAD")
+	err := commitPassIn(t, sub, nil, "code.txt")
+	if err == nil || !strings.Contains(err.Error(), "other.txt") {
+		t.Fatalf("got %v", err)
+	}
+	if after := runGit(t, repo, "rev-parse", "HEAD"); after != before {
+		t.Error("nothing should have been committed")
+	}
+}
+
+func TestCatalogCommitPassRefusesAnUnrelatedDirtyFileOutsideTheSubfolder(t *testing.T) {
+	repo, sub := subRepo(t)
+	write(t, filepath.Join(repo, "elsewhere.txt"), "x\n")
+	write(t, filepath.Join(sub, "code.txt"), "x\n")
+	before := runGit(t, repo, "rev-parse", "HEAD")
+	err := commitPassIn(t, sub, nil, "code.txt")
+	if err == nil || !strings.Contains(err.Error(), "../elsewhere.txt") {
+		t.Fatalf("got %v", err)
+	}
+	if after := runGit(t, repo, "rev-parse", "HEAD"); after != before {
+		t.Error("nothing should have been committed")
+	}
+}
+
+func TestCatalogCommitPassCommitsACarriedPathInsideTheSubfolder(t *testing.T) {
+	repo, sub := subRepo(t)
+	write(t, filepath.Join(sub, "left.txt"), "x\n")
+	if err := commitPassIn(t, sub, []string{"sub/left.txt"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := runGit(t, repo, "show", "--name-only", "--format=", "HEAD"); got != "lib.txt" {
+	if got := runGit(t, repo, "show", "--name-only", "--format=", "HEAD"); got != "sub/left.txt" {
+		t.Errorf("committed %q", got)
+	}
+}
+
+func TestCatalogCommitPassRefusesACarriedPathOutsideTheSubfolderAndDoesNotStageIt(t *testing.T) {
+	repo, sub := subRepo(t)
+	write(t, filepath.Join(repo, "left.txt"), "x\n")
+	before := runGit(t, repo, "rev-parse", "HEAD")
+	err := commitPassIn(t, sub, []string{"left.txt"})
+	if err == nil || !strings.Contains(err.Error(), "../left.txt") {
+		t.Fatalf("got %v", err)
+	}
+	if got := runGit(t, repo, "diff", "--cached", "--name-only"); got != "" {
+		t.Errorf("the outside file must not be staged, got %q", got)
+	}
+	if after := runGit(t, repo, "rev-parse", "HEAD"); after != before {
+		t.Error("nothing should have been committed")
+	}
+}
+
+func TestCatalogCommitPassRefusesARenameFromOutsideTheSubfolder(t *testing.T) {
+	repo, sub := subRepo(t)
+	runGit(t, sub, "mv", "../lib.txt", "moved.txt")
+	before := runGit(t, repo, "rev-parse", "HEAD")
+	err := commitPassIn(t, sub, nil, "moved.txt")
+	if err == nil || !strings.Contains(err.Error(), "../lib.txt") {
+		t.Fatalf("got %v", err)
+	}
+	if after := runGit(t, repo, "rev-parse", "HEAD"); after != before {
+		t.Error("nothing should have been committed")
+	}
+}
+
+func TestCatalogCommitPassCommitsARenameWithinTheSubfolder(t *testing.T) {
+	repo, sub := subRepo(t)
+	runGit(t, sub, "mv", "lib.txt", "moved.txt")
+	if err := commitPassIn(t, sub, nil, "moved.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if got := runGit(t, repo, "show", "--name-status", "--format=", "HEAD"); !strings.Contains(got, "sub/moved.txt") {
+		t.Errorf("committed %q", got)
+	}
+}
+
+func TestCatalogCommitPassCommitsAnInsideFileUnderDiffRelative(t *testing.T) {
+	repo, sub := subRepo(t)
+	runGit(t, repo, "config", "diff.relative", "true")
+	write(t, filepath.Join(sub, "lib.txt"), "two\n")
+	if err := commitPassIn(t, sub, nil, "lib.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if got := runGit(t, repo, "show", "--name-only", "--format=", "HEAD"); got != "sub/lib.txt" {
 		t.Errorf("committed %q", got)
 	}
 }

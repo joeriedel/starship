@@ -99,6 +99,26 @@ func startsAtDocs(r *RunFiles) bool {
 	return r.Snap.Start == "docs"
 }
 
+// startsAtPlainEntry reports whether the run went through the whole pipeline: it has no start, or starts where a plain run enters, which is the first stage, that stage's first child when it leads others, or the stage after a first stage that is skipped.
+func startsAtPlainEntry(r *RunFiles) bool {
+	start := r.Snap.Start
+	if start == "" {
+		return true
+	}
+	for _, s := range r.Snap.Pipeline.Stages {
+		if start == s.ID || (s.isLead() && start == s.Stages[0].ID) {
+			return true
+		}
+		if skipReason(s, r.Snap.Bindings, r.Snap.Documentation) == "" {
+			break
+		}
+		if t, _ := s.Outcomes.find(s.Skip.Outcome); !t.Next {
+			break
+		}
+	}
+	return false
+}
+
 // githubBranch runs at run.start: the workspace moves to the task's branch, created from
 // the default branch the first time. Work on another branch is never carried along, and
 // whatever passed before has to pass again before it can land.
@@ -431,8 +451,9 @@ func githubReady(r *RunFiles) error {
 	if s, _, _ := r.Snap.Pipeline.find("test"); s == nil {
 		noTestStage = true
 	}
-	// A docs start on a pipeline with no test stage passes testPassed, but ran nothing the marker could vouch for, so it never writes one.
-	if !testPassed(r) || (noTestStage && startsAtDocs(r)) {
+	// With no test stage testPassed is always true, so only a run through the whole pipeline may write a marker: a partial run ran nothing that vouches for the commits already on the branch.
+	partial := noTestStage && !startsAtPlainEntry(r)
+	if !testPassed(r) || partial {
 		if markerErr == nil {
 			marker := strings.TrimSpace(string(data))
 			if sha == marker {
@@ -445,12 +466,13 @@ func githubReady(r *RunFiles) error {
 				return nil
 			}
 		}
-		advice := fmt.Sprintf("`ensign run %s --start test`", r.Snap.Task)
-		if noTestStage {
-			advice = fmt.Sprintf("`ensign run %s`", r.Snap.Task)
+		if partial {
+			r.State.note(fmt.Sprintf("The task branch %s is at %s. This run did not go through the whole pipeline, so the branch is not recorded as tested: `ensign run %s` records it before it is published",
+				branch, short(sha), r.Snap.Task))
+			return nil
 		}
-		r.State.note(fmt.Sprintf("The task branch %s is at %s. No test ran in this run, so the branch is not recorded as tested: %s records it before it is published",
-			branch, short(sha), advice))
+		r.State.note(fmt.Sprintf("The task branch %s is at %s. No test ran in this run, so the branch is not recorded as tested: `ensign run %s --start test` records it before it is published",
+			branch, short(sha), r.Snap.Task))
 		return nil
 	}
 	f := testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)

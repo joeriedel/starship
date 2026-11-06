@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -63,7 +64,8 @@ func catalogRecordBase(r *RunFiles) error {
 
 type dirtyPath struct {
 	path     string
-	unstaged bool // the working tree differs from the index
+	unstaged bool   // the working tree differs from the index
+	origin   string // the old name of a rename; empty otherwise
 }
 
 // dirtyPaths lists the staged, unstaged and untracked paths of the workspace.
@@ -78,10 +80,15 @@ func dirtyPaths(ws string) ([]dirtyPath, error) {
 		if len(t) < 4 {
 			continue
 		}
-		out = append(out, dirtyPath{t[3:], t[1] != ' '})
+		d := dirtyPath{path: t[3:], unstaged: t[1] != ' '}
 		if strings.ContainsAny(t[:2], "RC") {
 			i++ // the original path follows
+			// A copy leaves its source unchanged, so only a rename alters the origin.
+			if i < len(toks) && strings.Contains(t[:2], "R") {
+				d.origin = toks[i]
+			}
 		}
+		out = append(out, d)
 	}
 	return out, nil
 }
@@ -118,14 +125,21 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 	for _, f := range files {
 		listed[f] = true
 	}
+	// git names are repo-root-relative; everything below compares workspace-relative names, and anything outside the workspace stays unlisted so it is refused as stray. A rename also alters its origin, so an origin outside the workspace is refused too.
+	prefix, err := gitOut(ws, "rev-parse", "--show-prefix")
+	if err != nil {
+		return fmt.Errorf("git rev-parse --show-prefix: %v", err)
+	}
 	// A retry starts on the previous attempt's leftovers; those still dirty count as reported.
 	dirty, err := dirtyPaths(ws)
 	if err != nil {
 		return fmt.Errorf("git status: %v", err)
 	}
 	for _, d := range dirty {
+		rel := workspaceRelative(prefix, d.path, runtime.GOOS)
 		for _, c := range r.State.Carried {
-			if d.path == c && !listed[c] {
+			c = workspaceRelative(prefix, c, runtime.GOOS)
+			if rel == c && !outsideRel(filepath.FromSlash(c)) && !listed[c] {
 				listed[c] = true
 				files = append(files, c)
 			}
@@ -142,15 +156,21 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 	}
 	var stray []string
 	for _, d := range dirty {
-		if d.unstaged || !listed[d.path] {
-			stray = append(stray, d.path)
+		rel := workspaceRelative(prefix, d.path, runtime.GOOS)
+		if d.unstaged || outsideRel(filepath.FromSlash(rel)) || !listed[rel] {
+			stray = append(stray, rel)
+		}
+		if d.origin != "" {
+			if orig := workspaceRelative(prefix, d.origin, runtime.GOOS); outsideRel(filepath.FromSlash(orig)) {
+				stray = append(stray, orig)
+			}
 		}
 	}
 	if len(stray) > 0 {
 		return fmt.Errorf("files changed that the coder did not report: %s", strings.Join(stray, ", "))
 	}
 	// User config must not hide a staged change: it would be dropped as "no changes to commit".
-	staged, err := gitOut(ws, "diff", "--cached", "--name-only", "--no-relative", "--ignore-submodules=none")
+	staged, err := gitOut(ws, "diff", "--cached", "--name-only", "--ignore-submodules=none")
 	if err != nil {
 		return fmt.Errorf("git diff --cached: %v", err)
 	}

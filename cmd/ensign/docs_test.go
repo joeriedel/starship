@@ -1123,3 +1123,66 @@ func TestFullRunWithoutTestStageStillRecordsAndPublishes(t *testing.T) {
 	}
 	w.wantLands(remote)
 }
+
+func TestPartialStartAfterAFailedRunWithoutTestStageCannotPublish(t *testing.T) {
+	for _, start := range []string{"review", "style"} {
+		t.Run(start, func(t *testing.T) {
+			w, ws, remote, _ := githubWorld(t, "success", localTest)
+			w.noTestStage()
+			mainBefore := remoteMain(t, remote)
+			lead := w.startLead()
+			write(t, filepath.Join(ws, "lib.txt"), "two\n")
+			runGit(t, ws, "commit", "-q", "-am", "work")
+			w.failRun(lead)
+
+			lead = w.startLead("--start", start)
+			if start == "review" {
+				w.leaf(lead, "reviewer", "clean")
+				w.leaf(lead, "reviewer", "clean")
+			}
+			w.leaf(lead, "style-reviewer", "done")
+			if st := w.state(); st.Status != "success" {
+				t.Fatalf("status %s (%s)", st.Status, st.Reason)
+			}
+			if got := w.markerSha(); got != "" {
+				t.Fatalf("a partial run must not write a marker, got %q", got)
+			}
+			if !w.hasNote("did not go through the whole pipeline") {
+				t.Errorf("the note should say the run was partial: %v", w.state().Notes)
+			}
+			if _, _, _, err := tested(w.bridge, authTask, ""); err == nil {
+				t.Error("tested() must not accept the failed run's commits")
+			}
+			for _, step := range []string{"merge", "pull-request"} {
+				if _, err := w.land(step); err == nil {
+					t.Errorf("%s should be refused", step)
+				}
+			}
+			if got := remoteMain(t, remote); got != mainBefore {
+				t.Errorf("nothing may be pushed to main: %s", got)
+			}
+		})
+	}
+}
+
+func TestExplicitStartAtFirstStageWithoutTestStageRecordsAndPublishes(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	w.noTestStage()
+	lead := w.startLead()
+	write(t, filepath.Join(ws, "lib.txt"), "two\n")
+	runGit(t, ws, "commit", "-q", "-am", "work")
+	w.failRun(lead)
+
+	lead = w.startLead("--start", "code")
+	w.leaf(lead, "coder", "compiled")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if got, head := w.markerSha(), runGit(t, ws, "rev-parse", "HEAD"); got != head {
+		t.Errorf("an explicit start at the first stage records HEAD %s, got %q", head, got)
+	}
+	w.wantLands(remote)
+}
