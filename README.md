@@ -76,7 +76,7 @@ code -> review -> style -> test -> docs -> success
 
 Each stage declares its outcomes and where each one goes. A review with findings returns to code, and a failed test returns to code. The docs stage updates the files a project declares in `@docs` and is skipped when it declares none. Two budgets bound the loop: `coder-loop` counts passes through the code stage and `test` counts test cycles, each 3 by default. A run that exhausts a budget ends in an error instead of retrying.
 
-Test results come from the project's `@test` command. If the binding is marked `plain`, `ensign` runs the command itself and uses the exit code, with no tester agent involved. Otherwise a tester agent runs the suite and reports.
+Test results come from the project's `@test` command. If the binding is marked `plain`, `ensign` runs the command itself and uses the exit code, with no tester agent involved. A command in a plain stage can append a short notice to the file named by `STARSHIP_NOTICES`, and it reaches the report without changing the outcome. Otherwise a tester agent runs the suite and reports.
 
 ## What the hooks enforce
 
