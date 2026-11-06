@@ -271,7 +271,7 @@ func leftBehindShow(err error) string {
 // hasOpenWork reports whether the session's sequence file has unfinished work or can't be read, so a missing file or a finished one has none.
 func hasOpenWork(bridge, session string) bool {
 	var sf seqFile
-	if err := readJSON(seqPath(bridge, session), &sf); err != nil {
+	if err := readSeqFile(seqPath(bridge, session), &sf); err != nil {
 		return !errors.Is(err, fs.ErrNotExist)
 	}
 	for _, seq := range sf.Sequences {
@@ -316,7 +316,7 @@ func withSeq(bridge, session string, fn func(sf *seqFile) error) error {
 	existed := true
 	if err := readJSON(path, sf); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			return err
+			return seqReadError(err)
 		}
 		existed = false
 	}
@@ -331,7 +331,7 @@ func withSeq(bridge, session string, fn func(sf *seqFile) error) error {
 	return seqSave(path, sf)
 }
 
-// readSeq reads the session's sequences without the lock, for display and checks.
+// readSeq reads the session's sequences without the lock, for display and checks, and drops the read error. Only a caller that may ignore a damaged file uses it: takeSequenceReports and onlyWaitingSequenceUnfinished.
 func readSeq(bridge, session string) *seqFile {
 	sf, _ := readSeqErr(bridge, session)
 	return sf
@@ -342,15 +342,44 @@ func readSeqErr(bridge, session string) (*seqFile, error) {
 	sf := &seqFile{}
 	var err error
 	if session != "" {
-		if err = readJSON(seqPath(bridge, session), sf); errors.Is(err, fs.ErrNotExist) {
+		if err = readSeqFile(seqPath(bridge, session), sf); errors.Is(err, fs.ErrNotExist) {
 			err = nil
 		}
 	}
 	if err != nil {
 		sf = &seqFile{}
+		err = seqReadError(err)
 	}
 	sf.normalize()
 	return sf, err
+}
+
+// errSeqSaving is the read error of a sequence file that is missing while a fresh <path>.tmp shows a save replacing it. It is not fs.ErrNotExist, so callers treat the file as unreadable rather than absent.
+var errSeqSaving = errors.New("a save of the sequence file seems to be in progress")
+
+// seqReadError adds the way out to the error of a sequence file that can't be read.
+func seqReadError(err error) error {
+	if errors.Is(err, errSeqSaving) {
+		return err
+	}
+	return fmt.Errorf("%w; if the file is damaged, `ensign sequence clear` sets it aside", err)
+}
+
+// readSeqFile is readJSON for a sequence file, which no one can tell exists. Windows can report not-found while a save replaces the file, and a save writes <path>.tmp first, so a fresh .tmp means the file is about to be there: the read is retried for up to retryWindow, and a file that stays missing is an error that is not fs.ErrNotExist. A missing .tmp, or one older than a save can take (a crash leftover), gets one more read, since the save may just have finished.
+func readSeqFile(path string, v any) error {
+	err := readJSON(path, v)
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	info, serr := os.Stat(path + ".tmp")
+	if serr != nil || time.Since(info.ModTime()) > 2*retryWindow {
+		return readJSON(path, v)
+	}
+	err = retry(retryWindow, func(e error) bool { return errors.Is(e, fs.ErrNotExist) }, func() error { return readJSON(path, v) })
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%s: %w", path, errSeqSaving)
+	}
+	return err
 }
 
 // normalize numbers each sequence's steps from 1 in their stored order, which also converts a file written when steps were numbered across the session, and tells each step its sequence.
@@ -489,13 +518,17 @@ func (sf *seqFile) held() (*sequence, *seqStep) {
 }
 
 // sequenceUnfinished reports whether the session has a step that has not finished.
-func sequenceUnfinished(bridge, session string) bool {
-	for _, seq := range readSeq(bridge, session).Sequences {
+func sequenceUnfinished(bridge, session string) (bool, error) {
+	sf, err := readSeqErr(bridge, session)
+	if err != nil {
+		return false, err
+	}
+	for _, seq := range sf.Sequences {
 		if seq.unfinished() {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // onlyWaitingSequenceUnfinished reports whether the sequence waiting for go has unfinished steps and no approved sequence does, so discard is the way to clear it.
@@ -511,7 +544,11 @@ func onlyWaitingSequenceUnfinished(bridge, session string) bool {
 }
 
 func sequenceListing(bridge, session string) string {
-	return readSeq(bridge, session).listing(bridge)
+	sf, err := readSeqErr(bridge, session)
+	if err != nil {
+		return "The session's sequence file can't be read: " + oneLine(err) + "\n"
+	}
+	return sf.listing(bridge)
 }
 
 func (s *seqStep) open() bool {
@@ -1420,7 +1457,14 @@ func queueSequenceFailure(bridge, session, run, line string) error {
 
 // retryStrandedRetires is the session start's retry of runs left pending under a cancelled or skipped step. It looks without the lock first, since a publish holds the lock, so a start with nothing stranded never waits for one. The text goes to the session directly.
 func retryStrandedRetires(bridge, session string) string {
-	if !seqExists(bridge, session) || !readSeq(bridge, session).hasStranded(bridge) {
+	if !seqExists(bridge, session) {
+		return ""
+	}
+	sf, err := readSeqErr(bridge, session)
+	if err != nil {
+		return "starship: the session's sequence file can't be read, so runs left pending under a cancelled step are not retried: " + oneLine(err)
+	}
+	if !sf.hasStranded(bridge) {
 		return ""
 	}
 	var lines []string
@@ -2028,6 +2072,57 @@ func sequenceStop(bridge string, in *HookInput) any {
 	return out
 }
 
+// cmdSequenceClear is `ensign sequence clear [<session>]`: it sets aside a sequence file that can't be read, since withSeq refuses one and so no other sequence command can end it. It needs no session of its own, since a damaged file can keep a session from getting ready.
+func cmdSequenceClear(args []string, out io.Writer) error {
+	session := os.Getenv("STARSHIP_SESSION")
+	switch {
+	case len(args) > 1 || (len(args) == 1 && strings.HasPrefix(args[0], "-")):
+		return errors.New("usage: ensign sequence clear [<session>]")
+	case len(args) == 1:
+		session = args[0]
+		if session == "." || session == ".." || strings.ContainsAny(session, `/\`) {
+			return fmt.Errorf("%q is not a session name", session)
+		}
+	}
+	if session == "" {
+		return errors.New("name the session whose sequence file to clear: ensign sequence clear <session>, since STARSHIP_SESSION is not set")
+	}
+	bridge, err := cwdBridge()
+	if err != nil {
+		return err
+	}
+	path := seqPath(bridge, session)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("session %s has no sequence file; there is nothing to clear", session)
+		}
+		return err
+	}
+	l := flock.New(path + ".lock")
+	ok, err := l.TryLock()
+	if err != nil {
+		return fmt.Errorf("locking the sequence: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("the sequence of session %s is in use, so it was not changed; try again in a moment", session)
+	}
+	defer l.Unlock()
+	var sf seqFile
+	switch err := readSeqFile(path, &sf); {
+	case err == nil:
+		return fmt.Errorf("the sequence file of session %s can be read; `ensign sequence halt` or `ensign sequence discard` ends its sequence", session)
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("session %s has no sequence file; there is nothing to clear", session)
+	case errors.Is(err, errSeqSaving):
+		return err
+	}
+	if err := renameRetry(path, path+".corrupt"); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Set aside the unreadable sequence file of session %s as %s; the session has no sequence now. Steps that had not run are dropped. Runs the sequence had queued are not ended: `ensign run retire <run>` ends each.\n", session, path+".corrupt")
+	return nil
+}
+
 // seqSave writes the sequences file withSeq changed; a variable so a test can fail it.
 var seqSave = writeJSON
 
@@ -2297,6 +2392,9 @@ func releaseRun(bridge, session, arg string, out io.Writer) error {
 
 // cmdSequence implements `ensign sequence [run|publish|do|mode|halt|drop|done|fail …]`.
 func cmdSequence(args []string, out io.Writer) error {
+	if len(args) > 0 && args[0] == "clear" {
+		return cmdSequenceClear(args[1:], out)
+	}
 	session := os.Getenv("STARSHIP_SESSION")
 	if session == "" {
 		return fmt.Errorf("a sequence belongs to a session, and STARSHIP_SESSION is not set")
@@ -2910,8 +3008,14 @@ func checkAddable(bridge, session, name string) error {
 	if err := writesPendingRefusal(bridge, session); err != nil {
 		return err
 	}
-	if name != "" && readSeq(bridge, session).openSeq() != nil {
-		return errNameJoins
+	if name != "" {
+		sf, err := readSeqErr(bridge, session)
+		if err != nil {
+			return err
+		}
+		if sf.openSeq() != nil {
+			return errNameJoins
+		}
 	}
 	live, err := liveSessionRuns(bridge, session)
 	if err != nil {

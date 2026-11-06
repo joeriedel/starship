@@ -12,6 +12,7 @@
 - Run `ensign run retire <run>` only when the user tells you to: only the user knows a run is hung or stuck.
 - Retire refuses a run of your own session (end that with `ensign run stop <run>`), a finished run and an unknown run. Retire is only for another session's run.
 - Retiring marks the run as error and frees its folders. It leaves the work in the code folder as it is: look at that work before you start work there.
+- A run whose files can't be read blocks every run, link and update, naming the run. `ensign run clear <run>` ends it as a failed run (the folder is kept, the code folders and anything the run started are untouched); its task must pass again before it can publish. It works with no session and refuses a run that is readable or still open. Offer it to the user, don't run it unasked.
 
 ## Stopping your own run
 

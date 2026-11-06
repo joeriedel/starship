@@ -522,7 +522,7 @@ func TestSequenceHaltCancelsAPausedRunStep(t *testing.T) {
 	if st := w.runState(w.step(1).Run); !st.terminal() {
 		t.Errorf("the paused run should be terminal: %s", st.Status)
 	}
-	if sequenceUnfinished(w.bridge, w.sid) {
+	if open, err := sequenceUnfinished(w.bridge, w.sid); err != nil || open {
 		t.Error("the halted sequence should be finished")
 	}
 	w.run("supernova/auth-refactor")
@@ -5073,8 +5073,8 @@ func TestPublishStepAheadFollowsTheRun(t *testing.T) {
 				sub = "sub-r1"
 			}
 			r := &RunFiles{Snap: &Snapshot{Bridge: bridge, Task: task, Subtask: sub}, State: &State{Run: id, Session: session, Sequence: true}}
-			if got := publishStepAhead(r); got != c.want {
-				t.Errorf("got %v, want %v", got, c.want)
+			if got, err := publishStepAhead(r); err != nil || got != c.want {
+				t.Errorf("got %v, %v, want %v", got, err, c.want)
 			}
 		})
 	}

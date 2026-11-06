@@ -750,16 +750,43 @@ type runInfo struct {
 	state State
 }
 
-// listRuns reads every run in the bridge, newest first, without locking. It skips what is not a run folder, a folder with no state.json (a creation gap or leftover, which gc owns), and a finished run whose pipeline.json can't be read, because a finished run holds nothing. A run that can't be ruled out as live fails the listing: one whose state.json can't be read, or a non-terminal one whose pipeline.json can't be read (state.json is written second, so that is no creation gap). Skipping it would hide it from the checks that refuse while a run is live.
-func listRuns(bridge string) ([]runInfo, error) {
+// runClass is how readRunInfo found a run folder.
+type runClass int
+
+const (
+	runReadable           runClass = iota // both files read
+	runNoState                            // no state.json: a creation gap or leftover, which gc owns
+	runFinishedNoPipeline                 // a terminal state and a pipeline.json that can't be read
+	runStateUnreadable                    // state.json exists and can't be read
+	runPipelineUnreadable                 // a state that is not terminal and a pipeline.json that can't be read; state.json is written second, so this is no creation gap
+)
+
+// readRunInfo reads one run folder into ri and says which of the cases it is; the error is the read failure for the last two.
+func readRunInfo(dir string, ri *runInfo) (runClass, error) {
+	if err := readRunState(dir, &ri.state); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return runNoState, nil
+		}
+		return runStateUnreadable, err
+	}
+	if err := readJSON(filepath.Join(dir, "pipeline.json"), &ri.snap); err != nil {
+		if ri.state.terminal() {
+			return runFinishedNoPipeline, nil
+		}
+		return runPipelineUnreadable, err
+	}
+	return runReadable, nil
+}
+
+// scanRuns reads every run in the bridge, newest first, without locking. unreadable holds the finished runs whose pipeline.json can't be read, which listRuns leaves out; their snap is empty. A run that can't be ruled out as live fails the scan: one whose state.json can't be read, or a non-terminal one whose pipeline.json can't be read. Skipping it would hide it from the checks that refuse while a run is live.
+func scanRuns(bridge string) (runs, unreadable []runInfo, err error) {
 	entries, err := os.ReadDir(runsDir(bridge))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) || plainFileOnPath(runsDir(bridge)) != "" {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("reading the runs: %w", err)
+		return nil, nil, fmt.Errorf("reading the runs: %w", err)
 	}
-	var out []runInfo
 	for i := len(entries) - 1; i >= 0; i-- {
 		if !entries[i].IsDir() {
 			continue
@@ -767,24 +794,24 @@ func listRuns(bridge string) ([]runInfo, error) {
 		dir := filepath.Join(runsDir(bridge), entries[i].Name())
 		var ri runInfo
 		ri.id = entries[i].Name()
-		cantRuleOut := func(err error) error {
-			return fmt.Errorf("reading the runs: run %s can't be ruled out as live: %v; repair or delete the folder %s", ri.id, err, dir)
+		class, err := readRunInfo(dir, &ri)
+		switch class {
+		case runReadable:
+			runs = append(runs, ri)
+		case runFinishedNoPipeline:
+			ri.snap = Snapshot{}
+			unreadable = append(unreadable, ri)
+		case runStateUnreadable, runPipelineUnreadable:
+			return nil, nil, fmt.Errorf("reading the runs: run %s can't be ruled out as live: %v; `ensign run clear %s` clears it, or repair the folder %s by hand", ri.id, err, ri.id, dir)
 		}
-		if err := readRunState(dir, &ri.state); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			return nil, cantRuleOut(err)
-		}
-		if err := readJSON(filepath.Join(dir, "pipeline.json"), &ri.snap); err != nil {
-			if ri.state.terminal() {
-				continue
-			}
-			return nil, cantRuleOut(err)
-		}
-		out = append(out, ri)
 	}
-	return out, nil
+	return runs, unreadable, nil
+}
+
+// listRuns is scanRuns without the finished runs that have no readable pipeline.json: a finished run holds nothing, and a folder with no state.json is skipped.
+func listRuns(bridge string) ([]runInfo, error) {
+	runs, _, err := scanRuns(bridge)
+	return runs, err
 }
 
 func (r *RunFiles) save() error {
@@ -903,6 +930,9 @@ func cmdRun(args []string, out io.Writer) error {
 	if len(args) > 0 && args[0] == "stop" {
 		return cmdRunStop(args[1:], out, os.Stderr)
 	}
+	if len(args) > 0 && args[0] == "clear" {
+		return cmdRunClear(args[1:], out)
+	}
 	o, err := parseRunArgs("ensign run", args)
 	if err != nil {
 		return err
@@ -923,6 +953,127 @@ func cmdRun(args []string, out io.Writer) error {
 	return err
 }
 
+// openRunError is the error a command gives when openRun fails: a run folder that is there but can't be opened points at `ensign run clear`, and one that is not there is no run.
+func openRunError(bridge, id string, err error) error {
+	if _, serr := os.Stat(filepath.Join(runsDir(bridge), id)); serr == nil {
+		return fmt.Errorf("run %s can't be opened (%w); if its files are damaged, `ensign run clear %s` ends it", id, err, id)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("no run %s", id)
+	}
+	return err
+}
+
+// clearedReason is the reason of a run ended by `ensign run clear`. It must not start with a noFaultPrefixes entry: the run counts as failed.
+const clearedReason = "cleared with ensign run clear: its files could not be read"
+
+// cmdRunClear is `ensign run clear <run>`: it ends a run whose files can't be read, the runs listRuns fails on, as a failed run and keeps its folder. It needs no session, since a damaged run can keep a session from getting ready.
+func cmdRunClear(args []string, out io.Writer) error {
+	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
+		return errors.New("usage: ensign run clear <run>")
+	}
+	id := args[0]
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
+		return fmt.Errorf("%q is not a run id", id)
+	}
+	bridge, err := cwdBridge()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(runsDir(bridge), id)
+	// flock creates its file, so a missing folder is caught first.
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		if err == nil || errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("no run %s", id)
+		}
+		return err
+	}
+	// run-stage drops the run lock while a stage runs and holds a dispatch lock instead.
+	names := []string{"lock"}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if n := e.Name(); !e.IsDir() && strings.HasPrefix(n, "dispatch-") && strings.HasSuffix(n, ".lock") {
+			names = append(names, n)
+		}
+	}
+	for _, n := range names {
+		l := flock.New(filepath.Join(dir, n))
+		ok, err := l.TryLock()
+		if err != nil {
+			return fmt.Errorf("locking run %s: %w", id, err)
+		}
+		if !ok {
+			return fmt.Errorf("run %s is still open (%s is held), so it was not changed", id, n)
+		}
+		defer l.Unlock()
+	}
+	ri := runInfo{id: id}
+	class, cause := readRunInfo(dir, &ri)
+	switch class {
+	case runNoState:
+		return fmt.Errorf("run %s has no state.json: it blocks nothing, and the next cleanup removes the folder", id)
+	case runReadable:
+		if ri.state.terminal() {
+			return fmt.Errorf("run %s has finished (%s) and its files can be read; there is nothing to clear", id, ri.state.Status)
+		}
+		return fmt.Errorf("run %s is a live run with readable files; `ensign run retire %s` ends it for another session, `ensign run stop %s` for its own", id, id, id)
+	case runFinishedNoPipeline:
+		return fmt.Errorf("run %s has finished (%s) and blocks nothing bridge-wide; only its pipeline.json can't be read. A new passing run of its task lifts its hold on a publish", id, ri.state.Status)
+	}
+	statePath := filepath.Join(dir, "state.json")
+	now := time.Now().UnixNano()
+	if class == runStateUnreadable {
+		bad, err := readFileRetry(statePath)
+		if err != nil {
+			return fmt.Errorf("run %s: could not keep a copy of state.json (%v) after %v; nothing was changed", id, err, cause)
+		}
+		if err := os.WriteFile(statePath+".corrupt", bad, 0o644); err != nil {
+			return err
+		}
+	}
+	// Whatever state.json says, no session may keep the id: a link to a run that can't be opened fails every hook of its session.
+	links, err := readDirIfAny(filepath.Join(bridge, ".starship", "sessions"))
+	if err != nil {
+		return err
+	}
+	for _, e := range links {
+		if e.IsDir() || strings.Contains(e.Name(), ".") {
+			continue
+		}
+		ids, err := sessionRuns(bridge, e.Name())
+		if err != nil {
+			return err
+		}
+		if slices.Contains(ids, id) {
+			if err := unbindSession(bridge, e.Name(), id); err != nil {
+				return err
+			}
+		}
+	}
+	if class == runPipelineUnreadable {
+		st := ri.state
+		st.FinishedAt = now
+		st.Status, st.Reason = "error", clearedReason
+		if err := writeJSON(statePath, st); err != nil {
+			return err
+		}
+	} else {
+		st := State{Run: id, Status: "error", Reason: clearedReason, Started: true, FinishedAt: now, Spent: map[string]int{}, Scopes: map[string]*ScopeState{}, Dispatches: []*Dispatch{}, History: []HistoryEntry{}}
+		if err := writeJSON(statePath, st); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(out, "Cleared run %s: it is now over, as a failed run. Its folder is kept at %s", id, dir)
+	if class == runStateUnreadable {
+		fmt.Fprint(out, ", and the state.json it had is kept as state.json.corrupt there")
+	}
+	fmt.Fprintf(out, ". The code folders were left as they are. Anything the run started, such as services, was not stopped, because its files can't be read. It counts as a failed run of its task, so the task must pass again before it can publish.\n")
+	return nil
+}
+
 // cmdRunRetire is `ensign run retire <run>`: it ends a live run of another session at the user's request, so the code folders it holds are free. The run's folder and the code folder are left as they are.
 func cmdRunRetire(args []string, out io.Writer) error {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
@@ -937,17 +1088,14 @@ func cmdRunRetire(args []string, out io.Writer) error {
 		return err
 	}
 	r, err := openRun(bridge, args[0])
-	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("no run %s", args[0])
-	}
 	if err != nil {
-		return err
+		return openRunError(bridge, args[0], err)
 	}
 	switch {
 	case r.State.terminal():
 		r.close()
 		return fmt.Errorf("run %s has finished (%s); there is nothing to retire", args[0], r.State.Status)
-	case r.State.Session == session:
+	case r.State.Session == session && !(r.State.queued() && seqNoLongerHolds(bridge, session, r.State.Run)):
 		r.close()
 		return fmt.Errorf("run %s belongs to this session; only a run of another session can be retired. To end this session's own run, use `ensign run stop %s`", args[0], args[0])
 	}
@@ -971,6 +1119,24 @@ func cmdRunRetire(args []string, out io.Writer) error {
 	return nil
 }
 
+// seqNoLongerHolds reports whether the session's sequence file can be read and none of its steps names the run, as after `ensign sequence clear`.
+func seqNoLongerHolds(bridge, session, run string) bool {
+	sf, err := readSeqErr(bridge, session)
+	if err != nil {
+		return false
+	}
+	for _, seq := range sf.Sequences {
+		for _, st := range seq.Steps {
+			for _, sr := range st.runs() {
+				if sr.Run == run {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
 // cmdRunStop is `ensign run stop <run>`: the session ends its own live run at once. Agents still working are ignored: every open dispatch is marked done so their late reports are dropped, and the session is unbound so their hooks find no run. The run's folder and the code folders are left as they are.
 func cmdRunStop(args []string, out, stderr io.Writer) error {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
@@ -985,11 +1151,8 @@ func cmdRunStop(args []string, out, stderr io.Writer) error {
 		return err
 	}
 	r, err := openRun(bridge, args[0])
-	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("no run %s", args[0])
-	}
 	if err != nil {
-		return err
+		return openRunError(bridge, args[0], err)
 	}
 	defer r.close()
 	switch {
@@ -1159,7 +1322,14 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 			}
 		}
 	}
-	if !queued && session != "" && sequenceUnfinished(bridge, session) {
+	unfinished := false
+	if !queued && session != "" {
+		var err error
+		if unfinished, err = sequenceUnfinished(bridge, session); err != nil {
+			return nil, err
+		}
+	}
+	if unfinished {
 		if onlyWaitingSequenceUnfinished(bridge, session) {
 			return nil, fmt.Errorf("this session has a sequence waiting for go; add the run with ensign sequence run, or ensign sequence discard first")
 		}

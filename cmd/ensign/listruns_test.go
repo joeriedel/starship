@@ -120,7 +120,7 @@ func TestListRunsTable(t *testing.T) {
 			if c.wantErr {
 				wantListErr(t, "listRuns", err)
 				wantListErr(t, "liveRuns", lerr)
-				if runs != nil || !strings.Contains(err.Error(), bad) || !strings.Contains(err.Error(), "ruled out as live") || !strings.Contains(err.Error(), filepath.Join(runsDir(w.bridge), bad)) {
+				if runs != nil || !strings.Contains(err.Error(), bad) || !strings.Contains(err.Error(), "ruled out as live") || !strings.Contains(err.Error(), "ensign run clear "+bad) || !strings.Contains(err.Error(), filepath.Join(runsDir(w.bridge), bad)) {
 					t.Errorf("listRuns = %v, %v", runs, err)
 				}
 				return

@@ -566,7 +566,16 @@ func githubReady(r *RunFiles) error {
 		return err
 	}
 	base, _ := defaultBranch(ws)
-	if r.State.Sequence && publishStepAhead(r) {
+	ahead := false
+	if r.State.Sequence {
+		var aerr error
+		if ahead, aerr = publishStepAhead(r); aerr != nil {
+			r.State.note(fmt.Sprintf("The tested work is committed on %s (%s). The session's sequence file can't be read, so whether a publish step is ahead is unknown (%s): sort that out before asking for a pull request",
+				branch, short(sha), oneLine(aerr)))
+			return nil
+		}
+	}
+	if ahead {
 		r.State.note(fmt.Sprintf("The tested work is committed on %s (%s). A publish step in the session's sequence takes it from here: when that step runs, the work goes straight to %s and the branch is removed, so finding it there with no task branch is the sequence's doing, not an unexplained push. The sequence's report to the session gives the result",
 			branch, short(sha), orDefault(base)))
 		return nil
@@ -577,8 +586,12 @@ func githubReady(r *RunFiles) error {
 }
 
 // publishStepAhead reports whether the run's sequence has a pending publish step for the task after the run's step, with no later run of the task in between. Such a publish lands every location the step's runs worked in.
-func publishStepAhead(r *RunFiles) bool {
-	for _, seq := range readSeq(r.Snap.Bridge, r.State.Session).Sequences {
+func publishStepAhead(r *RunFiles) (bool, error) {
+	sf, err := readSeqErr(r.Snap.Bridge, r.State.Session)
+	if err != nil {
+		return false, err
+	}
+	for _, seq := range sf.Sequences {
 		found := false
 		for _, st := range seq.Steps {
 			if !found {
@@ -598,11 +611,11 @@ func publishStepAhead(r *RunFiles) bool {
 				break
 			}
 			if st.Kind == "publish" && st.Status == "pending" {
-				return true
+				return true, nil
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 // docsOnlySince reports whether marker is an ancestor of head and every path changed between them is inside the declared @docs paths. It compares in git's own path space, lexically, so nothing is resolved on disk. The diff has no rename detection, so moving a code file into a docs folder still lists its source.
@@ -688,13 +701,40 @@ func endedAfterPass(failed runInfo, pass runInfo) bool {
 	return failed.id > pass.id
 }
 
+// runIDMayBelongTo reports whether a run id, <YYYYmmdd-HHMMSS>-<label> with an optional -N for a collision, could be a run of the task. The label is the task with its slashes turned into dashes, so tasks can share one: it may match too much, never too little.
+func runIDMayBelongTo(id, task string) bool {
+	const stamp = len("20060102-150405-")
+	if len(id) < stamp {
+		return false
+	}
+	rest := id[stamp:]
+	label := strings.ReplaceAll(task, "/", "-")
+	if rest == label {
+		return true
+	}
+	n, ok := strings.CutPrefix(rest, label+"-")
+	if !ok {
+		return false
+	}
+	v, err := strconv.Atoi(n)
+	return err == nil && v >= 2 && v <= 99
+}
+
 // latestRunPassed refuses when a run of the task in this location failed after the task's last pass (or when none passed), so a marker an earlier pass left behind cannot land failed work. An old run without a finish time, retired without a history entry after the pass was created, did no work and can slip past this.
 func latestRunPassed(bridge, task, location string) error {
 	var runs []runInfo
 	var pass *runInfo
-	all, err := listRuns(bridge)
+	all, noPipeline, err := scanRuns(bridge)
 	if err != nil {
 		return err
+	}
+	// A finished run with no readable pipeline.json has no task or location to read, so its id attributes it: it counts for every location of the task.
+	unreadable := map[string]bool{}
+	for _, ri := range noPipeline {
+		if ri.state.Status != "success" && runIDMayBelongTo(ri.id, task) {
+			runs = append(runs, ri)
+			unreadable[ri.id] = true
+		}
 	}
 	for _, ri := range all {
 		if ri.snap.Task != task || ri.snap.Location != location || !ri.state.terminal() {
@@ -710,6 +750,9 @@ func latestRunPassed(bridge, task, location string) error {
 	for _, ri := range runs {
 		if retiredWithoutFault(&ri.state) || (pass != nil && !endedAfterPass(ri, *pass)) {
 			continue
+		}
+		if unreadable[ri.id] {
+			return fmt.Errorf("run %s may be a run of %s that did not pass (%s), and its pipeline.json can't be read; run the task again", ri.id, task, ri.state.Reason)
 		}
 		return fmt.Errorf("the latest run of %s did not pass (%s); run the task again", task, ri.state.Reason)
 	}

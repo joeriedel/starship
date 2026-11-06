@@ -36,3 +36,5 @@ Drop pending steps of an approved sequence with `ensign sequence drop <seq>.<ste
 Before `go` the sequence is yours to rebuild: `ensign sequence drop <seq>.<step>...` removes steps (the rest renumber; publish rule as above), `ensign sequence discard` removes the whole sequence so the next step starts a fresh one. To reorder or insert a step (say a `supernova` publish step between two runs), drop the later steps and add them again in the new order. `halt` stops work that has begun; don't use it to rebuild. Halt leaves a run with a lead running; end it with `ensign run stop <run>`.
 
 - `ensign sequence` shows the open sequences; `ensign sequence --all` shows every sequence in the session, finished ones included.
+
+A sequence file that can't be read refuses new runs and every sequence command. `ensign sequence clear [<session>]` sets it aside as `<session>.sequence.corrupt` (bytes kept, steps not yet run dropped); queued runs it listed are not ended, `ensign run retire <run>` ends each. Offer it to the user, don't run it unasked.

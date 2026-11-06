@@ -336,7 +336,8 @@ func TestSequenceHaltStopsTheSubtaskChain(t *testing.T) {
 	if m := w.subtaskMarks("t"); m["01-a"].Status != "done" || m["02-b"].Status != "" {
 		t.Errorf("marks %+v", m)
 	}
-	if sf := readSeq(w.bridge, w.sid); !sf.Sequences[0].Halted || sequenceUnfinished(w.bridge, w.sid) {
+	if open, err := sequenceUnfinished(w.bridge, w.sid); err != nil || open || !readSeq(w.bridge, w.sid).Sequences[0].Halted {
+		sf := readSeq(w.bridge, w.sid)
 		t.Errorf("the sequence should close halted: %+v", sf.Sequences[0])
 	}
 }
