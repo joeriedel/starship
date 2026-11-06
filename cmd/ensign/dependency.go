@@ -552,7 +552,8 @@ func applyDependency(r *RunFiles, d *Dispatch, sd Side, dep Dependency, ignoredB
 		if !known {
 			_, wasDirty := before[f]
 			_, headErr := gitOut(sd.Workspace, "rev-parse", "--verify", "--quiet", "HEAD:"+f)
-			left := !wasDirty && headErr != nil && slices.Contains(ignoredBefore, f) && exec.Command("git", "-C", sd.Workspace, "check-ignore", "-q", "--", f).Run() == nil
+			// The "./" keeps a name starting ":" from being read as pathspec magic; ":(literal)" is rejected by check-ignore.
+			left := !wasDirty && headErr != nil && slices.Contains(ignoredBefore, f) && exec.Command("git", "-C", sd.Workspace, "check-ignore", "-q", "--", "./"+f).Run() == nil
 			rec.Files = append(rec.Files, appliedEntry{Path: f, Target: before[f], Post: post, Left: left})
 		}
 	}

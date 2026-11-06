@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -539,6 +540,20 @@ func TestGithubPRCommitDocsNoOps(t *testing.T) {
 	w.docsWith(lead, "updated", "docs/a.md", func() { write(t, filepath.Join(ws, "docs", "a.md"), "doc\n") })
 	if st := w.state(); st.Status != "success" {
 		t.Errorf("a declared path that doesn't exist should not fail: %s (%s)", st.Status, st.Reason)
+	}
+}
+
+func TestDocsChangedNeverPutsTheRepositoryRootInside(t *testing.T) {
+	needGit(t)
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	r := unitRun(t, ws)
+	r.Snap.Bindings = map[string]Binding{"docs": {Paths: []string{"docs"}}}
+	_, inside, outside, err := docsChanged(r, map[string]string{"": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(inside, "") {
+		t.Errorf("the root is inside the docs folder: inside=%q outside=%q", inside, outside)
 	}
 }
 

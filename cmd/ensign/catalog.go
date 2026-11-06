@@ -119,6 +119,9 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 		if filepath.IsAbs(f) || outsideRel(filepath.Clean(f)) {
 			return fmt.Errorf("reported file %q is not a path inside the workspace", f)
 		}
+		if filepath.Clean(f) == "." {
+			return fmt.Errorf("reported file %q is the whole workspace, not a file", f)
+		}
 		files = append(files, filepath.ToSlash(filepath.Clean(f)))
 	}
 	listed := map[string]bool{}

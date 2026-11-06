@@ -603,6 +603,36 @@ func TestRestoreLeavesAPreExistingIgnoredFileTheApplyModified(t *testing.T) {
 	}
 }
 
+func TestRestoreLeavesAPreExistingIgnoredFileWhoseNameStartsWithAColon(t *testing.T) {
+	needPOSIXShell(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("the name can't exist on Windows")
+	}
+	for _, c := range []struct{ name, file, ignore string }{
+		{"unparseable magic", ":(bogus)x.log", "*.log"},
+		{"valid magic", ":(top)keep", ":(top)keep"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+			write(t, filepath.Join(ws, ".gitignore"), c.ignore+"\n")
+			runGit(t, ws, "add", ".gitignore")
+			runGit(t, ws, "commit", "-q", "-m", "ignore")
+			write(t, filepath.Join(ws, c.file), "mine\n")
+			r := unitRun(t, ws)
+			sd := unitSide(ws, "echo more >> './"+c.file+"'; echo '"+c.file+"' > \"$STARSHIP_APPLIED_FILES\"")
+			if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := restoreDependencies(ws, "settle"); err != nil {
+				t.Fatal(err)
+			}
+			if got := readFile(t, ws, c.file); got != "mine\nmore\n" {
+				t.Errorf("%s = %q, want it left as the apply left it", c.file, got)
+			}
+		})
+	}
+}
+
 func TestRestoreDeletesAnIgnoredFileTheApplyCreated(t *testing.T) {
 	needPOSIXShell(t)
 	ws := ignoredRepo(t)
@@ -1040,6 +1070,31 @@ func TestCatalogCommitPassRefusesAPathOutsideTheWorkspace(t *testing.T) {
 	d := &Dispatch{ID: "d1", Summary: "escaped", Fields: map[string][]string{"files": {filepath.Join("..", "outside.txt")}}}
 	if err := catalogCommitPass(r, d); err == nil || !strings.Contains(err.Error(), "is not a path inside the workspace") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestCatalogCommitPassRefusesTheWholeWorkspace(t *testing.T) {
+	for _, name := range []string{".", "./", "a/..", "abs"} {
+		t.Run(name, func(t *testing.T) {
+			ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+			write(t, filepath.Join(ws, "dirty.txt"), "work\n")
+			reported := name
+			if name == "abs" {
+				reported = ws
+			}
+			before := runGit(t, ws, "status", "--porcelain")
+			r := unitRun(t, ws)
+			d := &Dispatch{ID: "d1", Summary: "root", Fields: map[string][]string{"files": {reported}}}
+			if err := catalogCommitPass(r, d); err == nil || !strings.Contains(err.Error(), "is the whole workspace, not a file") {
+				t.Fatalf("got %v", err)
+			}
+			if got := runGit(t, ws, "status", "--porcelain"); got != before {
+				t.Errorf("status changed from %q to %q", before, got)
+			}
+			if got := runGit(t, ws, "diff", "--cached", "--name-only"); got != "" {
+				t.Errorf("staged %q", got)
+			}
+		})
 	}
 }
 
