@@ -2146,11 +2146,25 @@ func extensionRoleDirs(bridge, cp string) []string {
 
 // brokenRoleLines says, one line each and sorted, which broken or nameless extensions have roles that link leaves out. It walks every extension folder, so a broken file that another extension shadows is still counted: unless, for a file that fails to decode, its key is gone from the broken map, which means a later good extension took its place. A folder that cannot be listed is a line too.
 func brokenRoleLines(bridge, cp string) []string {
-	_, broken := scanExtensions(bridge, cp)
 	var out []string
+	for _, n := range brokenRoleNotes(bridge, cp) {
+		out = append(out, n.full)
+	}
+	return out
+}
+
+// brokenRoleNote is one brokenRoleLines line and the short form of it that session start prints.
+type brokenRoleNote struct{ full, short string }
+
+func brokenRoleNotes(bridge, cp string) []brokenRoleNote {
+	_, broken := scanExtensions(bridge, cp)
+	var out []brokenRoleNote
 	dirs, derr := extensionDirs(bridge, cp)
 	if derr != nil {
-		out = append(out, flatLine("Note: could not list all extensions: "+derr.Error()))
+		out = append(out, brokenRoleNote{
+			flatLine("Note: could not list all extensions: " + derr.Error()),
+			flatLine("Note: could not list all extensions: " + shortReason(derr, "")),
+		})
 	}
 	for _, dir := range dirs {
 		file := filepath.Join(dir, "extension.yaml")
@@ -2173,12 +2187,51 @@ func brokenRoleLines(bridge, cp string) []string {
 		found, gerr := filesIn(rolesDir, ".md")
 		switch {
 		case gerr != nil:
-			out = append(out, flatLine(fmt.Sprintf("Note: extension %s: could not look for its roles in %s: %v", name, rolesDir, gerr)))
+			out = append(out, brokenRoleNote{
+				flatLine(fmt.Sprintf("Note: extension %s: could not look for its roles in %s: %v", name, rolesDir, gerr)),
+				flatLine(fmt.Sprintf("Note: extension %s: could not look for its roles: %s", truncate(name, focalNameLimit), shortReason(gerr, rolesDir))),
+			})
 		case len(found) > 0:
-			out = append(out, flatLine(fmt.Sprintf("Note: extension %s is broken, so its roles are not linked: %v", name, err)))
+			reason := shortReason(err, file)
+			out = append(out, brokenRoleNote{
+				flatLine(fmt.Sprintf("Note: extension %s is broken, so its roles are not linked: %v", name, err)),
+				flatLine(fmt.Sprintf("Note: extension %s is broken, roles not linked: %s", truncate(name, focalNameLimit), reason)),
+			})
 		}
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].full < out[j].full })
+	return out
+}
+
+// shortReason is err without the path it names: the operating system's text for a *fs.PathError, "is not a folder" for that error from readDirIfAny, else err with a leading path removed.
+func shortReason(err error, path string) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	msg := err.Error()
+	if strings.HasSuffix(msg, " is not a folder") {
+		return "is not a folder"
+	}
+	return strings.TrimLeft(strings.TrimPrefix(msg, path), ": ")
+}
+
+// brokenRoleLineLimit and brokenRoleLineCount bound what session start prints of the broken-extension notes, since session start has a fixed budget.
+const (
+	brokenRoleLineLimit = 100
+	brokenRoleLineCount = 1
+)
+
+// cappedBrokenRoleLines keeps the short form of the first few notes, cut to brokenRoleLineLimit, and counts the rest.
+func cappedBrokenRoleLines(notes []brokenRoleNote) []string {
+	var out []string
+	for i, n := range notes {
+		if i == brokenRoleLineCount {
+			out = append(out, fmt.Sprintf("And %d more broken.", len(notes)-i))
+			break
+		}
+		out = append(out, truncate(n.short, brokenRoleLineLimit))
+	}
 	return out
 }
 

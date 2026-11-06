@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func linkedWorld(t *testing.T) *world {
@@ -21,6 +22,32 @@ func linkedWorld(t *testing.T) *world {
 		t.Fatal(err)
 	}
 	return w
+}
+
+// contextChars counts s the way Claude Code's limit on additionalContext is most strictly read. The limit is in characters and the docs don't say whether those are code points or UTF-16 code units; code units are the higher count, and bytes would overstate non-ASCII text.
+func contextChars(s string) int { return len(utf16.Encode([]rune(s))) }
+
+// brokenRoleFixture writes n broken extensions with a role each. A long unknown key puts a long error text in each line.
+func brokenRoleFixture(t *testing.T, bridge string, n int, key string) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		folder := fmt.Sprintf("supernova-broken-%d", i)
+		write(t, filepath.Join(bridge, "extensions", folder, "extension.yaml"), fmt.Sprintf("name: %s\n%s: 1\n", folder, key))
+		write(t, filepath.Join(bridge, "extensions", folder, "roles", "supernova-role.md"), "---\nname: supernova-role\n---\nx\n")
+	}
+}
+
+// paddedChars is contextChars with the bridge path counted as if it were 200 characters long. A broken-extension line is cut at brokenRoleLineLimit, so a longer path cannot lengthen it.
+func paddedChars(ctx, bridge string) int {
+	size := contextChars(ctx)
+	if n := contextChars(bridge); n < 200 {
+		for _, l := range strings.Split(ctx, "\n") {
+			if !strings.HasPrefix(l, "Note: extension supernova-broken-") {
+				size += (200 - n) * strings.Count(l, bridge)
+			}
+		}
+	}
+	return size
 }
 
 func (w *world) skillCmd(args ...string) string {
@@ -194,8 +221,8 @@ func TestSessionStartReprintsNotesAfterCompactOrClear(t *testing.T) {
 			}
 			if c.want {
 				block, _ := projectNotes(w.bridge, "supernova")
-				if !strings.HasSuffix(ctx, block) || len(ctx) >= sessionContextLimit {
-					t.Errorf("notes should come last, under the limit (%d):\n%s", len(ctx), ctx)
+				if !strings.HasSuffix(ctx, block) || contextChars(ctx) >= sessionContextLimit {
+					t.Errorf("notes should come last, under the limit (%d):\n%s", contextChars(ctx), ctx)
 				}
 				if strings.Index(ctx, "STARSHIP-READY") > strings.Index(ctx, "notes      projects/supernova/project.md") {
 					t.Errorf("notes should follow the manual")
@@ -215,8 +242,8 @@ func TestSessionStartPointsAtNotesTooLongToReprint(t *testing.T) {
 	if !strings.Contains(ctx, "`ensign task open supernova/auth-refactor`") {
 		t.Errorf("want a pointer to task open:\n%s", ctx)
 	}
-	if len(ctx) >= sessionContextLimit {
-		t.Errorf("context is %d characters", len(ctx))
+	if contextChars(ctx) >= sessionContextLimit {
+		t.Errorf("context is %d characters", contextChars(ctx))
 	}
 }
 
@@ -276,8 +303,9 @@ func TestSessionStartFitsBudgetWithWorstNotes(t *testing.T) {
 		write(t, filepath.Join(w.bridge, "notes", fmt.Sprintf("topic-%02d.md", i)), "x\n")
 	}
 	write(t, filepath.Join(w.bridge, "notes", "inbox.md"), "call Ada\n")
+	brokenRoleFixture(t, w.bridge, brokenRoleLineCount+2, strings.Repeat("k", 2*brokenRoleLineLimit))
 	ctx := w.startWithNotes("clear", strings.Repeat("Prefer small commits and explain each one.\n", 400))
-	for _, want := range []string{"too long to reprint", "and ", " more", "unsorted notes", "sits outside", " more like it."} {
+	for _, want := range []string{"too long to reprint", "and ", " more", "unsorted notes", "sits outside", " more like it.", "2 more broken."} {
 		if !strings.Contains(ctx, want) {
 			t.Fatalf("the worst case should hold %q:\n%s", want, ctx)
 		}
@@ -287,10 +315,7 @@ func TestSessionStartFitsBudgetWithWorstNotes(t *testing.T) {
 	syncWorst := max(len(syncLocalChangesNote)+1, len(syncDivergedNote)+1, len(statusRead))
 	// A push that fails returns synced, so main skips syncBridge and no sync note follows notesPushFailed.
 	worst := max(len(notesCommitFailed)+1+syncWorst, len(committed)+syncWorst, len(committed)+len(notesPushFailed))
-	size := len(ctx) - len(fmt.Sprintf(notesCommittedFmt, 42)+"\n") + worst
-	if len(w.bridge) < 200 {
-		size += (200 - len(w.bridge)) * strings.Count(ctx, w.bridge)
-	}
+	size := paddedChars(ctx, w.bridge) - len(fmt.Sprintf(notesCommittedFmt, 42)+"\n") + worst
 	t.Logf("padded size %d, limit %d, room %d", size, manualLimit, sessionStartRoom)
 	if size > manualLimit-sessionStartRoom {
 		t.Errorf("worst case session start text is %d characters with a 200-character bridge path; the budget is %d less %d of room", size, manualLimit, sessionStartRoom)
@@ -301,12 +326,12 @@ func TestSessionStartFitsBudgetWithWorstNotes(t *testing.T) {
 func TestSessionStartFitsBudgetWithLongBridgePath(t *testing.T) {
 	for _, c := range []struct {
 		name, source, notes string
-		seed                bool
+		seed, broken        bool
 		want                []string
 	}{
-		{"startup", "startup", "", false, nil},
-		{"full notes block", "startup", "", true, []string{"and ", " more", "unsorted notes", "committed hand edits"}},
-		{"notes too long to reprint", "compact", strings.Repeat("Prefer small commits and explain each one.\n", 400), false, nil},
+		{"startup", "startup", "", false, false, nil},
+		{"full notes block", "startup", "", true, false, []string{"and ", " more", "unsorted notes", "committed hand edits"}},
+		{"notes too long to reprint", "compact", strings.Repeat("Prefer small commits and explain each one.\n", 400), false, true, []string{"too long to reprint", "2 more broken."}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			w := linkedWorld(t)
@@ -318,20 +343,94 @@ func TestSessionStartFitsBudgetWithLongBridgePath(t *testing.T) {
 				}
 				write(t, filepath.Join(w.bridge, "notes", "inbox.md"), "call Ada\n")
 			}
+			if c.broken {
+				brokenRoleFixture(t, w.bridge, brokenRoleLineCount+2, strings.Repeat("k", 2*brokenRoleLineLimit))
+			}
 			ctx := w.startWithNotes(c.source, c.notes)
 			for _, want := range c.want {
 				if !strings.Contains(ctx, want) {
 					t.Fatalf("the worst case should hold %q:\n%s", want, ctx)
 				}
 			}
-			size := len(ctx)
-			if len(w.bridge) < 200 {
-				size += (200 - len(w.bridge)) * strings.Count(ctx, w.bridge)
-			}
+			size := paddedChars(ctx, w.bridge)
 			t.Logf("padded size %d, limit %d, room %d", size, manualLimit, sessionStartRoom)
 			if size > manualLimit-sessionStartRoom {
 				t.Errorf("session start text is %d characters with a 200-character bridge path; the budget is %d less %d of room", size, manualLimit, sessionStartRoom)
 			}
 		})
+	}
+}
+
+// Notes that fit under sessionContextLimit are reprinted whole even when that takes the text past manualLimit; one byte more and the pointer replaces them.
+func TestSessionStartReprintsNotesUpToTheLimit(t *testing.T) {
+	for _, source := range []string{"compact", "clear"} {
+		t.Run(source, func(t *testing.T) {
+			w := linkedWorld(t)
+			notesOf := func(n int) string { return strings.Repeat("a", n-1) + "\n" }
+			const small = 100
+			rest := len(w.startWithNotes(source, notesOf(small))) - small
+			fit := w.startWithNotes(source, notesOf(sessionContextLimit-1-rest))
+			block, _ := projectNotes(w.bridge, "supernova")
+			if len(fit) != sessionContextLimit-1 || len(fit) <= manualLimit || !strings.HasSuffix(fit, block) || strings.Contains(fit, "too long to reprint") {
+				t.Fatalf("notes one byte under the limit should be reprinted whole: %d bytes, limit %d, manual %d", len(fit), sessionContextLimit, manualLimit)
+			}
+			over := w.startWithNotes(source, notesOf(sessionContextLimit-rest))
+			if !strings.Contains(over, "too long to reprint") || strings.Contains(over, "aaaa") || contextChars(over) > manualLimit-sessionStartRoom {
+				t.Errorf("notes at the limit should give the pointer and fit the budget: %d characters", contextChars(over))
+			}
+		})
+	}
+}
+
+// The reprint check compares bytes, so non-ASCII notes that are under the limit in characters still get the pointer.
+func TestSessionStartCountsBytesForNotes(t *testing.T) {
+	w := linkedWorld(t)
+	const small = 100
+	rest := len(w.startWithNotes("compact", strings.Repeat("a", small-1)+"\n")) - small
+	ctx := w.startWithNotes("compact", strings.Repeat("é", sessionContextLimit-rest-2)+"\n")
+	pointer := "\nnotes      projects/supernova/project.md is too long to reprint"
+	i := strings.Index(ctx, pointer)
+	if i < 0 {
+		t.Fatalf("want the pointer, not the notes")
+	}
+	block, _ := projectNotes(w.bridge, "supernova")
+	if bytes, chars := i+len(block), contextChars(ctx[:i])+contextChars(block); bytes < sessionContextLimit || chars >= sessionContextLimit {
+		t.Errorf("fixture should pass the limit in bytes (%d) and not in characters (%d)", bytes, chars)
+	}
+}
+
+// Text outside the ASCII range and outside the Basic Multilingual Plane reaches session start through document paths and an extension's error text, and the budget still holds when counted in UTF-16 code units.
+func TestSessionStartFitsBudgetWithNonASCIIText(t *testing.T) {
+	w := linkedWorld(t)
+	yaml := "use: [focal-sheet]\ndocuments:\n"
+	for i := 0; i < 6; i++ {
+		yaml += fmt.Sprintf("  supernova-focal-%d-%s:\n    path: notes/reviews/%s-%d.md\n", i, strings.Repeat("a", 300), strings.Repeat("é😀", 150), i)
+	}
+	bridgeYAML := filepath.Join(w.bridge, "bridge.yaml")
+	data, err := os.ReadFile(bridgeYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, bridgeYAML, string(data)+yaml)
+	brokenRoleFixture(t, w.bridge, brokenRoleLineCount+2, "é😀"+strings.Repeat("k", 2*brokenRoleLineLimit))
+	ctx := w.startWithNotes("startup", "")
+	for _, want := range []string{"😀", "sits outside", "2 more broken."} {
+		if !strings.Contains(ctx, want) {
+			t.Fatalf("the fixture should hold %q:\n%s", want, ctx)
+		}
+	}
+	var broken string
+	for _, l := range strings.Split(ctx, "\n") {
+		if strings.HasPrefix(l, "Note: extension supernova-broken-") {
+			broken = l
+		}
+	}
+	if !strings.Contains(broken, "é😀") {
+		t.Fatalf("the kept broken-extension line should hold the non-ASCII key: %q", broken)
+	}
+	size := paddedChars(ctx, w.bridge)
+	t.Logf("padded size %d, limit %d, room %d", size, manualLimit, sessionStartRoom)
+	if size > manualLimit-sessionStartRoom {
+		t.Errorf("session start text is %d characters with a 200-character bridge path; the budget is %d less %d of room", size, manualLimit, sessionStartRoom)
 	}
 }

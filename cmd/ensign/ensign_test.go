@@ -959,8 +959,8 @@ func TestSessionStartDeliversTheManual(t *testing.T) {
 		t.Fatalf("the manual did not follow the heartbeat:\n%s", ctx)
 	}
 	// Claude Code cuts additionalContext over 10,000 characters to a preview.
-	if _, ctx := sessionStartReply(t, out.Bytes()); len(ctx) >= sessionContextLimit {
-		t.Errorf("the session context is %d characters; over 10,000 it is cut to a preview", len(ctx))
+	if _, ctx := sessionStartReply(t, out.Bytes()); contextChars(ctx) >= sessionContextLimit {
+		t.Errorf("the session context is %d characters; over 10,000 it is cut to a preview", contextChars(ctx))
 	}
 	claude, _ := os.ReadFile(filepath.Join(w.bridge, "CLAUDE.md"))
 	if strings.Contains(string(claude), sessionImport) {

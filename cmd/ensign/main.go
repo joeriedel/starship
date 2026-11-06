@@ -570,7 +570,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	fmt.Fprintf(&ctx, "\n%s", manual)
 	if cp, err := controlPlaneDir(bridge, bf); err == nil {
-		for _, l := range brokenRoleLines(bridge, cp) {
+		for _, l := range cappedBrokenRoleLines(brokenRoleNotes(bridge, cp)) {
 			fmt.Fprintln(&ctx, l)
 		}
 	}
@@ -632,8 +632,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	return reply(show+leftBehindShow(carryErr), ctx.String())
 }
 
-// sessionContextLimit is the length of additionalContext past which Claude Code cuts it
-// to a preview.
+// sessionContextLimit is the length, in characters, of additionalContext past which Claude Code cuts it to a preview.
+//
+// The check against it compares bytes on purpose: bytes are never fewer than characters however they are counted, so the text cannot pass the limit, and non-ASCII notes only fall back to the pointer earlier.
 const sessionContextLimit = 10000
 
 // beforeHandback is settings as ensign wrote them before it registered PostToolUse and
