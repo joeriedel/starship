@@ -232,6 +232,7 @@ func TestMovedSessionRefusesWritesAdd(t *testing.T) {
 
 func TestMovedSessionTaskOpenPrintsButDoesNotRecord(t *testing.T) {
 	w := movedWorld(t)
+	os.Remove(sessionFile(w.bridge, "s1") + ".task")
 	out, err := w.taskCmd("open", "supernova/auth-refactor")
 	if err != nil {
 		t.Fatal(err)
@@ -260,7 +261,13 @@ func TestMovedMarkerClearsWhenTheIDStartsAgain(t *testing.T) {
 
 func unfinishedSeq(t *testing.T, w *world, session, status string) {
 	t.Helper()
-	writeJSON(seqPath(w.bridge, session), &seqFile{Sequences: []*sequence{{N: 1, Steps: []*seqStep{{N: 1, Kind: "do", Instruction: "x", Status: status}}}}})
+	path := seqPath(w.bridge, session)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(path, &seqFile{Sequences: []*sequence{{N: 1, Steps: []*seqStep{{N: 1, Kind: "do", Instruction: "x", Status: status}}}}}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (w *world) resumeTo(sid string, prior ...string) string {
