@@ -29,6 +29,8 @@ A run that could not be retired under a cancelled or skipped step stays pending 
 
 A publish command runs under the session's sequence lock, so it can't call an `ensign` command that takes that lock (`sequence` commands, `run`, `go`): such a call fails at once.
 
+A publish lands every location the preceding run step worked in, across all its subtask groups, dependencies first, and stops at the first failure; its report names what landed, what was never tried and what failed. After a failure, a new `ensign sequence publish supernova/<task>` lands only the locations left, and needs no run step before it.
+
 Drop pending steps of an approved sequence with `ensign sequence drop <seq>.<step>... --reason <why>` only when the user asks; it keeps the rest running, and dropping a run step drops its task's publish step.
 
 Before `go` the sequence is yours to rebuild: `ensign sequence drop <seq>.<step>...` removes steps (the rest renumber; publish rule as above), `ensign sequence discard` removes the whole sequence so the next step starts a fresh one. To reorder or insert a step (say a `supernova` publish step between two runs), drop the later steps and add them again in the new order. `halt` stops work that has begun; don't use it to rebuild. Halt leaves a run with a lead running; end it with `ensign run stop <run>`.

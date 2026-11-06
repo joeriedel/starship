@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -403,7 +404,7 @@ func (w *world) finishRun(run string) *State {
 	return w.runState(run)
 }
 
-func TestPublishAfterAGroupMergesTheLastRunsLocation(t *testing.T) {
+func TestPublishAfterAGroupLandsEveryLocationOfTheGroup(t *testing.T) {
 	w, remotes := githubGroupWorld(t, "01-client", "02-server")
 	w.mustSeq("run", "supernova/t")
 	w.mustSeq("publish", "supernova/t")
@@ -412,29 +413,32 @@ func TestPublishAfterAGroupMergesTheLastRunsLocation(t *testing.T) {
 	if len(ids) != 2 {
 		t.Fatalf("the group is client and server: %v", ids)
 	}
-	first := w.finishRun(ids[0])
-	if notes := strings.Join(first.Notes, "\n"); !strings.Contains(notes, "Nothing has been opened yet") || strings.Contains(notes, "publish step") {
-		t.Errorf("the first run of the group should get the usual note:\n%s", notes)
-	}
-	last := w.finishRun(ids[1])
-	if notes := strings.Join(last.Notes, "\n"); !strings.Contains(notes, "A publish step in the session's sequence takes it from here") || strings.Contains(notes, "Nothing has been opened yet") {
-		t.Errorf("the last run of the group should name the publish step:\n%s", notes)
+	for _, id := range ids {
+		st := w.finishRun(id)
+		if notes := strings.Join(st.Notes, "\n"); !strings.Contains(notes, "A publish step in the session's sequence takes it from here") || strings.Contains(notes, "Nothing has been opened yet") {
+			t.Errorf("each run of the group should name the publish step:\n%s", notes)
+		}
 	}
 	w.wantStatus("done", "done")
-	lastLoc := "server"
+	if got := w.step(2).Reason; !strings.HasPrefix(got, "landed client (pushed to main: ") || !strings.Contains(got, "), server (pushed to main: ") {
+		t.Errorf("the publish should name both locations: %q", got)
+	}
 	for loc, remote := range remotes {
 		want := "one"
-		if loc == lastLoc {
+		if loc != "models" {
 			want = "two"
 		}
 		if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got != want {
-			t.Errorf("main of %s has %q, want %q (the publish merges %s)", loc, got, want, lastLoc)
+			t.Errorf("main of %s has %q, want %q", loc, got, want)
 		}
+	}
+	if publishRecorded(w.bridge, "supernova/t") {
+		t.Error("a publish that landed everything leaves no record")
 	}
 }
 
-func TestPublishNoteAfterAGroupWithAFurtherGroupIsThePlainOne(t *testing.T) {
-	w, _ := githubGroupWorld(t, "01-client", "02-server", "03-models")
+func TestPublishLandsTheLocationsOfEarlierGroupsInDependencyOrder(t *testing.T) {
+	w, remotes := githubGroupWorld(t, "01-client", "02-server", "03-models")
 	w.mustSeq("run", "supernova/t")
 	w.mustSeq("publish", "supernova/t")
 	w.approve()
@@ -442,9 +446,126 @@ func TestPublishNoteAfterAGroupWithAFurtherGroupIsThePlainOne(t *testing.T) {
 	if len(ids) != 2 {
 		t.Fatalf("the first group is client and server: %v", ids)
 	}
+	for _, id := range ids {
+		st := w.finishRun(id)
+		if notes := strings.Join(st.Notes, "\n"); !strings.Contains(notes, "A publish step in the session's sequence takes it from here") {
+			t.Errorf("a run followed by a further group still gets the publish note:\n%s", notes)
+		}
+	}
+	for _, id := range w.stepRuns(1) {
+		w.finishRun(id)
+	}
+	w.wantStatus("done", "done")
+	reason := w.step(2).Reason
+	models, client, server := strings.Index(reason, "models ("), strings.Index(reason, "client ("), strings.Index(reason, "server (")
+	if !strings.HasPrefix(reason, "landed ") || models < 0 || models > client || client > server {
+		t.Errorf("models lands before client and server, which keep their run order: %q", reason)
+	}
+	for loc, remote := range remotes {
+		if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got != "two" {
+			t.Errorf("main of %s has %q, want two", loc, got)
+		}
+	}
+}
+
+func TestPublishLandsALocationOnceWhenGroupsRevisitIt(t *testing.T) {
+	w, remotes := githubGroupWorld(t, "01-client", "02-models", "03-client")
+	w.mustSeq("run", "supernova/t")
+	w.mustSeq("publish", "supernova/t")
+	w.approve()
+	for i := 0; i < 3; i++ {
+		for _, id := range w.stepRuns(1) {
+			w.finishRun(id)
+		}
+	}
+	w.wantStatus("done", "done")
+	reason := w.step(2).Reason
+	if strings.Count(reason, "client (") != 1 || strings.Count(reason, "models (") != 1 || strings.Contains(reason, "server") {
+		t.Errorf("client and models each land once: %q", reason)
+	}
+	for _, loc := range []string{"client", "models"} {
+		if got := runGit(t, ".", "--git-dir", remotes[loc], "show", "main:lib.txt"); got != "two" {
+			t.Errorf("main of %s has %q, want two", loc, got)
+		}
+	}
+}
+
+// failedPublish runs a sequence of models, then client and server together, then a publish, with client's tested marker lost so landing it fails. It returns the world, the remotes and a function that puts the marker back.
+func failedPublish(t *testing.T) (*world, map[string]string, func()) {
+	t.Helper()
+	w, remotes := githubGroupWorld(t, "01-models", "02-client", "03-server")
+	w.mustSeq("run", "supernova/t")
+	w.mustSeq("publish", "supernova/t")
+	w.approve()
+	w.finishRun(w.stepRuns(1)[0])
+	ids := w.stepRuns(1)
+	if len(ids) != 2 {
+		t.Fatalf("the second group is client and server: %v", ids)
+	}
 	w.finishRun(ids[0])
-	last := w.finishRun(ids[1])
-	if notes := strings.Join(last.Notes, "\n"); !strings.Contains(notes, "Nothing has been opened yet") || strings.Contains(notes, "publish step") {
-		t.Errorf("a run followed by a further group should get the usual note:\n%s", notes)
+	marker := testedFile(w.bridge, "supernova/t", "client")
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	w.finishRun(ids[1])
+	w.wantStatus("done", "failed")
+	return w, remotes, func() { write(t, marker, string(data)) }
+}
+
+func TestPublishStopsAtTheFirstFailureAndReportsWhatLanded(t *testing.T) {
+	w, remotes, _ := failedPublish(t)
+	reason := w.step(2).Reason
+	if !strings.HasPrefix(reason, "landed models (pushed to main: ") || !strings.Contains(reason, "); never tried server; client failed: ") || !strings.Contains(reason, "no passing run") {
+		t.Errorf("the failure should name what landed, what was never tried and what failed:\n%s", reason)
+	}
+	for loc, want := range map[string]string{"models": "two", "client": "one", "server": "one"} {
+		if got := runGit(t, ".", "--git-dir", remotes[loc], "show", "main:lib.txt"); got != want {
+			t.Errorf("main of %s has %q, want %q", loc, got, want)
+		}
+	}
+	if got := readPublishRecord(w.bridge, "supernova/t"); !reflect.DeepEqual(got, []string{"client", "server"}) {
+		t.Errorf("the record lists what is left: %v", got)
+	}
+}
+
+func TestANewPublishLandsOnlyWhatIsLeft(t *testing.T) {
+	w, remotes, restore := failedPublish(t)
+	restore()
+	w.mustSeq("publish", "supernova/t")
+	w.approve()
+	w.wantStatus("done", "failed", "done")
+	if got := w.step(3).Reason; !strings.HasPrefix(got, "landed client (pushed to main: ") || !strings.Contains(got, "), server (pushed to main: ") || strings.Contains(got, "models") {
+		t.Errorf("the retry lands client and server only: %q", got)
+	}
+	for loc, remote := range remotes {
+		if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got != "two" {
+			t.Errorf("main of %s has %q, want two", loc, got)
+		}
+	}
+	if publishRecorded(w.bridge, "supernova/t") {
+		t.Error("nothing is left, so the record is gone")
+	}
+}
+
+func TestADirectMergeShrinksTheRecordOfWhatIsLeft(t *testing.T) {
+	w, _, restore := failedPublish(t)
+	if _, _, _, err := githubMerge(w.bridge, "supernova/t", "server"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPublishRecord(w.bridge, "supernova/t"); !reflect.DeepEqual(got, []string{"client"}) {
+		t.Errorf("the record after landing server by hand: %v", got)
+	}
+	restore()
+	w.mustSeq("publish", "supernova/t")
+	w.approve()
+	if got := w.step(3).Reason; !strings.HasPrefix(got, "pushed to main: ") {
+		t.Errorf("one location is left, so the text is a single landing's: %q", got)
+	}
+	if publishRecorded(w.bridge, "supernova/t") {
+		t.Error("nothing is left, so the record is gone")
 	}
 }

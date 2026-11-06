@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -446,14 +447,130 @@ func TestPublishStepUsesThePrecedingRunsLocation(t *testing.T) {
 		{N: 3, Kind: "run", Task: task, Run: s1.Run},
 		{N: 4, Kind: "publish", Task: task},
 	}}
-	if got := precedingRunLocation(w.bridge, seq, 2, task); got != "client" {
-		t.Errorf("step 2 location %q, want client", got)
+	if got := publishTargets(w.bridge, seq, 2, task); !reflect.DeepEqual(got, []string{"client"}) {
+		t.Errorf("step 2 targets %q, want client", got)
 	}
-	if got := precedingRunLocation(w.bridge, seq, 4, task); got != "server" {
-		t.Errorf("step 4 location %q, want server", got)
+	if got := publishTargets(w.bridge, seq, 4, task); !reflect.DeepEqual(got, []string{"server"}) {
+		t.Errorf("step 4 targets %q, want server", got)
 	}
-	if got := precedingRunLocation(w.bridge, seq, 1, task); got != "" {
+	if got := publishTargets(w.bridge, seq, 1, task); !reflect.DeepEqual(got, []string{""}) {
 		t.Errorf("no preceding run step should give no location, got %q", got)
+	}
+}
+
+// targetsOf is the publish targets for a sequence of one run step with the given earlier locations and live runs, then a publish.
+func targetsOf(w *world, task string, earlier []string, live ...string) []string {
+	st := &seqStep{N: 1, Kind: "run", Task: task, Earlier: earlier}
+	for i, l := range live {
+		st.Runs = append(st.Runs, &seqRun{Run: fmt.Sprintf("r%d", i), Location: l})
+	}
+	return publishTargets(w.bridge, &sequence{Steps: []*seqStep{st, {N: 2, Kind: "publish", Task: task}}}, 2, task)
+}
+
+func TestPublishTargetsOrderAndRecurrence(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "t", "models, client, server")
+	cases := []struct {
+		name    string
+		earlier []string
+		live    []string
+		want    []string
+	}{
+		{"unrelated keep first-run order", nil, []string{"server", "client"}, []string{"server", "client"}},
+		{"a dependency comes first", nil, []string{"client", "models"}, []string{"models", "client"}},
+		{"earlier groups count, against the dependency order", []string{"client", "server"}, []string{"models"}, []string{"models", "client", "server"}},
+		{"a location that recurs lands once", []string{"client", "models"}, []string{"client"}, []string{"models", "client"}},
+		{"a location with no real name is dropped beside real ones", []string{""}, []string{"client"}, []string{"client"}},
+	}
+	for _, c := range cases {
+		if got := targetsOf(w, task, c.earlier, c.live...); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestPublishTargetsOrderThroughALocationThatIsNotATarget(t *testing.T) {
+	w := locationsWorld(t)
+	write(t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"), `platforms: [linux]
+
+bindings:
+  build: { command: "./build.sh" }
+  test:  { command: "./test.sh" }
+
+locations:
+  app:
+    depends-on: [mid]
+  mid:
+    depends-on: [lib]
+  lib: {}
+`)
+	task := "supernova/t"
+	for _, l := range []string{"app", "mid", "lib"} {
+		if _, err := setLocationPath(w.bridge, "supernova", l, t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := targetsOf(w, task, nil, "app", "lib"); !reflect.DeepEqual(got, []string{"lib", "app"}) {
+		t.Errorf("lib is app's dependency through mid: %v", got)
+	}
+}
+
+func TestPublishTargetsCollapseLocationsThatShareAFolder(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "t", "models, client, server")
+	shared, _ := locationPathFor(w.bridge, "supernova", "client")
+	if _, err := setLocationPath(w.bridge, "supernova", "server", shared); err != nil {
+		t.Fatal(err)
+	}
+	if got := targetsOf(w, task, []string{"client"}, "server"); !reflect.DeepEqual(got, []string{"server"}) {
+		t.Errorf("the later run's location stands for the folder: %v", got)
+	}
+	if got := targetsOf(w, task, []string{"server"}, "models", "client"); !reflect.DeepEqual(got, []string{"models", "client"}) {
+		t.Errorf("got %v", got)
+	}
+	m := loadMachine(w.bridge)
+	delete(m.Locations["supernova"], "client")
+	if err := saveMachine(w.bridge, m); err != nil {
+		t.Fatal(err)
+	}
+	if got := targetsOf(w, task, []string{"client"}, "server"); !reflect.DeepEqual(got, []string{"client", "server"}) {
+		t.Errorf("a folder this machine doesn't know is not collapsed: %v", got)
+	}
+}
+
+func TestPublishTargetsLeftOverLosesItsFolderToTheRun(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "t", "models, client, server")
+	shared, _ := locationPathFor(w.bridge, "supernova", "client")
+	if _, err := setLocationPath(w.bridge, "supernova", "server", shared); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePublishRecord(w.bridge, task, []string{"client", "models"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := targetsOf(w, task, nil, "server"); !reflect.DeepEqual(got, []string{"models", "server"}) {
+		t.Errorf("the run's location stands for the folder over a left-over: %v", got)
+	}
+}
+
+func TestPublishTargetsAddWhatAFailedPublishLeft(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "t", "models, client, server")
+	if err := writePublishRecord(w.bridge, task, []string{"models", "client"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := targetsOf(w, task, nil, "server"); !reflect.DeepEqual(got, []string{"models", "server", "client"}) {
+		t.Errorf("left-over locations join the step's: %v", got)
+	}
+	noRun := &sequence{Steps: []*seqStep{{N: 1, Kind: "publish", Task: task}}}
+	if got := publishTargets(w.bridge, noRun, 1, task); !reflect.DeepEqual(got, []string{"models", "client"}) {
+		t.Errorf("with no run step the left-over locations are the targets: %v", got)
+	}
+	if err := writePublishRecord(w.bridge, task, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := publishTargets(w.bridge, noRun, 1, task); !reflect.DeepEqual(got, []string{""}) {
+		t.Errorf("with nothing left the target is the fallback: %v", got)
 	}
 }
 

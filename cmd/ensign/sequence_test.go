@@ -158,6 +158,9 @@ func TestSequenceRunPublishNoteOnlyWhenOriginKeepsCommitsWeLack(t *testing.T) {
 			if !keeps && strings.Contains(reason, "Note:") {
 				t.Errorf("no note expected: %q", reason)
 			}
+			if publishRecorded(w.bridge, task) {
+				t.Error("a single location writes no record")
+			}
 		})
 	}
 }
@@ -180,8 +183,11 @@ func TestSequencePublishThatIsNotAFastForwardFails(t *testing.T) {
 	w.runStage()
 	_ = gh
 	w.wantStatus("done", "failed", "cancelled")
-	if r := w.step(2).Reason; !strings.Contains(r, "has moved since this task branched") {
-		t.Errorf("the step should carry the operation's error: %q", r)
+	if r := w.step(2).Reason; !strings.Contains(r, "has moved since this task branched") || strings.HasPrefix(r, "landed ") {
+		t.Errorf("the step should carry the operation's error as it is: %q", r)
+	}
+	if publishRecorded(w.bridge, task) {
+		t.Error("a single location writes no record")
 	}
 	if got := runGit(t, ".", "--git-dir", remote, "show", "main:news.txt"); got != "meanwhile" {
 		t.Errorf("main should be untouched, got %q", got)
@@ -5044,9 +5050,9 @@ func TestPublishStepAheadFollowsTheRun(t *testing.T) {
 		{"publish already done before the run", []*seqStep{publish(task, "done"), run("r1", task)}, nil, false},
 		{"publish pending before the run", []*seqStep{publish(task, "pending"), run("r1", task)}, nil, false},
 		{"no publish", []*seqStep{run("r1", task)}, nil, false},
-		{"run not last in its group", []*seqStep{group(task, "r1", "r2"), publish(task, "pending")}, []string{"sub-r1", "sub-r2"}, false},
+		{"run not last in its group", []*seqStep{group(task, "r1", "r2"), publish(task, "pending")}, []string{"sub-r1", "sub-r2"}, true},
 		{"last run of a group", []*seqStep{group(task, "r0", "r1"), publish(task, "pending")}, []string{"sub-r0", "sub-r1"}, true},
-		{"last run of a group with a further group", []*seqStep{group(task, "r0", "r1"), publish(task, "pending")}, []string{"sub-r0", "sub-r1", "sub-later"}, false},
+		{"last run of a group with a further group", []*seqStep{group(task, "r0", "r1"), publish(task, "pending")}, []string{"sub-r0", "sub-r1", "sub-later"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -5071,5 +5077,75 @@ func TestPublishStepAheadFollowsTheRun(t *testing.T) {
 				t.Errorf("got %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestPublishRunsACustomCommandOncePerLocation(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "t", "models, client, server")
+	log := filepath.Join(t.TempDir(), "log")
+	run := &seqStep{N: 1, Kind: "run", Task: task, Earlier: []string{"models"}, Runs: []*seqRun{{Run: "r1", Location: "client"}, {Run: "r2", Location: "server"}}}
+	pub := &seqStep{N: 2, Kind: "publish", Task: task, Command: `echo "$(basename "$PWD")" | tee -a ` + shellQuote(log) + ` #`}
+	out, err := runPublish(w.bridge, w.sid, &sequence{Steps: []*seqStep{run, pub}}, pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "landed models (models), client (client), server (server)"; out != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+	if got, _ := os.ReadFile(log); string(got) != "models\nclient\nserver\n" {
+		t.Errorf("the command should run once in each location's folder, dependencies first:\n%s", got)
+	}
+	if publishRecorded(w.bridge, task) {
+		t.Error("everything landed, so no record is left")
+	}
+}
+
+func TestPublishFailureOfACustomCommandNamesTheLocation(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "t", "models, client, server")
+	run := &seqStep{N: 1, Kind: "run", Task: task, Runs: []*seqRun{{Run: "r1", Location: "models"}, {Run: "r2", Location: "client"}, {Run: "r3", Location: "server"}}}
+	pub := &seqStep{N: 2, Kind: "publish", Task: task, Command: `test "$(basename "$PWD")" != client #`}
+	_, err := runPublish(w.bridge, w.sid, &sequence{Steps: []*seqStep{run, pub}}, pub)
+	if err == nil || !strings.HasPrefix(err.Error(), "landed models (); never tried server; client failed: ") {
+		t.Fatalf("got %v", err)
+	}
+	// A new publish step in another session, with no run step, lands what is left.
+	pub.Command = `true #`
+	again := &seqStep{N: 1, Kind: "publish", Task: task, Command: pub.Command}
+	out, err := runPublish(w.bridge, "other-session", &sequence{Steps: []*seqStep{again}}, again)
+	if err != nil || out != "landed client (), server ()" {
+		t.Errorf("got %q, %v", out, err)
+	}
+	if publishRecorded(w.bridge, task) {
+		t.Error("nothing is left, so the record is gone")
+	}
+}
+
+func TestSkippedStepOfAnEarlierGroupBlocksAPublishThatLandsItsLocation(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "t", "models, client, server")
+	skipped := &seqStep{N: 1, Kind: "run", Task: task, Status: "failed", Reason: skipPrefix + "no", Earlier: []string{"models"}, Runs: []*seqRun{{Run: "r1", Location: "client"}}}
+	run := &seqStep{N: 2, Kind: "run", Task: task, Status: "done", Runs: []*seqRun{{Run: "r2", Location: "server"}}}
+	pub := &seqStep{N: 3, Kind: "publish", Task: task, Status: "pending"}
+	seq := &sequence{N: 1, Steps: []*seqStep{skipped, run, pub}}
+	sf := &seqFile{Sequences: []*sequence{seq}}
+	if got := sf.skippedBefore(w.bridge, seq, pub); got != nil {
+		t.Errorf("the skipped step never worked in server: %v", got.ref())
+	}
+	if err := writePublishRecord(w.bridge, task, []string{"models"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
+		t.Errorf("models, from the skipped step's earlier group, is among the targets: %v", got)
+	}
+}
+
+func TestAStepKeepsTheLocationsOfItsEarlierGroups(t *testing.T) {
+	st := &seqStep{Kind: "run", Runs: []*seqRun{{Run: "r1", Location: "client"}, {Run: "r2", Location: "server"}}}
+	st.Earlier = append(st.Earlier, st.runLocations("")...)
+	st.setRuns([]*seqRun{{Run: "r3", Location: "client"}})
+	if got := st.locations(""); !slices.Equal(got, []string{"client", "server"}) {
+		t.Errorf("got %v", got)
 	}
 }

@@ -49,15 +49,16 @@ type seqStep struct {
 	Headline    string    `json:"headline,omitempty"`
 	Status      string    `json:"status"` // pending, active, paused, decide, done, failed, skipped, cancelled
 	Reason      string    `json:"reason,omitempty"`
-	Blocks      int       `json:"blocks,omitempty"`      // stops held open for this step; on a deciding step, nonzero once the session has been told
-	WaitBlocks  int       `json:"wait_blocks,omitempty"` // stops held open while this step waited for a busy folder
-	Prev        string    `json:"prev_run,omitempty"`    // the first run this step's latest retry replaces; set once the step has been retried
-	Retries     int       `json:"retries,omitempty"`     // how many times the current group has been retried; a file from before this field has Prev set and 0 here
-	SkippedAt   int64     `json:"skipped_at,omitempty"`  // unix nanoseconds when the step was skipped, by the user or because a keep-going run step failed; 0 for a skip from before this field, and for a stop-mode step that failed without being skipped
-	Diagnosis   string    `json:"diagnosis,omitempty"`   // why the previous run failed, as the session wrote it
-	Position    string    `json:"position,omitempty"`    // publish: its Step X/Y when it ran, taken before it and before any cancelling; "" for a cancelled one
-	Queued      bool      `json:"queued,omitempty"`      // publish: its outcome line went into the sequence's Report, so it is not also a note
-	RetireNote  string    `json:"retire_note,omitempty"` // run step: why a run under this cancelled or skipped step could not be retired; it is the tail of Reason, and starship retries the run
+	Blocks      int       `json:"blocks,omitempty"`            // stops held open for this step; on a deciding step, nonzero once the session has been told
+	WaitBlocks  int       `json:"wait_blocks,omitempty"`       // stops held open while this step waited for a busy folder
+	Prev        string    `json:"prev_run,omitempty"`          // the first run this step's latest retry replaces; set once the step has been retried
+	Retries     int       `json:"retries,omitempty"`           // how many times the current group has been retried; a file from before this field has Prev set and 0 here
+	SkippedAt   int64     `json:"skipped_at,omitempty"`        // unix nanoseconds when the step was skipped, by the user or because a keep-going run step failed; 0 for a skip from before this field, and for a stop-mode step that failed without being skipped
+	Diagnosis   string    `json:"diagnosis,omitempty"`         // why the previous run failed, as the session wrote it
+	Position    string    `json:"position,omitempty"`          // publish: its Step X/Y when it ran, taken before it and before any cancelling; "" for a cancelled one
+	Queued      bool      `json:"queued,omitempty"`            // publish: its outcome line went into the sequence's Report, so it is not also a note
+	Earlier     []string  `json:"earlier_locations,omitempty"` // run step: the locations of the runs of its earlier groups, which the live group replaced
+	RetireNote  string    `json:"retire_note,omitempty"`       // run step: why a run under this cancelled or skipped step could not be retired; it is the tail of Reason, and starship retries the run
 }
 
 // attempt is the number of the attempt the step is on, counting the first as 1.
@@ -99,6 +100,45 @@ func (s *seqStep) setRuns(rs []*seqRun) {
 	if len(rs) > 0 {
 		s.Run = rs[0].Run
 	}
+}
+
+// runLocations are the locations of the step's live runs, in run order: the run's own, else its snapshot's, else "".
+func (s *seqStep) runLocations(bridge string) []string {
+	var out []string
+	for _, ru := range s.runs() {
+		at := ru.Location
+		if at == "" {
+			var snap Snapshot
+			if readJSON(filepath.Join(runsDir(bridge), ru.Run, "pipeline.json"), &snap) == nil {
+				at = snap.Location
+			}
+		}
+		out = append(out, at)
+	}
+	return out
+}
+
+// rawLocations are the locations of every run the step has worked in, earlier groups first, repeats kept.
+func (s *seqStep) rawLocations(bridge string) []string {
+	return append(slices.Clone(s.Earlier), s.runLocations(bridge)...)
+}
+
+// locations are the step's locations, each once in order of first run. A "" is dropped when real names are present.
+func (s *seqStep) locations(bridge string) []string {
+	return uniqueLocations(s.rawLocations(bridge))
+}
+
+func uniqueLocations(raw []string) []string {
+	var out []string
+	for _, l := range raw {
+		if l != "" && !slices.Contains(out, l) {
+			out = append(out, l)
+		}
+	}
+	if len(out) == 0 && len(raw) > 0 {
+		return []string{""}
+	}
+	return out
 }
 
 // newRunStep is a run step for the queued runs of one group.
@@ -960,6 +1000,7 @@ func (sf *seqFile) nextSubtaskGroup(bridge string, seq *sequence, st *seqStep, d
 		return
 	}
 	fresh := newRunStep(task, max(st.Group, 1)+1, snaps)
+	st.Earlier = append(st.Earlier, st.runLocations(bridge)...)
 	st.setRuns(fresh.Runs)
 	st.Group, st.Prev, st.Retries, st.Diagnosis, st.Headline = fresh.Group, "", 0, "", fresh.Headline
 	st.Status, st.Reason, st.Blocks, st.WaitBlocks = "pending", "", 0, 0
@@ -1409,12 +1450,15 @@ func takeSequenceReports(bridge, session string) string {
 	return strings.Join(reports, "\n\n")
 }
 
-// skippedBefore returns the latest skipped run step of the publish's task, before the publish step in any sequence, that ran in the location the publish will act in; it is nil when the publish may go ahead. When that location can't be resolved, any skipped step of the task counts and the clear check looks at the locations of its runs. A successful run of the task in the location that finished after the step was skipped clears the skip, whether it came from a sequence or from a plain `ensign run`. Run ids are stamped at creation and a retry is created after the steps queued behind it, so only finish times against SkippedAt say what came after; a step skipped before SkippedAt existed has none, and its skip stands.
+// skippedBefore returns the latest skipped run step of the publish's task, before the publish step in any sequence, that ran in a location the publish will act in; it is nil when the publish may go ahead. When none of those locations can be resolved, any skipped step of the task counts and the clear check looks at the locations of its runs. A successful run of the task in the location that finished after the step was skipped clears the skip, whether it came from a sequence or from a plain `ensign run`. Run ids are stamped at creation and a retry is created after the steps queued behind it, so only finish times against SkippedAt say what came after; a step skipped before SkippedAt existed has none, and its skip stands.
 func (sf *seqFile) skippedBefore(bridge string, seq *sequence, pub *seqStep) *seqStep {
-	loc, known := "", false
-	if c, err := loadConfigAt(bridge, pub.Task, precedingRunLocation(bridge, seq, pub.N, pub.Task)); err == nil {
-		loc, known = c.Location, true
+	var targets []string
+	for _, t := range publishTargets(bridge, seq, pub.N, pub.Task) {
+		if c, err := loadConfigAt(bridge, pub.Task, t); err == nil {
+			targets = append(targets, c.Location)
+		}
 	}
+	known := len(targets) > 0
 	var skipped *seqStep
 	var locs []string
 	for _, s := range sf.Sequences {
@@ -1426,15 +1470,8 @@ func (sf *seqFile) skippedBefore(bridge string, seq *sequence, pub *seqStep) *se
 				continue
 			}
 			var here []string
-			for _, ru := range st.runs() {
-				at, resolved := ru.Location, ru.Location != ""
-				if !resolved {
-					var snap Snapshot
-					if readJSON(filepath.Join(runsDir(bridge), ru.Run, "pipeline.json"), &snap) == nil {
-						at, resolved = snap.Location, true
-					}
-				}
-				if !resolved || !known || at == loc {
+			for _, at := range st.locations(bridge) {
+				if at == "" || !known || slices.Contains(targets, at) {
 					here = append(here, at)
 				}
 			}
@@ -1769,9 +1806,64 @@ func publishCommand(bridge, task string) (string, error) {
 	return "", fmt.Errorf("%s: more than one of its project's extensions declare a publish operation", task)
 }
 
-// runPublish carries out a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell.
+// runPublish carries out a publish step: it lands each of its target locations in turn, stopping at the first failure. While locations are left to land they are kept in the task's publish record, so a new publish step lands only those.
 func runPublish(bridge, session string, seq *sequence, st *seqStep) (string, error) {
-	loc := precedingRunLocation(bridge, seq, st.N, st.Task)
+	targets := publishTargets(bridge, seq, st.N, st.Task)
+	if len(targets) == 1 && !publishRecorded(bridge, st.Task) {
+		return landLocation(bridge, session, st, targets[0])
+	}
+	left := slices.Clone(targets)
+	var landed []string
+	fail := func(failed string, err error) (string, error) {
+		return "", publishFailure(landed, left, failed, err, len(targets) > 1)
+	}
+	if err := writePublishRecord(bridge, st.Task, left); err != nil {
+		return fail("", err)
+	}
+	for i, loc := range targets {
+		out, err := landLocation(bridge, session, st, loc)
+		if err != nil {
+			left = targets[i+1:]
+			return "", publishFailure(landed, left, loc, err, len(targets) > 1)
+		}
+		if len(targets) > 1 {
+			landed = append(landed, fmt.Sprintf("%s (%s)", loc, out))
+		} else {
+			landed = append(landed, out)
+		}
+		left = targets[i+1:]
+		if err := writePublishRecord(bridge, st.Task, left); err != nil {
+			return fail("", err)
+		}
+	}
+	if len(targets) == 1 {
+		return landed[0], nil
+	}
+	return "landed " + strings.Join(landed, ", "), nil
+}
+
+// publishFailure words a failed publish. With several targets everything but the error is on the first line: what landed, what was never tried, then the failed location and its error.
+func publishFailure(landed, never []string, failed string, err error, several bool) error {
+	if !several {
+		return err
+	}
+	var parts []string
+	if len(landed) > 0 {
+		parts = append(parts, "landed "+strings.Join(landed, ", "))
+	}
+	if len(never) > 0 {
+		parts = append(parts, "never tried "+strings.Join(never, ", "))
+	}
+	if failed != "" {
+		parts = append(parts, fmt.Sprintf("%s failed: %v", failed, err))
+	} else {
+		parts = append(parts, err.Error())
+	}
+	return errors.New(strings.Join(parts, "; "))
+}
+
+// landLocation lands one location of a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell.
+func landLocation(bridge, session string, st *seqStep, loc string) (string, error) {
 	if args, ok := strings.CutPrefix(st.Command, "ensign "); ok {
 		if strings.TrimSpace(args) == "github-pr merge" {
 			base, sha, note, err := githubMerge(bridge, st.Task, loc)

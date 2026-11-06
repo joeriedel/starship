@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 
@@ -338,22 +340,76 @@ func latestRunLocation(bridge, task string, successOnly bool) string {
 	return loc
 }
 
-// precedingRunLocation is the location of the run step nearest before step n for the task, taking the latest attempt, or "" when there is none.
-func precedingRunLocation(bridge string, seq *sequence, n int, task string) string {
-	var run string
+// publishTargets are the locations a publish step lands, in the order to land them: those of the nearest run step of the task before step n, then the ones a failed publish left to land. A dependency comes before what depends on it, and locations that share a folder are one, represented by the one whose run came last. With neither a run step nor anything left over it is a single "", which the landing resolves as it always has.
+func publishTargets(bridge string, seq *sequence, n int, task string) []string {
+	var run []string
+	found := false
 	for _, s := range seq.Steps {
 		if rs := s.runs(); s.N < n && s.Kind == "run" && s.Task == task && len(rs) > 0 {
-			run = rs[len(rs)-1].Run
+			run, found = s.rawLocations(bridge), true
 		}
 	}
-	if run == "" {
-		return ""
+	left := readPublishRecord(bridge, task)
+	if !found && len(left) == 0 {
+		return []string{""}
 	}
-	var snap Snapshot
-	if readJSON(filepath.Join(runsDir(bridge), run, "pipeline.json"), &snap) != nil {
-		return ""
+	raw := append(slices.Clone(run), left...)
+	names := uniqueLocations(raw)
+	if len(names) < 2 {
+		return names
 	}
-	return snap.Location
+	project, _, _ := strings.Cut(task, "/")
+	return byDependency(bridge, project, collapseFolders(bridge, project, names, append(slices.Clone(left), run...)))
+}
+
+// collapseFolders drops each location whose folder another location, ranked later in order, also works in. The caller puts left-overs of a failed publish before the current run step's locations, so the run step's location wins its folder. A folder this machine has no record of is not compared.
+func collapseFolders(bridge, project string, names, order []string) []string {
+	paths := map[string]string{}
+	for _, l := range names {
+		if p, err := locationPathFor(bridge, project, l); err == nil {
+			paths[l] = p
+		}
+	}
+	var out []string
+	for _, l := range names {
+		later := false
+		for _, o := range names {
+			if o != l && paths[l] != "" && paths[o] != "" && sameFolder(paths[l], paths[o], runtime.GOOS) && lastIndex(order, o) > lastIndex(order, l) {
+				later = true
+			}
+		}
+		if !later {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func lastIndex(list []string, s string) int {
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i] == s {
+			return i
+		}
+	}
+	return -1
+}
+
+// byDependency orders names so that a location comes after every other one it depends on, directly or through locations that are not in names. Locations with no such order between them keep their order in names.
+func byDependency(bridge, project string, names []string) []string {
+	locs, err := loadLocations(bridge, project)
+	if err != nil || len(locs.deps) == 0 {
+		return names
+	}
+	rest := slices.Clone(names)
+	var out []string
+	for len(rest) > 0 {
+		pick := slices.IndexFunc(rest, func(t string) bool {
+			return !slices.ContainsFunc(rest, func(o string) bool { return o != t && locs.reaches(t, o, map[string]bool{}) })
+		})
+		out = append(out, rest[pick])
+		rest = slices.Delete(rest, pick, pick+1)
+	}
+	return out
 }
 
 // taskStateFile is a per-task file under .starship/tasks, kept per location when the task's runs have one so each repo records its own commits.

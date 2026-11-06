@@ -484,6 +484,39 @@ func testedFile(bridge, task, location string) string {
 	return taskStateFile(bridge, task, location, ".tested")
 }
 
+// publishRecordFile lists the locations a publish step still has to land, one per line, so a new publish step after a failed one lands only those.
+func publishRecordFile(bridge, task string) string {
+	return taskStateFile(bridge, task, "", ".publish")
+}
+
+func publishRecorded(bridge, task string) bool {
+	_, err := os.Stat(publishRecordFile(bridge, task))
+	return err == nil
+}
+
+func readPublishRecord(bridge, task string) []string {
+	data, _ := os.ReadFile(publishRecordFile(bridge, task))
+	return strings.Fields(string(data))
+}
+
+// writePublishRecord records the locations left to land, and removes the record when there are none.
+func writePublishRecord(bridge, task string, left []string) error {
+	f := publishRecordFile(bridge, task)
+	if len(left) == 0 {
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("could not remove the record of locations still to land: %v", err)
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		return fmt.Errorf("could not record the locations still to land: %v", err)
+	}
+	if err := os.WriteFile(f, []byte(strings.Join(left, "\n")+"\n"), 0o644); err != nil {
+		return fmt.Errorf("could not record the locations still to land: %v", err)
+	}
+	return nil
+}
+
 // githubReady runs when the run succeeds: it records the tested commit and tells the user
 // the work is waiting on the task branch. Nothing is pushed or opened until they ask.
 func githubReady(r *RunFiles) error {
@@ -543,7 +576,7 @@ func githubReady(r *RunFiles) error {
 	return nil
 }
 
-// publishStepAhead reports whether the run's sequence has a pending publish step for the task after the run's step, with no later run of the task in between. A publish merges the location of the last run of the step's group, so the run must be that one, with no further subtask group to come.
+// publishStepAhead reports whether the run's sequence has a pending publish step for the task after the run's step, with no later run of the task in between. Such a publish lands every location the step's runs worked in.
 func publishStepAhead(r *RunFiles) bool {
 	for _, seq := range readSeq(r.Snap.Bridge, r.State.Session).Sequences {
 		found := false
@@ -552,12 +585,8 @@ func publishStepAhead(r *RunFiles) bool {
 				if st.Kind != "run" {
 					continue
 				}
-				runs := st.runs()
-				if !slices.ContainsFunc(runs, func(sr *seqRun) bool { return sr.Run == r.State.Run }) {
+				if !slices.ContainsFunc(st.runs(), func(sr *seqRun) bool { return sr.Run == r.State.Run }) {
 					continue
-				}
-				if runs[len(runs)-1].Run != r.State.Run || furtherSubtaskGroup(r, runs) {
-					break
 				}
 				found = true
 				continue
@@ -574,20 +603,6 @@ func publishStepAhead(r *RunFiles) bool {
 		}
 	}
 	return false
-}
-
-// furtherSubtaskGroup reports whether the task has subtasks beyond the group's own, the case where the sequence queues another group for the step. It reads as nextSubtaskGroup does and takes no lock.
-func furtherSubtaskGroup(r *RunFiles, group []*seqRun) bool {
-	if r.Snap.Subtask == "" {
-		return false
-	}
-	pending, _, err := pendingSubtasks(r.Snap.Bridge, r.Snap.Task)
-	if err != nil {
-		return false
-	}
-	return slices.ContainsFunc(pending, func(s subtask) bool {
-		return s.Name != r.Snap.Subtask && !slices.ContainsFunc(group, func(sr *seqRun) bool { return sr.Subtask == s.Name })
-	})
 }
 
 // docsOnlySince reports whether marker is an ancestor of head and every path changed between them is inside the declared @docs paths. It compares in git's own path space, lexically, so nothing is resolved on disk. The diff has no rename detection, so moving a code file into a docs folder still lists its source.
@@ -805,6 +820,10 @@ func githubMerge(bridge, task, location string) (string, string, string, error) 
 	note := deleteLandedRemote(ws, branch)
 	leaveLandedBranch(ws, branch, base, sha)
 	os.Remove(testedFile(bridge, task, c.Location))
+	if left := readPublishRecord(bridge, task); slices.Contains(left, c.Location) {
+		// The landing has happened; a record that can't be shrunk only makes a later publish try this location again.
+		writePublishRecord(bridge, task, slices.DeleteFunc(left, func(l string) bool { return l == c.Location }))
+	}
 	return base, sha, note, nil
 }
 
