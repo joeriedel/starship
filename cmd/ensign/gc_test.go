@@ -621,14 +621,29 @@ func TestSessionLeftoversFreshSequenceTmpKept(t *testing.T) {
 	w := newWorld(t)
 	dir := filepath.Join(w.bridge, ".starship", "sessions")
 	files := sessFiles(t, w, "s1", oldAge, "")
-	write(t, filepath.Join(dir, "s1.sequence.tmp"), "")
-	oldFile(t, filepath.Join(dir, "s1.sequence.lock"), oldAge)
+	tmp := filepath.Join(dir, "s1.sequence.tmp")
+	lock := filepath.Join(dir, "s1.sequence.lock")
+	write(t, tmp, "")
+	oldFile(t, lock, oldAge)
+	dropDeadLinks(w.bridge)
+	for _, f := range files {
+		if !exists(f) {
+			t.Errorf("%s must stay: a fresh sequence tmp with no sequence file is a save in progress", f)
+		}
+	}
+	if !exists(tmp) || !exists(lock) {
+		t.Error("a fresh sequence tmp and its lock must stay")
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(tmp, past, past); err != nil {
+		t.Fatal(err)
+	}
 	dropDeadLinks(w.bridge)
 	if !noneExist(files) {
-		t.Error("old session files must go despite a fresh sequence tmp")
+		t.Error("old session files must go once the sequence tmp is a crash leftover")
 	}
-	if !exists(filepath.Join(dir, "s1.sequence.tmp")) || !exists(filepath.Join(dir, "s1.sequence.lock")) {
-		t.Error("a fresh sequence tmp and its lock must stay")
+	if !exists(tmp) || !exists(lock) {
+		t.Error("a sequence tmp younger than the sweep age and its lock must stay")
 	}
 }
 
