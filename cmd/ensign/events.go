@@ -229,7 +229,7 @@ func finishRun(r *RunFiles) {
 		st.log("journal", "", "", "the run could not be added to the task's history: "+err.Error())
 	}
 	if finishedRun(st) {
-		emptyDir(filepath.Join(r.Dir, "scratch"))
+		emptyDir(filepath.Join(r.Dir, "scratch"), time.Now().Add(retryWindow))
 	}
 }
 

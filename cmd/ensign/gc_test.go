@@ -6,7 +6,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,7 +145,7 @@ func TestDropDeadLinksKeepsLiveAndClearsLeftovers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := dropDeadLinks(w.bridge); n != 1 {
+	if n := dropDeadLinks(w.bridge).Links; n != 1 {
 		t.Fatalf("dropped %d, want 1", n)
 	}
 	if !exists(filepath.Join(sess, "live")) || exists(filepath.Join(sess, "live.gc")) ||
@@ -305,7 +308,7 @@ func TestSessionFilesSweptByAge(t *testing.T) {
 	mixed := sessFiles(t, w, "mixed", oldAge, "")
 	os.Remove(mixed[1])
 	write(t, mixed[1], "x\n")
-	if n := dropDeadLinks(w.bridge); n != 0 {
+	if n := dropDeadLinks(w.bridge).Links; n != 0 {
 		t.Fatalf("dropped %d links", n)
 	}
 	if !noneExist(append(stale, seq)) {
@@ -419,7 +422,7 @@ func TestSweepLockHeldSkipsSessionFilesAndGC(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan int)
-	go func() { done <- dropDeadLinks(w.bridge) }()
+	go func() { done <- dropDeadLinks(w.bridge).Links }()
 	select {
 	case n := <-done:
 		if n != 1 {
@@ -482,7 +485,7 @@ func TestDeadLinkWithSeveralRuns(t *testing.T) {
 	if !deadLink(w.bridge, link) {
 		t.Error("both runs gone: dead")
 	}
-	if n := dropDeadLinks(w.bridge); n != 1 || exists(link) {
+	if n := dropDeadLinks(w.bridge).Links; n != 1 || exists(link) {
 		t.Errorf("dead link not dropped: %d", n)
 	}
 }
@@ -900,5 +903,295 @@ func TestSessionFilesKeepsAnOldMovedMarkerWhileItsSessionHasAnUnfinishedSequence
 	dropDeadLinks(w.bridge)
 	if !exists(marker) || !allExist(append(files, seq)) {
 		t.Error("the marker must stay while its session has an unfinished sequence")
+	}
+}
+
+func TestGCEmptyOrMissingScratchIsNotAFailure(t *testing.T) {
+	w := newWorld(t)
+	empty := fabricate(t, w, "20240101-000001-supernova", "success", true)
+	if err := os.Remove(filepath.Join(empty, "scratch", "note.txt")); err != nil {
+		t.Fatal(err)
+	}
+	missing := fabricate(t, w, "20240101-000002-supernova", "success", true)
+	if err := os.RemoveAll(filepath.Join(missing, "scratch")); err != nil {
+		t.Fatal(err)
+	}
+	if res := gcRuns(w.bridge, 2, 0); res.ScratchFailed != 0 || res.Scratch != 0 {
+		t.Fatalf("want no scratch work: %+v", res)
+	}
+}
+
+func TestSessionStartNoFailuresSaysNothingFailed(t *testing.T) {
+	w := newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "success", true)
+	fabricate(t, w, "20240101-000002-supernova", "success", true)
+	show := sessionStartLine(t, w)
+	if !strings.Contains(show, "cleaned up 1 old runs") || strings.Contains(show, "could not") {
+		t.Errorf("start line: %q", show)
+	}
+}
+
+func TestCmdGCNoFailuresSaysNothingFailed(t *testing.T) {
+	w := newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "success", true)
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	if err := cmdGC([]string{"0"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "could not") {
+		t.Errorf("output: %q", out.String())
+	}
+}
+
+func sessionStartLine(t *testing.T, w *world) string {
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "keep-runs: 1\ncontrol-plane:\n  path: "+mustRoot(t)+"\n")
+	if err := link(w.bridge, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	in, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "abc"})
+	var out, errb bytes.Buffer
+	if code := cmdHook("SessionStart", bytes.NewReader(in), &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	show, _ := sessionStartReply(t, out.Bytes())
+	return show
+}
+
+// captureStderr returns what fn wrote to os.Stderr.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = wr
+	fn()
+	os.Stderr = old
+	wr.Close()
+	data, _ := io.ReadAll(r)
+	r.Close()
+	return string(data)
+}
+
+// runGC runs `ensign gc` from the world's bridge and returns what it printed and its error.
+func runGC(t *testing.T, w *world, args ...string) (string, error) {
+	t.Helper()
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	var err error
+	captureStderr(t, func() { err = cmdGC(args, &out) })
+	return out.String(), err
+}
+
+// failSeam replaces a gc file operation for one test.
+func failSeam[T any](t *testing.T, seam *T, fake T) {
+	t.Helper()
+	old := *seam
+	*seam = fake
+	t.Cleanup(func() { *seam = old })
+}
+
+var errSeam = errors.New("seam failure")
+
+func TestGCScratchItemThatCannotBeRemovedFails(t *testing.T) {
+	w := newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "success", true)
+	failSeam(t, &gcRemoveAll, func(string) error { return errSeam })
+	if show := sessionStartLine(t, w); !strings.Contains(show, "could not empty 1 scratch folders") {
+		t.Errorf("start line: %q", show)
+	}
+	var res gcResult
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 1, 0) })
+	if res.ScratchFailed != 1 || res.Scratch != 0 || !strings.Contains(stderr, "warning: could not empty") {
+		t.Errorf("res = %+v, stderr = %q", res, stderr)
+	}
+	out, err := runGC(t, w, "1")
+	if err == nil || !strings.Contains(out, ", could not empty 1 scratch folders") {
+		t.Errorf("err = %v, output = %q", err, out)
+	}
+}
+
+func TestGCRunThatCannotBeDeletedFails(t *testing.T) {
+	w := newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "success", true)
+	fabricate(t, w, "20240101-000002-supernova", "success", true)
+	failSeam(t, &gcRemoveRun, func(string) {})
+	if res := gcRuns(w.bridge, 1, 0); res.Failed != 1 || res.Removed != 0 {
+		t.Errorf("res = %+v", res)
+	}
+	out, err := runGC(t, w, "1")
+	if err == nil || !strings.Contains(out, ", could not delete 1 runs") {
+		t.Errorf("err = %v, output = %q", err, out)
+	}
+}
+
+func TestGCReportsHeldSessionsThatCannotBeListed(t *testing.T) {
+	w := newWorld(t)
+	a := fabricate(t, w, "20240101-000001-supernova", "success", true)
+	fabricate(t, w, "20240101-000002-supernova", "success", true)
+	bad := seqPath(w.bridge, "bad")
+	write(t, bad, "{not json")
+	var res gcResult
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 1, 0) })
+	if !res.HeldFailed || res.Removed != 0 || !exists(a) {
+		t.Errorf("res = %+v", res)
+	}
+	if !strings.Contains(stderr, "warning: could not list the held sessions, so no run was deleted and no scratch folder emptied: ") || !strings.Contains(stderr, bad) {
+		t.Errorf("stderr = %q", stderr)
+	}
+	out, err := runGC(t, w, "1")
+	if err == nil || !strings.Contains(out, ", could not list the held sessions") {
+		t.Errorf("err = %v, output = %q", err, out)
+	}
+	if show := sessionStartLine(t, w); !strings.Contains(show, " · could not list the held sessions") {
+		t.Errorf("start line: %q", show)
+	}
+}
+
+func TestGCReportsSessionsFolderThatCannotBeListed(t *testing.T) {
+	w := newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "success", true)
+	sess := filepath.Join(w.bridge, ".starship", "sessions")
+	os.MkdirAll(sess, 0o755)
+	failSeam(t, &gcReadDir, func(dir string) ([]os.DirEntry, error) {
+		if dir == sess {
+			return nil, errSeam
+		}
+		return os.ReadDir(dir)
+	})
+	var res gcResult
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 500, 0) })
+	if !res.SessionsListFailed || !strings.Contains(stderr, "warning: could not list the session files in "+sess) {
+		t.Errorf("res = %+v, stderr = %q", res, stderr)
+	}
+	out, err := runGC(t, w, "500")
+	if err == nil || !strings.Contains(out, ", could not list the session files") {
+		t.Errorf("err = %v, output = %q", err, out)
+	}
+	if show := sessionStartLine(t, w); !strings.Contains(show, " · could not list the session files") {
+		t.Errorf("start line: %q", show)
+	}
+}
+
+func TestGCMissingSessionsFolderReportsNothing(t *testing.T) {
+	w := newWorld(t)
+	os.RemoveAll(filepath.Join(w.bridge, ".starship", "sessions"))
+	var res gcResult
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 500, 0) })
+	if res.failed() || stderr != "" {
+		t.Errorf("res = %+v, stderr = %q", res, stderr)
+	}
+}
+
+func TestGCSessionFileThatCannotBeRemovedFails(t *testing.T) {
+	sess := func(w *world) string { return filepath.Join(w.bridge, ".starship", "sessions") }
+	cases := map[string]func(t *testing.T, w *world){
+		"stale pid record": func(t *testing.T, w *world) {
+			oldFile(t, filepath.Join(sess(w), "7.pid"), 2*pidRecordAge)
+		},
+		"stale gc file": func(t *testing.T, w *world) {
+			oldFile(t, filepath.Join(sess(w), "old.gc"), time.Hour)
+		},
+		"leftover tmp": func(t *testing.T, w *world) {
+			oldFile(t, filepath.Join(sess(w), "s1.tmp"), oldAge)
+		},
+		"leftover lock": func(t *testing.T, w *world) {
+			oldFile(t, filepath.Join(sess(w), "s1.lock"), oldAge)
+		},
+		"dead link": func(t *testing.T, w *world) {
+			write(t, filepath.Join(sess(w), "dead"), "20240101-000009-supernova\n")
+		},
+	}
+	// Each surface gets a fresh world because a pass consumes the leftover it fails on or creates the lock beside it.
+	for name, setup := range cases {
+		failing := func(string) bool { return true }
+		if name == "leftover tmp" {
+			failing = func(path string) bool { return strings.HasSuffix(path, ".tmp") }
+		}
+		fresh := func(t *testing.T) *world {
+			w := newWorld(t)
+			setup(t, w)
+			failSeam(t, &gcRemove, func(path string) error {
+				if failing(path) {
+					return errSeam
+				}
+				return os.Remove(path)
+			})
+			return w
+		}
+		t.Run(name, func(t *testing.T) {
+			w := fresh(t)
+			var res gcResult
+			stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 500, 0) })
+			if res.SessionFilesFailed != 1 || !strings.Contains(stderr, "warning: could not remove ") {
+				t.Errorf("res = %+v, stderr = %q", res, stderr)
+			}
+			w = fresh(t)
+			out, err := runGC(t, w, "500")
+			if err == nil || !strings.Contains(out, ", could not remove 1 session files") {
+				t.Errorf("err = %v, output = %q", err, out)
+			}
+			w = fresh(t)
+			if show := sessionStartLine(t, w); !strings.Contains(show, " · could not remove 1 session files") {
+				t.Errorf("start line: %q", show)
+			}
+		})
+	}
+}
+
+func TestGCSessionFileAlreadyGoneIsNotAFailure(t *testing.T) {
+	w := newWorld(t)
+	sess := filepath.Join(w.bridge, ".starship", "sessions")
+	oldFile(t, filepath.Join(sess, "7.pid"), 2*pidRecordAge)
+	write(t, filepath.Join(sess, "dead"), "20240101-000009-supernova\n")
+	failSeam(t, &gcRemove, func(string) error { return fs.ErrNotExist })
+	var res gcResult
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 500, 0) })
+	if res.failed() || res.Links != 0 || stderr != "" {
+		t.Errorf("res = %+v, stderr = %q", res, stderr)
+	}
+}
+
+func TestGCDeadLinkThatCannotBeRenamedFails(t *testing.T) {
+	w := newWorld(t)
+	link := filepath.Join(w.bridge, ".starship", "sessions", "dead")
+	write(t, link, "20240101-000009-supernova\n")
+	failSeam(t, &gcRename, func(string, string) error { return errSeam })
+	var res gcResult
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 500, 0) })
+	if res.SessionFilesFailed != 1 || res.Links != 0 || !exists(link) || !strings.Contains(stderr, "warning: could not rename "+link) {
+		t.Errorf("res = %+v, stderr = %q", res, stderr)
+	}
+}
+
+func TestGCRestoreThatFailsWarnsAndCountsOnce(t *testing.T) {
+	w := newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "running", true)
+	link := filepath.Join(w.bridge, ".starship", "sessions", "rebound")
+	write(t, link, "20240101-000009-supernova\n")
+	calls := 0
+	failSeam(t, &gcRename, func(old, new string) error {
+		calls++
+		if calls > 1 {
+			return errSeam
+		}
+		// The session rebinds to a live run right after the link is renamed away.
+		err := os.Rename(old, new)
+		write(t, new, "20240101-000001-supernova\n")
+		return err
+	})
+	var sw linkSweep
+	stderr := captureStderr(t, func() { sw = dropDeadLinks(w.bridge) })
+	if sw.Failed != 1 || sw.Links != 0 || !strings.Contains(stderr, "warning: could not restore session link "+link) {
+		t.Errorf("sweep = %+v, stderr = %q", sw, stderr)
+	}
+	if exists(link + ".gc") {
+		t.Error("the renamed link must not be left behind")
 	}
 }

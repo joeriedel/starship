@@ -609,6 +609,15 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		if res.ListFailed {
 			show += " · could not list the runs"
 		}
+		if res.HeldFailed {
+			show += " · could not list the held sessions"
+		}
+		if res.SessionsListFailed {
+			show += " · could not list the session files"
+		}
+		if res.SessionFilesFailed > 0 {
+			show += fmt.Sprintf(" · could not remove %d session files", res.SessionFilesFailed)
+		}
 	}
 	return reply(show+leftBehindShow(carryErr), ctx.String())
 }

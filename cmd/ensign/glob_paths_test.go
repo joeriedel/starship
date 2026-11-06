@@ -117,12 +117,12 @@ func TestListingSitesFindFilesUnderBracketedFolders(t *testing.T) {
 	})
 	t.Run("heldRuns", func(t *testing.T) {
 		write(t, filepath.Join(bridge, ".starship", "sessions", "supernova.sequence"), "{")
-		if _, ok := heldRuns(bridge); ok {
+		if _, err := heldRuns(bridge); err == nil {
 			t.Error("the unreadable sequence file was not found")
 		}
 		write(t, filepath.Join(bridge, ".starship", "sessions", "supernova.sequence"), "{}")
-		if held, ok := heldRuns(bridge); !ok || len(held) != 0 {
-			t.Errorf("%v, %v", held, ok)
+		if held, err := heldRuns(bridge); err != nil || len(held) != 0 {
+			t.Errorf("%v, %v", held, err)
 		}
 	})
 	t.Run("skill new moves held facts", func(t *testing.T) {
@@ -230,7 +230,7 @@ func TestListingFailuresReachTheirChannel(t *testing.T) {
 
 	t.Run("heldRuns is not ok", func(t *testing.T) {
 		fileAt(t, filepath.Join(bridge, ".starship", "sessions"))
-		if _, ok := heldRuns(bridge); ok {
+		if _, err := heldRuns(bridge); err == nil {
 			t.Error("gc would treat every run as unheld")
 		}
 	})

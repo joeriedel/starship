@@ -7,6 +7,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -280,5 +281,42 @@ func TestGCReclaimsPipelineOnlyFolderFast(t *testing.T) {
 	}
 	if exists(dir) || res.Removed != 1 {
 		t.Fatalf("the pipeline-only folder must be reclaimed: %+v", res)
+	}
+}
+
+func TestEmptyScratchSucceedsWhileItemHeld(t *testing.T) {
+	w := newWorld(t)
+	dir := fabricate(t, w, "20240101-000001-supernova", "success", true)
+	hold(t, filepath.Join(dir, "scratch", "note.txt"))
+	var res gcResult
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 1, 0) })
+	if res.ScratchFailed != 0 || res.Scratch != 1 || stderr != "" {
+		t.Errorf("res = %+v, stderr = %q", res, stderr)
+	}
+}
+
+func TestEmptyScratchDeadlineIsShared(t *testing.T) {
+	w := newWorld(t)
+	const kept = 4
+	for i := 1; i <= kept; i++ {
+		dir := fabricate(t, w, fmt.Sprintf("2024010%d-000001-supernova", i), "success", true)
+		p, err := windows.UTF16PtrFromString(filepath.Join(dir, "scratch", "note.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := windows.CreateFile(p, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { windows.CloseHandle(h) })
+	}
+	start := time.Now()
+	var res gcResult
+	captureStderr(t, func() { res = gcRuns(w.bridge, kept, 0) })
+	if res.ScratchFailed != kept {
+		t.Errorf("res = %+v, want %d scratch failed", res, kept)
+	}
+	if took := time.Since(start); took >= 3*retryWindow {
+		t.Errorf("the pass took %v; the retry window must be shared", took)
 	}
 }

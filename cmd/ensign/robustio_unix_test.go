@@ -7,7 +7,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -143,20 +142,6 @@ func stickRun(t *testing.T, dir string) {
 	t.Cleanup(func() { os.Chmod(scratch, 0o755) })
 }
 
-func sessionStartLine(t *testing.T, w *world) string {
-	write(t, filepath.Join(w.bridge, "bridge.yaml"), "keep-runs: 1\ncontrol-plane:\n  path: "+mustRoot(t)+"\n")
-	if err := link(w.bridge, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	in, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "abc"})
-	var out, errb bytes.Buffer
-	if code := cmdHook("SessionStart", bytes.NewReader(in), &out, &errb); code != 0 {
-		t.Fatalf("exit %d: %s", code, errb.String())
-	}
-	show, _ := sessionStartReply(t, out.Bytes())
-	return show
-}
-
 func TestSessionStartReportsFailedDeletes(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
@@ -230,21 +215,6 @@ func TestGCCountsUnreadableScratchFailed(t *testing.T) {
 	}
 }
 
-func TestGCEmptyOrMissingScratchIsNotAFailure(t *testing.T) {
-	w := newWorld(t)
-	empty := fabricate(t, w, "20240101-000001-supernova", "success", true)
-	if err := os.Remove(filepath.Join(empty, "scratch", "note.txt")); err != nil {
-		t.Fatal(err)
-	}
-	missing := fabricate(t, w, "20240101-000002-supernova", "success", true)
-	if err := os.RemoveAll(filepath.Join(missing, "scratch")); err != nil {
-		t.Fatal(err)
-	}
-	if res := gcRuns(w.bridge, 2, 0); res.ScratchFailed != 0 || res.Scratch != 0 {
-		t.Fatalf("want no scratch work: %+v", res)
-	}
-}
-
 func TestSessionStartReportsScratchFailed(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
@@ -270,16 +240,6 @@ func TestSessionStartReportsScratchFailedAlongsideCleaned(t *testing.T) {
 	}
 }
 
-func TestSessionStartNoFailuresSaysNothingFailed(t *testing.T) {
-	w := newWorld(t)
-	fabricate(t, w, "20240101-000001-supernova", "success", true)
-	fabricate(t, w, "20240101-000002-supernova", "success", true)
-	show := sessionStartLine(t, w)
-	if !strings.Contains(show, "cleaned up 1 old runs") || strings.Contains(show, "could not") {
-		t.Errorf("start line: %q", show)
-	}
-}
-
 func TestCmdGCReportsFailures(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
@@ -291,25 +251,10 @@ func TestCmdGCReportsFailures(t *testing.T) {
 	defer os.Chdir(wd)
 	os.Chdir(w.bridge)
 	var out bytes.Buffer
-	if err := cmdGC([]string{"1"}, &out); err != nil {
-		t.Fatal(err)
+	if err := cmdGC([]string{"1"}, &out); err == nil {
+		t.Error("cmdGC must fail when something failed")
 	}
 	if !strings.Contains(out.String(), "could not delete 1 runs") || !strings.Contains(out.String(), "could not empty 1 scratch folders") {
-		t.Errorf("output: %q", out.String())
-	}
-}
-
-func TestCmdGCNoFailuresSaysNothingFailed(t *testing.T) {
-	w := newWorld(t)
-	fabricate(t, w, "20240101-000001-supernova", "success", true)
-	wd, _ := os.Getwd()
-	defer os.Chdir(wd)
-	os.Chdir(w.bridge)
-	var out bytes.Buffer
-	if err := cmdGC([]string{"0"}, &out); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out.String(), "could not") {
 		t.Errorf("output: %q", out.String())
 	}
 }

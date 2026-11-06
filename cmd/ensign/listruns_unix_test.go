@@ -7,11 +7,11 @@ package main
 
 import (
 	"bytes"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // unlistable makes the world's runs folder exist but refuse to be listed.
@@ -85,7 +85,7 @@ func TestUnlistableRunsFolderSweepsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sweepSessionFiles(w.bridge, entries)
+	sweepSessionFiles(w.bridge, entries, &sessionSweep{deadline: time.Now().Add(retryWindow)})
 	if !allExist(paths) {
 		t.Error("session files were swept although the runs could not be listed")
 	}
@@ -107,28 +107,11 @@ func TestGCRunsReportsAnUnlistableRunsFolder(t *testing.T) {
 	defer os.Chdir(wd)
 	os.Chdir(w.bridge)
 	captureStderr(t, func() {
-		if err := cmdGC(nil, &out); err != nil {
-			t.Fatal(err)
+		if err := cmdGC(nil, &out); err == nil {
+			t.Error("cmdGC must fail when the runs could not be listed")
 		}
 	})
 	if !strings.Contains(out.String(), ", could not list the runs") {
 		t.Errorf("gc output = %q", out.String())
 	}
-}
-
-// captureStderr returns what fn wrote to os.Stderr.
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	r, wr, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := os.Stderr
-	os.Stderr = wr
-	fn()
-	os.Stderr = old
-	wr.Close()
-	data, _ := io.ReadAll(r)
-	r.Close()
-	return string(data)
 }
