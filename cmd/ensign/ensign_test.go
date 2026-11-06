@@ -1295,7 +1295,7 @@ func TestCuratingHandbackBudget(t *testing.T) {
 		t.Fatalf("no active run: %v", err)
 	}
 	code, _, _ := r.Snap.Pipeline.find("code")
-	code.Curates = "skill"
+	code.Curates = "style"
 	code.Outcomes = append(code.Outcomes, Outcome{Name: "updated"})
 	err = writeJSON(filepath.Join(r.Dir, "pipeline.json"), r.Snap)
 	r.close()
