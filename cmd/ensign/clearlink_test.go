@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -281,57 +283,39 @@ func activeSeq(t *testing.T, w *world, session, instruction string) {
 	}
 }
 
-func (w *world) resumeTo(sid string, prior ...string) string {
+// clearRaw starts the world's current session as a clear from prev, the session CLAUDE_PID last started under, and returns what the hook wrote.
+func (w *world) clearRaw(prev string) (stdout, stderr string, code int) {
 	w.t.Helper()
-	var lines string
-	for _, id := range prior {
-		lines += `{"type":"user","sessionId":"` + id + `"}` + "\n"
-	}
-	write(w.t, w.session, lines)
+	w.t.Setenv("CLAUDE_PID", "4242")
+	write(w.t, pidRecord(w.bridge, "4242"), prev+"\n")
+	data, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "source": "clear", "transcript_path": w.session, "session_id": w.sid})
+	var out, errb bytes.Buffer
+	code = cmdHook("SessionStart", bytes.NewReader(data), &out, &errb)
+	return out.String(), errb.String(), code
+}
+
+func (w *world) clearHook(prev string) (map[string]any, int) {
+	w.t.Helper()
+	w.t.Setenv("CLAUDE_PID", "4242")
+	write(w.t, pidRecord(w.bridge, "4242"), prev+"\n")
+	return w.hook("SessionStart", map[string]any{"source": "clear"})
+}
+
+// clearFrom clears the world to session sid from prev and returns the line shown to the user and the context Claude reads.
+func (w *world) clearFrom(prev, sid string) (string, string) {
+	w.t.Helper()
 	w.sid = sid
-	res, code := w.hook("SessionStart", map[string]any{"source": "resume"})
+	res, code := w.clearHook(prev)
 	if code != 0 {
-		w.t.Fatalf("resume exited %d", code)
+		w.t.Fatalf("clear exited %d", code)
 	}
-	return dig(res, "hookSpecificOutput", "additionalContext")
-}
-
-func TestCarryReportsTheSecondPriorsSequence(t *testing.T) {
-	w := newWorld(t)
-	unfinishedSeq(t, w, "pa", "pending")
-	unfinishedSeq(t, w, "pb", "pending")
-	ctx := w.resumeTo("s2", "pa", "pb")
-	if !strings.Contains(ctx, "could not carry the earlier session's runs over") || !strings.Contains(ctx, "the sequence of session pa was not moved to session s2") {
-		t.Errorf("the second prior's sequence should be reported:\n%s", ctx)
-	}
-	if !seqExists(w.bridge, "s2") || !seqExists(w.bridge, "pa") || seqExists(w.bridge, "pb") {
-		t.Error("only the first prior's sequence should move")
-	}
-	if _, err := os.Stat(movedPath(w.bridge, "pa")); err != nil {
-		t.Errorf("every prior is marked moved: %v", err)
-	}
-}
-
-func TestCarryReportsAPriorTheCarriedReturnSkips(t *testing.T) {
-	w := newWorld(t)
-	t.Setenv("CLAUDE_PID", "4242")
-	w.hook("SessionStart", map[string]any{"source": "startup"})
-	w.startLead()
-	unfinishedSeq(t, w, "pa", "pending")
-	ctx := w.resumeTo("s2", "pa", "s1")
-	if !strings.Contains(ctx, "the sequence of session pa was not moved to session s2") {
-		t.Errorf("the skipped prior's sequence should be reported:\n%s", ctx)
-	}
-	if !seqExists(w.bridge, "pa") || seqExists(w.bridge, "s2") {
-		t.Error("the skipped prior's sequence should stay where it is")
-	}
+	return dig(res, "systemMessage"), dig(res, "hookSpecificOutput", "additionalContext")
 }
 
 func TestCarryDoesNotReportAFinishedLeftBehindSequence(t *testing.T) {
 	w := newWorld(t)
 	unfinishedSeq(t, w, "pa", "done")
-	unfinishedSeq(t, w, "pb", "pending")
-	ctx := w.resumeTo("s2", "pa", "pb")
+	_, ctx := w.clearFrom("pa", "s2")
 	if strings.Contains(ctx, "could not carry") {
 		t.Errorf("a finished sequence should not be reported:\n%s", ctx)
 	}
@@ -388,41 +372,25 @@ func (w *world) startReply(source string, prior ...string) (string, string) {
 func TestCarryShowsTheLeftBehindSequenceToTheUser(t *testing.T) {
 	w := newWorld(t)
 	unfinishedSeq(t, w, "pa", "pending")
-	unfinishedSeq(t, w, "pb", "pending")
-	w.sid = "s2"
-	show, ctx := w.startReply("resume", "pa", "pb")
-	if !strings.Contains(show, "the sequence of session pa was left behind: resume that session to drive it") || strings.Contains(show, "pb") {
-		t.Errorf("the user line should name pa only:\n%s", show)
+	unfinishedSeq(t, w, "s2", "done")
+	show, ctx := w.clearFrom("pa", "s2")
+	if !strings.Contains(show, "the sequence of session pa was left behind: resume that session to drive it") {
+		t.Errorf("the user line should name pa:\n%s", show)
 	}
 	if !strings.Contains(ctx, "the sequence of session pa was not moved to session s2") || !strings.Contains(ctx, "resume session pa to drive or halt it") {
 		t.Errorf("the context should say how to recover:\n%s", ctx)
 	}
 }
 
-func TestCarryShowsEveryLeftBehindSequence(t *testing.T) {
-	w := newWorld(t)
-	unfinishedSeq(t, w, "pa", "pending")
-	unfinishedSeq(t, w, "pb", "pending")
-	unfinishedSeq(t, w, "pc", "pending")
-	w.sid = "s2"
-	show, _ := w.startReply("resume", "pa", "pb", "pc")
-	if !strings.Contains(show, "the sequences of sessions pb, pa were left behind: resume those sessions to drive them") {
-		t.Errorf("both left-behind sessions should be listed:\n%s", show)
-	}
-}
-
 func TestCarryShowsNothingWhenNothingIsLeftBehind(t *testing.T) {
 	w := newWorld(t)
 	unfinishedSeq(t, w, "pa", "done")
-	unfinishedSeq(t, w, "pb", "pending")
-	w.sid = "s2"
-	show, _ := w.startReply("resume", "pa", "pb")
+	show, _ := w.clearFrom("pa", "s2")
 	if strings.Contains(show, "left behind") {
 		t.Errorf("nothing was left behind:\n%s", show)
 	}
 	w2 := newWorld(t)
-	w2.sid = "s2"
-	plain, _ := w2.startReply("resume", "s1")
+	plain, _ := w2.clearFrom("s1", "s2")
 	if strings.Contains(plain, "left behind") || !strings.HasPrefix(plain, "Starship ready") {
 		t.Errorf("an ordinary carry leaves the line unchanged:\n%s", plain)
 	}
@@ -431,10 +399,9 @@ func TestCarryShowsNothingWhenNothingIsLeftBehind(t *testing.T) {
 func TestNotReadyShowsTheLeftBehindSequence(t *testing.T) {
 	w := newWorld(t)
 	unfinishedSeq(t, w, "pa", "pending")
-	unfinishedSeq(t, w, "pb", "pending")
+	unfinishedSeq(t, w, "s2", "done")
 	write(t, filepath.Join(w.bridge, "bridge.yaml"), "{not yaml: [")
-	w.sid = "s2"
-	show, ctx := w.startReply("resume", "pa", "pb")
+	show, ctx := w.clearFrom("pa", "s2")
 	if !strings.Contains(show, "Starship is not ready") || !strings.Contains(show, "session pa was left behind") {
 		t.Errorf("the not-ready line should name pa:\n%s", show)
 	}
@@ -447,8 +414,7 @@ func TestRenameFailureIsShownToTheUser(t *testing.T) {
 	w := newWorld(t)
 	unfinishedSeq(t, w, "pa", "pending")
 	failRename(t)
-	w.sid = "s2"
-	show, ctx := w.startReply("resume", "pa")
+	show, ctx := w.clearFrom("pa", "s2")
 	if !strings.Contains(show, "the sequence of session pa was left behind") {
 		t.Errorf("the user line should name pa:\n%s", show)
 	}
@@ -464,8 +430,7 @@ func TestRenameFailureOfAFinishedSequenceIsNotLeftBehind(t *testing.T) {
 	w := newWorld(t)
 	unfinishedSeq(t, w, "pa", "done")
 	failRename(t)
-	w.sid = "s2"
-	show, ctx := w.startReply("resume", "pa")
+	show, ctx := w.clearFrom("pa", "s2")
 	if strings.Contains(show, "left behind") {
 		t.Errorf("a finished sequence is not left behind:\n%s", show)
 	}
@@ -480,9 +445,8 @@ func TestRenameFailureOfAFinishedSequenceIsNotLeftBehind(t *testing.T) {
 func TestResumingTheEarlierSessionRecoversItsSequence(t *testing.T) {
 	w := newWorld(t)
 	activeSeq(t, w, "pa", "drive me")
-	unfinishedSeq(t, w, "pb", "pending")
-	w.sid = "s2"
-	w.startReply("resume", "pa", "pb")
+	unfinishedSeq(t, w, "s2", "done")
+	w.clearFrom("pa", "s2")
 	if _, err := os.Stat(movedPath(w.bridge, "pa")); err != nil {
 		t.Fatalf("pa should be marked moved: %v", err)
 	}
@@ -543,5 +507,165 @@ func TestResumedForkStampedWithItsOwnIDLeavesTheParentAlone(t *testing.T) {
 	}
 	if !seqExists(w.bridge, "pa") || seqExists(w.bridge, "f1") {
 		t.Error("the parent's sequence must stay in place")
+	}
+}
+
+func TestResumeAndCompactCarryNothingFromAForeignSessionID(t *testing.T) {
+	for _, source := range []string{"resume", "compact"} {
+		w := newWorld(t)
+		unfinishedSeq(t, w, "pa", "pending")
+		w.sid = "s2"
+		show, _ := w.startReply(source, "pa")
+		if strings.Contains(show, "left behind") {
+			t.Errorf("%s reports nothing:\n%s", source, show)
+		}
+		if _, err := os.Stat(movedPath(w.bridge, "pa")); err == nil {
+			t.Errorf("%s must not mark pa moved", source)
+		}
+		if !seqExists(w.bridge, "pa") || seqExists(w.bridge, "s2") {
+			t.Errorf("%s must not move pa's sequence", source)
+		}
+	}
+}
+
+// leftBehindRun writes a run of the given status, owned by session, and a sequence of session whose one run step lists it; moved marks the session as having moved to s9.
+func leftBehindRun(t *testing.T, w *world, session, run string, snap *Snapshot, moved, approved bool, runStatus, stepStatus string) {
+	t.Helper()
+	dir := filepath.Join(runsDir(w.bridge), run)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(seqPath(w.bridge, session)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(dir, "pipeline.json"), snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(dir, "state.json"), &State{Run: run, Session: session, Status: runStatus, Approved: approved, Dispatches: []*Dispatch{}, History: []HistoryEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	step := &seqStep{N: 1, Kind: "run", Status: stepStatus, Runs: []*seqRun{{Run: run}}}
+	if err := writeJSON(seqPath(w.bridge, session), &seqFile{Sequences: []*sequence{{N: 1, Approved: true, Steps: []*seqStep{step}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if moved {
+		if err := markMoved(w.bridge, session, "s9"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+const heldRunID = "20260101-000001-supernova"
+
+func TestStartNamesALeftBehindSequenceThatHoldsAFolder(t *testing.T) {
+	for _, source := range []string{"startup", "resume", "compact", "clear"} {
+		w := newWorld(t)
+		folder := t.TempDir()
+		leftBehindRun(t, w, "pa", heldRunID, &Snapshot{Workspace: folder}, true, true, "running", "active")
+		w.sid = "s2"
+		show, ctx := w.startReply(source)
+		for _, text := range []string{"pa", folder, heldRunID} {
+			if !strings.Contains(show, text) || !strings.Contains(ctx, text) {
+				t.Errorf("%s: %q should be in the user line and the context:\n%s\n%s", source, text, show, ctx)
+			}
+		}
+		if !strings.Contains(ctx, "nothing expires it") || !strings.Contains(ctx, "resume session pa") {
+			t.Errorf("%s: the context should say what to do:\n%s", source, ctx)
+		}
+	}
+}
+
+func TestStartNamesALeftBehindHoldOnANotReadyReply(t *testing.T) {
+	w := newWorld(t)
+	folder := t.TempDir()
+	leftBehindRun(t, w, "pa", heldRunID, &Snapshot{Workspace: folder}, true, true, "running", "active")
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "{not yaml: [")
+	w.sid = "s2"
+	show, ctx := w.startReply("startup")
+	if !strings.Contains(show, "Starship is not ready") || !strings.Contains(show, folder) || !strings.Contains(ctx, folder) || !strings.Contains(ctx, heldRunID) {
+		t.Errorf("the not-ready reply should name the hold:\n%s\n%s", show, ctx)
+	}
+}
+
+func TestStartNamesALeftBehindHoldOnStderrWhenTheEnvFileFails(t *testing.T) {
+	w := newWorld(t)
+	folder := t.TempDir()
+	leftBehindRun(t, w, "pa", heldRunID, &Snapshot{Workspace: folder}, true, true, "running", "active")
+	t.Setenv("CLAUDE_ENV_FILE", t.TempDir())
+	w.sid = "s2"
+	stdout, stderr, code := w.clearRaw("s1")
+	if code != 2 || stdout != "" {
+		t.Fatalf("exit %d, stdout %q", code, stdout)
+	}
+	for _, text := range []string{"session pa", folder, heldRunID} {
+		if !strings.Contains(stderr, text) {
+			t.Errorf("stderr should name %q:\n%s", text, stderr)
+		}
+	}
+}
+
+func TestStartNamesNoHoldFor(t *testing.T) {
+	cases := []struct {
+		name                  string
+		session               string
+		moved, approved       bool
+		runStatus, stepStatus string
+	}{
+		{"the starting session's own sequence", "s2", true, true, "running", "active"},
+		{"a session that has not moved", "pa", false, true, "running", "active"},
+		{"a moved session with no open work", "pa", true, true, "running", "done"},
+		{"an unapproved run", "pa", true, false, "pending", "active"},
+		{"a finished run", "pa", true, true, "success", "active"},
+	}
+	for _, c := range cases {
+		w := newWorld(t)
+		leftBehindRun(t, w, c.session, heldRunID, &Snapshot{Workspace: t.TempDir()}, c.moved, c.approved, c.runStatus, c.stepStatus)
+		w.sid = "s2"
+		show, ctx := w.startReply("startup")
+		if strings.Contains(show, heldRunID) || strings.Contains(ctx, heldRunID) || strings.Contains(show, "holds") || strings.Contains(ctx, "holds the code folder") {
+			t.Errorf("%s should name nothing:\n%s\n%s", c.name, show, ctx)
+		}
+	}
+}
+
+func TestStartNamesNoHoldForARunOnTheStartingSession(t *testing.T) {
+	w := newWorld(t)
+	leftBehindRun(t, w, "pa", heldRunID, &Snapshot{Workspace: t.TempDir()}, true, true, "running", "active")
+	if err := writeJSON(filepath.Join(runsDir(w.bridge), heldRunID, "state.json"), &State{Run: heldRunID, Session: "s2", Status: "running", Approved: true, Dispatches: []*Dispatch{}, History: []HistoryEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	w.sid = "s2"
+	show, ctx := w.startReply("startup")
+	if strings.Contains(show, heldRunID) || strings.Contains(ctx, heldRunID) || strings.Contains(show, "holds") || strings.Contains(ctx, "holds the code folder") {
+		t.Errorf("a run owned by the starting session should not be named:\n%s\n%s", show, ctx)
+	}
+}
+
+func TestStartNamesALeftBehindDependencyReadHold(t *testing.T) {
+	w := newWorld(t)
+	f := supernovaFolders{t.TempDir(), t.TempDir(), t.TempDir()}
+	leftBehindRun(t, w, "pa", heldRunID, f.clientSnap(), true, true, "running", "active")
+	w.sid = "s2"
+	show, ctx := w.startReply("startup")
+	for _, folder := range []string{f.client, f.models} {
+		if !strings.Contains(show, folder) || !strings.Contains(ctx, folder) {
+			t.Errorf("%s should be named:\n%s\n%s", folder, show, ctx)
+		}
+	}
+}
+
+func TestStartSaysWhenALeftBehindSequenceCouldNotBeChecked(t *testing.T) {
+	w := newWorld(t)
+	write(t, seqPath(w.bridge, "pa"), "{not json")
+	if err := markMoved(w.bridge, "pa", "s9"); err != nil {
+		t.Fatal(err)
+	}
+	w.sid = "s2"
+	show, ctx := w.startReply("startup")
+	if !strings.Contains(show, "could not check") || !strings.Contains(show, "pa") || !strings.Contains(ctx, "could not check") || !strings.Contains(ctx, "session pa") {
+		t.Errorf("the unreadable sequence should be named:\n%s\n%s", show, ctx)
+	}
+	if !strings.HasPrefix(show, "Starship ready") {
+		t.Errorf("the start should still succeed:\n%s", show)
 	}
 }

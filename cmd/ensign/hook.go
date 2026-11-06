@@ -22,7 +22,7 @@ import (
 // HookInput is the part of Claude Code's hook payload that ensign reads.
 type HookInput struct {
 	Event               string         `json:"hook_event_name"`
-	Source              string         `json:"source"` // SessionStart: startup, resume, clear or compact
+	Source              string         `json:"source"` // SessionStart: startup, resume, clear or compact; only clear moves a session to a new id
 	SessionID           string         `json:"session_id"`
 	Cwd                 string         `json:"cwd"`
 	ToolName            string         `json:"tool_name"`
@@ -1127,31 +1127,6 @@ func shellQuote(p string) string {
 	return p
 }
 
-// priorSessions lists the session ids, other than current, that records of a session
-// transcript carry, latest first. A resumed transcript keeps the earlier session's records.
-func priorSessions(transcript, current string) []string {
-	f, err := os.Open(transcript)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	var out []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1<<20), 64<<20)
-	for sc.Scan() {
-		var rec struct {
-			SessionID string `json:"sessionId"`
-		}
-		if json.Unmarshal(sc.Bytes(), &rec) != nil || rec.SessionID == "" || rec.SessionID == current {
-			continue
-		}
-		if len(out) == 0 || out[0] != rec.SessionID {
-			out = append([]string{rec.SessionID}, out...)
-		}
-	}
-	return out
-}
-
 // claudePID returns CLAUDE_PID, which Claude Code gives hook commands and keeps across /clear, or "" when it is missing or not all digits: it becomes a file name.
 func claudePID() string {
 	pid := os.Getenv("CLAUDE_PID")
@@ -1183,117 +1158,68 @@ func processBaseline(bridge, pid, source, connectors, agents string) (string, st
 // carryBind binds a run to the session that continues its own; a variable so a test can fail it.
 var carryBind = bindSession
 
-// carryOverSession binds a restarted session to the live run of the session it continues.
-// It assumes a resumed or compacted session's transcript still holds records
-// stamped with the earlier session's id; a cleared session's does not, see below. A failure to read the earlier session's runs is
-// returned for SessionStart to report; SessionStart never fails over this.
+// carryOverSession binds a cleared session to the live run of the session it continues.
+// A clear is the only route on which a session moves: resume, compact and continue keep the session id, and a fork starts a session of its own. The earlier session is prev, the id the session's CLAUDE_PID last started under; it counts only for a clear to a different id, and then the task is carried even with no live run. Every other start returns nil and marks nothing moved.
+// A failure to read the earlier session's runs is returned for SessionStart to report; SessionStart never fails over this.
 // A run whose setup file could not be written is still carried over, and that error is returned too.
-// A sequence that could not be moved is returned too, and the runs are still carried; a run that could not be opened or bound, or whose rebind could not be saved, stays on the earlier session and is reported to this one, see reportRebindFailures; a run whose folder is gone is skipped. A run that stays is moved again only if a later session start or an agent hook happens to reach it; a run already reported by an earlier prior in this call is skipped in the later ones.
-// A clear leaves no records under the earlier id in the new transcript, so prev, the id the session's CLAUDE_PID last started under, is tried first; it counts only for a clear to a different id, and then the task is carried even with no live run.
+// A sequence that could not be moved is returned too, and the runs are still carried; a run that could not be opened or bound, or whose rebind could not be saved, stays on the earlier session and is reported to this one, see reportRebindFailures; a run whose folder is gone is skipped. A run that stays is moved again only if an agent hook happens to reach it.
 func carryOverSession(bridge string, in *HookInput, prev string) error {
-	switch in.Source {
-	case "resume", "compact", "clear":
-	default:
+	if in.Source != "clear" || in.SessionID == "" || prev == "" || prev == in.SessionID {
 		return nil
 	}
-	if in.SessionID == "" {
-		return nil
-	}
-	linked := in.Source == "clear" && prev != "" && prev != in.SessionID
-	if in.TranscriptPath == "" && !linked {
-		return nil
-	}
-	if linked {
-		copySessionTask(bridge, prev, in.SessionID)
-	}
-	var priors []string
-	if in.TranscriptPath != "" {
-		priors = priorSessions(in.TranscriptPath, in.SessionID)
-	}
-	if linked {
-		kept := []string{prev}
-		for _, id := range priors {
-			if id != prev {
-				kept = append(kept, id)
-			}
-		}
-		priors = kept
-	}
+	copySessionTask(bridge, prev, in.SessionID)
 	var errs []error
-	for _, old := range priors {
-		if err := markMoved(bridge, old, in.SessionID); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	strand := func(rest []string) {
-		for _, old := range rest {
-			errs = append(errs, strandedSequence(bridge, old, in.SessionID))
-		}
+	if err := markMoved(bridge, prev, in.SessionID); err != nil {
+		errs = append(errs, err)
 	}
 	if _, err := os.Stat(sessionFile(bridge, in.SessionID)); err == nil {
-		strand(priors)
+		errs = append(errs, strandedSequence(bridge, prev, in.SessionID))
 		return errors.Join(errs...)
 	}
-	reported := map[string]bool{}
-	for i, old := range priors {
-		if err := carrySequence(bridge, old, in.SessionID, reported); err != nil {
-			errs = append(errs, err)
-		}
-		carried := false
-		var setupErr error
-		ids, err := sessionRuns(bridge, old)
-		if err != nil {
-			errs = append(errs, err)
-			strand(priors[i+1:])
-			return errors.Join(errs...)
-		}
-		var failed []rebindFail
-		for _, id := range ids {
-			if reported[id] {
-				continue
-			}
-			r, err := openRun(bridge, id)
-			if err != nil {
-				if !errors.Is(err, fs.ErrNotExist) {
-					failed = append(failed, rebindFail{id, err, rebindMayMove})
-					reported[id] = true
-				}
-				continue
-			}
-			switch {
-			case r.State.terminal():
-			case r.State.Session == in.SessionID:
-				carried = true
-			default:
-				bindErr := carryBind(bridge, in.SessionID, id)
-				if bindErr != nil && !errors.Is(bindErr, errSetupFile) {
-					failed = append(failed, rebindFail{id, bindErr, rebindMayMove})
-					reported[id] = true
-					break
-				}
-				if bindErr != nil {
-					setupErr = bindErr
-				}
-				carried = true
-				copySessionTask(bridge, old, in.SessionID)
-				if r.State.Session != old {
-					r.State.log("rebound", "", "", fmt.Sprintf("%s%s (%s)", reboundPrefix(r.State.Session), in.SessionID, in.Source))
-				}
-				r.State.Session = in.SessionID
-				r.State.log("rebound", "", "", fmt.Sprintf("%s%s (%s)", reboundPrefix(old), in.SessionID, in.Source))
-				if err := r.save(); err != nil {
-					failed = append(failed, rebindFail{id, err, rebindSaveFailed})
-				}
-			}
-			r.close()
-		}
-		// The queue takes the sequence lock, so it is called with no run lock held.
-		errs = append(errs, reportRebindFailures(bridge, in.SessionID, failed))
-		if carried {
-			strand(priors[i+1:])
-			return errors.Join(append(errs, setupErr)...)
-		}
+	if err := carrySequence(bridge, prev, in.SessionID); err != nil {
+		errs = append(errs, err)
 	}
+	var setupErr error
+	ids, err := sessionRuns(bridge, prev)
+	if err != nil {
+		errs = append(errs, err)
+		return errors.Join(errs...)
+	}
+	var failed []rebindFail
+	for _, id := range ids {
+		r, err := openRun(bridge, id)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				failed = append(failed, rebindFail{id, err, rebindMayMove})
+			}
+			continue
+		}
+		switch {
+		case r.State.terminal():
+		case r.State.Session == in.SessionID:
+		default:
+			bindErr := carryBind(bridge, in.SessionID, id)
+			if bindErr != nil && !errors.Is(bindErr, errSetupFile) {
+				failed = append(failed, rebindFail{id, bindErr, rebindMayMove})
+				break
+			}
+			if bindErr != nil {
+				setupErr = bindErr
+			}
+			if r.State.Session != prev {
+				r.State.log("rebound", "", "", fmt.Sprintf("%s%s (%s)", reboundPrefix(r.State.Session), in.SessionID, in.Source))
+			}
+			r.State.Session = in.SessionID
+			r.State.log("rebound", "", "", fmt.Sprintf("%s%s (%s)", reboundPrefix(prev), in.SessionID, in.Source))
+			if err := r.save(); err != nil {
+				failed = append(failed, rebindFail{id, err, rebindSaveFailed})
+			}
+		}
+		r.close()
+	}
+	// The queue takes the sequence lock, so it is called with no run lock held.
+	errs = append(errs, reportRebindFailures(bridge, in.SessionID, failed))
+	errs = append(errs, setupErr)
 	return errors.Join(errs...)
 }
 

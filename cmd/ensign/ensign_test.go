@@ -1704,8 +1704,6 @@ func TestSessionStartCarriesBindingOver(t *testing.T) {
 	w := newWorld(t)
 	w.startLead()
 	run := w.state().Run
-	rec, _ := json.Marshal(map[string]any{"type": "user", "sessionId": "s1"})
-	write(t, w.session, string(rec)+"\n")
 
 	w.sid = "s2"
 	if _, code := w.hook("SessionStart", map[string]any{"source": "startup"}); code != 0 {
@@ -1714,7 +1712,7 @@ func TestSessionStartCarriesBindingOver(t *testing.T) {
 	if _, err := os.Stat(sessionFile(w.bridge, "s2")); err == nil {
 		t.Fatalf("a fresh startup carried a binding over")
 	}
-	if _, code := w.hook("SessionStart", map[string]any{"source": "resume"}); code != 0 {
+	if _, code := w.clearHook("s1"); code != 0 {
 		t.Fatalf("SessionStart exited %d", code)
 	}
 	if got := w.state(); got.Run != run || got.Session != "s2" {
@@ -1726,14 +1724,12 @@ func TestSessionStartNotReadyStillShowsACarryFailure(t *testing.T) {
 	w := newWorld(t)
 	w.startLead()
 	run := w.state().Run
-	rec, _ := json.Marshal(map[string]any{"type": "user", "sessionId": "s1"})
-	write(t, w.session, string(rec)+"\n")
 	old := carryBind
 	t.Cleanup(func() { carryBind = old })
 	carryBind = func(string, string, string) error { return errors.New("session file busy") }
 	write(t, filepath.Join(w.bridge, "bridge.yaml"), "{not yaml: [")
 	w.sid = "s2"
-	reply, code := w.hook("SessionStart", map[string]any{"source": "resume"})
+	reply, code := w.clearHook("s1")
 	if code != 0 {
 		t.Fatalf("SessionStart exited %d", code)
 	}
@@ -1748,18 +1744,18 @@ func TestSessionStartEnvFileFailureStillShowsACarryFailure(t *testing.T) {
 	w := newWorld(t)
 	w.startLead()
 	run := w.state().Run
-	rec, _ := json.Marshal(map[string]any{"type": "user", "sessionId": "s1"})
-	write(t, w.session, string(rec)+"\n")
 	old := carryBind
 	t.Cleanup(func() { carryBind = old })
 	carryBind = func(string, string, string) error { return errors.New("session file busy") }
 	t.Setenv("CLAUDE_ENV_FILE", t.TempDir())
 	w.sid = "s2"
-	reply, code := w.hook("SessionStart", map[string]any{"source": "resume"})
+	stdout, stderr, code := w.clearRaw("s1")
 	if code != 2 {
 		t.Fatalf("SessionStart exited %d, want 2", code)
 	}
-	stderr := dig(reply, "stderr")
+	if stdout != "" {
+		t.Errorf("the failure writes nothing to stdout: %q", stdout)
+	}
 	if !strings.Contains(stderr, "could not record the session id") || !strings.Contains(stderr, "could not carry the earlier session's runs over") || !strings.Contains(stderr, run) {
 		t.Errorf("stderr should carry the failure:\n%s", stderr)
 	}

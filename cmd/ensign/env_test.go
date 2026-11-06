@@ -223,8 +223,7 @@ func TestRestartedSessionGetsTheSetupFile(t *testing.T) {
 	t.Cleanup(func() { gitBashFound = detectGitBash })
 	runEnv(t, "supernova", "SUPERNOVA_TOOL=hello")
 	w.run("supernova/auth-refactor")
-	write(t, w.session, `{"sessionId":"s1"}`+"\n")
-	carryOverSession(w.bridge, &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session}, "")
+	carryOverSession(w.bridge, &HookInput{Source: "clear", SessionID: "s2"}, "s1")
 	data, err := os.ReadFile(setupFile(w.bridge, "s2"))
 	if err != nil || string(data) != "export SUPERNOVA_TOOL='hello'\n" {
 		t.Fatalf("setup file %q (%v)", data, err)
@@ -280,9 +279,8 @@ func TestCarryOverKeepsTheRunWhenTheSetupFileFails(t *testing.T) {
 	t.Cleanup(func() { gitBashFound = detectGitBash })
 	runEnv(t, "supernova", "SUPERNOVA_TOOL=hello")
 	w.run("supernova/auth-refactor")
-	write(t, w.session, `{"sessionId":"s1"}`+"\n")
 	blockSetupFile(t, w.bridge, "s2")
-	err := carryOverSession(w.bridge, &HookInput{Source: "resume", SessionID: "s2", TranscriptPath: w.session}, "")
+	err := carryOverSession(w.bridge, &HookInput{Source: "clear", SessionID: "s2"}, "s1")
 	if !errors.Is(err, errSetupFile) {
 		t.Fatalf("carry-over error: %v", err)
 	}
@@ -733,9 +731,7 @@ func TestCarryOverNamesTheLinkAndTheOwnerAsRebound(t *testing.T) {
 	if err := bindSession(w.bridge, "s9", run); err != nil {
 		t.Fatal(err)
 	}
-	rec, _ := json.Marshal(map[string]any{"type": "user", "sessionId": "s1"})
-	write(t, w.session, string(rec)+"\n")
-	if _, code := w.hook("SessionStart", map[string]any{"source": "resume"}); code != 0 {
+	if _, code := w.clearHook("s1"); code != 0 {
 		t.Fatalf("SessionStart exited %d", code)
 	}
 	st := w.runState(run)

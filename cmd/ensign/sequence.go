@@ -2145,7 +2145,7 @@ const (
 	rebindQueued rebindHow = iota
 	// rebindSaveFailed is a run the new session's file lists, because its save failed; an agent hook can finish the move.
 	rebindSaveFailed
-	// rebindMayMove is a run the new session's file does not list, because its open or bind failed; a later SessionStart in the session or a hook from one of the run's agents may carry it, but nothing is sure to.
+	// rebindMayMove is a run the new session's file does not list, because its open or bind failed; a hook from one of the run's agents may carry it, but nothing is sure to.
 	rebindMayMove
 	// rebindSequenceNotSaved is the moved sequence itself: its file on the new session could not be updated. The runs it lists were rebound when the save failed, but not when withSeq failed before its fn ran (lock or read), since then ids is empty and none were rebound.
 	rebindSequenceNotSaved
@@ -2169,7 +2169,7 @@ func reportRebindFailures(bridge, session string, fails []rebindFail) error {
 		case rebindSequenceNotSaved:
 			msg = fmt.Sprintf("the sequence moved to this session but its file could not be updated; starship does not retry: %s", oneLine(f.err))
 		case rebindMayMove:
-			msg = fmt.Sprintf("run %s could not be moved to this session and stays on the earlier session for now; a later session start or a hook from one of its agents may move it, but nothing is sure to: %s", f.run, oneLine(f.err))
+			msg = fmt.Sprintf("run %s could not be moved to this session and stays on the earlier session for now; a hook from one of its agents may move it, but nothing is sure to: %s", f.run, oneLine(f.err))
 		default:
 			msg = fmt.Sprintf("run %s could not be moved to this session and stays on the earlier session; starship does not retry: %s", f.run, oneLine(f.err))
 		}
@@ -2216,10 +2216,10 @@ func renameSequenceLocked(bridge, old, session string) error {
 	return seqRename(seqPath(bridge, old), seqPath(bridge, session))
 }
 
-// carrySequence moves a session's sequence to the session that continues it, and points the runs that are not bound to the old session at the new one. A sequence that could not be moved stays on the old session and is returned, not retried. A run that could not be opened or whose rebind could not be saved is reported to the session and the rest are still rebound, and so is a save of the moved file that failed, after the runs it lists are rebound; a run whose folder is gone is skipped. Each run it reports is marked in reported, and a run already in reported is not reported again, so a run is reported once per carry.
+// carrySequence moves a session's sequence to the session that continues it, and points the runs that are not bound to the old session at the new one. A sequence that could not be moved stays on the old session and is returned, not retried. A run that could not be opened or whose rebind could not be saved is reported to the session and the rest are still rebound, and so is a save of the moved file that failed, after the runs it lists are rebound; a run whose folder is gone is skipped.
 //
 // The rename happens under both sessions' sequence locks, so a holder that read the file before the move can't save it back over the old session afterwards, and a writer that creates the new session's file can't be overwritten by the rename. Both locks are released before anything else is taken, and a run lock is never taken under them. A reader that takes no lock is covered by the rename's retry, not by these locks.
-func carrySequence(bridge, old, session string, reported map[string]bool) error {
+func carrySequence(bridge, old, session string) error {
 	if !seqExists(bridge, old) {
 		return nil
 	}
@@ -2266,17 +2266,15 @@ func carrySequence(bridge, old, session string, reported map[string]bool) error 
 	for _, id := range ids {
 		r, err := openRun(bridge, id)
 		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) && !reported[id] {
+			if !errors.Is(err, fs.ErrNotExist) {
 				failed = append(failed, rebindFail{id, err, rebindQueued})
-				reported[id] = true
 			}
 			continue
 		}
 		if r.State.Session == old {
 			r.State.Session = session
-			if err := r.save(); err != nil && !reported[id] {
+			if err := r.save(); err != nil {
 				failed = append(failed, rebindFail{id, err, rebindQueued})
-				reported[id] = true
 			}
 		}
 		r.close()
@@ -3081,4 +3079,95 @@ func seqAdd(bridge, session string, out io.Writer, name string, st *seqStep) err
 		fmt.Fprint(out, sf.listing(bridge))
 		return nil
 	})
+}
+
+// leftBehindHold is a code folder that a live run of a left-behind sequence holds.
+type leftBehindHold struct{ session, folder, run string }
+
+// leftBehindHolds returns, for the session starting, the code folders held by sequences left behind on other sessions: a session that has moved to a new id and still has open work holds a folder through an approved live run of an open step, and nothing expires it. Both the folders a run works in and the ones it only reads count, since a read blocks another session's work. It lists one hold per session and folder. unchecked names the sessions whose holds could not be worked out, one line each, and the listing itself failing is one more line; this never fails the start.
+func leftBehindHolds(bridge, self string) (holds []leftBehindHold, unchecked []string) {
+	files, err := filesIn(filepath.Join(bridge, ".starship", "sessions"), ".sequence")
+	if err != nil {
+		return nil, []string{"the sessions' sequences could not be listed: " + oneLine(err)}
+	}
+	var live []runInfo
+	var liveErr error
+	liveRead := false
+	for _, f := range files {
+		session := strings.TrimSuffix(filepath.Base(f), ".sequence")
+		if session == self {
+			continue
+		}
+		if _, moved, err := movedTo(bridge, session); err != nil {
+			unchecked = append(unchecked, fmt.Sprintf("session %s: %s", session, oneLine(err)))
+			continue
+		} else if !moved {
+			continue
+		}
+		var sf seqFile
+		if err := readSeqFile(f, &sf); err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				unchecked = append(unchecked, fmt.Sprintf("session %s: %s", session, oneLine(err)))
+			}
+			continue
+		}
+		if !hasOpenWork(bridge, session) {
+			continue
+		}
+		if !liveRead {
+			live, liveErr = liveRuns(bridge)
+			liveRead = true
+		}
+		if liveErr != nil {
+			unchecked = append(unchecked, fmt.Sprintf("session %s: %s", session, oneLine(liveErr)))
+			continue
+		}
+		var folders []string
+		for _, seq := range sf.Sequences {
+			for _, st := range seq.Steps {
+				if !st.open() {
+					continue
+				}
+				for _, ru := range st.runs() {
+					i := slices.IndexFunc(live, func(ri runInfo) bool { return ri.id == ru.Run })
+					if i < 0 || live[i].state.Session != session || !live[i].state.Approved || live[i].snap.Workspace == "" {
+						continue
+					}
+					works, reads := folderHolds(&live[i].snap)
+					for _, folder := range append(works, reads...) {
+						if slices.ContainsFunc(folders, func(h string) bool { return sameFolder(h, folder, runtime.GOOS) }) {
+							continue
+						}
+						folders = append(folders, folder)
+						holds = append(holds, leftBehindHold{session, folder, ru.Run})
+					}
+				}
+			}
+		}
+	}
+	return holds, unchecked
+}
+
+// leftBehindHoldLines are the lines that tell the session, or the user on stderr, which left-behind sequences hold a code folder and which could not be checked.
+func leftBehindHoldLines(holds []leftBehindHold, unchecked []string) []string {
+	var out []string
+	for _, h := range holds {
+		out = append(out, fmt.Sprintf("starship: the sequence of session %s was left behind and holds the code folder %s through run %s; nothing expires it. To free the folder, resume session %s and drive or halt its sequence.", h.session, h.folder, h.run, h.session))
+	}
+	for _, u := range unchecked {
+		out = append(out, "starship: could not check whether a left-behind sequence holds a code folder: "+u)
+	}
+	return out
+}
+
+// leftBehindHoldShow is the piece of the session start line for leftBehindHoldLines, or empty when there is nothing to name.
+func leftBehindHoldShow(holds []leftBehindHold, unchecked []string) string {
+	var out string
+	for _, h := range holds {
+		out += fmt.Sprintf(" · session %s is left behind and holds %s (run %s): resume it to drive or halt it", h.session, h.folder, h.run)
+	}
+	for _, u := range unchecked {
+		out += " · could not check the holds of a left-behind sequence: " + u
+	}
+	return out
 }
