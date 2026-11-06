@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -295,17 +296,81 @@ func TestWindowsLeadingSpaceSpellings(t *testing.T) {
 	}
 }
 
-func TestEditFolderTarget(t *testing.T) {
-	for _, c := range []struct{ in, goos, want string }{
-		{` \\fs\share\x.txt`, "windows", `\\fs\share\x.txt`},
-		{` //fs/share/x.txt`, "windows", `//fs/share/x.txt`},
-		{` C:\x`, "windows", ` C:\x`},
-		{`notes.md`, "windows", `notes.md`},
-		{` notes.md`, "windows", ` notes.md`},
-		{` \\fs\share\x.txt`, "linux", ` \\fs\share\x.txt`},
+func TestGuardsJudgeExpandedPaths(t *testing.T) {
+	w, tmp := newGuardWorld(t)
+	home := filepath.Dir(w.bridge)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	goos := runtime.GOOS
+	elsewhere := filepath.Join(home, "workspace")
+	sessions := filepath.Join(w.bridge, ".starship", "sessions")
+	withCwd := func(p, cwd string) *HookInput {
+		in := guardInput("Write", "file_path", p)
+		in.Cwd = cwd
+		return in
+	}
+	cp := func(p, cwd string) bool { return controlPlaneEdit(w.bridge, withCwd(p, cwd), goos) != "" }
+	ws := func(p, cwd string) bool { return writesStateEdit(w.bridge, withCwd(p, cwd), goos) != "" }
+	eg := func(p, cwd string) bool {
+		why, _, err := editGuard(w.bridge, withCwd(p, cwd), goos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return why != ""
+	}
+	for _, c := range []struct {
+		name         string
+		guard        func(p, cwd string) bool
+		raw, spelled string
+		cwd          string
+		refused      bool
+	}{
+		{"controlPlaneEdit", cp, filepath.Join(w.bridge, ".starship", "control-plane", "x.go"), "~/bridge/.starship/control-plane/x.go", tmp, true},
+		{"controlPlaneEdit leading space", cp, filepath.Join(w.bridge, ".starship", "control-plane", "x.go"), " ~/bridge/.starship/control-plane/x.go", tmp, true},
+		{"writesStateEdit .writes", ws, filepath.Join(sessions, "s1.writes"), "~/bridge/.starship/sessions/s1.writes", tmp, true},
+		{"writesStateEdit .writes.lock", ws, filepath.Join(sessions, "s1.writes.lock"), "~/bridge/.starship/sessions/s1.writes.lock", tmp, true},
+		{"writesStateEdit .writes.tmp", ws, filepath.Join(sessions, "s1.writes.tmp"), "~/bridge/.starship/sessions/s1.writes.tmp", tmp, true},
+		{"writesStateEdit unrelated", ws, filepath.Join(w.bridge, "notes.md"), "~/bridge/notes.md", tmp, false},
+		{"editGuard outside, cwd inside", eg, filepath.Join(elsewhere, "x.txt"), "~/workspace/x.txt", w.bridge, true},
+		{"editGuard allowed, cwd outside", eg, filepath.Join(w.bridge, "notes.md"), "~/bridge/notes.md", elsewhere, false},
 	} {
-		if got := editFolderTarget(c.in, "/home/u", c.goos); got != c.want {
-			t.Errorf("editFolderTarget(%q, %s) = %q, want %q", c.in, c.goos, got, c.want)
+		if got := c.guard(c.spelled, c.cwd); got != c.refused {
+			t.Errorf("%s: %q refused = %v, want %v", c.name, c.spelled, got, c.refused)
+		}
+		if got := c.guard(c.raw, c.cwd); got != c.refused {
+			t.Errorf("%s: expanded %q refused = %v, want %v", c.name, c.raw, got, c.refused)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		vol := filepath.VolumeName(w.bridge)
+		slash := "/" + strings.ToLower(vol[:1]) + filepath.ToSlash(w.bridge[len(vol):])
+		if why := controlPlaneEdit(w.bridge, withCwd(slash+"/.starship/control-plane/x.go", tmp), goos); !strings.Contains(why, "which isn't edited") {
+			t.Errorf("controlPlaneEdit: a /c/ path is the control plane: %q", why)
+		}
+		if why := writesStateEdit(w.bridge, withCwd(slash+"/.starship/sessions/s1.writes", tmp), goos); !strings.Contains(why, "connector writes state, which is changed only") {
+			t.Errorf("writesStateEdit: a /c/ path is the writes file: %q", why)
+		}
+		if why, _, _ := editGuard(w.bridge, withCwd(slash+"/../workspace/x.txt", w.bridge), goos); !strings.Contains(why, "is outside the folders") {
+			t.Errorf("editGuard: a /c/ path outside the allowed folders is refused as outside: %q", why)
+		}
+		if why, _, _ := editGuard(w.bridge, withCwd(slash+"/notes.md", elsewhere), goos); why != "" {
+			t.Errorf("editGuard: a /c/ path inside the bridge is allowed: %q", why)
+		}
+	}
+}
+
+func TestWindowsGuardsJudgeExpandedForm(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	for _, p := range []string{`/c/supernova/x`, ` C:\supernova\x`} {
+		in := guardInput("Write", "file_path", p)
+		if why := controlPlaneEdit(w.bridge, in, "windows"); strings.Contains(why, "full `C:") {
+			t.Errorf("controlPlaneEdit windows %q: %q", p, why)
+		}
+		if why := writesStateEdit(w.bridge, in, "windows"); strings.Contains(why, "full `C:") {
+			t.Errorf("writesStateEdit windows %q: %q", p, why)
+		}
+		if why, _, err := editGuard(w.bridge, in, "windows"); err != nil || strings.Contains(why, "full `C:") {
+			t.Errorf("editGuard windows %q: %q %v", p, why, err)
 		}
 	}
 }

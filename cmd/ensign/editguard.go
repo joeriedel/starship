@@ -28,10 +28,10 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 		return "", "", nil
 	}
 	home, _ := os.UserHomeDir()
-	if windowsUnresolvable(target, goos) || windowsUnresolvable(claudeToolPath(target, home, goos), goos) {
+	expanded := claudeToolPath(target, home, goos)
+	if windowsUnresolvable(expanded, goos) {
 		return "this edit was refused because on Windows, give the full `C:\\...` path of the file; this spelling (a stream, a device or volume path, a drive-relative or a rooted path with no drive) can't be checked against the folders this agent may edit. Working around the guard is a failure, not a fix.", "", nil
 	}
-	folderTarget := editFolderTarget(target, home, goos)
 	if why := snapshotGuard(bridge, in, target, goos); why != "" {
 		return why, "", nil
 	}
@@ -46,7 +46,7 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 		}
 		if _, declared := rules["reader"]; declared {
 			folder := filepath.Join(bridge, "reader")
-			if pathWithin(resolveEditTarget(folderTarget, in.Cwd, goos), resolveEditFolder(folder, goos), goos) {
+			if pathWithin(resolveEditTarget(expanded, in.Cwd, goos), resolveEditFolder(folder, goos), goos) {
 				return "", "", nil
 			}
 			return "this edit was refused because " + target + " is outside " + folder + ", the only folder a reader may edit. Working around the guard is a failure, not a fix.", "", nil
@@ -94,7 +94,7 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 			}
 		}
 	}
-	resolved := resolveEditTarget(folderTarget, in.Cwd, goos)
+	resolved := resolveEditTarget(expanded, in.Cwd, goos)
 	for _, f := range folders {
 		if pathWithin(resolved, resolveEditFolder(f, goos), goos) {
 			return "", warning, nil
@@ -327,16 +327,6 @@ func foldPath(p, goos string) string {
 func pathWithin(p, dir, goos string) bool {
 	p, dir = foldPath(p, goos), foldPath(dir, goos)
 	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
-}
-
-// editFolderTarget is the path editGuard resolves for its folder checks: on Windows a UNC path as Claude Code's tools expand it (so a leading space can't make it look relative to the cwd), otherwise the raw target.
-func editFolderTarget(target, home, goos string) string {
-	if goos == "windows" {
-		if expanded := claudeToolPath(target, home, goos); isUNCPath(expanded) {
-			return expanded
-		}
-	}
-	return target
 }
 
 func resolveEditTarget(p, cwd, goos string) string {

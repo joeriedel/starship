@@ -487,7 +487,7 @@ func controlPlaneEdit(bridge string, in *HookInput, goos string) string {
 	}
 	home, _ := os.UserHomeDir()
 	expanded := claudeToolPath(path, home, goos)
-	if windowsUnresolvable(path, goos) || windowsUnresolvable(expanded, goos) {
+	if windowsUnresolvable(expanded, goos) {
 		return "on Windows, give the full `C:\\...` path of the file; this spelling (a stream, a device or volume path, a drive-relative or a rooted path with no drive) can't be checked against the bridge's pinned copy of starship."
 	}
 	bf, err := loadBridgeFile(bridge)
@@ -498,7 +498,7 @@ func controlPlaneEdit(bridge string, in *HookInput, goos string) string {
 	if cp, err := controlPlaneDir(bridge, bf); err == nil {
 		roots = append(roots, cp)
 	}
-	target := resolveEditTarget(path, in.Cwd, goos)
+	target := resolveEditTarget(expanded, in.Cwd, goos)
 	for _, root := range roots {
 		folder := resolveEditFolder(root, goos)
 		if pathWithin(target, folder, goos) || uncNamesFolder(expanded, root, goos) || uncNamesFolder(expanded, folder, goos) {
@@ -517,15 +517,16 @@ func writesStateEdit(bridge string, in *HookInput, goos string) string {
 	if p == "" {
 		return ""
 	}
+	home, _ := os.UserHomeDir()
+	expanded := claudeToolPath(p, home, goos)
 	unc := false
 	if goos == "windows" {
-		stripped := stripExtendedPrefix(p, goos)
-		if windowsDevicePath(p) || windowsAmbiguousPath(stripped) {
+		if windowsUnresolvable(expanded, goos) {
 			return "on Windows, give the full `C:\\...` path of the file; this spelling (a stream, a device or volume path, a drive-relative or a rooted path with no drive) can't be checked against the session's connector writes state."
 		}
-		unc = len(stripped) > 1 && (stripped[0] == '\\' || stripped[0] == '/') && (stripped[1] == '\\' || stripped[1] == '/')
+		unc = isUNCPath(expanded)
 	}
-	target := foldPath(resolveEditTarget(p, in.Cwd, goos), goos)
+	target := foldPath(resolveEditTarget(expanded, in.Cwd, goos), goos)
 	dir := foldPath(resolveEditFolder(filepath.Join(bridge, ".starship", "sessions"), goos), goos)
 	// A share can name the sessions folder in ways that can't be listed (host, address, share), so a UNC path is decided by its name alone.
 	if !unc && path.Dir(target) != dir {
@@ -540,7 +541,7 @@ func writesStateEdit(bridge string, in *HookInput, goos string) string {
 	return ""
 }
 
-// windowsUnresolvable reports, on Windows only, a path spelling that can't be placed by name: a device or volume path, a stream, a drive-relative or a rooted path with no drive. It takes the raw path.
+// windowsUnresolvable reports, on Windows only, a path spelling that can't be placed by name: a device or volume path, a stream, a drive-relative or a rooted path with no drive. It takes a path already through claudeToolPath.
 func windowsUnresolvable(p, goos string) bool {
 	return goos == "windows" && (windowsDevicePath(p) || windowsAmbiguousPath(stripExtendedPrefix(p, goos)))
 }
