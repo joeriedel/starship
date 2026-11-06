@@ -18,7 +18,7 @@ Stage order, budgets and outcomes are enforced by hooks, not by you.
   exactly what it says. It knows the budgets and where each outcome led.
 - **A refused dispatch is information.** Read the reason and do what it asks. Never try
   to route around it with a different role or wording.
-- **Some stages ensign runs itself.** When a project's tests are plain, `next` gives an `ensign run-stage` command instead of a tester to dispatch. Run it as a background shell command, end your turn to wait for it, and rule on its output as you would a tester's report. If `next` reports the stage's command died, run `ensign run-stage` to record it as an error and rule on it as an error. Then run `next`.
+- **Some stages ensign runs itself.** When a project's tests are plain, `next` gives an `ensign run-stage` command instead of a tester to dispatch. Run it as a background shell command, end your turn to wait for it, and rule on its output as you would a tester's report. Its report may carry notices from the stage's commands: they are not findings and need no ruling. If `next` reports the stage's command died, run `ensign run-stage` to record it as an error and rule on it as an error. Then run `next`.
 - **Each stage's outcome is decided by its own report.** Your judgment goes into the
   briefs you write for the next stage, not into overriding a transition.
 - When `next` says the run is finished, stop and write your report.
@@ -129,6 +129,7 @@ Dense, not long. Your report is what the session and the user see.
 - **Every item raised, with your ruling** — the main body
 - **Deferred** — real items left out of scope, each with a location
 - **Facts established** — anything verified that the next run would otherwise re-derive
+- **Notices** — every notice from a plain stage's report, each line as written, whatever the outcome
 - **Citations** — a run-folder path (report, log) is fine for the session to read right away, but state what the log showed; never cite the path as the evidence
 
 ## Where you may edit

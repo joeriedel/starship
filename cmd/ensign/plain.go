@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -145,7 +146,7 @@ func stopServices(r *RunFiles, d *Dispatch, sides []Side, multi bool, deadline t
 			continue
 		}
 		start := time.Now()
-		out, err := runBinding(r, d, sd.Workspace, b.Command, start.Add(limit))
+		out, err := runBinding(r, d, sd.Workspace, b.Command, noticesPath(r, d, i), start.Add(limit))
 		took := time.Since(start).Round(time.Second)
 		log = append(log, fmt.Sprintf("$ %s\n%s", b.Command, out))
 		if err != nil {
@@ -273,7 +274,7 @@ func hasServicesDown(snap *Snapshot) bool {
 }
 
 // completeDeadOwner records a plain dispatch whose owner died as an error. Nothing is run again except @services-down, whose steps it returns; deadline, when set, caps them all.
-func completeDeadOwner(r *RunFiles, m *machine, d *Dispatch, deadline time.Time) (downs []string, err error) {
+func completeDeadOwner(r *RunFiles, m *machine, d *Dispatch, deadline time.Time) (downs []string, notices string, err error) {
 	s := m.stage(d.Stage)
 	summary := fmt.Sprintf("stage %q's command died before it finished (killed, or the session or machine stopped); its effect on the run is unknown", s.ID)
 	report := "Run by ensign: " + summary + ".\n"
@@ -285,14 +286,16 @@ func completeDeadOwner(r *RunFiles, m *machine, d *Dispatch, deadline time.Time)
 		summary += "; " + strings.Join(steps, "; ")
 		report = "Run by ensign: " + summary + ".\n"
 	}
+	notices = noticesSection(readNotices(r, d))
+	report += notices
 	wasTerminal := r.State.terminal()
 	completeDispatch(r, m, d, s, "error", summary, nil, report)
-	return downs, finishIfTerminal(r, wasTerminal, os.Stderr)
+	return downs, notices, finishIfTerminal(r, wasTerminal, os.Stderr)
 }
 
 // runBinding runs a plain binding's command: an ensign built-in, or a command line. A
 // built-in reports failed tests as errTestsFailed; any other error means no verdict.
-func runBinding(r *RunFiles, d *Dispatch, dir, command string, deadline time.Time) (string, error) {
+func runBinding(r *RunFiles, d *Dispatch, dir, command, notices string, deadline time.Time) (string, error) {
 	if args, ok := strings.CutPrefix(strings.TrimSpace(command), "ensign "); ok {
 		f := strings.Fields(args)
 		if len(f) > 0 && f[0] == "github-pr" {
@@ -300,7 +303,48 @@ func runBinding(r *RunFiles, d *Dispatch, dir, command string, deadline time.Tim
 		}
 		return "", internalHandler(r, f, d)
 	}
-	return shellFor(dir, command, handlerEnv(r, d), time.Until(deadline))
+	// Last, so that it wins over machine.yaml and the inherited environment.
+	return shellFor(dir, command, append(handlerEnv(r, d), "STARSHIP_NOTICES="+notices), time.Until(deadline))
+}
+
+// noticesPath is the file a command of side i appends its notices to; the cross-location test is side len(sides). The command's `>>` creates it, and a missing file means no notices.
+func noticesPath(r *RunFiles, d *Dispatch, i int) string {
+	return filepath.Join(r.Dir, "reports", fmt.Sprintf("%s.notices-%d", d.ID, i))
+}
+
+// readNotices returns the notice lines the dispatch's commands wrote, side by side and then the cross-location test, each exactly as written. A file that cannot be read gives one line saying so; notices never change an outcome.
+func readNotices(r *RunFiles, d *Dispatch) []string {
+	var lines []string
+	sides := r.Snap.sides()
+	multi := len(sides) > 1
+	read := func(i int, label string) {
+		data, err := os.ReadFile(noticesPath(r, d, i))
+		switch {
+		case errors.Is(err, fs.ErrNotExist) || (err == nil && len(data) == 0):
+			return
+		case err != nil:
+			lines = append(lines, label+"notices could not be read: "+err.Error())
+			return
+		}
+		for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+			lines = append(lines, label+strings.TrimSuffix(line, "\r"))
+		}
+	}
+	for i, sd := range sides {
+		read(i, sideLabel(sd, multi))
+	}
+	if r.Snap.crossTest().Valid() {
+		read(len(sides), "cross-location: ")
+	}
+	return lines
+}
+
+// noticesSection is the report section carrying notices, or "" when there are none.
+func noticesSection(notices []string) string {
+	if len(notices) == 0 {
+		return ""
+	}
+	return "\nNotices from the stage's commands. They do not affect the outcome. Carry every line below into your report as written:\n\n- " + strings.Join(notices, "\n- ") + "\n"
 }
 
 // couldNotRun is an exit code that means the command could not do its job at all, as
@@ -340,7 +384,7 @@ func cmdRunStage(args []string, out io.Writer) (err error) {
 	}
 	if m.running(scope, s.ID) > 0 {
 		if d := deadPlainOwner(r, m, scope); d != nil {
-			downs, err := completeDeadOwner(r, m, d, time.Time{})
+			downs, notices, err := completeDeadOwner(r, m, d, time.Time{})
 			if err != nil {
 				return err
 			}
@@ -351,7 +395,7 @@ func cmdRunStage(args []string, out io.Writer) (err error) {
 			if len(downs) > 0 {
 				ran = "ran only its @services-down: " + strings.Join(downs, "; ")
 			}
-			fmt.Fprintf(out, "Stage %q was left running by an `ensign run-stage` that died; ensign recorded it as an error and %s. Outcome: error.\n\nNext: %s\n", s.ID, ran, m.expect(scope))
+			fmt.Fprintf(out, "Stage %q was left running by an `ensign run-stage` that died; ensign recorded it as an error and %s. Outcome: error.\n%s\nNext: %s\n", s.ID, ran, notices, m.expect(scope))
 			return nil
 		}
 		return fmt.Errorf("stage %q is already running. %s", s.ID, m.expect(scope))
@@ -403,6 +447,7 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	type planned struct {
 		label, name, dir string
 		b                Binding
+		index            int   // the index of the side, for its notices file; len(sides) for the cross-location test
 		side             *Side // the side whose wiring the command needs; the edited side for the cross-location test
 		deps             []Dependency
 	}
@@ -416,13 +461,13 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 		}
 		for _, name := range []string{"build", "test"} {
 			if b, ok := sd.Bindings[name]; ok && b.NotApplicable == "" && b.Command != "" {
-				plan = append(plan, planned{sideLabel(sd, multi), name, sd.Workspace, b, &sides[i], sp.apply})
+				plan = append(plan, planned{sideLabel(sd, multi), name, sd.Workspace, b, i, &sides[i], sp.apply})
 			}
 		}
 	}
 	if b := r.Snap.crossTest(); b.Valid() {
 		edited := &r.Snap.sides()[0]
-		plan = append(plan, planned{"cross-location: ", "test", r.Snap.Workspace, b, edited, planSide(*edited, r.Snap.Dependencies).apply})
+		plan = append(plan, planned{"cross-location: ", "test", r.Snap.Workspace, b, len(sides), edited, planSide(*edited, r.Snap.Dependencies).apply})
 	}
 	// Services come up before anything else and go down last, whatever happens in between; a signal that arrives while they are up waits for the downs.
 	for _, sd := range sides {
@@ -434,7 +479,7 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 		}
 	}
 	reached := 0
-	for _, sd := range sides {
+	for i, sd := range sides {
 		if sig := caughtSignal(); sig != nil {
 			outcome = "error"
 			steps = append(steps, fmt.Sprintf("interrupted by %s before the services were up", sig))
@@ -446,7 +491,7 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 			continue
 		}
 		start := time.Now()
-		out, err := runBinding(r, d, sd.Workspace, b.Command, start.Add(bindingLimit(b)))
+		out, err := runBinding(r, d, sd.Workspace, b.Command, noticesPath(r, d, i), start.Add(bindingLimit(b)))
 		took := time.Since(start).Round(time.Second)
 		log = append(log, fmt.Sprintf("$ %s\n%s", b.Command, out))
 		if err != nil {
@@ -497,7 +542,7 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 			}
 		}
 		start := time.Now()
-		out, err := runBinding(r, d, p.dir, b.Command, start.Add(bindingLimit(b)))
+		out, err := runBinding(r, d, p.dir, b.Command, noticesPath(r, d, p.index), start.Add(bindingLimit(b)))
 		took := time.Since(start).Round(time.Second)
 		log = append(log, fmt.Sprintf("$ %s\n%s", b.Command, out))
 		var exit *exec.ExitError
@@ -539,6 +584,7 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 
 	summary := strings.Join(steps, "; ")
 	report := "Run by ensign: this project's @test binding is plain.\n\n- " + strings.Join(steps, "\n- ") + "\n"
+	report += noticesSection(readNotices(r, d))
 	switch {
 	case failed != "":
 		report += "\nThe end of the failing command's output:\n\n```\n" + tailLines(failed, 40) + "\n```\n"

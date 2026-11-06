@@ -434,8 +434,13 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 	if s.isLead() {
 		deadline := time.Now().Add(recoveryDownLimit)
 		if d := deadPlainOwner(r, m, s.ID); d != nil && !r.State.terminal() {
-			if _, err := completeDeadOwner(r, m, d, deadline); err != nil {
+			_, notices, err := completeDeadOwner(r, m, d, deadline)
+			if err != nil {
 				return nil, err
+			}
+			if notices != "" {
+				// Nothing else will show the lead the notices once the stage is gone.
+				return block(m.expect(s.ID) + "\n" + notices), nil
 			}
 		}
 		if r.State.terminal() {
@@ -1009,7 +1014,11 @@ func cmdNext(args []string, out io.Writer) error {
 			continue
 		}
 		if s := m.stage(d.Stage); s != nil && plainStage(r.Snap, s) {
-			fmt.Fprintf(out, "Stage %q (run by ensign) finished: %s. Its report: %s\n", d.Stage, d.Outcome, filepath.Join(r.Dir, "reports", d.ID+".md"))
+			hasNotices := ""
+			if len(readNotices(r, d)) > 0 {
+				hasNotices = "; it has notices from the stage's commands, to carry into your report as written"
+			}
+			fmt.Fprintf(out, "Stage %q (run by ensign) finished: %s. Its report: %s%s\n", d.Stage, d.Outcome, filepath.Join(r.Dir, "reports", d.ID+".md"), hasNotices)
 		}
 		break
 	}

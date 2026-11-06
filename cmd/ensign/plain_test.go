@@ -987,3 +987,199 @@ func TestServicesRunPerSideInTheirOwnFolders(t *testing.T) {
 		}
 	}
 }
+
+// report is the text of the newest dispatch's report.
+func (w *world) report() string {
+	w.t.Helper()
+	b, err := os.ReadFile(filepath.Join(w.bridge, ".starship", "runs", w.state().Run, "reports", lastDispatch(w).ID+".md"))
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return string(b)
+}
+
+const noticesHeading = "Notices from the stage's commands."
+
+// noticeStage runs the world's test stage and returns the run-stage output and the report.
+func noticeStage(t *testing.T, w *world) (out, report string) {
+	t.Helper()
+	w.toTest(w.startLead())
+	out, err := w.runStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out, w.report()
+}
+
+func TestNoticesFromEveryBindingReachTheReport(t *testing.T) {
+	n := func(s string) string { return "echo " + s + " >> $STARSHIP_NOTICES" }
+	w := servicesWorld(t, n("n-test"), n("n-up"), n("n-down"))
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	write(t, p, strings.Replace(string(data), `command: "echo build >> order"`, `command: "`+n("n-build")+`"`, 1))
+	out, report := noticeStage(t, w)
+	for name, text := range map[string]string{"run-stage output": out, "report": report} {
+		if !strings.Contains(text, noticesHeading) || !strings.Contains(text, "- n-up\n- n-build\n- n-test\n- n-down\n") {
+			t.Errorf("%s should carry the notices of all four bindings in order: %q", name, text)
+		}
+		if strings.Contains(text, "- side ") {
+			t.Errorf("a single-side run has no labels: %q", text)
+		}
+	}
+	if !strings.Contains(out, "Outcome: pass") {
+		t.Errorf("outcome %q", out)
+	}
+}
+
+func TestNoticesAreLabelledInAMultiSideRun(t *testing.T) {
+	w := sidesPlainWorld(t, "echo c-note >> $STARSHIP_NOTICES")
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	write(t, p, strings.Replace(string(data), `touch cross`, `echo x-note >> $STARSHIP_NOTICES`, 1))
+	w.run(locTask(t, w, "m", "models"))
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.toTestOneReview(lead)
+	out, err := w.runStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "- side client: c-note\n- cross-location: x-note\n") {
+		t.Fatalf("notices should carry their side's label, then the cross-location one: %q", out)
+	}
+	if !strings.Contains(w.report(), "- side client: c-note\n- cross-location: x-note\n") {
+		t.Fatalf("report %q", w.report())
+	}
+}
+
+func TestNoticesDoNotChangeAFailure(t *testing.T) {
+	w := plainWorld(t, "echo FAILTEXT; echo n-fail >> $STARSHIP_NOTICES; exit 1")
+	out, report := noticeStage(t, w)
+	if !strings.Contains(out, "Outcome: fail") || lastDispatch(w).Outcome != "fail" {
+		t.Fatalf("outcome %q", out)
+	}
+	i, j := strings.Index(report, "- n-fail\n"), strings.Index(report, "The end of the failing command's output:\n\n```\nFAILTEXT\n```\n")
+	if i < 0 || j < 0 || i > j {
+		t.Fatalf("notices should come before the unchanged failure output: %q", report)
+	}
+	if got := w.next(); !strings.Contains(got, "has notices") {
+		t.Fatalf("next should mention the notices: %s", got)
+	}
+}
+
+func TestNoticesDoNotChangeAnError(t *testing.T) {
+	for _, cmd := range []string{"echo n-err >> $STARSHIP_NOTICES; exit 127", "echo n-err >> $STARSHIP_NOTICES; sleep 5"} {
+		w := plainWorld(t, cmd)
+		p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+		data, _ := os.ReadFile(p)
+		write(t, p, strings.Replace(string(data), `command: "`+cmd+`", plain: true`, `command: "`+cmd+`", plain: true, timeout: 1s`, 1))
+		out, report := noticeStage(t, w)
+		if !strings.Contains(out, "Outcome: error") || !strings.Contains(report, "- n-err\n") {
+			t.Errorf("%s: %q", cmd, out)
+		}
+	}
+}
+
+func TestNoNoticesLeavesTheReportAlone(t *testing.T) {
+	for _, cmd := range []string{"exit 1", ": > $STARSHIP_NOTICES; exit 1"} {
+		w := plainWorld(t, cmd)
+		out, report := noticeStage(t, w)
+		if !strings.Contains(out, "Outcome: fail") || strings.Contains(out, noticesHeading) || strings.Contains(report, noticesHeading) {
+			t.Errorf("%s: a missing or empty file means no notices: %q", cmd, out)
+		}
+		if got := w.next(); strings.Contains(got, "has notices") {
+			t.Errorf("%s: next should not mention notices: %s", cmd, got)
+		}
+	}
+}
+
+func TestNoticesAreCarriedWhole(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	w := plainWorld(t, `i=0; while [ $i -lt 60 ]; do echo line$i >> $STARSHIP_NOTICES; i=$((i+1)); done; head -c 5000 /dev/zero | tr '\\0' x >> $STARSHIP_NOTICES; echo >> $STARSHIP_NOTICES`)
+	out, report := noticeStage(t, w)
+	for _, text := range []string{out, report} {
+		if !strings.Contains(text, "- line0\n- line1\n") || !strings.Contains(text, "- line59\n- "+long+"\n") {
+			t.Fatalf("every line should be carried whole: %d bytes", len(text))
+		}
+	}
+}
+
+func TestNoticesKeepBlankLinesAndStripCRLF(t *testing.T) {
+	w := plainWorld(t, `printf 'a\\r\\n\\nb' >> $STARSHIP_NOTICES`)
+	_, report := noticeStage(t, w)
+	if !strings.Contains(report, "- a\n- \n- b\n") || strings.Contains(report, "\r") {
+		t.Fatalf("report %q", report)
+	}
+}
+
+func TestInheritedNoticesVariableDoesNotWin(t *testing.T) {
+	t.Setenv("STARSHIP_NOTICES", filepath.Join(t.TempDir(), "elsewhere"))
+	w := plainWorld(t, "echo n-own >> $STARSHIP_NOTICES")
+	if _, report := noticeStage(t, w); !strings.Contains(report, "- n-own\n") {
+		t.Fatalf("report %q", report)
+	}
+}
+
+func TestUnreadableNoticesAreOneLine(t *testing.T) {
+	w := plainWorld(t, "rm -f $STARSHIP_NOTICES; mkdir $STARSHIP_NOTICES")
+	out, report := noticeStage(t, w)
+	if !strings.Contains(out, "Outcome: pass") || strings.Count(report, "notices could not be read") != 1 {
+		t.Fatalf("a directory should be one line and no change of outcome: %q", report)
+	}
+}
+
+func TestDeadRunStageKeepsItsNotices(t *testing.T) {
+	w, _ := diedRunIn(t, plainWorld(t, "echo n-before >> $STARSHIP_NOTICES; kill -9 $PPID"))
+	out, err := w.runStage()
+	if err != nil || !strings.Contains(out, "Outcome: error") || !strings.Contains(out, "- n-before\n") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if report := w.report(); !strings.Contains(report, noticesHeading) || !strings.Contains(report, "- n-before\n") {
+		t.Fatalf("report %q", report)
+	}
+}
+
+func TestLeadStopKeepsNoticesOfADeadStageOnATerminalRun(t *testing.T) {
+	w, lead := diedRunIn(t, plainWorld(t, "echo n-before >> $STARSHIP_NOTICES; kill -9 $PPID"))
+	if r := w.stop(lead, "orchestrator", "waiting", false); !strings.Contains(r, "The run is finished: error") || !strings.Contains(r, "Stop and report this.\n\nNotices") || !strings.Contains(r, "- n-before\n") {
+		t.Fatalf("the first stop should block with the notice: %q", r)
+	}
+	if st := w.state(); st.Status != "error" {
+		t.Fatalf("status %s", st.Status)
+	}
+	if r := w.stop(lead, "orchestrator", "waiting", false); r != "" {
+		t.Fatalf("the second stop should pass: %s", r)
+	}
+	for _, d := range w.state().Dispatches {
+		if d.Role == "orchestrator" && !d.Done {
+			t.Fatalf("the lead should be done: %+v", d)
+		}
+	}
+}
+
+func TestLeadStopKeepsNoticesOfADeadStageWhenTheRunGoesOn(t *testing.T) {
+	pw := plainWorld(t, "echo n-before >> $STARSHIP_NOTICES; kill -9 $PPID")
+	pf := filepath.Join(pw.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(pf)
+	write(t, pf, strings.Replace(string(data), "      - set:    { budgets.test: 2 }", "      - set:    { budgets.test: 2 }\n      - set:    { stage: test, outcomes.error: { goto: code, spend: test } }", 1))
+	w, lead := diedRunIn(t, pw)
+	left := map[string]int{}
+	for _, d := range w.state().Dispatches {
+		if d.StopsLeft != nil {
+			left[d.ID] = *d.StopsLeft
+		}
+	}
+	r := w.stop(lead, "orchestrator", "waiting", false)
+	if !strings.Contains(r, "Dispatch stage \"code\"") || !strings.Contains(r, "- n-before\n") {
+		t.Fatalf("the stop should block with the notice and the next stage: %q", r)
+	}
+	st := w.state()
+	if st.Finished || st.Status == "error" {
+		t.Fatalf("the run should go on: %s finished=%v", st.Status, st.Finished)
+	}
+	for _, d := range st.Dispatches {
+		if d.Role == "orchestrator" && (d.Done || *d.StopsLeft != left[d.ID]) {
+			t.Fatalf("the block should not spend a stop: %+v", d)
+		}
+	}
+}
