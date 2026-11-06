@@ -119,15 +119,19 @@ func focalThemes(bridge string, d DeclaredDocument) ([]string, error) {
 	return themes, nil
 }
 
+// focalEntryID is an entry's id for a message, or a placeholder when it is malformed, since a bad id field could hold anything.
+func focalEntryID(prefix, id string) string {
+	if !regexp.MustCompile(`^` + prefix + `\d+$`).MatchString(id) {
+		return "(a malformed id)"
+	}
+	return id
+}
+
 // focalProblems are the refusals for a focal rewrite, one per entry and field, naming the entry's id and never a value.
 func focalProblems(prefix string, themes []string, next Doc) []string {
-	idRe := regexp.MustCompile(`^` + prefix + `\d+$`)
 	var out []string
 	for _, e := range next.Entries {
-		id := e.ID
-		if !idRe.MatchString(id) {
-			id = "(a malformed id)"
-		}
+		id := focalEntryID(prefix, e.ID)
 		if strings.TrimSpace(e.Part) == "" {
 			out = append(out, fmt.Sprintf("entry %s: part is missing", id))
 		}
@@ -168,7 +172,21 @@ func renderFocalReadable(name string, themes []string, d Doc) []byte {
 	return []byte(b.String())
 }
 
-// focalWarnings are session-start notes about a focal-sheet setup that has no effect.
+// leftOutEntries are the active entries whose theme is not in themes, which renderFocalReadable skips.
+func leftOutEntries(themes []string, d Doc) []Entry {
+	var out []Entry
+	for _, e := range d.Entries {
+		if e.Status == "active" && !slices.Contains(themes, strings.TrimSpace(e.Theme)) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// maxLeftOutIDs keeps the left-out warning short, as the session-start text has a size budget.
+const maxLeftOutIDs = 3
+
+// focalWarnings are session-start notes about a focal-sheet setup that has no effect, and about active entries a focal sheet's readable companion leaves out.
 func focalWarnings(bridge string) []string {
 	var out []string
 	if bridgeUses(bridge, focalExtension) {
@@ -176,11 +194,46 @@ func focalWarnings(bridge string) []string {
 		if err != nil {
 			return nil
 		}
+		var firstName string
+		var firstLeft []Entry
+		moreDocs := 0
 		for _, d := range docs {
 			path := strings.ToLower(d.Path)
 			if !strings.HasPrefix(path, focalPrefix) && (strings.Contains(path, "focal") || strings.Contains(strings.ToLower(d.Name), "focal")) {
 				out = append(out, fmt.Sprintf("the document %s (%s) sits outside %s, so it is curated as a plain document with no focal rules.", d.Name, d.Path, focalPrefix))
 			}
+			if !isFocalDocument(bridge, d) {
+				continue
+			}
+			sheet, err := loadDocumentFile(d.file(bridge))
+			if err != nil {
+				continue
+			}
+			themes, err := focalThemes(bridge, d)
+			if err != nil {
+				continue
+			}
+			if left := leftOutEntries(themes, sheet); len(left) > 0 {
+				if firstLeft == nil {
+					firstName, firstLeft = d.Name, left
+				} else {
+					moreDocs++
+				}
+			}
+		}
+		if firstLeft != nil {
+			ids := make([]string, min(len(firstLeft), maxLeftOutIDs))
+			for i := range ids {
+				ids[i] = focalEntryID("D", firstLeft[i].ID)
+			}
+			list := strings.Join(ids, ", ")
+			if len(firstLeft) > len(ids) {
+				list += fmt.Sprintf(" and %d more", len(firstLeft)-len(ids))
+			}
+			if moreDocs > 0 {
+				list += fmt.Sprintf("; also in %d more document%s", moreDocs, plural(moreDocs))
+			}
+			out = append(out, fmt.Sprintf("the document %s has active entries left out of the readable companion; an updated rewrite is refused until each has a listed theme: %s.", firstName, list))
 		}
 		return out
 	}

@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -689,9 +690,9 @@ func TestReadableCompanionCollision(t *testing.T) {
 			sheet, _ := os.ReadFile(filepath.Join(w.bridge, focalPath))
 			cur, _ := focalCurator(w)
 			write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+repoRoot(t)+"\n"+head+other)
-			other := "other document\n"
+			theirs := "other document\n"
 			if strings.Contains(name, "path") {
-				write(t, filepath.Join(w.bridge, "notes/focal/2026-H2.readable.md"), other)
+				write(t, filepath.Join(w.bridge, "notes/focal/2026-H2.readable.md"), theirs)
 			}
 			r := w.stop(cur, "curator", "```starship-report\noutcome: unchanged\nsummary: nothing\n```\n", false)
 			if !strings.Contains(r, companion) || !strings.Contains(r, "updated or unchanged") {
@@ -704,7 +705,7 @@ func TestReadableCompanionCollision(t *testing.T) {
 				t.Errorf("the sheet changed")
 			}
 			if name == "path" {
-				if got, _ := os.ReadFile(filepath.Join(w.bridge, "notes/focal/2026-H2.readable.md")); string(got) != other {
+				if got, _ := os.ReadFile(filepath.Join(w.bridge, "notes/focal/2026-H2.readable.md")); string(got) != theirs {
 					t.Errorf("the other document was written over: %q", got)
 				}
 			}
@@ -812,4 +813,142 @@ func TestFocalWarningsExtensionElsewhere(t *testing.T) {
 	if got := sessionStartText(t, w); strings.Contains(got, reads) {
 		t.Errorf("warned although bridge.yaml uses the sheet:\n%s", got)
 	}
+}
+
+func TestFocalWarningsLeftOutEntries(t *testing.T) {
+	const marker = "left out of the readable companion"
+	act := func(id, theme string) Entry {
+		return Entry{ID: id, Status: "active", Theme: theme, Text: "Nova secrettext " + id, Why: "secretwhy", Part: "secretpart", Hits: 1, Evidence: []string{"review"}}
+	}
+	t.Run("delisted by id, no values", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		seedSheet(t, w, Doc{Entries: []Entry{act("D1", "Alpha"), act("D2", "secretthemevalue")}})
+		got := sessionStartText(t, w)
+		if !strings.Contains(got, marker) || !strings.Contains(got, "document supernova-focal has") || !strings.Contains(got, ": D2.") || strings.Contains(got, "D1,") {
+			t.Errorf("warning missing or wrong:\n%s", got)
+		}
+		for _, s := range []string{"secrettext", "secretwhy", "secretpart", "secretthemevalue"} {
+			if strings.Contains(got, s) {
+				t.Errorf("session start carries %q:\n%s", s, got)
+			}
+		}
+	})
+	t.Run("several in one line, empty theme counts", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		seedSheet(t, w, Doc{Entries: []Entry{act("D3", "Gone"), act("D1", "Alpha"), act("D2", ""), act("D4", "Gone")}})
+		got := sessionStartText(t, w)
+		if !strings.Contains(got, ": D3, D2, D4.") || strings.Count(got, marker) != 1 {
+			t.Errorf("want one line with D3, D2, D4:\n%s", got)
+		}
+	})
+	t.Run("ids are capped", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		var es []Entry
+		for i := 1; i <= 12; i++ {
+			es = append(es, act(fmt.Sprintf("D%d", i), "Gone"))
+		}
+		seedSheet(t, w, Doc{Entries: es})
+		if got := sessionStartText(t, w); !strings.Contains(got, ": D1, D2, D3 and 9 more.") || strings.Contains(got, "D4") {
+			t.Errorf("want three ids and 9 more:\n%s", got)
+		}
+	})
+	t.Run("lines are capped", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		y := "use: [focal-sheet]\ndocuments:\n"
+		for _, n := range []string{"a", "b", "c", "d", "e"} {
+			y += "  supernova-" + n + ":\n    path: notes/focal/2026-" + n + ".md\n    rubric: notes/focal/rubric.md\n"
+			p := filepath.Join(w.bridge, "notes/focal/2026-"+n+".md")
+			if err := writeDocumentFile(w.bridge, p, "supernova-"+n, Doc{Entries: []Entry{act("D1", "Gone")}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+repoRoot(t)+"\n"+y)
+		got := sessionStartText(t, w)
+		if strings.Count(got, marker) != 1 || !strings.Contains(got, "document supernova-a has") || !strings.Contains(got, ": D1; also in 4 more documents.") {
+			t.Errorf("want one line naming supernova-a and 4 more documents:\n%s", got)
+		}
+	})
+	t.Run("one more document, others not counted", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		y := "use: [focal-sheet]\ndocuments:\n"
+		for _, n := range []string{"a", "b", "c"} {
+			y += "  supernova-" + n + ":\n    path: notes/focal/2026-" + n + ".md\n    rubric: notes/focal/rubric.md\n"
+		}
+		write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+repoRoot(t)+"\n"+y)
+		for _, n := range []string{"a", "b"} {
+			if err := writeDocumentFile(w.bridge, filepath.Join(w.bridge, "notes/focal/2026-"+n+".md"), "supernova-"+n, Doc{Entries: []Entry{act("D1", "Gone")}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write(t, filepath.Join(w.bridge, "notes/focal/2026-c.md"), "# sheet\n\n```starship-document\nentries: [broken\n```\n")
+		got := sessionStartText(t, w)
+		if strings.Count(got, marker) != 1 || !strings.Contains(got, ": D1; also in 1 more document.") {
+			t.Errorf("want one more document:\n%s", got)
+		}
+	})
+	t.Run("no warning", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		cand := act("D2", "Gone")
+		cand.Status = "candidate"
+		seedSheet(t, w, Doc{Entries: []Entry{act("D1", "Alpha"), cand, act("D3", "  Alpha  ")}})
+		if got := sessionStartText(t, w); strings.Contains(got, marker) {
+			t.Errorf("unexpected warning:\n%s", got)
+		}
+	})
+	t.Run("default themes", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "")
+		seedSheet(t, w, Doc{Entries: []Entry{act("D1", "Business impact"), act("D2", "Alpha")}})
+		if got := sessionStartText(t, w); !strings.Contains(got, ": D2.") || strings.Contains(got, "D1") {
+			t.Errorf("want only D2:\n%s", got)
+		}
+	})
+	t.Run("no sheet", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		if got := sessionStartText(t, w); !strings.Contains(got, "Supernova manual.") || strings.Contains(got, marker) {
+			t.Errorf("no sheet:\n%s", got)
+		}
+	})
+	t.Run("broken sheet", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		write(t, filepath.Join(w.bridge, focalPath), "# sheet\n\n```starship-document\nentries: [broken\n```\n")
+		if got := sessionStartText(t, w); !strings.Contains(got, "Supernova manual.") || strings.Contains(got, marker) {
+			t.Errorf("broken sheet:\n%s", got)
+		}
+	})
+	t.Run("malformed id", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		seedSheet(t, w, Doc{Entries: []Entry{act("rawbadid", "Gone")}})
+		got := sessionStartText(t, w)
+		if !strings.Contains(got, "(a malformed id)") || strings.Contains(got, "rawbadid") {
+			t.Errorf("malformed id:\n%s", got)
+		}
+	})
+	t.Run("writes nothing", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		seedSheet(t, w, Doc{Entries: []Entry{act("D1", "Gone")}})
+		sheet, _ := os.ReadFile(filepath.Join(w.bridge, focalPath))
+		if got := sessionStartText(t, w); !strings.Contains(got, marker) {
+			t.Fatalf("no warning:\n%s", got)
+		}
+		if _, err := os.Stat(filepath.Join(w.bridge, "notes/focal/2026-h2.readable.md")); err == nil {
+			t.Errorf("a companion was written")
+		}
+		if got, _ := os.ReadFile(filepath.Join(w.bridge, focalPath)); !bytes.Equal(got, sheet) {
+			t.Errorf("the sheet changed")
+		}
+	})
+	t.Run("named entry is absent after unchanged", func(t *testing.T) {
+		w := focalWorld(t, true, focalPath, "## Alpha\n")
+		seedSheet(t, w, Doc{Entries: []Entry{act("D1", "Alpha"), act("D2", "Gone")}})
+		if got := sessionStartText(t, w); !strings.Contains(got, ": D2.") {
+			t.Fatalf("D2 not named:\n%s", got)
+		}
+		cur, _ := focalCurator(w)
+		if r := w.stop(cur, "curator", unchangedReport(), true); r != "" {
+			t.Fatalf("refused: %s", r)
+		}
+		if got := readableOf(w); !strings.Contains(got, "secrettext D1") || strings.Contains(got, "secrettext D2") {
+			t.Errorf("companion:\n%s", got)
+		}
+	})
 }
