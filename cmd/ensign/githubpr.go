@@ -225,7 +225,7 @@ func githubUpdate(bridge, task, location string) (base, sha string, upToDate boo
 	}
 	if out, err := exec.Command("git", "-C", ws, "rebase", "origin/"+base, want).CombinedOutput(); err != nil {
 		// User config must not narrow this listing: an omitted conflict would go unreported.
-		files, _ := gitZ(ws, "diff", "--name-only", "--diff-filter=U", "--no-relative", "--ignore-submodules=none", "-z")
+		files, _ := gitZ(ws, "diff", "--name-only", "--diff-filter=U", "--no-relative", "-z")
 		git(ws, "rebase", "--abort")
 		if cur != "" && cur != want {
 			git(ws, "switch", "-q", cur)
@@ -349,8 +349,8 @@ func githubReady(r *RunFiles) error {
 	if s, _, _ := r.Snap.Pipeline.find("test"); s == nil {
 		noTestStage = true
 	}
-	// A docs start on a pipeline with no test stage passes testPassed, but must not replace a marker that exists.
-	if !testPassed(r) || (noTestStage && startsAtDocs(r) && markerErr == nil) {
+	// A docs start on a pipeline with no test stage passes testPassed, but ran nothing the marker could vouch for, so it never writes one.
+	if !testPassed(r) || (noTestStage && startsAtDocs(r)) {
 		if markerErr == nil {
 			marker := strings.TrimSpace(string(data))
 			if sha == marker {

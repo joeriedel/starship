@@ -346,6 +346,59 @@ func TestGithubPRUpdateConflict(t *testing.T) {
 	}
 }
 
+func TestGithubPRUpdateConflictOnAGitlinkHiddenByConfig(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	t.Setenv("GIT_COMMITTER_NAME", "t") // the rebase under test commits
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
+	link := func(dir, sha string) {
+		runGit(t, dir, "update-index", "--add", "--cacheinfo", "160000,"+sha+",lib")
+	}
+	link(ws, strings.Repeat("1", 40))
+	runGit(t, ws, "commit", "-qm", "link")
+	runGit(t, ws, "push", "-q", "origin", "main")
+	runGit(t, ws, "switch", "-q", "-c", "task/auth-refactor")
+	link(ws, strings.Repeat("2", 40))
+	write(t, filepath.Join(ws, "mine.txt"), "mine\n")
+	runGit(t, ws, "add", "mine.txt")
+	runGit(t, ws, "commit", "-qm", "mine")
+	runGit(t, ws, "switch", "-q", "main")
+	other := filepath.Join(t.TempDir(), "other")
+	runGit(t, ".", "clone", "-q", remote, other)
+	link(other, strings.Repeat("3", 40))
+	write(t, filepath.Join(other, "theirs.txt"), "theirs\n")
+	runGit(t, other, "add", "theirs.txt")
+	runGit(t, other, "commit", "-qm", "meanwhile")
+	runGit(t, other, "push", "-q", "origin", "main")
+	runGit(t, ws, "config", "diff.ignoreSubmodules", "all")
+	_, err := w.land("update")
+	if err == nil || !strings.Contains(err.Error(), "conflicts in: lib. ") {
+		t.Fatalf("a conflict on a gitlink should be named even when config ignores submodules: %v", err)
+	}
+}
+
+// subfolderWorkspace points the project's workspace at a tracked folder inside the repository at ws.
+func subfolderWorkspace(t *testing.T, w *world, ws string) {
+	t.Helper()
+	write(t, filepath.Join(ws, "sub", "code.txt"), "one\n")
+	runGit(t, ws, "add", "sub")
+	runGit(t, ws, "commit", "-qm", "sub")
+	runGit(t, ws, "push", "-q", "origin", "main")
+	if _, err := setWorkspace(w.bridge, "supernova", filepath.Join(ws, "sub")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGithubPRUpdateConflictOutsideTheWorkspaceUnderDiffRelative(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	runGit(t, ws, "config", "diff.relative", "true")
+	subfolderWorkspace(t, w, ws)
+	staleBranch(t, ws, remote, "lib.txt", "theirs\n")
+	_, err := w.land("update")
+	if err == nil || !strings.Contains(err.Error(), "conflicts in: lib.txt") {
+		t.Fatalf("a conflict outside the workspace folder should be named: %v", err)
+	}
+}
+
 func TestGithubPRUpdateConflictAwkwardNames(t *testing.T) {
 	for _, c := range []struct{ file, want string }{
 		{"old nova.txt", "old nova.txt"},

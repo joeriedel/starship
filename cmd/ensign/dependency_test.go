@@ -1066,6 +1066,30 @@ func TestCatalogCommitPassCommitsAStagedGitlinkHiddenByConfig(t *testing.T) {
 	}
 }
 
+// Pins --no-relative on the staged-change check: the name lib.txt matches both lib.txt at the repository root and sub/lib.txt, and under diff.relative a plain diff run from sub hides the root file. This does not say a file outside the workspace ought to be committed.
+func TestCatalogCommitPassCommitsAStagedChangeOutsideTheWorkspaceUnderDiffRelative(t *testing.T) {
+	repo := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	sub := filepath.Join(repo, "sub")
+	write(t, filepath.Join(repo, "lib.txt"), "one\n")
+	write(t, filepath.Join(sub, "lib.txt"), "one\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-qm", "libs")
+	runGit(t, repo, "config", "diff.relative", "true")
+	write(t, filepath.Join(repo, "lib.txt"), "two\n")
+	runGit(t, repo, "add", "lib.txt")
+	if got := runGit(t, sub, "diff", "--cached", "--name-only"); got != "" {
+		t.Fatalf("a plain diff should hide the staged root file, got %q", got)
+	}
+	r := unitRun(t, sub)
+	d := &Dispatch{ID: "d1", Summary: "changed", Fields: map[string][]string{"files": {"lib.txt"}}}
+	if err := catalogCommitPass(r, d); err != nil {
+		t.Fatal(err)
+	}
+	if got := runGit(t, repo, "show", "--name-only", "--format=", "HEAD"); got != "lib.txt" {
+		t.Errorf("committed %q", got)
+	}
+}
+
 func TestUntrackedFilesCountAsDirtyUnderShowUntrackedFilesNo(t *testing.T) {
 	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
 	runGit(t, ws, "config", "status.showUntrackedFiles", "no")

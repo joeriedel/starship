@@ -951,6 +951,37 @@ func TestCommitDocsPathsStagesOnlyLiteralNames(t *testing.T) {
 	}
 }
 
+func TestCommitDocsPathsCommitsAPathOutsideTheRootUnderDiffRelative(t *testing.T) {
+	repo := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	runGit(t, repo, "config", "diff.relative", "true")
+	write(t, filepath.Join(repo, "sub", "code.txt"), "one\n")
+	write(t, filepath.Join(repo, "other", "o.md"), "one\n")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-qm", "base")
+	write(t, filepath.Join(repo, "other", "o.md"), "two\n")
+	if err := commitDocsPaths(filepath.Join(repo, "sub"), []string{"../other/o.md"}, true, "-m", "docs"); err != nil {
+		t.Fatal(err)
+	}
+	if got := runGit(t, repo, "show", "--name-only", "--format=", "HEAD"); got != "other/o.md" {
+		t.Errorf("committed %q, want other/o.md", got)
+	}
+}
+
+func TestCommitDocsPathsCommitsAStagedGitlinkHiddenByConfig(t *testing.T) {
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	write(t, filepath.Join(ws, ".gitmodules"), "[submodule \"lib\"]\n\tpath = lib\n\turl = ./lib\n\tignore = all\n")
+	runGit(t, ws, "add", ".gitmodules")
+	runGit(t, ws, "commit", "-qm", "modules")
+	before := runGit(t, ws, "rev-parse", "HEAD")
+	newRepo(t, filepath.Join(ws, "lib"))
+	if err := commitDocsPaths(ws, []string{"lib"}, true, "-m", "docs"); err != nil {
+		t.Fatal(err)
+	}
+	if after := runGit(t, ws, "rev-parse", "HEAD"); after == before {
+		t.Error("the staged gitlink should have been committed")
+	}
+}
+
 func TestCommitDocsPathsHookDoesNotSeeLiteralPathspecs(t *testing.T) {
 	needGit(t)
 	if runtime.GOOS == "windows" {
@@ -1022,7 +1053,7 @@ func TestDocsStartWithoutTestStageKeepsTheMarkerOverDocsCommits(t *testing.T) {
 	}
 }
 
-func TestDocsStartWithoutTestStageRecordsAMissingMarker(t *testing.T) {
+func TestDocsStartWithoutTestStageRecordsNothingForAMissingMarker(t *testing.T) {
 	w, ws, _, _ := githubWorld(t, "success", localTest)
 	w.docsBinding(`{ paths: [docs] }`)
 	w.noTestStage()
@@ -1031,7 +1062,64 @@ func TestDocsStartWithoutTestStageRecordsAMissingMarker(t *testing.T) {
 	if st := w.state(); st.Status != "success" {
 		t.Fatalf("status %s (%s)", st.Status, st.Reason)
 	}
-	if got, head := w.markerSha(), runGit(t, ws, "rev-parse", "HEAD"); got != head {
-		t.Errorf("with no marker the run records HEAD %s, got %q", head, got)
+	if got := w.markerSha(); got != "" {
+		t.Errorf("a docs start must not write a marker, got %q", got)
 	}
+	if !w.hasNote("not recorded as tested") || !w.hasNote("`ensign run "+authTask+"`") || w.hasNote("--start test") {
+		t.Errorf("the note should advise a full run: %v", w.state().Notes)
+	}
+}
+
+func TestDocsStartAfterAFailedRunWithoutTestStageCannotPublish(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	w.docsBinding(`{ paths: [docs] }`)
+	w.noTestStage()
+	mainBefore := remoteMain(t, remote)
+	lead := w.startLead()
+	write(t, filepath.Join(ws, "lib.txt"), "two\n")
+	runGit(t, ws, "commit", "-q", "-am", "work")
+	w.failRun(lead)
+
+	lead = w.startLead("--start", "docs")
+	w.docsWith(lead, "updated", "docs/a.md", func() { write(t, filepath.Join(ws, "docs", "a.md"), "doc\n") })
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if got := w.markerSha(); got != "" {
+		t.Fatalf("the docs run must not write a marker, got %q", got)
+	}
+	if _, _, _, err := tested(w.bridge, authTask, ""); err == nil {
+		t.Error("tested() must not accept the failed run's commits")
+	}
+	for _, step := range []string{"merge", "pull-request"} {
+		if _, err := w.land(step); err == nil {
+			t.Errorf("%s should be refused", step)
+		}
+	}
+	if got := remoteMain(t, remote); got != mainBefore {
+		t.Errorf("nothing may be pushed to main: %s", got)
+	}
+}
+
+func TestFullRunWithoutTestStageStillRecordsAndPublishes(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	w.noTestStage()
+	lead := w.startLead()
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatalf("coder refused: %s", why)
+	}
+	write(t, filepath.Join(ws, "lib.txt"), "two\n")
+	runGit(t, ws, "commit", "-qam", "work")
+	w.stop(coder, "coder", coderReport("compiled", "lib.txt"), false)
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if got, head := w.markerSha(), runGit(t, ws, "rev-parse", "HEAD"); got != head {
+		t.Errorf("a full run records HEAD %s, got %q", head, got)
+	}
+	w.wantLands(remote)
 }
