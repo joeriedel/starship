@@ -521,7 +521,7 @@ func TestSettleSessionJudgesTheWholeSession(t *testing.T) {
 	files := sessFiles(t, w, "s1", oldAge, "")
 	renamed := rename(files)
 	write(t, files[1], "x\n")
-	settleSession(dir, "s1", names(files), renamed)
+	settleSession(dir, "s1", names(files), renamed, testSweep())
 	if !allExist(files) || !noGC(files) {
 		t.Error("a .pin rewritten after the snapshot must keep the whole session")
 	}
@@ -533,7 +533,7 @@ func TestSettleSessionJudgesTheWholeSession(t *testing.T) {
 	write(t, files[0], "new\n")
 	old := time.Now().Add(-oldAge)
 	os.Chtimes(files[0], old, old)
-	settleSession(dir, "s1", names(files), renamed)
+	settleSession(dir, "s1", names(files), renamed, testSweep())
 	if got, _ := os.ReadFile(files[0]); string(got) != "new\n" {
 		t.Errorf("a recreated .task must keep its new content, got %q", got)
 	}
@@ -545,7 +545,7 @@ func TestSettleSessionJudgesTheWholeSession(t *testing.T) {
 	dir = filepath.Join(w.bridge, ".starship", "sessions")
 	files = sessFiles(t, w, "s1", oldAge, "")
 	renamed = rename(files)
-	settleSession(dir, "s1", names(files), renamed)
+	settleSession(dir, "s1", names(files), renamed, testSweep())
 	if !noneExist(files) || !noGC(files) {
 		t.Error("a session that is still stale must be gone, with no .gc left")
 	}
@@ -1036,7 +1036,7 @@ func TestGCRunThatCannotBeDeletedFails(t *testing.T) {
 	w := newWorld(t)
 	fabricate(t, w, "20240101-000001-supernova", "success", true)
 	fabricate(t, w, "20240101-000002-supernova", "success", true)
-	failSeam(t, &gcRemoveRun, func(string) {})
+	failSeam(t, &gcRemoveRun, func(string, time.Time) {})
 	if res := gcRuns(w.bridge, 1, 0); res.Failed != 1 || res.Removed != 0 {
 		t.Errorf("res = %+v", res)
 	}
@@ -1208,5 +1208,206 @@ func TestGCRestoreThatFailsWarnsAndCountsOnce(t *testing.T) {
 	}
 	if exists(link + ".gc") {
 		t.Error("the renamed link must not be left behind")
+	}
+}
+
+func testSweep() *sessionSweep { return &sessionSweep{deadline: time.Now().Add(time.Second)} }
+
+func TestReapSessionRenameFailureWarnsAndCounts(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	files := sessFiles(t, w, "s1", oldAge, "")
+	failSeam(t, &gcRename, func(string, string) error { return errSeam })
+	s := testSweep()
+	stderr := captureStderr(t, func() { reapSession(dir, "s1", []string{filepath.Base(files[0])}, s) })
+	if s.failed != 1 || !strings.Contains(stderr, "warning: could not rename") || !exists(files[0]) || exists(files[0]+".gc") {
+		t.Errorf("failed = %d, stderr = %q", s.failed, stderr)
+	}
+	failSeam(t, &gcRename, func(string, string) error { return fs.ErrNotExist })
+	s = testSweep()
+	stderr = captureStderr(t, func() { reapSession(dir, "s1", []string{filepath.Base(files[0])}, s) })
+	if s.failed != 0 || stderr != "" {
+		t.Errorf("a vanished file is no failure: failed = %d, stderr = %q", s.failed, stderr)
+	}
+}
+
+func TestSettleSessionStaleRemoveFailure(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	files := sessFiles(t, w, "s1", oldAge, "")
+	if err := os.Rename(files[0], files[0]+".gc"); err != nil {
+		t.Fatal(err)
+	}
+	failSeam(t, &gcRemove, func(string) error { return errSeam })
+	s := testSweep()
+	stderr := captureStderr(t, func() { settleSession(dir, "s1", []string{filepath.Base(files[0])}, []string{files[0]}, s) })
+	if s.failed != 1 || !strings.Contains(stderr, "warning: could not remove") {
+		t.Errorf("failed = %d, stderr = %q", s.failed, stderr)
+	}
+	failSeam(t, &gcRemove, func(string) error { return fs.ErrNotExist })
+	s = testSweep()
+	stderr = captureStderr(t, func() { settleSession(dir, "s1", []string{filepath.Base(files[0])}, []string{files[0]}, s) })
+	if s.failed != 0 || stderr != "" {
+		t.Errorf("failed = %d, stderr = %q", s.failed, stderr)
+	}
+}
+
+func TestSettleSessionNotStale(t *testing.T) {
+	setup := func() (string, []string, string) {
+		w := newWorld(t)
+		dir := filepath.Join(w.bridge, ".starship", "sessions")
+		files := sessFiles(t, w, "s1", oldAge, "")
+		if err := os.Rename(files[0], files[0]+".gc"); err != nil {
+			t.Fatal(err)
+		}
+		write(t, files[1], "new\n")
+		return dir, files, filepath.Base(files[0])
+	}
+
+	dir, files, name := setup()
+	failSeam(t, &gcRename, func(string, string) error { return errSeam })
+	s := testSweep()
+	stderr := captureStderr(t, func() { settleSession(dir, "s1", []string{name}, []string{files[0]}, s) })
+	if s.failed != 1 || !strings.Contains(stderr, "warning: could not rename") || !exists(files[0]+".gc") || exists(files[0]) {
+		t.Errorf("a failed restore must keep the .gc: failed = %d, stderr = %q", s.failed, stderr)
+	}
+
+	dir, files, name = setup()
+	write(t, files[0], "newer\n")
+	s = testSweep()
+	settleSession(dir, "s1", []string{name}, []string{files[0]}, s)
+	if got, _ := os.ReadFile(files[0]); string(got) != "newer\n" || exists(files[0]+".gc") || s.failed != 0 {
+		t.Errorf("a superseded file must lose its .gc: content %q, failed %d", got, s.failed)
+	}
+
+	gcRename = os.Rename
+	dir, files, name = setup()
+	s = testSweep()
+	stderr = captureStderr(t, func() { settleSession(dir, "s1", []string{name}, []string{files[0]}, s) })
+	if s.failed != 0 || stderr != "" || !exists(files[0]) || exists(files[0]+".gc") {
+		t.Errorf("a restore must count nothing: failed %d, stderr %q", s.failed, stderr)
+	}
+}
+
+// infoFailEntry is a directory entry whose Info fails.
+type infoFailEntry struct {
+	os.DirEntry
+	err error
+}
+
+func (e infoFailEntry) Info() (fs.FileInfo, error) { return nil, e.err }
+
+func TestDropDeadLinksEntryInfoFailure(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{{errSeam, 1}, {fs.ErrNotExist, 0}} {
+		w := newWorld(t)
+		dir := filepath.Join(w.bridge, ".starship", "sessions")
+		oldFile(t, filepath.Join(dir, "123.pid"), pidRecordAge+time.Hour)
+		oldFile(t, filepath.Join(dir, "x.gc"), staleGCAge+time.Hour)
+		failSeam(t, &gcReadDir, func(d string) ([]os.DirEntry, error) {
+			entries, err := os.ReadDir(d)
+			for i, e := range entries {
+				if strings.HasSuffix(e.Name(), ".gc") || strings.HasSuffix(e.Name(), ".pid") {
+					entries[i] = infoFailEntry{e, tc.err}
+				}
+			}
+			return entries, err
+		})
+		var sw linkSweep
+		stderr := captureStderr(t, func() { sw = dropDeadLinks(w.bridge) })
+		if sw.Failed != 2*tc.want || (tc.want == 0) != (stderr == "") || (tc.want > 0 && !strings.Contains(stderr, "warning: could not read")) {
+			t.Errorf("%v: failed = %d, stderr = %q", tc.err, sw.Failed, stderr)
+		}
+	}
+}
+
+func TestGCRunThatCannotBeOpenedIsReported(t *testing.T) {
+	w := newWorld(t)
+	old := fabricate(t, w, "20240101-000001-supernova", "success", true)
+	fabricate(t, w, "20240101-000002-supernova", "success", true)
+	if err := os.Remove(filepath.Join(old, "pipeline.json")); err != nil {
+		t.Fatal(err)
+	}
+	var res gcResult
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 1, 1) })
+	if res.OpenFailed != 1 || !res.failed() || res.Failed != 0 || res.More || res.Removed != 0 || !exists(old) || !strings.Contains(stderr, "warning: could not open run folder "+old) {
+		t.Errorf("res = %+v, stderr = %q", res, stderr)
+	}
+	out, err := runGC(t, w, "1")
+	if err == nil || !strings.Contains(out, ", could not open 1 old runs") {
+		t.Errorf("err = %v, output = %q", err, out)
+	}
+	if show := sessionStartLine(t, w); !strings.Contains(show, " · could not open 1 old runs") {
+		t.Errorf("start line: %q", show)
+	}
+}
+
+func TestGCRunDeleteBudgetIsSpentOnlyByFailedDeletes(t *testing.T) {
+	const spent = 40 * time.Millisecond
+	for _, tc := range []struct {
+		name   string
+		remove bool
+	}{{"failed", false}, {"succeeded", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
+			fabricate(t, w, "20240101-000002-supernova", "success", true)
+			fabricate(t, w, "20240101-000003-supernova", "success", true)
+			fabricate(t, w, "20240101-000004-supernova", "success", true)
+			var left []time.Duration
+			failSeam(t, &gcRemoveRun, func(dir string, d time.Time) {
+				left = append(left, time.Until(d))
+				time.Sleep(spent)
+				if tc.remove {
+					os.RemoveAll(dir)
+				}
+			})
+			gcRuns(w.bridge, 1, 0)
+			if len(left) != 3 {
+				t.Fatalf("left = %v", left)
+			}
+			for i := 1; i < len(left); i++ {
+				shrunk := left[i-1] - left[i]
+				if tc.remove && shrunk > spent/2 {
+					t.Errorf("a successful delete must not shrink the budget: %v", left)
+				}
+				if !tc.remove && shrunk < spent/2 {
+					t.Errorf("a failed delete must shrink the budget: %v", left)
+				}
+			}
+		})
+	}
+}
+
+// removeSiblings is a gcRemoveRun that deletes its own folder and every other run folder, so the next candidate has vanished by the time gc reaches it.
+func removeSiblings(dir string, _ time.Time) {
+	parent := filepath.Dir(dir)
+	entries, _ := os.ReadDir(parent)
+	for _, e := range entries {
+		os.RemoveAll(filepath.Join(parent, e.Name()))
+	}
+}
+
+func TestGCVanishedCandidateIsNotReportedAsUnopenable(t *testing.T) {
+	for _, name := range []string{"openRun", "TryLock"} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			if name == "openRun" {
+				for i := 1; i <= 3; i++ {
+					fabricate(t, w, fmt.Sprintf("2024010%d-000001-supernova", i), "success", true)
+				}
+			} else {
+				pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
+				pipelineOnlyRun(t, w, "20240102-000001-supernova", pipelineOnlyAge+time.Minute)
+			}
+			failSeam(t, &gcRemoveRun, removeSiblings)
+			var res gcResult
+			stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 1, 0) })
+			if res.OpenFailed != 0 || res.failed() || stderr != "" {
+				t.Errorf("res = %+v, stderr = %q", res, stderr)
+			}
+		})
 	}
 }

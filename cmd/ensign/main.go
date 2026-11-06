@@ -626,6 +626,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		if res.Failed > 0 {
 			show += fmt.Sprintf(" · could not delete %d old runs", res.Failed)
 		}
+		if res.OpenFailed > 0 {
+			show += fmt.Sprintf(" · could not open %d old runs", res.OpenFailed)
+		}
 		if res.ScratchFailed > 0 {
 			show += fmt.Sprintf(" · could not empty %d scratch folders", res.ScratchFailed)
 		}

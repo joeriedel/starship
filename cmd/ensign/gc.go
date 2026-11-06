@@ -20,7 +20,7 @@ import (
 // defaultKeepRuns is how many finished runs a bridge keeps when bridge.yaml has no keep-runs.
 const defaultKeepRuns = 500
 
-// sessionStartGCCap is how many deletes one session start attempts, failed ones included, so neither a first cleanup of a long-neglected bridge nor a set of undeletable folders can hold the start up. The delete attempts cost at most about 2s each on Windows, so 100s, well inside the 600s default hook timeout. The cap limits attempts only, not reads: a persistently unreadable state.json or pipeline.json can cost up to 2s per read on Windows with no attempt counted. Only folders that keep pipeline.json between starts can use the cap repeatedly, and `ensign gc` has no cap, so it reaches what they hold back.
+// sessionStartGCCap is how many deletes one session start attempts, failed ones included, so neither a first cleanup of a long-neglected bridge nor a set of undeletable folders can hold the start up. The failed delete attempts share one retry budget of about 2s on Windows, so they cost about that in all, well inside the 600s default hook timeout. The cap limits attempts only, not reads: a persistently unreadable state.json or pipeline.json can cost up to 2s per read on Windows with no attempt counted. Only folders that keep pipeline.json between starts can use the cap repeatedly, and `ensign gc` has no cap, so it reaches what they hold back.
 const sessionStartGCCap = 50
 
 // pipelineOnlyAge is how old a run folder's pipeline.json must be, with no state.json beside it, before gc takes the folder for a leftover. Age, because createRun writes pipeline.json and then state.json with no lock held between them, and five minutes outlasts that gap.
@@ -43,13 +43,14 @@ var (
 	gcRename    = os.Rename
 	gcRemoveAll = os.RemoveAll
 	gcReadDir   = os.ReadDir
-	gcRemoveRun = removeRun
+	gcRemoveRun = removeRunBy
 )
 
 // gcResult is what a cleanup did.
 type gcResult struct {
 	Removed, Scratch, Links int
 	Failed                  int  // delete attempts that left the folder in place
+	OpenFailed              int  // run folders due for deletion that could not be locked or opened, so were not judged
 	ScratchFailed           int  // kept finished runs whose scratch folder could not be read or fully emptied
 	SessionFilesFailed      int  // session files that could not be removed, renamed or restored
 	ListFailed              bool // the runs folder could not be listed, so no run was considered for deletion
@@ -60,7 +61,7 @@ type gcResult struct {
 
 // failed reports whether the cleanup left something undone that it should have done.
 func (r gcResult) failed() bool {
-	return r.Failed > 0 || r.ScratchFailed > 0 || r.SessionFilesFailed > 0 || r.ListFailed || r.HeldFailed || r.SessionsListFailed
+	return r.Failed > 0 || r.OpenFailed > 0 || r.ScratchFailed > 0 || r.SessionFilesFailed > 0 || r.ListFailed || r.HeldFailed || r.SessionsListFailed
 }
 
 // addLinks copies a session sweep into the result.
@@ -114,14 +115,26 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		}
 		return false
 	}
+	// Only failed deletes spend the budget, so a persistent failure can't hold the start up but a healthy cleanup never starves a later delete of its retries.
+	budget := retryWindow
 	remove := func(dir string) {
 		attempts++
-		gcRemoveRun(dir)
+		start := time.Now()
+		gcRemoveRun(dir, start.Add(budget))
 		if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 			res.Removed++
 		} else {
+			budget -= time.Since(start)
 			res.Failed++
 		}
+	}
+	// skipped counts a run folder that could not be locked or opened. It stays silent for a folder already gone; a folder caught mid-delete by another gc counts once and clears at the next gc.
+	skipped := func(dir string, err error) {
+		if _, serr := os.Stat(dir); errors.Is(serr, fs.ErrNotExist) {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "warning: could not open run folder %s: %v\n", dir, err)
+		res.OpenFailed++
 	}
 	for i := len(pipelineOnly) - 1; i >= 0; i-- {
 		if capped() {
@@ -130,6 +143,9 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		dir := filepath.Join(runsDir(bridge), pipelineOnly[i])
 		l := flock.New(filepath.Join(dir, "lock"))
 		if ok, err := l.TryLock(); err != nil || !ok {
+			if err != nil {
+				skipped(dir, err)
+			}
 			continue
 		}
 		_, err := os.Stat(filepath.Join(dir, "state.json"))
@@ -150,6 +166,7 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		}
 		r, err := openRun(bridge, candidates[i])
 		if err != nil {
+			skipped(filepath.Join(runsDir(bridge), candidates[i]), err)
 			continue
 		}
 		done := finishedRun(r.State)
@@ -396,7 +413,7 @@ func sweepSessionFiles(bridge string, entries []os.DirEntry, s *sessionSweep) {
 				listed = true
 			}
 			if listErr == nil {
-				sweepSession(bridge, id, g, runs)
+				sweepSession(bridge, id, g, runs, s)
 			}
 			l.Unlock()
 			continue
@@ -406,7 +423,7 @@ func sweepSessionFiles(bridge string, entries []os.DirEntry, s *sessionSweep) {
 			listed = true
 		}
 		if listErr == nil {
-			sweepSession(bridge, id, g, runs)
+			sweepSession(bridge, id, g, runs, s)
 		}
 	}
 	sweepLeftovers(bridge, leftovers, s, func() ([]runInfo, error) {
@@ -564,12 +581,12 @@ func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, s *session
 }
 
 // sweepSession removes a stale session's files unless it is busy.
-func sweepSession(bridge, id string, g *sweptSession, runs []runInfo) {
+func sweepSession(bridge, id string, g *sweptSession, runs []runInfo, s *sessionSweep) {
 	if sessionBusy(bridge, id, runs) {
 		return
 	}
 	dir := filepath.Join(bridge, ".starship", "sessions")
-	reapSession(dir, id, g.files)
+	reapSession(dir, id, g.files, s)
 }
 
 // sessionBusy reports whether a session has an open sequence or a run that has not finished, found through its link or through the run's owner. Anything unreadable counts as busy.
@@ -609,19 +626,19 @@ func sessionBusy(bridge, id string, runs []runInfo) bool {
 }
 
 // reapSession removes a session's files the way a dead link is removed: it renames them all to <name>.gc and judges the session once more, so a write in between restores the whole session rather than only the file written.
-func reapSession(dir, id string, files []string) {
+func reapSession(dir, id string, files []string, s *sessionSweep) {
 	var renamed []string
 	for _, name := range files {
 		orig := filepath.Join(dir, name)
-		if os.Rename(orig, orig+".gc") == nil {
+		if s.rename(orig, orig+".gc") {
 			renamed = append(renamed, orig)
 		}
 	}
-	settleSession(dir, id, files, renamed)
+	settleSession(dir, id, files, renamed, s)
 }
 
 // settleSession judges a session whose files were renamed to .gc: it removes them all if the session is still stale, and otherwise restores each unless a newer file holds its name.
-func settleSession(dir, id string, files, renamed []string) {
+func settleSession(dir, id string, files, renamed []string, s *sessionSweep) {
 	fresh := func(p string) bool {
 		info, err := os.Stat(p)
 		return err == nil && time.Since(info.ModTime()) <= sessionFileAge
@@ -637,16 +654,25 @@ func settleSession(dir, id string, files, renamed []string) {
 		stale = stale && !fresh(filepath.Join(dir, id+suf))
 	}
 	for _, orig := range renamed {
-		if !stale {
-			if _, err := os.Stat(orig); errors.Is(err, fs.ErrNotExist) && os.Rename(orig+".gc", orig) == nil {
-				continue
-			}
+		if stale {
+			s.remove(orig + ".gc")
+			continue
 		}
-		os.Remove(orig + ".gc")
+		_, err := os.Stat(orig)
+		switch {
+		case err == nil:
+			s.remove(orig + ".gc")
+		case errors.Is(err, fs.ErrNotExist):
+			// A failed restore keeps the .gc, the only copy of a file in a session just judged live, unlike the dead-link restore, which drops it. A later sweep removes a kept .gc through s.remove once it is older than staleGCAge.
+			s.rename(orig+".gc", orig)
+		default:
+			fmt.Fprintf(os.Stderr, "warning: could not restore %s: %v\n", orig, err)
+			s.failed++
+		}
 	}
 }
 
-// dropDeadLinks removes session links (the bare <session-id> files) whose run folders are all gone, and returns how many, with how many session files it could not remove. It also removes <pid>.pid records older than pidRecordAge, and the per-session files, locks included, of sessions idle past sessionFileAge (see sweepSessionFiles); those are not counted. Live links are only read. A link that looks dead is renamed to <id>.gc and judged again, so a concurrent rebind is restored rather than deleted. Only one sweeper runs at a time, under a non-blocking bridge-wide .sweep.lock (never removed); a call that can't take it skips the .gc removal and sweepSessionFiles and does the rest, so it never blocks. Lock order: .sweep.lock, then a session's .sequence.lock, then its .lock.
+// dropDeadLinks removes session links (the bare <session-id> files) whose run folders are all gone, and returns how many, with how many session files it could not remove. It also removes <pid>.pid records older than pidRecordAge, and the per-session files, locks included, of sessions idle past sessionFileAge (see sweepSessionFiles); those files do not count as links, but failures on them do. Live links are only read. A link that looks dead is renamed to <id>.gc and judged again, so a concurrent rebind is restored rather than deleted. Only one sweeper runs at a time, under a non-blocking bridge-wide .sweep.lock (never removed); a call that can't take it skips the .gc removal and sweepSessionFiles and does the rest, so it never blocks. Lock order: .sweep.lock, then a session's .sequence.lock, then its .lock.
 func dropDeadLinks(bridge string) linkSweep {
 	dir := filepath.Join(bridge, ".starship", "sessions")
 	var sw linkSweep
@@ -678,7 +704,15 @@ func dropDeadLinks(bridge string) linkSweep {
 		default:
 			continue
 		}
-		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > maxAge {
+		info, err := e.Info()
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", filepath.Join(dir, e.Name()), err)
+				s.failed++
+			}
+			continue
+		}
+		if time.Since(info.ModTime()) > maxAge {
 			s.remove(filepath.Join(dir, e.Name()))
 		}
 	}
@@ -748,6 +782,9 @@ func cmdGC(args []string, out io.Writer) error {
 	fmt.Fprintf(out, "removed %d runs, emptied %d scratch folders, dropped %d session links", res.Removed, res.Scratch, res.Links)
 	if res.Failed > 0 {
 		fmt.Fprintf(out, ", could not delete %d runs", res.Failed)
+	}
+	if res.OpenFailed > 0 {
+		fmt.Fprintf(out, ", could not open %d old runs", res.OpenFailed)
 	}
 	if res.ScratchFailed > 0 {
 		fmt.Fprintf(out, ", could not empty %d scratch folders", res.ScratchFailed)

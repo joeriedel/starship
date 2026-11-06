@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 func TestReadRunMissingStateFailsFast(t *testing.T) {
@@ -256,5 +258,37 @@ func TestCmdGCReportsFailures(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "could not delete 1 runs") || !strings.Contains(out.String(), "could not empty 1 scratch folders") {
 		t.Errorf("output: %q", out.String())
+	}
+}
+
+func TestGCPipelineOnlyFolderThatCannotBeLockedIsReported(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	w := newWorld(t)
+	stuck := pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
+	if err := os.Chmod(stuck, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(stuck, 0o755) })
+	var res gcResult
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 500, 1) })
+	if res.OpenFailed != 1 || !res.failed() || res.Failed != 0 || res.More || !exists(stuck) || !strings.Contains(stderr, "warning: could not open run folder "+stuck) {
+		t.Errorf("res = %+v, stderr = %q", res, stderr)
+	}
+}
+
+func TestGCPipelineOnlyFolderWithHeldLockCountsNothing(t *testing.T) {
+	w := newWorld(t)
+	dir := pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
+	l := flock.New(filepath.Join(dir, "lock"))
+	if ok, err := l.TryLock(); err != nil || !ok {
+		t.Fatalf("lock: %v %v", ok, err)
+	}
+	defer l.Unlock()
+	var res gcResult
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 500, 0) })
+	if res.OpenFailed != 0 || res.failed() || stderr != "" {
+		t.Errorf("res = %+v, stderr = %q", res, stderr)
 	}
 }

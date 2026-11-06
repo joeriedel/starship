@@ -320,3 +320,29 @@ func TestEmptyScratchDeadlineIsShared(t *testing.T) {
 		t.Errorf("the pass took %v; the retry window must be shared", took)
 	}
 }
+
+func TestGCRunDeletesShareTheRetryWindow(t *testing.T) {
+	w := newWorld(t)
+	const stuck = 4
+	for i := 1; i <= stuck; i++ {
+		dir := fabricate(t, w, fmt.Sprintf("2024010%d-000001-supernova", i), "success", true)
+		p, err := windows.UTF16PtrFromString(filepath.Join(dir, "scratch", "note.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := windows.CreateFile(p, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { windows.CloseHandle(h) })
+	}
+	start := time.Now()
+	var res gcResult
+	captureStderr(t, func() { res = gcRuns(w.bridge, 0, 0) })
+	if res.Failed != stuck {
+		t.Errorf("res = %+v, want %d failed deletes", res, stuck)
+	}
+	if took := time.Since(start); took >= 3*retryWindow {
+		t.Errorf("the pass took %v; the failed deletes must share one retry budget", took)
+	}
+}

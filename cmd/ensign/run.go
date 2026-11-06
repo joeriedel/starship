@@ -586,7 +586,12 @@ func markRetired(r *RunFiles, reason string) error {
 // removeRun deletes a retired run's folder. A failed delete leaves a run that is already
 // terminal, so it is only a warning.
 func removeRun(dir string) {
-	if err := retry(retryWindow, isTransientFileError, func() error { return os.RemoveAll(dir) }); err != nil {
+	removeRunBy(dir, time.Now().Add(retryWindow))
+}
+
+// removeRunBy is removeRun with a retry deadline the caller sets, so gcRuns can build each delete's deadline from a budget that only failed deletes spend.
+func removeRunBy(dir string, deadline time.Time) {
+	if err := retry(time.Until(deadline), isTransientFileError, func() error { return os.RemoveAll(dir) }); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not delete run folder %s: %v\n", dir, err)
 	}
 }
