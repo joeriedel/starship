@@ -644,6 +644,12 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		if res.SessionFilesFailed > 0 {
 			show += fmt.Sprintf(" · could not remove %d session files", res.SessionFilesFailed)
 		}
+		if res.Records > 0 {
+			show += fmt.Sprintf(" · removed %d publish records of closed tasks", res.Records)
+		}
+		if res.RecordsFailed > 0 {
+			show += fmt.Sprintf(" · could not sweep %d publish records of closed tasks", res.RecordsFailed)
+		}
 	}
 	return reply(show+leftBehindShow(carryErr)+holdShow, ctx.String())
 }

@@ -36,7 +36,7 @@ cross-location:
   bindings: { test: { command: "./e2e.sh" } }
 ```
 
-- Names: lower-case letters, digits, dashes. `depends-on` names declared locations only: no self-dependency, no cycle. `project new` refuses a Windows reserved location name (`con`, `aux`, `com1`); an existing one still loads.
+- Names: lower-case letters, digits, dashes; a project name can't hold `--`. `depends-on` names declared locations only: no self-dependency, no cycle. `project new` refuses a Windows reserved location name (`con`, `aux`, `com1`); an existing one still loads.
 - Location bindings override the project's; the task's override both. `cross-location` `test` runs once after the sides' own tests when a run has several sides.
 - A task names the locations it uses: `locations: [client, models]` in its frontmatter, or `ensign task new <p>/<t> --locations client,models`. Required once the project declares any.
 - Each run works in one location: `ensign run <p>/<t> --location <name>`. Optional when the task names one; required when it names several. A sequence run step takes the same flags: `ensign sequence run <p>/<t> --location <name> [--sides <a,b>]`; see `ensign help sequence`.

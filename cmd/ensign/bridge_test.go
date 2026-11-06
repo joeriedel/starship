@@ -586,3 +586,18 @@ func TestProjectNewRefusesInvalidShippedLocationName(t *testing.T) {
 		t.Error("a refused project should not be written")
 	}
 }
+
+func TestProjectNewRefusesADoubleDashName(t *testing.T) {
+	b := newBridge(t)
+	var out bytes.Buffer
+	err := cmdProject([]string{"new", "super--nova", "--locations", "web", "--platforms", "linux"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "double dash") {
+		t.Errorf("a double dash should be refused: %v", err)
+	}
+	if dirHasEntry(filepath.Join(b, "projects"), "super--nova") {
+		t.Error("a refused project should not be written")
+	}
+	if err := cmdProject([]string{"new", "super-nova", "--locations", "web", "--platforms", "linux"}, &out); err != nil {
+		t.Errorf("a single dash should be accepted: %v", err)
+	}
+}

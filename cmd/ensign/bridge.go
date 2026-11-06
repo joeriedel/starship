@@ -815,6 +815,9 @@ func cmdProject(args []string, out io.Writer) error {
 	if !validName(name) {
 		return fmt.Errorf("project names are lower-case letters, digits and dashes")
 	}
+	if strings.Contains(name, "--") {
+		return fmt.Errorf("project names can't hold a double dash: a task's files are named project--task, and a double dash in the project would make two tasks share them")
+	}
 	if windowsReserved(name) {
 		return fmt.Errorf("project name %q is a name Windows reserves, and the name becomes a committed folder", name)
 	}

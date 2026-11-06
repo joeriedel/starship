@@ -978,11 +978,28 @@ func githubMerge(bridge, task, location string) (string, string, string, error) 
 	leaveLandedBranch(ws, branch, base, sha)
 	removeRecord(testedFile(bridge, task, c.Location))
 	removeSameFolderMarkers(bridge, task, c.Location)
-	if left := readPublishRecord(bridge, task); slices.Contains(left, c.Location) {
-		// The landing has happened; a record that can't be shrunk only makes a later publish try this location again.
-		writePublishRecord(bridge, task, slices.DeleteFunc(left, func(l string) bool { return l == c.Location }))
-	}
+	dropLandedFromRecord(bridge, task, c.Location)
 	return base, sha, note, nil
+}
+
+// dropLandedFromRecord removes the landed location and its same-folder peers from the publish record, even when the landed location is not listed: the landing deleted the branch the peers tested. A location with no recorded folder is not a peer. The landing has happened; a record that can't be shrunk only makes a later publish try these locations again.
+func dropLandedFromRecord(bridge, task, landed string) {
+	left := readPublishRecord(bridge, task)
+	project, _, _ := strings.Cut(task, "/")
+	landedPath, err := locationPathFor(bridge, project, landed)
+	kept := slices.DeleteFunc(slices.Clone(left), func(l string) bool {
+		if l == landed {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+		p, perr := locationPathFor(bridge, project, l)
+		return perr == nil && sameFolder(landedPath, p, runtime.GOOS)
+	})
+	if len(kept) != len(left) {
+		writePublishRecord(bridge, task, kept)
+	}
 }
 
 // removeSameFolderMarkers removes the .tested of each other location of the task that works in the landed location's folder: the landing deleted the task branch they tested, and collapseFolders may have dropped them from the publish. A location with no recorded folder is not compared.

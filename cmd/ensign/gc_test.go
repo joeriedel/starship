@@ -1713,3 +1713,197 @@ func TestKeptGCRetry(t *testing.T) {
 		t.Error("a .gc under staleGCAge must be left alone")
 	}
 }
+
+// seedRecords writes a task's publish records and the files a sweep must leave, and returns the records.
+func seedRecords(t *testing.T, w *world, task string) (records, keepers []string) {
+	t.Helper()
+	for _, f := range []string{taskStateFile(w.bridge, task, "", ".publish"), taskStateFile(w.bridge, task, "", ".tested"), taskStateFile(w.bridge, task, "client", ".tested")} {
+		write(t, f, "x\n")
+		records = append(records, f)
+	}
+	for _, f := range []string{taskStateFile(w.bridge, task, "", ".publish.lock"), taskStateFile(w.bridge, task, "", ".base"), taskStateFile(w.bridge, task, "client", ".base")} {
+		write(t, f, "x\n")
+		keepers = append(keepers, f)
+	}
+	return records, keepers
+}
+
+func wantGone(t *testing.T, files []string, gone bool) {
+	t.Helper()
+	for _, f := range files {
+		if exists(f) == gone {
+			t.Errorf("%s: gone=%v, want %v", f, !exists(f), gone)
+		}
+	}
+}
+
+func closedTask(w *world, name string) { w.frontTask(name, "status: closed\n") }
+
+func TestGCSweepsAClosedTasksPublishRecords(t *testing.T) {
+	w := newWorld(t)
+	closedTask(w, "a")
+	w.frontTask("o", "status: open\n")
+	gone, keep := seedRecords(t, w, "supernova/a")
+	open, _ := seedRecords(t, w, "supernova/o")
+	res := gcRuns(w.bridge, 5, 0)
+	if res.Records != 3 || res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, gone, true)
+	wantGone(t, keep, false)
+	wantGone(t, open, false)
+}
+
+func TestGCSweepNeverClaimsAnotherTasksEncoding(t *testing.T) {
+	w := newWorld(t)
+	closedTask(w, "b")
+	w.frontTask("b--c", "status: open\n")
+	gone, _ := seedRecords(t, w, "supernova/b")
+	peer, _ := seedRecords(t, w, "supernova/b--c")
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 3 || res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, gone, true)
+	wantGone(t, peer, false)
+}
+
+func TestGCSweepKeepsAnEncodingAnOpenTaskShares(t *testing.T) {
+	w := newWorld(t)
+	closedTask(w, "b--c")
+	write(t, filepath.Join(w.bridge, "projects/supernova--b/tasks/c/task.md"), "---\nstatus: open\n---\n\n# c\n")
+	records, _ := seedRecords(t, w, "supernova/b--c")
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, records, false)
+}
+
+func TestGCSweepLeavesRecordsOfTasksThatAreGone(t *testing.T) {
+	w := newWorld(t)
+	records, _ := seedRecords(t, w, "supernova/ghost")
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, records, false)
+}
+
+func TestGCSweepKeepsRecordsOfATaskWithALiveRun(t *testing.T) {
+	w := newWorld(t)
+	closedTask(w, "a")
+	records, _ := seedRecords(t, w, "supernova/a")
+	dir := fabricate(t, w, "20240101-000001-supernova", "pending", true)
+	if err := writeJSON(filepath.Join(dir, "pipeline.json"), &Snapshot{Task: "supernova/a"}); err != nil {
+		t.Fatal(err)
+	}
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, records, false)
+	if err := writeJSON(filepath.Join(dir, "state.json"), &State{Run: "20240101-000001-supernova", Status: "success", Dispatches: []*Dispatch{}, History: []HistoryEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 3 || res.failed() {
+		t.Errorf("result after the run ended: %+v", res)
+	}
+	wantGone(t, records, true)
+}
+
+func TestGCSweepSkipsABusyPublishLockQuietly(t *testing.T) {
+	w := newWorld(t)
+	closedTask(w, "a")
+	records, _ := seedRecords(t, w, "supernova/a")
+	holdPublishLock(t, w, "supernova/a")
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, records, false)
+}
+
+func TestGCSweepCountsALockError(t *testing.T) {
+	w := newWorld(t)
+	closedTask(w, "a")
+	records, _ := seedRecords(t, w, "supernova/a")
+	failSeam(t, &gcTryLock, lockFailing(".publish.lock", false, errSeam))
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.RecordsFailed != 1 || !res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, records, false)
+}
+
+func TestGCSweepRetriesAFailedRemoval(t *testing.T) {
+	w := newWorld(t)
+	closedTask(w, "a")
+	records, _ := seedRecords(t, w, "supernova/a")
+	old := gcRemove
+	gcRemove = func(p string) error {
+		if strings.HasSuffix(p, ".publish") {
+			return errSeam
+		}
+		return old(p)
+	}
+	res := gcRuns(w.bridge, 5, 0)
+	gcRemove = old
+	if res.Records != 2 || res.RecordsFailed != 1 || !res.failed() || !exists(records[0]) {
+		t.Errorf("result: %+v", res)
+	}
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 1 || res.failed() {
+		t.Errorf("next gc: %+v", res)
+	}
+	wantGone(t, records, true)
+}
+
+func TestGCSweepKeepsRecordsOfAnUnreadableTask(t *testing.T) {
+	w := newWorld(t)
+	if err := os.MkdirAll(filepath.Join(w.bridge, "projects/supernova/tasks/a/task.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	records, _ := seedRecords(t, w, "supernova/a")
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.RecordsFailed != 1 || !res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, records, false)
+}
+
+func TestGCSweepListing(t *testing.T) {
+	w := newWorld(t)
+	closedTask(w, "a")
+	records, _ := seedRecords(t, w, "supernova/a")
+	old := gcReadDir
+	gcReadDir = func(p string) ([]os.DirEntry, error) {
+		if filepath.Base(p) == "tasks" && filepath.Base(filepath.Dir(p)) == ".starship" {
+			return nil, errSeam
+		}
+		return old(p)
+	}
+	res := gcRuns(w.bridge, 5, 0)
+	gcReadDir = old
+	if res.Records != 0 || res.RecordsFailed != 1 || !res.failed() {
+		t.Errorf("failed listing: %+v", res)
+	}
+	wantGone(t, records, false)
+	if err := os.RemoveAll(filepath.Join(w.bridge, ".starship", "tasks")); err != nil {
+		t.Fatal(err)
+	}
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
+		t.Errorf("missing folder: %+v", res)
+	}
+}
+
+func TestSessionStartSweepsClosedTasksRecords(t *testing.T) {
+	w := newWorld(t)
+	if err := link(w.bridge, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	closedTask(w, "a")
+	records, _ := seedRecords(t, w, "supernova/a")
+	in, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "abc"})
+	var out, errb bytes.Buffer
+	if code := cmdHook("SessionStart", bytes.NewReader(in), &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	show, _ := sessionStartReply(t, out.Bytes())
+	if !strings.Contains(show, "removed 3 publish records of closed tasks") {
+		t.Errorf("summary: %q", show)
+	}
+	wantGone(t, records, true)
+}

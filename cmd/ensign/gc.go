@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,8 @@ var (
 // gcResult is what a cleanup did.
 type gcResult struct {
 	Removed, Scratch, Links int
+	Records                 int  // publish records of closed tasks removed
+	RecordsFailed           int  // closed tasks' publish records that could not be judged or removed
 	Failed                  int  // delete attempts that left the folder in place
 	OpenFailed              int  // run folders due for deletion that could not be locked or opened, so were not judged
 	ScratchFailed           int  // kept finished runs whose scratch folder could not be read or fully emptied
@@ -63,7 +66,7 @@ type gcResult struct {
 
 // failed reports whether the cleanup left something undone that it should have done.
 func (r gcResult) failed() bool {
-	return r.Failed > 0 || r.OpenFailed > 0 || r.ScratchFailed > 0 || r.SessionFilesFailed > 0 || r.ListFailed || r.HeldFailed || r.SessionsListFailed
+	return r.Failed > 0 || r.OpenFailed > 0 || r.ScratchFailed > 0 || r.SessionFilesFailed > 0 || r.RecordsFailed > 0 || r.ListFailed || r.HeldFailed || r.SessionsListFailed
 }
 
 // addLinks copies a session sweep into the result.
@@ -71,6 +74,12 @@ func (r *gcResult) addLinks(sw linkSweep) {
 	r.Links = sw.Links
 	r.SessionFilesFailed = sw.Failed
 	r.SessionsListFailed = sw.ListFailed
+}
+
+// addRecords copies a publish record sweep into the result.
+func (r *gcResult) addRecords(sw recordSweep) {
+	r.Records = sw.Removed
+	r.RecordsFailed = sw.Failed
 }
 
 // finishedRun reports whether a run's state says success or error. Pending, running and ask-user runs are never finished.
@@ -84,6 +93,7 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		fmt.Fprintf(os.Stderr, "warning: could not list the held sessions, so no run was deleted and no scratch folder emptied: %v\n", err)
 		res.HeldFailed = true
 		res.addLinks(dropDeadLinks(bridge))
+		res.addRecords(sweepClosedRecords(bridge))
 		return res
 	}
 	entries, err := os.ReadDir(runsDir(bridge))
@@ -226,6 +236,7 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		}
 	}
 	res.addLinks(dropDeadLinks(bridge))
+	res.addRecords(sweepClosedRecords(bridge))
 	return res
 }
 
@@ -424,6 +435,118 @@ func (s *sessionSweep) rename(oldpath, newpath string) bool {
 		s.failed++
 	}
 	return false
+}
+
+// recordSweep is what sweepClosedRecords did.
+type recordSweep struct {
+	Removed int // record files removed
+	Failed  int // listings, reads, locks and removals that went wrong
+}
+
+// sweepClosedRecords removes the .publish, .tested and @<location>.tested records of closed tasks, which close-time cleanup missed or a run finishing after the close recreated. A task name can't be recovered from an encoded file name, so each record is matched forward from the tasks on disk. An encoding is swept only when every task encoding to it is closed, none has a live run, and its publish lock is free; a busy lock is retried by the next gc. Records of tasks that no longer exist are left alone.
+func sweepClosedRecords(bridge string) recordSweep {
+	var sw recordSweep
+	dir := filepath.Join(bridge, ".starship", "tasks")
+	entries, err := gcReadDir(dir)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) && plainFileOnPath(dir) == "" {
+			fmt.Fprintf(os.Stderr, "warning: could not list the publish records in %s: %v\n", dir, err)
+			sw.Failed++
+		}
+		return sw
+	}
+	records := map[string][]string{} // encoded task name -> its record file names
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		var enc string
+		if base, ok := strings.CutSuffix(name, ".publish"); ok {
+			enc = base
+		} else if base, ok := strings.CutSuffix(name, ".tested"); ok {
+			var loc string
+			var hasLoc bool
+			if enc, loc, hasLoc = strings.Cut(base, "@"); hasLoc && !validName(loc) {
+				continue
+			}
+		} else {
+			continue
+		}
+		records[enc] = append(records[enc], name)
+	}
+	if len(records) == 0 {
+		return sw
+	}
+	files, err := taskFiles(bridge)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not list every task, so no publish record was removed: %v\n", err)
+		sw.Failed++
+		return sw
+	}
+	tasks := map[string]string{} // encoded task name -> a task encoding to it
+	open := map[string]bool{}
+	for _, f := range files {
+		d := filepath.Dir(f)
+		task := filepath.Base(filepath.Dir(filepath.Dir(d))) + "/" + filepath.Base(d)
+		enc := strings.ReplaceAll(task, "/", "--")
+		if records[enc] == nil {
+			continue
+		}
+		tasks[enc] = task
+		var tf struct {
+			Status string `yaml:"status"`
+		}
+		front, _, err := splitFrontmatter(f)
+		if err == nil {
+			err = decodeFrontmatter(front, &tf)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not read the status of %s, so its publish records are kept: %v\n", task, err)
+			sw.Failed++
+			open[enc] = true
+		} else if tf.Status != "closed" {
+			open[enc] = true
+		}
+	}
+	var encs []string
+	for enc := range tasks {
+		if !open[enc] {
+			encs = append(encs, enc)
+		}
+	}
+	if len(encs) == 0 {
+		return sw
+	}
+	sort.Strings(encs)
+	live, err := liveRuns(bridge)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not list the live runs, so no publish record was removed: %v\n", err)
+		sw.Failed++
+		return sw
+	}
+	liveEnc := map[string]bool{}
+	for _, ri := range live {
+		liveEnc[strings.ReplaceAll(ri.snap.Task, "/", "--")] = true
+	}
+	s := &sessionSweep{deadline: time.Now().Add(retryWindow)}
+	for _, enc := range encs {
+		if liveEnc[enc] {
+			continue
+		}
+		l := flock.New(taskStateFile(bridge, tasks[enc], "", ".publish.lock"))
+		if !s.tryLock(l) {
+			continue
+		}
+		for _, name := range records[enc] {
+			if s.remove(filepath.Join(dir, name)) {
+				sw.Removed++
+			}
+		}
+		l.Unlock()
+	}
+	sw.Failed += s.failed
+	return sw
 }
 
 // sweepSessionFiles removes the per-session files of sessions untouched for sessionFileAge, then their lock and tmp files (see sweepLeftovers). A session's age is the newest mtime among its swept files and its link, because .pin is rewritten at every SessionStart while .task is not. A session with a live run or an open sequence keeps all its files. It must run before dead links are dropped, so a link still shows which runs a session owned.
@@ -940,6 +1063,12 @@ func cmdGC(args []string, out io.Writer) error {
 	}
 	if res.SessionFilesFailed > 0 {
 		fmt.Fprintf(out, ", could not remove %d session files", res.SessionFilesFailed)
+	}
+	if res.Records > 0 {
+		fmt.Fprintf(out, ", removed %d publish records of closed tasks", res.Records)
+	}
+	if res.RecordsFailed > 0 {
+		fmt.Fprintf(out, ", could not sweep %d publish records of closed tasks", res.RecordsFailed)
 	}
 	fmt.Fprintln(out)
 	if res.failed() {

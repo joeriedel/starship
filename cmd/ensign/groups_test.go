@@ -572,6 +572,58 @@ func TestADirectMergeShrinksTheRecordOfWhatIsLeft(t *testing.T) {
 	}
 }
 
+func TestDroppingTheLandedLocationFromThePublishRecord(t *testing.T) {
+	task := "supernova/t"
+	cases := []struct {
+		name       string
+		record     []string
+		peerMarker bool
+		want       []string
+	}{
+		{"the peer goes with the landed location", []string{"client", "server", "models"}, true, []string{"models"}},
+		{"a peer whose marker is gone goes too", []string{"client", "server", "models"}, false, []string{"models"}},
+		{"the landed location need not be listed", []string{"server", "models"}, false, []string{"models"}},
+		{"a record of only the peer goes away", []string{"server"}, true, nil},
+	}
+	for _, c := range cases {
+		w := locationsWorld(t)
+		client, _ := locationPathFor(w.bridge, "supernova", "client")
+		if _, err := setLocationPath(w.bridge, "supernova", "server", client); err != nil {
+			t.Fatal(err)
+		}
+		if err := writePublishRecord(w.bridge, task, c.record); err != nil {
+			t.Fatal(err)
+		}
+		if c.peerMarker {
+			write(t, testedFile(w.bridge, task, "server"), "abc\n")
+		}
+		dropLandedFromRecord(w.bridge, task, "client")
+		if got := readPublishRecord(w.bridge, task); len(got) != len(c.want) || (len(got) > 0 && !reflect.DeepEqual(got, c.want)) {
+			t.Errorf("%s: record %v, want %v", c.name, got, c.want)
+		}
+		if c.want == nil && publishRecorded(w.bridge, task) {
+			t.Errorf("%s: the record file should be gone", c.name)
+		}
+	}
+}
+
+func TestDroppingTheLandedLocationWithoutAFolder(t *testing.T) {
+	w := locationsWorld(t)
+	task := "supernova/t"
+	m := loadMachine(w.bridge)
+	delete(m.Locations["supernova"], "client")
+	if err := saveMachine(w.bridge, m); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePublishRecord(w.bridge, task, []string{"client", "server"}); err != nil {
+		t.Fatal(err)
+	}
+	dropLandedFromRecord(w.bridge, task, "client")
+	if got := readPublishRecord(w.bridge, task); !reflect.DeepEqual(got, []string{"server"}) {
+		t.Errorf("only the landed location goes: %v", got)
+	}
+}
+
 func holdPublishLock(t *testing.T, w *world, task string) {
 	t.Helper()
 	lock := taskStateFile(w.bridge, task, "", ".publish.lock")

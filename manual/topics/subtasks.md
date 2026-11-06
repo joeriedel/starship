@@ -41,3 +41,4 @@ Publishing:
 - Pull requests and landing stay at the task level, on the task's branch.
 - Default: publish once, after the last subtask. Publish earlier only when the user asks.
 - A publish step after a run step lands every location its groups worked in, dependencies first. After a partial failure a new `ensign sequence publish` lands only what is left.
+- A publish refused with `a publish of <task> is already under way` applies here too: retry later.
