@@ -590,6 +590,8 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		if res.More {
 			show += " (more will be cleaned at the next session start)"
 		}
+	} else if res.Failed > 0 {
+		show += fmt.Sprintf(" · could not delete %d old runs", res.Failed)
 	}
 	return reply(show, ctx.String())
 }

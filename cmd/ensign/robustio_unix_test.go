@@ -6,11 +6,14 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -128,5 +131,74 @@ func TestGCUnwritablePipelineOnlyFolderUsesCapEachStart(t *testing.T) {
 		if res.Removed != 0 || !res.More || !exists(newer) {
 			t.Fatalf("call %d: the stuck pipeline-only folder must use the cap: %+v", i+1, res)
 		}
+	}
+}
+
+// stickRun makes a fabricated run's folder undeletable.
+func stickRun(t *testing.T, dir string) {
+	scratch := filepath.Join(dir, "scratch")
+	if err := os.Chmod(scratch, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(scratch, 0o755) })
+}
+
+func sessionStartLine(t *testing.T, w *world) string {
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "keep-runs: 1\ncontrol-plane:\n  path: "+mustRoot(t)+"\n")
+	if err := link(w.bridge, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	in, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "abc"})
+	var out, errb bytes.Buffer
+	if code := cmdHook("SessionStart", bytes.NewReader(in), &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	show, _ := sessionStartReply(t, out.Bytes())
+	return show
+}
+
+func TestSessionStartReportsFailedDeletes(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	w := newWorld(t)
+	for i := 1; i <= 3; i++ {
+		stickRun(t, fabricate(t, w, fmt.Sprintf("20240101-00000%d-supernova", i), "success", true))
+	}
+	fabricate(t, w, "20240101-000004-supernova", "success", true)
+	show := sessionStartLine(t, w)
+	if !strings.Contains(show, "could not delete 3 old runs") || strings.Contains(show, "cleaned up") {
+		t.Errorf("start line: %q", show)
+	}
+}
+
+func TestSessionStartPartialDeleteFailureReportsCleaned(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	w := newWorld(t)
+	stickRun(t, fabricate(t, w, "20240101-000001-supernova", "success", true))
+	fabricate(t, w, "20240101-000002-supernova", "success", true)
+	fabricate(t, w, "20240101-000003-supernova", "success", true)
+	show := sessionStartLine(t, w)
+	if !strings.Contains(show, "cleaned up 1 old runs") || strings.Contains(show, "could not delete") {
+		t.Errorf("start line: %q", show)
+	}
+}
+
+func TestGCCountsFailedDeletes(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	w := newWorld(t)
+	stickRun(t, fabricate(t, w, "20240101-000001-supernova", "success", true))
+	fabricate(t, w, "20240101-000002-supernova", "success", true)
+	if res := gcRuns(w.bridge, 0, 0); res.Failed != 1 || res.Removed != 1 {
+		t.Fatalf("want 1 failed and 1 removed: %+v", res)
+	}
+	w = newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "success", true)
+	if res := gcRuns(w.bridge, 0, 0); res.Failed != 0 || res.Removed != 1 {
+		t.Fatalf("want 0 failed: %+v", res)
 	}
 }

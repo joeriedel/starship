@@ -40,6 +40,7 @@ func (bf *BridgeFile) keepRuns() (int, error) {
 // gcResult is what a cleanup did.
 type gcResult struct {
 	Removed, Scratch, Links int
+	Failed                  int  // delete attempts that left the folder in place
 	More                    bool // candidates remain because the cap on delete attempts was reached
 }
 
@@ -86,6 +87,8 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		removeRun(dir)
 		if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 			res.Removed++
+		} else {
+			res.Failed++
 		}
 	}
 	for i := len(pipelineOnly) - 1; i >= 0; i-- {
