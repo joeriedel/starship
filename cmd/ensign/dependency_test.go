@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1100,5 +1101,69 @@ func TestUntrackedFilesCountAsDirtyUnderShowUntrackedFilesNo(t *testing.T) {
 	r := unitRun(t, ws)
 	if err := catalogRecordBase(r); err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
 		t.Errorf("catalogRecordBase should refuse an untracked file: %v", err)
+	}
+}
+
+var literalPathCases = []struct{ name, path, sibling string }{
+	{"bracket", "a[b].md", "ab.md"},
+	{"star", "a*.md", "ab.md"},
+	{"colon", ":(glob)x.md", "x.md"},
+}
+
+func TestRestoreUntracksOnlyTheLiteralName(t *testing.T) {
+	needPOSIXShell(t)
+	for _, c := range literalPathCases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.name != "bracket" && runtime.GOOS == "windows" {
+				t.Skip("the name can't exist on Windows")
+			}
+			ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+			write(t, filepath.Join(ws, c.sibling), "old\n")
+			runGit(t, ws, "add", ".")
+			runGit(t, ws, "commit", "-q", "-m", "more")
+			r := unitRun(t, ws)
+			sd := unitSide(ws, fmt.Sprintf("echo new > '%s'; echo '%s' > \"$STARSHIP_APPLIED_FILES\"", c.path, c.path))
+			if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := restoreDependencies(ws, "settle"); err != nil {
+				t.Fatal(err)
+			}
+			if got := runGit(t, ws, "-c", "core.quotepath=off", "ls-files", "--", ":(literal)"+c.sibling); got != c.sibling {
+				t.Errorf("the sibling should stay in the index, ls-files gave %q", got)
+			}
+		})
+	}
+}
+
+func TestRestoreUnstagesOnlyTheLiteralName(t *testing.T) {
+	needPOSIXShell(t)
+	for _, c := range literalPathCases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.name != "bracket" && runtime.GOOS == "windows" {
+				t.Skip("the name can't exist on Windows")
+			}
+			ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+			write(t, filepath.Join(ws, c.path), "old\n")
+			write(t, filepath.Join(ws, c.sibling), "old\n")
+			runGit(t, ws, "add", ".")
+			runGit(t, ws, "commit", "-q", "-m", "more")
+			write(t, filepath.Join(ws, c.sibling), "staged\n")
+			runGit(t, ws, "add", "--", ":(literal)"+c.sibling)
+			r := unitRun(t, ws)
+			sd := unitSide(ws, fmt.Sprintf("echo new > '%s'; git add -- ':(literal)%s'; echo '%s' > \"$STARSHIP_APPLIED_FILES\"", c.path, c.path, c.path))
+			if _, err := applyDependency(r, nil, sd, unitDep(t), ignoredNow(t, ws)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := restoreDependencies(ws, "settle"); err != nil {
+				t.Fatal(err)
+			}
+			if got := runGit(t, ws, "-c", "core.quotepath=off", "diff", "--cached", "--name-only"); got != c.sibling {
+				t.Errorf("only the sibling should stay staged, got %q", got)
+			}
+			if got := readFile(t, ws, c.path); got != "old\n" {
+				t.Errorf("%s = %q, want it back at HEAD", c.path, got)
+			}
+		})
 	}
 }

@@ -381,7 +381,7 @@ func writeTarget(ws string, e appliedEntry, target string) error {
 		for dir := filepath.Dir(abs); dir != filepath.Clean(ws) && os.Remove(dir) == nil; dir = filepath.Dir(dir) {
 		}
 		if e.Target == "" {
-			return git(ws, "rm", "-q", "--cached", "-f", "--ignore-unmatch", "--", e.Path)
+			return git(ws, "rm", "-q", "--cached", "-f", "--ignore-unmatch", "--", ":(literal)"+e.Path)
 		}
 		return nil
 	}
@@ -400,7 +400,7 @@ func writeTarget(ws string, e appliedEntry, target string) error {
 		return err
 	}
 	if e.Target == "" {
-		return git(ws, "reset", "-q", "HEAD", "--", e.Path)
+		return git(ws, "reset", "-q", "HEAD", "--", ":(literal)"+e.Path)
 	}
 	return nil
 }
