@@ -569,3 +569,20 @@ func TestTaskNewInReservedProjectName(t *testing.T) {
 		t.Errorf("an existing project with a reserved name should still take tasks: %v", err)
 	}
 }
+
+func TestProjectNewRefusesInvalidShippedLocationName(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	b := newBridge(t)
+	var out bytes.Buffer
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, ".starship", "project.yaml"), "platforms: [linux]\nlocations:\n  web: {}\n  Client: {}\n")
+	err := cmdProject([]string{"new", "supernova", "--workspace", ws, "--platforms", "linux"}, &out)
+	if err == nil || !strings.Contains(err.Error(), `location "Client": name it with lower-case letters, digits and dashes`) {
+		t.Errorf("an invalid shipped location name should be refused: %v", err)
+	}
+	if dirHasEntry(filepath.Join(b, "projects"), "supernova") {
+		t.Error("a refused project should not be written")
+	}
+}

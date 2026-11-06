@@ -448,6 +448,9 @@ func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 		}
 		path, prefix = decl.file(r.Snap.Bridge), "D"
 	case "skill":
+		if !usableSkillName(d.Dim) {
+			return fmt.Sprintf("%q is not a usable skill name, so nothing was written for it.", d.Dim)
+		}
 		path, prefix = learnedSkillFile(r.Snap.Bridge, d.Dim), "K"
 	case "style":
 		path, prefix = styleGuideFile(r.Snap.Bridge, r.Snap.Project), "S"

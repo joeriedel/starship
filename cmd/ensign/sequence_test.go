@@ -4783,3 +4783,90 @@ func TestSequencePublishCommandSeesWhichSessionsLockItHolds(t *testing.T) {
 		t.Errorf("the publish command should see the session: %s %q", st.Status, st.Reason)
 	}
 }
+
+func TestSequenceRunNoteNamesALaterPublishStep(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	w.runStage()
+	notes := strings.Join(w.state().Notes, "\n")
+	if !strings.Contains(notes, "A publish step in the session's sequence takes it from here") || strings.Contains(notes, "Nothing has been opened yet") {
+		t.Errorf("the run's note should name the publish step:\n%s", notes)
+	}
+}
+
+func TestSequenceRunNoteWithoutAPublishStepIsUnchanged(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("do", "tell the user")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	w.runStage()
+	notes := strings.Join(w.state().Notes, "\n")
+	if !strings.Contains(notes, "Nothing has been opened yet") || strings.Contains(notes, "publish step") {
+		t.Errorf("the note should be the usual one:\n%s", notes)
+	}
+}
+
+func TestPublishStepAheadFollowsTheRun(t *testing.T) {
+	const session, task = "s1", "supernova/auth-refactor"
+	run := func(id, t string) *seqStep {
+		return &seqStep{Kind: "run", Task: t, Status: "active", Runs: []*seqRun{{Run: id}}}
+	}
+	group := func(t string, ids ...string) *seqStep {
+		st := &seqStep{Kind: "run", Task: t, Status: "active"}
+		for _, id := range ids {
+			st.Runs = append(st.Runs, &seqRun{Run: id, Subtask: "sub-" + id})
+		}
+		return st
+	}
+	publish := func(t, status string) *seqStep { return &seqStep{Kind: "publish", Task: t, Status: status} }
+	cases := []struct {
+		name  string
+		steps []*seqStep
+		subs  []string
+		want  bool
+	}{
+		{"later publish", []*seqStep{run("r1", task), publish(task, "pending")}, nil, true},
+		{"later publish after another task's step", []*seqStep{run("r1", task), run("r2", "supernova/other"), publish(task, "pending")}, nil, true},
+		{"publish of another task", []*seqStep{run("r1", task), publish("supernova/other", "pending")}, nil, false},
+		{"publish cancelled", []*seqStep{run("r1", task), publish(task, "cancelled")}, nil, false},
+		{"another run of the task first", []*seqStep{run("r1", task), run("r2", task), publish(task, "pending")}, nil, false},
+		{"publish already done before the run", []*seqStep{publish(task, "done"), run("r1", task)}, nil, false},
+		{"publish pending before the run", []*seqStep{publish(task, "pending"), run("r1", task)}, nil, false},
+		{"no publish", []*seqStep{run("r1", task)}, nil, false},
+		{"run not last in its group", []*seqStep{group(task, "r1", "r2"), publish(task, "pending")}, []string{"sub-r1", "sub-r2"}, false},
+		{"last run of a group", []*seqStep{group(task, "r0", "r1"), publish(task, "pending")}, []string{"sub-r0", "sub-r1"}, true},
+		{"last run of a group with a further group", []*seqStep{group(task, "r0", "r1"), publish(task, "pending")}, []string{"sub-r0", "sub-r1", "sub-later"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			bridge := t.TempDir()
+			for _, name := range c.subs {
+				write(t, filepath.Join(subtasksDir(taskDirOf(bridge, task)), name+".md"), "## Goal\n\nx\n")
+			}
+			sf := &seqFile{Sequences: []*sequence{{N: 1, Mode: "stop", Steps: c.steps}}}
+			if err := os.MkdirAll(filepath.Dir(seqPath(bridge, session)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeJSON(seqPath(bridge, session), sf); err != nil {
+				t.Fatal(err)
+			}
+			id := "r1"
+			sub := ""
+			if c.subs != nil {
+				sub = "sub-r1"
+			}
+			r := &RunFiles{Snap: &Snapshot{Bridge: bridge, Task: task, Subtask: sub}, State: &State{Run: id, Session: session, Sequence: true}}
+			if got := publishStepAhead(r); got != c.want {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}

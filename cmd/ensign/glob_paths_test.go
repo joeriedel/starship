@@ -521,3 +521,42 @@ func TestSplitHistoryAndMigrateIgnoreGlobSiblings(t *testing.T) {
 		}
 	})
 }
+
+func TestPendingSkillsSkipsUnusableNames(t *testing.T) {
+	bridge := t.TempDir()
+	pending := filepath.Join(bridge, "skills", "pending")
+	names := []string{"Bad Name", ".hidden"}
+	if runtime.GOOS != "windows" {
+		names = append(names, "con")
+	}
+	for _, name := range names {
+		write(t, filepath.Join(pending, name, "f1.yaml"), "fact: x\n")
+	}
+	write(t, filepath.Join(pending, "Empty Name", "notes.txt"), "x\n")
+	if _, err := generatorItems(&Config{Bridge: bridge}, "pending-skills", false); err == nil || !strings.Contains(err.Error(), "no skill has pending facts to curate") {
+		t.Errorf("only unusable names should leave nothing to curate: %v", err)
+	}
+	write(t, filepath.Join(pending, "supernova-notes", "f1.yaml"), "fact: x\n")
+	items, err := generatorItems(&Config{Bridge: bridge}, "pending-skills", false)
+	if err != nil || len(items) != 1 || items[0] != "supernova-notes" {
+		t.Errorf("%v, %v", items, err)
+	}
+	for _, name := range names {
+		if _, err := os.Stat(filepath.Join(pending, name, "f1.yaml")); err != nil {
+			t.Errorf("%s should stay on disk: %v", name, err)
+		}
+	}
+}
+
+func TestApplyCurationRefusesUnusableSkillName(t *testing.T) {
+	bridge := t.TempDir()
+	r := &RunFiles{Snap: &Snapshot{Bridge: bridge}}
+	s := &Stage{ID: "curate", Curates: "skill"}
+	d := &Dispatch{Outcome: "updated", Dim: "Bad Name"}
+	if got := applyCuration(r, s, d, ""); got == "" {
+		t.Error("an unusable skill name should be a problem")
+	}
+	if matches, _ := filepath.Glob(filepath.Join(bridge, "skills", "*.learned.yaml")); len(matches) != 0 {
+		t.Errorf("nothing should be written: %v", matches)
+	}
+}

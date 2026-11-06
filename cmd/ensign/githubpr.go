@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -362,9 +363,61 @@ func githubReady(r *RunFiles) error {
 		return err
 	}
 	base, _ := defaultBranch(ws)
+	if r.State.Sequence && publishStepAhead(r) {
+		r.State.note(fmt.Sprintf("The tested work is committed on %s (%s). A publish step in the session's sequence takes it from here: when that step runs, the work goes straight to %s and the branch is removed, so finding it there with no task branch is the sequence's doing, not an unexplained push. The sequence's report to the session gives the result",
+			branch, short(sha), orDefault(base)))
+		return nil
+	}
 	r.State.note(fmt.Sprintf("The tested work is committed on %s (%s). Nothing has been opened yet: the user can ask for a pull request, or for it to go straight to %s",
 		branch, short(sha), orDefault(base)))
 	return nil
+}
+
+// publishStepAhead reports whether the run's sequence has a pending publish step for the task after the run's step, with no later run of the task in between. A publish merges the location of the last run of the step's group, so the run must be that one, with no further subtask group to come.
+func publishStepAhead(r *RunFiles) bool {
+	for _, seq := range readSeq(r.Snap.Bridge, r.State.Session).Sequences {
+		found := false
+		for _, st := range seq.Steps {
+			if !found {
+				if st.Kind != "run" {
+					continue
+				}
+				runs := st.runs()
+				if !slices.ContainsFunc(runs, func(sr *seqRun) bool { return sr.Run == r.State.Run }) {
+					continue
+				}
+				if runs[len(runs)-1].Run != r.State.Run || furtherSubtaskGroup(r, runs) {
+					break
+				}
+				found = true
+				continue
+			}
+			if st.Task != r.Snap.Task {
+				continue
+			}
+			if st.Kind == "run" {
+				break
+			}
+			if st.Kind == "publish" && st.Status == "pending" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// furtherSubtaskGroup reports whether the task has subtasks beyond the group's own, the case where the sequence queues another group for the step. It reads as nextSubtaskGroup does and takes no lock.
+func furtherSubtaskGroup(r *RunFiles, group []*seqRun) bool {
+	if r.Snap.Subtask == "" {
+		return false
+	}
+	pending, _, err := pendingSubtasks(r.Snap.Bridge, r.Snap.Task)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(pending, func(s subtask) bool {
+		return s.Name != r.Snap.Subtask && !slices.ContainsFunc(group, func(sr *seqRun) bool { return sr.Subtask == s.Name })
+	})
 }
 
 // docsOnlySince reports whether marker is an ancestor of head and every path changed between them is inside the declared @docs paths. It compares in git's own path space, lexically, so nothing is resolved on disk. The diff has no rename detection, so moving a code file into a docs folder still lists its source.

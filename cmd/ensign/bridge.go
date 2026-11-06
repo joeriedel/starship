@@ -980,6 +980,9 @@ func shippedProject(dir string) (string, []string, error) {
 		return "", nil, err
 	}
 	for _, name := range sortedKeys(declared) {
+		if !validName(name) {
+			return "", nil, fmt.Errorf("%s in %s: location %q: name it with lower-case letters, digits and dashes", shippedProjectFile, dir, name)
+		}
 		if windowsReserved(name) {
 			return "", nil, fmt.Errorf("%s in %s: location %q: a name Windows reserves", shippedProjectFile, dir, name)
 		}

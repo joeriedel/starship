@@ -351,7 +351,7 @@ func recordFacts(r *RunFiles, d *Dispatch) {
 			continue
 		}
 		skill := strings.TrimSpace(parts[0])
-		if !validName(skill) || windowsReserved(skill) {
+		if !usableSkillName(skill) {
 			continue
 		}
 		f := map[string]string{"fact": strings.TrimSpace(parts[1]), "run": r.State.Run, "stage": d.Stage}
@@ -371,6 +371,11 @@ func recordFacts(r *RunFiles, d *Dispatch) {
 	}
 }
 
+// usableSkillName reports whether name can name a skill's files: a valid name that Windows does not reserve.
+func usableSkillName(name string) bool {
+	return validName(name) && !windowsReserved(name)
+}
+
 // generatorItems resolves a parallel stage's list for this run.
 func generatorItems(c *Config, over string, rebuild bool) ([]string, error) {
 	switch over {
@@ -388,9 +393,14 @@ func generatorItems(c *Config, over string, rebuild bool) ([]string, error) {
 			if err != nil {
 				return nil, fmt.Errorf("listing skills/pending/%s: %v", d.Name(), err)
 			}
-			if len(files) > 0 {
-				out = append(out, d.Name())
+			if len(files) == 0 {
+				continue
 			}
+			if !usableSkillName(d.Name()) {
+				fmt.Fprintf(os.Stderr, "ensign: skills/pending/%s has facts but is not a usable skill name; skipped\n", d.Name())
+				continue
+			}
+			out = append(out, d.Name())
 		}
 		if len(out) == 0 {
 			return nil, fmt.Errorf("no skill has pending facts to curate")
