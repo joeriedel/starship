@@ -2004,7 +2004,7 @@ func extensionDirs(bridge, cp string) ([]string, error) {
 				out = append(out, d)
 				continue
 			}
-			// A stray file in extensions/ makes the stat fail with something other than not-exist (ENOTDIR on Linux).
+			// A stray file in extensions/ is skipped on both platforms: the stat fails with ENOTDIR on Linux and reads as not-exist on Windows, and either way d is not a directory.
 			if fi, serr := os.Stat(d); !errors.Is(err, fs.ErrNotExist) && (serr != nil || fi.IsDir()) {
 				errs = append(errs, err)
 			}
@@ -2013,16 +2013,33 @@ func extensionDirs(bridge, cp string) ([]string, error) {
 	return out, errors.Join(errs...)
 }
 
-// readDirIfAny lists dir, and a missing dir has no entries. Windows reports a plain file in place of a folder as not-exist, and that is not a missing folder.
+// readDirIfAny lists dir, and a missing dir has no entries. Windows reports a path beneath a plain file as not-exist, so a plain file at dir or anywhere higher up the path is an error, not a missing folder.
 func readDirIfAny(dir string) ([]os.DirEntry, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		if fi, serr := os.Stat(dir); serr == nil && !fi.IsDir() {
-			return nil, fmt.Errorf("%s is not a folder", dir)
+		if file := plainFileOnPath(dir); file != "" {
+			return nil, fmt.Errorf("%s is not a folder", file)
 		}
 		return nil, nil
 	}
 	return entries, err
+}
+
+// plainFileOnPath returns the nearest existing ancestor-or-self of p when it is not a folder, or "" when it is a folder or nothing on the path exists.
+func plainFileOnPath(p string) string {
+	for {
+		if fi, err := os.Stat(p); err == nil {
+			if fi.IsDir() {
+				return ""
+			}
+			return p
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return ""
+		}
+		p = parent
+	}
 }
 
 // filesIn lists the files in dir whose names end in suffix, as paths, in name order. It reads the folder rather than matching a pattern, so brackets in the path mean nothing. A missing dir has none.

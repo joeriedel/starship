@@ -218,7 +218,7 @@ func TestStrayFilesInListedFoldersAreNotErrors(t *testing.T) {
 	}
 }
 
-// fileAt replaces whatever is at path with a file, so listing path itself as a folder fails on every platform. A file higher up does not: Windows reports a path beneath it as missing, which reads as empty.
+// fileAt replaces whatever is at path with a file, so listing path itself, or anything beneath it, as a folder fails on every platform.
 func fileAt(t *testing.T, path string) {
 	t.Helper()
 	os.RemoveAll(path)
@@ -321,9 +321,6 @@ func TestSkillNewListingFailureWritesNothing(t *testing.T) {
 }
 
 func TestWalkListingFailuresAreNotes(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("a file where projects/ should be lists differently here")
-	}
 	bridge, _ := bracketedPair(t)
 	write(t, filepath.Join(bridge, "projects"), "not a folder\n")
 	if note := migrateWorkspaces(bridge); !strings.Contains(note, "could not list") {
@@ -381,6 +378,34 @@ func TestReadDirIfAny(t *testing.T) {
 	entries, err := readDirIfAny(dir)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "supernova.txt" {
 		t.Errorf("real folder: entries = %v, err = %v", entries, err)
+	}
+}
+
+func TestReadDirIfAnyBeneathAFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "supernova.txt")
+	fileAt(t, file)
+	for _, p := range []string{filepath.Join(file, "child"), filepath.Join(file, "child", "grandchild")} {
+		if _, err := readDirIfAny(p); err == nil {
+			t.Errorf("%s: want an error", p)
+		}
+	}
+	if entries, err := readDirIfAny(filepath.Join(dir, "missing", "deeper")); err != nil || len(entries) != 0 {
+		t.Errorf("missing: entries = %v, err = %v", entries, err)
+	}
+}
+
+func TestPlainFileOnPath(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "supernova.txt")
+	fileAt(t, file)
+	for _, p := range []string{file, filepath.Join(file, "child"), filepath.Join(file, "child", "grandchild")} {
+		if got := plainFileOnPath(p); got != file {
+			t.Errorf("%s: got %q, want %q", p, got, file)
+		}
+	}
+	if got := plainFileOnPath(filepath.Join(dir, "missing", "deeper")); got != "" {
+		t.Errorf("missing: got %q", got)
 	}
 }
 
