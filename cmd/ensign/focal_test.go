@@ -904,14 +904,14 @@ func TestFocalWarningsLeftOutEntries(t *testing.T) {
 	})
 	t.Run("no sheet", func(t *testing.T) {
 		w := focalWorld(t, true, focalPath, "## Alpha\n")
-		if got := sessionStartText(t, w); !strings.Contains(got, "Supernova manual.") || strings.Contains(got, marker) {
+		if got := sessionStartText(t, w); !strings.Contains(got, "STARSHIP-READY") || strings.Contains(got, marker) {
 			t.Errorf("no sheet:\n%s", got)
 		}
 	})
 	t.Run("broken sheet", func(t *testing.T) {
 		w := focalWorld(t, true, focalPath, "## Alpha\n")
 		write(t, filepath.Join(w.bridge, focalPath), "# sheet\n\n```starship-document\nentries: [broken\n```\n")
-		if got := sessionStartText(t, w); !strings.Contains(got, "Supernova manual.") || strings.Contains(got, marker) {
+		if got := sessionStartText(t, w); !strings.Contains(got, "STARSHIP-READY") || strings.Contains(got, marker) {
 			t.Errorf("broken sheet:\n%s", got)
 		}
 	})
