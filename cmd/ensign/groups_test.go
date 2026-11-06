@@ -5,9 +5,12 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // groupWorld is a locations world whose task t has one subtask per name, "<number>-<location>" for the locations client, server and models.
@@ -322,5 +325,126 @@ func TestSequenceRetryListingKeepsASingleSubtask(t *testing.T) {
 	got := sequenceListing(w.bridge, w.sid)
 	if !strings.Contains(got, "Edited goal. (subtask 01-client)") {
 		t.Errorf("the line should show the new goal and the subtask:\n%s", got)
+	}
+}
+
+// githubGroupWorld is a groupWorld whose project uses github-pr with a test binding that passes locally, and whose location folders are git repos with a bare origin each. It returns the remote of each location.
+func githubGroupWorld(t *testing.T, names ...string) (*world, map[string]string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	w := groupWorld(t, names...)
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	s := strings.NewReplacer(
+		`build: { command: "./build.sh" }`, `build: { not-applicable: "none here" }`,
+		`{ command: "./test.sh" }`, localTest,
+		`{ command: "./models-test.sh" }`, localTest,
+		`{ command: "./client-test.sh" }`, localTest,
+		`{ command: "./cross-test.sh" }`, localTest,
+	).Replace(string(data))
+	write(t, p, "use: [github-pr]\n"+s)
+
+	remotes := map[string]string{}
+	for _, loc := range []string{"client", "server", "models"} {
+		c, err := loadConfigAt(w.bridge, "supernova/t", loc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, c.Workspace, "init", "-q", "-b", "main")
+		write(t, filepath.Join(c.Workspace, "lib.txt"), "one\n")
+		runGit(t, c.Workspace, "add", "lib.txt")
+		runGit(t, c.Workspace, "commit", "-q", "-m", "init")
+		remote := filepath.Join(t.TempDir(), "remote.git")
+		runGit(t, ".", "init", "-q", "--bare", "-b", "main", remote)
+		runGit(t, c.Workspace, "remote", "add", "origin", remote)
+		runGit(t, c.Workspace, "push", "-q", "-u", "origin", "main")
+		runGit(t, c.Workspace, "remote", "set-head", "origin", "main")
+		remotes[loc] = remote
+	}
+
+	gh := &fakeGH{prs: map[string]bool{}, conclusion: "success"}
+	oldGH, oldPoll := runGH, checkPoll
+	runGH, checkPoll = gh.run, time.Millisecond
+	t.Cleanup(func() { runGH, checkPoll = oldGH, oldPoll })
+	return w, remotes
+}
+
+// codeChangeIn is codeChange for a run of the locations fixture, changing the location's folder ws.
+func (w *world) codeChangeIn(lead, ws string) {
+	w.t.Helper()
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		w.t.Fatalf("coder refused: %s", why)
+	}
+	write(w.t, filepath.Join(ws, "lib.txt"), "two\n")
+	w.stop(coder, "coder", report("compiled"), false)
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+}
+
+// finishRun codes a change in the run's location and runs its test stage, returning the run's final state.
+func (w *world) finishRun(run string) *State {
+	w.t.Helper()
+	var snap Snapshot
+	if err := readJSON(filepath.Join(runsDir(w.bridge), run, "pipeline.json"), &snap); err != nil {
+		w.t.Fatal(err)
+	}
+	c, err := loadConfigAt(w.bridge, "supernova/t", snap.Location)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	w.codeChangeIn(w.leadOf(run), c.Workspace)
+	var out bytes.Buffer
+	if err := cmdRunStage([]string{"--bridge", w.bridge, "--run", run}, &out); err != nil || !strings.Contains(out.String(), "Outcome: pass") {
+		w.t.Fatalf("run %s should pass: %v\n%s", run, err, out.String())
+	}
+	return w.runState(run)
+}
+
+func TestPublishAfterAGroupMergesTheLastRunsLocation(t *testing.T) {
+	w, remotes := githubGroupWorld(t, "01-client", "02-server")
+	w.mustSeq("run", "supernova/t")
+	w.mustSeq("publish", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	if len(ids) != 2 {
+		t.Fatalf("the group is client and server: %v", ids)
+	}
+	first := w.finishRun(ids[0])
+	if notes := strings.Join(first.Notes, "\n"); !strings.Contains(notes, "Nothing has been opened yet") || strings.Contains(notes, "publish step") {
+		t.Errorf("the first run of the group should get the usual note:\n%s", notes)
+	}
+	last := w.finishRun(ids[1])
+	if notes := strings.Join(last.Notes, "\n"); !strings.Contains(notes, "A publish step in the session's sequence takes it from here") || strings.Contains(notes, "Nothing has been opened yet") {
+		t.Errorf("the last run of the group should name the publish step:\n%s", notes)
+	}
+	w.wantStatus("done", "done")
+	lastLoc := "server"
+	for loc, remote := range remotes {
+		want := "one"
+		if loc == lastLoc {
+			want = "two"
+		}
+		if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got != want {
+			t.Errorf("main of %s has %q, want %q (the publish merges %s)", loc, got, want, lastLoc)
+		}
+	}
+}
+
+func TestPublishNoteAfterAGroupWithAFurtherGroupIsThePlainOne(t *testing.T) {
+	w, _ := githubGroupWorld(t, "01-client", "02-server", "03-models")
+	w.mustSeq("run", "supernova/t")
+	w.mustSeq("publish", "supernova/t")
+	w.approve()
+	ids := w.stepRuns(1)
+	if len(ids) != 2 {
+		t.Fatalf("the first group is client and server: %v", ids)
+	}
+	w.finishRun(ids[0])
+	last := w.finishRun(ids[1])
+	if notes := strings.Join(last.Notes, "\n"); !strings.Contains(notes, "Nothing has been opened yet") || strings.Contains(notes, "publish step") {
+		t.Errorf("a run followed by a further group should get the usual note:\n%s", notes)
 	}
 }

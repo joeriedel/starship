@@ -461,12 +461,24 @@ func statusText(bridge, session string) string {
 	if herr != nil {
 		fmt.Fprintf(&b, "\nstarship: %v\n", herr)
 	}
-	if len(held) > 0 {
+	var offered, unusable []string
+	for _, name := range sortedKeys(held) {
+		if usableSkillName(name) {
+			offered = append(offered, name)
+		} else {
+			unusable = append(unusable, name)
+		}
+	}
+	if len(offered) > 0 {
 		b.WriteString("\nAgents reported facts about technologies with no skill yet:\n")
-		for _, name := range sortedKeys(held) {
+		for _, name := range offered {
 			fmt.Fprintf(&b, "  %s: %d fact%s. Say \"make a %s skill\" or \"discard the %s facts\".\n",
 				name, held[name], plural(held[name]), name, name)
 		}
+	}
+	for _, name := range unusable {
+		fmt.Fprintf(&b, "\nskills/proposed has %d fact%s under %q, which is not a usable skill name: remove that folder by hand.\n",
+			held[name], plural(held[name]), name)
 	}
 	return b.String()
 }

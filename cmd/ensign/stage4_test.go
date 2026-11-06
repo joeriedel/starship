@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -582,5 +583,31 @@ func TestFactForReservedSkillNameIsSkipped(t *testing.T) {
 	}
 	if got, _ := filepath.Glob(filepath.Join(w.bridge, "skills/pending/shell/*.yaml")); len(got) != 1 {
 		t.Errorf("the normal fact should be pending: %v", got)
+	}
+}
+
+func TestStatusOffersNoCommandForUnusableProposedNames(t *testing.T) {
+	w := newWorld(t)
+	names := []string{"make", ".hidden", "a b"}
+	if runtime.GOOS != "windows" {
+		names = append(names, "con", "line\nbreak")
+	}
+	for _, n := range names {
+		write(t, filepath.Join(w.bridge, "skills/proposed", n, "f1.yaml"), "fact: x\n")
+	}
+	s := statusText(w.bridge, w.sid)
+	if !strings.Contains(s, "\nAgents reported facts about technologies with no skill yet:\n  make: 1 fact. Say \"make a make skill\" or \"discard the make facts\".\n") {
+		t.Errorf("the usable name should be offered as before:\n%s", s)
+	}
+	for _, n := range names[1:] {
+		for _, offer := range []string{"make a " + n, "discard the " + n} {
+			if strings.Contains(s, offer) {
+				t.Errorf("%q must not be offered (%q):\n%s", n, offer, s)
+			}
+		}
+		want := fmt.Sprintf("skills/proposed has 1 fact under %q, which is not a usable skill name: remove that folder by hand.\n", n)
+		if !strings.Contains(s, want) {
+			t.Errorf("the status should name %q:\n%s", n, s)
+		}
 	}
 }
