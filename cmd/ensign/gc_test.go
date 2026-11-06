@@ -859,7 +859,7 @@ func TestGCLeavesNeitherFileFolderAndSpendsNoAttempt(t *testing.T) {
 	}
 }
 
-func TestGCLeavesStateOnlyFolderAndSpendsNoAttempt(t *testing.T) {
+func TestGCRemovesStateOnlyFolderAndSpendsAnAttempt(t *testing.T) {
 	w := newWorld(t)
 	stateOnly := fabricate(t, w, "20240101-000001-supernova", "success", true)
 	if err := os.Remove(filepath.Join(stateOnly, "pipeline.json")); err != nil {
@@ -867,11 +867,8 @@ func TestGCLeavesStateOnlyFolderAndSpendsNoAttempt(t *testing.T) {
 	}
 	newer := fabricate(t, w, "20240101-000002-supernova", "success", true)
 	res := gcRuns(w.bridge, 0, 1)
-	if !exists(stateOnly) {
-		t.Errorf("a state-only folder must survive")
-	}
-	if exists(newer) || res.Removed != 1 || res.More {
-		t.Fatalf("the newer run must go and the state-only folder use no attempt: %+v", res)
+	if exists(stateOnly) || !exists(newer) || res.Removed != 1 || !res.More {
+		t.Fatalf("the state-only folder must go and spend the attempt, leaving the newer run for the next gc: %+v", res)
 	}
 }
 
@@ -1323,23 +1320,29 @@ func TestDropDeadLinksEntryInfoFailure(t *testing.T) {
 	}
 }
 
-func TestGCRunThatCannotBeOpenedIsReported(t *testing.T) {
-	w := newWorld(t)
-	old := fabricate(t, w, "20240101-000001-supernova", "success", true)
-	fabricate(t, w, "20240101-000002-supernova", "success", true)
-	if err := os.Remove(filepath.Join(old, "pipeline.json")); err != nil {
-		t.Fatal(err)
+func TestGCRemovesARunWithoutAPipelineInsteadOfReportingIt(t *testing.T) {
+	setup := func() (*world, string) {
+		w := newWorld(t)
+		old := fabricate(t, w, "20240101-000001-supernova", "success", true)
+		fabricate(t, w, "20240101-000002-supernova", "success", true)
+		if err := os.Remove(filepath.Join(old, "pipeline.json")); err != nil {
+			t.Fatal(err)
+		}
+		return w, old
 	}
+	w, old := setup()
 	var res gcResult
 	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 1, 1) })
-	if res.OpenFailed != 1 || !res.failed() || res.Failed != 0 || res.More || res.Removed != 0 || !exists(old) || !strings.Contains(stderr, "warning: could not open run folder "+old) {
+	if res.OpenFailed != 0 || res.failed() || res.Failed != 0 || res.More || res.Removed != 1 || exists(old) || stderr != "" {
 		t.Errorf("res = %+v, stderr = %q", res, stderr)
 	}
+	w, old = setup()
 	out, err := runGC(t, w, "1")
-	if err == nil || !strings.Contains(out, ", could not open 1 old runs") {
+	if err != nil || strings.Contains(out, "could not open") || exists(old) {
 		t.Errorf("err = %v, output = %q", err, out)
 	}
-	if show := sessionStartLine(t, w); !strings.Contains(show, " · could not open 1 old runs") {
+	w, _ = setup()
+	if show := sessionStartLine(t, w); strings.Contains(show, "could not open") {
 		t.Errorf("start line: %q", show)
 	}
 }

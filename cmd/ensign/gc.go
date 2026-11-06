@@ -98,7 +98,7 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		var st State
 		dir := filepath.Join(runsDir(bridge), entries[i].Name())
 		err := readJSON(filepath.Join(dir, "state.json"), &st)
-		// A folder with neither file (a run creation that failed early, a crash mid-delete, or a failed delete, because os.RemoveAll removes all it can) is left alone on purpose. It costs no attempt. After a failed delete it holds only what couldn't be deleted, and reclaiming it would bring undeletable folders back into the cap at every start. A failed run creation or a crash mid-delete can leave deletable content (scratch, reports, skills) that stays until someone removes it by hand; that is accepted, because gc can't tell these apart from a failed delete, they are rare, and they cost no time. A state-only folder fails openRun in the second pass, likewise without an attempt.
+		// A folder with neither file (a run creation that failed early, a crash mid-delete, or a failed delete, because os.RemoveAll removes all it can) is left alone on purpose. It costs no attempt. After a failed delete it holds only what couldn't be deleted, and reclaiming it would bring undeletable folders back into the cap at every start. A failed run creation or a crash mid-delete can leave deletable content (scratch, reports, skills) that stays until someone removes it by hand; that is accepted, because gc can't tell these apart from a failed delete, they are rare, and they cost no time. A state-only finished folder is retried in the second pass and counts as an attempt; one a failed delete left behind counts as Failed each time, under the cap and the budget.
 		if err == nil && finishedRun(&st) {
 			finished = append(finished, entries[i].Name())
 		} else if errors.Is(err, fs.ErrNotExist) {
@@ -160,20 +160,52 @@ func gcRuns(bridge string, keep, max int) gcResult {
 	if len(finished) > keep {
 		kept, candidates = finished[:keep], finished[keep:]
 	}
+	// A cleared run is held back while a .tested marker would let a landing pass over it; the markers are read once, when the first cleared candidate turns up.
+	var markerRuns map[string]bool
+	var markerErr error
+	markersLoaded := false
 	for i := len(candidates) - 1; i >= 0; i-- {
 		if capped() {
 			break
 		}
-		r, err := openRun(bridge, candidates[i])
-		if err != nil {
-			skipped(filepath.Join(runsDir(bridge), candidates[i]), err)
+		dir := filepath.Join(runsDir(bridge), candidates[i])
+		var st State
+		if r, err := openRun(bridge, candidates[i]); err == nil {
+			st = *r.State
+			r.close()
+		} else {
+			// A run whose files can't be used still goes when its state says it is finished.
+			l := flock.New(filepath.Join(dir, "lock"))
+			ok, lerr := l.TryLock()
+			if lerr != nil {
+				skipped(dir, lerr)
+				continue
+			}
+			if !ok {
+				continue
+			}
+			rerr := readRunState(dir, &st)
+			l.Unlock()
+			if rerr != nil {
+				skipped(dir, rerr)
+				continue
+			}
+		}
+		if !finishedRun(&st) {
 			continue
 		}
-		done := finishedRun(r.State)
-		dir := r.Dir
-		r.close()
-		if !done {
-			continue
+		if st.Reason == clearedReason {
+			if !markersLoaded {
+				markerRuns, markerErr = markerCountedRuns(bridge)
+				markersLoaded = true
+			}
+			if markerErr != nil {
+				skipped(dir, fmt.Errorf("a cleared run is kept because the tested records could not be checked: %w", markerErr))
+				continue
+			}
+			if markerRuns[candidates[i]] {
+				continue
+			}
 		}
 		remove(dir)
 	}

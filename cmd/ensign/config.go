@@ -720,7 +720,11 @@ func loadConfig(bridge, task string) (*Config, error) {
 
 // loadConfigAt is loadConfig for the commands that land a task's work, with the location they were asked to act in.
 func loadConfigAt(bridge, task, location string) (*Config, error) {
-	return loadTarget(bridge, Target{Task: task, Location: runLocation(bridge, task, location)})
+	loc, err := runLocation(bridge, task, location)
+	if err != nil {
+		return nil, err
+	}
+	return loadTarget(bridge, Target{Task: task, Location: loc})
 }
 
 // projectPipeline reads the project's pipeline: setting; none is the only value it may have. A file that can't be read has no setting; the callers report that themselves.

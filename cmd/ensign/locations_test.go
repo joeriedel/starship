@@ -415,11 +415,11 @@ func TestLandingRanksSuccessByFinishTime(t *testing.T) {
 	// The server run was created later but finished first.
 	finish(client.Run, 200)
 	finish(server.Run, 100)
-	if got := latestRunLocation(w.bridge, task, true); got != "client" {
+	if got, _ := latestRunLocation(w.bridge, task, true); got != "client" {
 		t.Errorf("newest finish is client, got %q", got)
 	}
 	finish(server.Run, 300)
-	if got := latestRunLocation(w.bridge, task, true); got != "server" {
+	if got, _ := latestRunLocation(w.bridge, task, true); got != "server" {
 		t.Errorf("newest finish is server, got %q", got)
 	}
 }

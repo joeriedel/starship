@@ -314,30 +314,32 @@ func locationsYAML(locs map[string]map[string]string) string {
 }
 
 // runLocation is the location the commands that land a task's work act in: the one asked for, else the one its newest successful run worked in. "" leaves it to taskLocation, which takes the task's sole location or asks for --location.
-func runLocation(bridge, task, want string) string {
+func runLocation(bridge, task, want string) (string, error) {
 	if want != "" {
-		return want
+		return want, nil
 	}
 	return latestRunLocation(bridge, task, true)
 }
 
 // latestRunLocation is the location of the task's newest run, or of the one that succeeded last. Runs are listed by creation, but a retry is created after the steps queued behind it, so success is ranked by when the run finished; a run with no finish time is oldest.
-func latestRunLocation(bridge, task string, successOnly bool) string {
+func latestRunLocation(bridge, task string, successOnly bool) (string, error) {
 	loc, best := "", int64(-1)
-	// A failed listing leaves loc "", which takes the task's sole location or asks for --location, so it can't pick a wrong one.
-	runs, _ := listRuns(bridge)
+	runs, err := listRuns(bridge)
+	if err != nil {
+		return "", err
+	}
 	for _, ri := range runs {
 		if ri.snap.Task != task {
 			continue
 		}
 		if !successOnly {
-			return ri.snap.Location
+			return ri.snap.Location, nil
 		}
 		if ri.state.Status == "success" && ri.state.FinishedAt > best {
 			loc, best = ri.snap.Location, ri.state.FinishedAt
 		}
 	}
-	return loc
+	return loc, nil
 }
 
 // publishTargets are the locations a publish step lands, in the order to land them: those of the nearest run step of the task before step n, then the ones a failed publish left to land. A dependency comes before what depends on it, and locations that share a folder are one, represented by the one whose run came last. With neither a run step nor anything left over it is a single "", which the landing resolves as it always has.

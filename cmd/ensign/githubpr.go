@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -742,41 +743,47 @@ func endedAfterPass(failed runInfo, pass runInfo) bool {
 
 // runIDMayBelongTo reports whether a run id, <YYYYmmdd-HHMMSS>-<label> with an optional -N for a collision, could be a run of the task. The label is the task with its slashes turned into dashes, so tasks can share one: it may match too much, never too little.
 func runIDMayBelongTo(id, task string) bool {
+	label := strings.ReplaceAll(task, "/", "-")
+	return idLabelIs(id, func(l string) bool { return l == label })
+}
+
+// idLabelIs reports whether the label of a run id, <YYYYmmdd-HHMMSS>-<label> with an optional -N for a collision, satisfies is.
+func idLabelIs(id string, is func(label string) bool) bool {
 	const stamp = len("20060102-150405-")
 	if len(id) < stamp {
 		return false
 	}
 	rest := id[stamp:]
-	label := strings.ReplaceAll(task, "/", "-")
-	if rest == label {
+	if is(rest) {
 		return true
 	}
-	n, ok := strings.CutPrefix(rest, label+"-")
-	if !ok {
+	i := strings.LastIndex(rest, "-")
+	if i < 0 {
 		return false
 	}
-	v, err := strconv.Atoi(n)
-	return err == nil && v >= 2 && v <= 99
+	v, err := strconv.Atoi(rest[i+1:])
+	return err == nil && v >= 2 && v <= 99 && is(rest[:i])
 }
 
-// latestRunPassed refuses when a run of the task in this location failed after the task's last pass (or when none passed), so a marker an earlier pass left behind cannot land failed work. An old run without a finish time, retired without a history entry after the pass was created, did no work and can slip past this.
-func latestRunPassed(bridge, task, location string) error {
+// countedRun is a finished run that counts as a failed attempt; unreadable is set when it was attributed by its id because its pipeline.json can't be read.
+type countedRun struct {
+	ri         runInfo
+	unreadable bool
+}
+
+// countedFailures lists the finished runs that count as a failed attempt after the last pass in one task and location, in the order latestRunPassed reports them. mine says whether a readable run is of that task and location; mayBelong whether the id of a run with no readable pipeline.json may be a run of the task, in which case it counts for every location. Landing and gc share it, so a run gc holds back is exactly one landing refuses on.
+func countedFailures(all, noPipeline []runInfo, mine func(*Snapshot) bool, mayBelong func(id string) bool) []countedRun {
 	var runs []runInfo
 	var pass *runInfo
-	all, noPipeline, err := scanRuns(bridge)
-	if err != nil {
-		return err
-	}
-	// A finished run with no readable pipeline.json has no task or location to read, so its id attributes it: it counts for every location of the task.
 	unreadable := map[string]bool{}
 	for _, ri := range noPipeline {
-		if ri.state.Status != "success" && runIDMayBelongTo(ri.id, task) {
+		if ri.state.Status != "success" && mayBelong(ri.id) {
 			runs = append(runs, ri)
 			unreadable[ri.id] = true
 		}
 	}
 	for _, ri := range all {
-		if ri.snap.Task != task || ri.snap.Location != location || !ri.state.terminal() {
+		if !mine(&ri.snap) || !ri.state.terminal() {
 			continue
 		}
 		if ri.state.Status != "success" {
@@ -786,16 +793,84 @@ func latestRunPassed(bridge, task, location string) error {
 			pass = &cp
 		}
 	}
+	var out []countedRun
 	for _, ri := range runs {
 		if retiredWithoutFault(&ri.state) || (pass != nil && !endedAfterPass(ri, *pass)) {
 			continue
 		}
-		if unreadable[ri.id] {
-			return fmt.Errorf("run %s may be a run of %s that did not pass (%s), and its pipeline.json can't be read; run the task again", ri.id, task, ri.state.Reason)
-		}
-		return fmt.Errorf("the latest run of %s did not pass (%s); run the task again", task, ri.state.Reason)
+		out = append(out, countedRun{ri, unreadable[ri.id]})
 	}
-	return nil
+	return out
+}
+
+// collapseDashes turns every run of dashes into one, so labels and encoded task names that differ only in how a slash was written compare equal.
+func collapseDashes(s string) string {
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	return s
+}
+
+// markerCountedRuns returns the ids of the runs that count as a failed attempt against some .tested marker. A marker name has its task's slashes turned into dashes and so can't be decoded when a task name holds a double dash; it is matched on the encoded form, which may hold a run too long but never too short.
+func markerCountedRuns(bridge string) (map[string]bool, error) {
+	entries, err := os.ReadDir(filepath.Join(bridge, ".starship", "tasks"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing the tested records: %w", err)
+	}
+	type marker struct{ enc, loc string }
+	var markers []marker
+	for _, ent := range entries {
+		base, ok := strings.CutSuffix(ent.Name(), ".tested")
+		if !ok {
+			continue
+		}
+		enc, loc, hasLoc := strings.Cut(base, "@")
+		if hasLoc && !validName(loc) {
+			continue
+		}
+		markers = append(markers, marker{enc, loc})
+	}
+	if len(markers) == 0 {
+		return nil, nil
+	}
+	all, noPipeline, err := scanRuns(bridge)
+	if err != nil {
+		return nil, err
+	}
+	counted := map[string]bool{}
+	for _, m := range markers {
+		mine := func(s *Snapshot) bool { return strings.ReplaceAll(s.Task, "/", "--") == m.enc && s.Location == m.loc }
+		mayBelong := func(id string) bool {
+			return idLabelIs(id, func(l string) bool { return collapseDashes(l) == collapseDashes(m.enc) })
+		}
+		for _, c := range countedFailures(all, noPipeline, mine, mayBelong) {
+			counted[c.ri.id] = true
+		}
+	}
+	return counted, nil
+}
+
+// latestRunPassed refuses when a run of the task in this location failed after the task's last pass (or when none passed), so a marker an earlier pass left behind cannot land failed work. An old run without a finish time, retired without a history entry after the pass was created, did no work and can slip past this.
+func latestRunPassed(bridge, task, location string) error {
+	all, noPipeline, err := scanRuns(bridge)
+	if err != nil {
+		return err
+	}
+	// A finished run with no readable pipeline.json has no task or location to read, so its id attributes it: it counts for every location of the task.
+	counted := countedFailures(all, noPipeline,
+		func(s *Snapshot) bool { return s.Task == task && s.Location == location },
+		func(id string) bool { return runIDMayBelongTo(id, task) })
+	if len(counted) == 0 {
+		return nil
+	}
+	ri := counted[0].ri
+	if counted[0].unreadable {
+		return fmt.Errorf("run %s may be a run of %s that did not pass (%s), and its pipeline.json can't be read; run the task again", ri.id, task, ri.state.Reason)
+	}
+	return fmt.Errorf("the latest run of %s did not pass (%s); run the task again", task, ri.state.Reason)
 }
 
 // tested finds a task's tested commit, and checks the task branch still holds it, or only @docs paths on top of it. It returns the branch head, so what lands includes those docs commits.

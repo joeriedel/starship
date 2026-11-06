@@ -2734,23 +2734,23 @@ func TestSequenceSkippedBeforeTracksLocationAndLaterRuns(t *testing.T) {
 	seq2 := &sequence{N: 2, Steps: []*seqStep{step(1, "run", "pending", "", pinned), pub}}
 	sf := &seqFile{Sequences: []*sequence{seq1, seq2}}
 
-	if got := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
+	if got, _ := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
 		t.Fatalf("a publish alone in a later sequence should see the skip in its location: %v", got)
 	}
 
 	cancelled := newRun("client", "error")
 	seq1.Steps = append(seq1.Steps, step(2, "run", "cancelled", "dropped", cancelled))
-	if got := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
+	if got, _ := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
 		t.Errorf("a cancelled later run step must not clear the skip: %v", got)
 	}
 
 	newRun("server", "success")
-	if got := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
+	if got, _ := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
 		t.Errorf("a passing run in another location must not clear the skip: %v", got)
 	}
 
 	newRun("client", "success")
-	if got := sf.skippedBefore(w.bridge, seq2, pub); got != nil {
+	if got, _ := sf.skippedBefore(w.bridge, seq2, pub); got != nil {
 		t.Errorf("a plain passing run after the skip should clear it: %v", got)
 	}
 }
@@ -2785,7 +2785,7 @@ func TestSequenceSkippedBeforeComparesEveryRunOfAGroup(t *testing.T) {
 	seq := &sequence{N: 1, Steps: []*seqStep{skipped, pub}}
 	sf := &seqFile{Sequences: []*sequence{seq}}
 	// The publish acts in the group's last run's location, the server; the skipped step has a run there, though its failed run was the client's.
-	if got := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
+	if got, _ := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
 		t.Errorf("a skipped group step with a run in the publish's location should stand: %v", got)
 	}
 }
@@ -2824,11 +2824,11 @@ func TestSequenceSkippedBeforeWithoutAResolvableLocation(t *testing.T) {
 	if _, err := loadConfigAt(w.bridge, task, ""); err == nil {
 		t.Fatal("the task has no success to follow and two locations; its location should not resolve")
 	}
-	if got := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
+	if got, _ := sf.skippedBefore(w.bridge, seq2, pub); got != skipped {
 		t.Errorf("the skip should apply when the location can't be resolved: %v", got)
 	}
 	newRun("success")
-	if got := sf.skippedBefore(w.bridge, seq2, pub); got != nil {
+	if got, _ := sf.skippedBefore(w.bridge, seq2, pub); got != nil {
 		t.Errorf("a passing run after the skip should clear it: %v", got)
 	}
 }
@@ -2859,7 +2859,7 @@ func TestSequenceSkippedBeforeAStandingSkipWithoutATime(t *testing.T) {
 	pub := &seqStep{N: 2, Kind: "publish", Task: task, Status: "pending"}
 	seq := &sequence{N: 1, Steps: []*seqStep{skipped, pub}}
 	sf := &seqFile{Sequences: []*sequence{seq}}
-	if got := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
+	if got, _ := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
 		t.Errorf("a skip with no time stands: %v", got)
 	}
 }
@@ -2942,7 +2942,7 @@ func TestSequenceSkippedBeforeSurvivesADeletedRunFolder(t *testing.T) {
 		if err := os.RemoveAll(filepath.Join(runsDir(w.bridge), failed)); err != nil {
 			t.Fatal(err)
 		}
-		if got := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
+		if got, _ := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
 			t.Errorf("recorded=%v: a skip must stand when its run folder is gone: %v", recorded, got)
 		}
 	}
@@ -5066,13 +5066,13 @@ func TestSkippedStepOfAnEarlierGroupBlocksAPublishThatLandsItsLocation(t *testin
 	pub := &seqStep{N: 3, Kind: "publish", Task: task, Status: "pending"}
 	seq := &sequence{N: 1, Steps: []*seqStep{skipped, run, pub}}
 	sf := &seqFile{Sequences: []*sequence{seq}}
-	if got := sf.skippedBefore(w.bridge, seq, pub); got != nil {
+	if got, _ := sf.skippedBefore(w.bridge, seq, pub); got != nil {
 		t.Errorf("the skipped step never worked in server: %v", got.ref())
 	}
 	if err := writePublishRecord(w.bridge, task, []string{"models"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
+	if got, _ := sf.skippedBefore(w.bridge, seq, pub); got != skipped {
 		t.Errorf("models, from the skipped step's earlier group, is among the targets: %v", got)
 	}
 }

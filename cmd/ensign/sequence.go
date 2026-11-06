@@ -1361,7 +1361,14 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 				}
 				return parts, nil
 			case "publish":
-				if sk := sf.skippedBefore(bridge, seq, st); sk != nil {
+				sk, err := sf.skippedBefore(bridge, seq, st)
+				if err != nil {
+					st.Status, st.Reason = "failed", err.Error()
+					sf.failed(bridge, seq, st)
+					parts = publishReport(seq, st, parts, st.publishLine("failed", err.Error()), false)
+					continue
+				}
+				if sk != nil {
 					cancelStep(bridge, st, "cancelled", fmt.Sprintf("step %s was skipped", sk.ref()))
 					st.Position = ""
 					parts = publishReport(seq, st, parts, st.publishLine("cancelled", fmt.Sprintf("step %s was skipped", sk.ref())), false)
@@ -1495,7 +1502,7 @@ func takeSequenceReports(bridge, session string) string {
 }
 
 // skippedBefore returns the latest skipped run step of the publish's task, before the publish step in any sequence, that ran in a location the publish will act in; it is nil when the publish may go ahead. When none of those locations can be resolved, any skipped step of the task counts and the clear check looks at the locations of its runs. A successful run of the task in the location that finished after the step was skipped clears the skip, whether it came from a sequence or from a plain `ensign run`. Run ids are stamped at creation and a retry is created after the steps queued behind it, so only finish times against SkippedAt say what came after; a step skipped before SkippedAt existed has none, and its skip stands.
-func (sf *seqFile) skippedBefore(bridge string, seq *sequence, pub *seqStep) *seqStep {
+func (sf *seqFile) skippedBefore(bridge string, seq *sequence, pub *seqStep) (*seqStep, error) {
 	var targets []string
 	for _, t := range publishTargets(bridge, seq, pub.N, pub.Task) {
 		if c, err := loadConfigAt(bridge, pub.Task, t); err == nil {
@@ -1528,19 +1535,21 @@ func (sf *seqFile) skippedBefore(bridge string, seq *sequence, pub *seqStep) *se
 		}
 	}
 	if skipped == nil {
-		return nil
+		return nil, nil
 	}
 	if skipped.SkippedAt == 0 {
-		return skipped
+		return skipped, nil
 	}
-	// A failed listing keeps the step skipped, which cancels the publish.
-	runs, _ := listRuns(bridge)
+	runs, err := listRuns(bridge)
+	if err != nil {
+		return nil, err
+	}
 	for _, ri := range runs {
 		if ri.snap.Task == pub.Task && slices.Contains(locs, ri.snap.Location) && ri.state.Status == "success" && ri.state.FinishedAt > skipped.SkippedAt {
-			return nil
+			return nil, nil
 		}
 	}
-	return skipped
+	return skipped, nil
 }
 
 func doText(st *seqStep) string {
@@ -1826,9 +1835,14 @@ func startRun(bridge, session, task, run string) (string, error) {
 // publishCommand finds the one publish operation a task's extensions declare.
 func publishCommand(bridge, task string) (string, error) {
 	// The step is added before the runs it follows have finished, so a planned run's location will do to find the extensions.
-	loc := latestRunLocation(bridge, task, true)
+	loc, err := latestRunLocation(bridge, task, true)
+	if err != nil {
+		return "", err
+	}
 	if loc == "" {
-		loc = latestRunLocation(bridge, task, false)
+		if loc, err = latestRunLocation(bridge, task, false); err != nil {
+			return "", err
+		}
 	}
 	c, err := loadConfigAt(bridge, task, loc)
 	if err != nil {

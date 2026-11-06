@@ -375,6 +375,7 @@ func openSoleSessionRun(bridge, session string) (*RunFiles, error) {
 	return openRunIfExists(bridge, id)
 }
 
+// openRunIfExists opens a run, or returns nil, nil when it has none: a folder that is gone, or a finished run whose pipeline can't be used, which nothing can unbind.
 func openRunIfExists(bridge, id string) (*RunFiles, error) {
 	if id == "" {
 		return nil, nil
@@ -383,7 +384,21 @@ func openRunIfExists(bridge, id string) (*RunFiles, error) {
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
+	if err != nil && finishedWithBadPipeline(filepath.Join(runsDir(bridge), id)) {
+		return nil, nil
+	}
 	return r, err
+}
+
+// finishedWithBadPipeline reports whether a run's state reads and is terminal while its files do not read as a whole.
+func finishedWithBadPipeline(dir string) bool {
+	var st State
+	if readRunState(dir, &st) != nil || !st.terminal() {
+		return false
+	}
+	var snap Snapshot
+	var st2 State
+	return readRunFiles(dir, &snap, &st2) != nil
 }
 
 // findAgentRun finds the live run an agent belongs to: the run its transcript's dispatch tag names, then any live run with a dispatch bound to its agent id. It returns nil, nil when there is none. Each candidate is opened and closed in turn, so no two run locks are held.
