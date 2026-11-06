@@ -1,6 +1,6 @@
 # Where edits are allowed
 
-A hook refuses Edit, Write and NotebookEdit outside the caller's folders; keep shell writes inside them.
+A hook refuses Edit, Write and NotebookEdit outside the caller's folders; keep shell writes inside them. A read-only role's (`explorer`, `reviewer`) Bash is refused when it changes a remote: push, `gh` writes, publishing, `ensign` commands that push.
 
 - Session: the bridge, temp, `~/.claude`, and the `session-edit` folders in `bridge.yaml` (user-added; never code).
 - Run coder, style reviewer: code folders, scratch, temp.

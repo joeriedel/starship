@@ -151,7 +151,7 @@ func TestConnectorSettingsGeneration(t *testing.T) {
 		t.Fatal("undeclared settings must be exactly hookSettings()")
 	}
 	s := hookSettingsFor(true, []string{"mcp__b__z", "mcp__a__y", "mcp__b__z"})
-	if !strings.Contains(s, `"matcher": "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep"`) {
+	if !strings.Contains(s, `"matcher": "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|Bash|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep"`) {
 		t.Fatalf("matcher missing:\n%s", s)
 	}
 	if !strings.Contains(s, `"allow": ["Bash(ensign:*)", "mcp__a__y", "mcp__b__z"]`) {

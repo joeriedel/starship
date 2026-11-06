@@ -292,7 +292,7 @@ func upgradeHookSettings(bridge string, bf *BridgeFile) error {
 	base := withoutConnectors(text)
 	known := false
 	for _, form := range []string{hookSettings(), hookSettingsWith(0, 0), hookSettingsWith(hookTimeout, 0)} {
-		known = known || base == form || base == beforeHandback(form)
+		known = known || base == form || base == beforeHandback(form) || base == withoutBash(form) || base == beforeHandback(withoutBash(form))
 	}
 	known = known && ensignShaped(text)
 	if !declared && text != string(data) && withoutConnectors(text) == text {

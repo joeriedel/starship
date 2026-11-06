@@ -105,7 +105,7 @@ func hookSettingsWith(preTimeout, stopTimeout int) string {
 
 // hookSettingsConn is the generated settings.json. A timeout of 0 leaves that hook without one, as older ensigns wrote it; SessionStart upgrades those forms. Declared connectors add the mcp__, resource-tool, Read and Grep matchers and allow the tools, sorted and without duplicates.
 func hookSettingsConn(preTimeout, stopTimeout int, declared bool, tools []string) string {
-	matcher, allow := "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback", `"Bash(ensign:*)"`
+	matcher, allow := "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|Bash", `"Bash(ensign:*)"`
 	if declared {
 		matcher += "|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep"
 		sorted := slices.Compact(slices.Sorted(slices.Values(tools)))

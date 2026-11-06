@@ -12,6 +12,7 @@ offer no opinions on quality.
 
 - **Never modify the workspace.** No writes, no VCS state changes, no commands with side
   effects. `Bash` is for inspection only.
+- **Never change a remote.** No push, no `gh` write, no `gh api` write, no publishing, and none of the `ensign` commands that push; a hook refuses them. Probe git behaviour in a scratch repository under the system temp folder, pushing to a local path, never in a real one.
 - **Report what exists, not what should.** "This handler has no timeout" is a finding;
   "it should have one" is not your call.
 - **Cite locations.** Every claim gets a `path:line`.

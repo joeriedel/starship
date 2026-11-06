@@ -186,6 +186,15 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "starship: ensign could not read the hook input:", err)
 		return 2
 	}
+	if event == "PreToolUse" && in.ToolName == "Bash" {
+		if in.AgentID != "" && (in.AgentType == "explorer" || in.AgentType == "reviewer") {
+			cmd, _ := in.ToolInput["command"].(string)
+			if what := remoteChange(cmd); what != "" {
+				json.NewEncoder(stdout).Encode(denial("this role can't change a remote, so `" + what + "` was refused. Probe git behaviour in a scratch repository under the system temp folder, pushing to a local path; otherwise report the need to your caller."))
+			}
+		}
+		return 0
+	}
 	if event == "PreToolUse" && isConnectorTool(in.ToolName) {
 		var raw struct {
 			ToolInput json.RawMessage `json:"tool_input"`
@@ -633,6 +642,11 @@ func beforeHandback(settings string) string {
 	j := strings.Index(settings[i:], "\n")
 	settings = settings[:i] + settings[i+j+1:]
 	return strings.Replace(settings, "|SubagentHandback", "", 1)
+}
+
+// withoutBash is settings as ensign wrote them before it matched Bash on PreToolUse.
+func withoutBash(settings string) string {
+	return strings.Replace(settings, `|Bash", "hooks"`, `", "hooks"`, 1)
 }
 
 // addGitattributes gives an existing bridge the .gitattributes that init writes, so its text files are LF on every machine, and commits just that file; committed blobs are not rewritten. Tracked files with uncommitted changes defer it to the next session. A non-blocking lock on .starship/gitattributes.lock keeps concurrent sessions from racing; a session that cannot take it skips. A .gitattributes that an interrupted attempt left untracked or staged, not in HEAD and holding exactly the expected content, is committed in place; any other .gitattributes is left alone. On a failure it removes and unstages the file unless HEAD has it, so the next session retries.

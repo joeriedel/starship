@@ -126,3 +126,23 @@ func TestCuratorRoleCoversDocuments(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOnlyRolesNeverChangeARemote(t *testing.T) {
+	root := repoRoot(t)
+	for _, rel := range []string{"roles/explorer.md", "roles/reviewer.md"} {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range []string{
+			`(?i)never change a remote`,
+			`(?i)no push, no .gh. write, no .gh api. write, no publishing`,
+			`(?i)ensign. commands that push`,
+			`(?i)scratch repository under the system temp folder`,
+		} {
+			if !regexp.MustCompile(re).Match(data) {
+				t.Errorf("%s does not match %q", rel, re)
+			}
+		}
+	}
+}

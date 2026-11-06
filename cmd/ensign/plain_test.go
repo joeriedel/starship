@@ -178,6 +178,66 @@ func TestHookSettingsUpgrade(t *testing.T) {
 	}
 }
 
+func TestHookSettingsMatchBashAndUpgradeFromBefore(t *testing.T) {
+	for _, s := range []string{hookSettings(), hookSettingsFor(true, []string{"mcp__supernova_mail__read_message"}), hookSettingsFor(true, nil)} {
+		if !strings.Contains(s, `NotebookEdit|SubagentHandback|Bash`) {
+			t.Fatalf("PreToolUse does not match Bash:\n%s", s)
+		}
+	}
+	b := t.TempDir()
+	f := filepath.Join(b, ".claude", "settings.json")
+	forms := map[string]string{}
+	for name, form := range map[string]string{"both timeouts": hookSettings(), "no timeouts": hookSettingsWith(0, 0), "PreToolUse timeout": hookSettingsWith(hookTimeout, 0)} {
+		forms[name+", before Bash"] = withoutBash(form)
+		forms[name+", before Bash and SubagentHandback"] = beforeHandback(withoutBash(form))
+	}
+	crlf := func(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
+	declared := &BridgeFile{Connectors: map[string][]string{"reader": {"mcp__a__x"}}}
+	for name, old := range forms {
+		if old == hookSettings() || strings.Contains(old, "SubagentHandback|Bash\"") || strings.Contains(old, "NotebookEdit|Bash\"") {
+			t.Fatalf("%s still matches Bash", name)
+		}
+		write(t, f, old)
+		if err := upgradeHookSettings(b, &BridgeFile{}); err != nil {
+			t.Fatal(err)
+		}
+		if data, _ := os.ReadFile(f); string(data) != hookSettings() {
+			t.Fatalf("settings %s should be upgraded", name)
+		}
+		write(t, f, crlf(old))
+		if err := upgradeHookSettings(b, &BridgeFile{}); err != nil {
+			t.Fatal(err)
+		}
+		if data, _ := os.ReadFile(f); string(data) != crlf(old) {
+			t.Fatalf("an undeclared CRLF file %s without connector parts must be left alone", name)
+		}
+		write(t, f, crlf(old))
+		if err := upgradeHookSettings(b, declared); err != nil {
+			t.Fatal(err)
+		}
+		if data, _ := os.ReadFile(f); string(data) != hookSettingsFor(true, []string{"mcp__a__x"}) {
+			t.Fatalf("a CRLF file %s on a declared bridge should be upgraded", name)
+		}
+		withConn := strings.Replace(old, `", "hooks"`, `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep", "hooks"`, 1)
+		if withConn == old {
+			t.Fatalf("%s: the connector parts were not added", name)
+		}
+		write(t, f, withConn)
+		if err := upgradeHookSettings(b, declared); err != nil {
+			t.Fatal(err)
+		}
+		if data, _ := os.ReadFile(f); string(data) != hookSettingsFor(true, []string{"mcp__a__x"}) {
+			t.Fatalf("settings %s with connectors should be upgraded", name)
+		}
+	}
+	edited := strings.Replace(withoutBash(hookSettings()), "ensign:*", "ensign:*\", \"Bash(make:*)", 1)
+	write(t, f, edited)
+	_ = upgradeHookSettings(b, &BridgeFile{})
+	if data, _ := os.ReadFile(f); string(data) != edited {
+		t.Fatal("an edited settings file must be left alone")
+	}
+}
+
 // gatedPlainRun starts a plain test stage whose command blocks until the returned release
 // is called, and waits until it is running. wait returns the command's output.
 func gatedPlainRun(t *testing.T) (w *world, run string, release func(), wait func() string) {
