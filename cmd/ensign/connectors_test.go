@@ -238,10 +238,38 @@ func TestConnectorSettingsShapeAndLineEndings(t *testing.T) {
 	if err := upgradeHookSettings(b, rules); err != nil || read() != crlf(declared) {
 		t.Fatalf("a CRLF file equal to the wanted form isn't written: %v", err)
 	}
-	old := crlf(hookSettingsWith(0, 0))
+	write(t, f, crlf(hookSettingsWith(0, 0)))
+	if err := upgradeHookSettings(b, &BridgeFile{}); err != nil || read() != hookSettings() || !strings.Contains(read(), "|Bash") {
+		t.Fatalf("an undeclared CRLF known form is upgraded to LF: %v\n%s", err, read())
+	}
+	edited := crlf(strings.Replace(withoutBash(hookSettings()), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1))
+	write(t, f, edited)
+	if err := upgradeHookSettings(b, &BridgeFile{}); err != nil || read() != edited {
+		t.Fatalf("a hand-edited undeclared CRLF file stays byte-identical: %v", err)
+	}
+}
+
+func TestUndeclaredCRLFSettingsCommittedOnGitBridge(t *testing.T) {
+	needGit(t)
+	b := t.TempDir()
+	runGit(t, b, "init", "-q")
+	runGit(t, b, "config", "core.autocrlf", "false")
+	f := filepath.Join(b, ".claude", "settings.json")
+	old := strings.ReplaceAll(withoutBash(hookSettings()), "\n", "\r\n")
 	write(t, f, old)
-	if err := upgradeHookSettings(b, &BridgeFile{}); err != nil || read() != old {
-		t.Fatalf("an undeclared CRLF file without connector parts isn't written: %v", err)
+	runGit(t, b, "add", ".claude/settings.json")
+	runGit(t, b, "commit", "-q", "-m", "settings")
+	if err := upgradeHookSettings(b, &BridgeFile{}); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(f); string(data) != hookSettings() {
+		t.Fatalf("the file should be the wanted form:\n%s", data)
+	}
+	if got := runGit(t, b, "status", "--porcelain", "--", ".claude/settings.json"); got != "" {
+		t.Fatalf("the path should be clean: %q", got)
+	}
+	if got := runGit(t, b, "log", "-1", "--format=%s"); got != "Update the starship hook settings" {
+		t.Fatalf("the upgrade should be committed: %q", got)
 	}
 }
 

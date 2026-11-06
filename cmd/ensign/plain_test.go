@@ -208,8 +208,8 @@ func TestHookSettingsMatchBashAndUpgradeFromBefore(t *testing.T) {
 		if err := upgradeHookSettings(b, &BridgeFile{}); err != nil {
 			t.Fatal(err)
 		}
-		if data, _ := os.ReadFile(f); string(data) != crlf(old) {
-			t.Fatalf("an undeclared CRLF file %s without connector parts must be left alone", name)
+		if data, _ := os.ReadFile(f); string(data) != hookSettings() || !strings.Contains(string(data), "|Bash") {
+			t.Fatalf("an undeclared CRLF file %s should be upgraded to LF", name)
 		}
 		write(t, f, crlf(old))
 		if err := upgradeHookSettings(b, declared); err != nil {

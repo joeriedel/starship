@@ -401,3 +401,22 @@ func TestReplacingOneRoleByStemAndName(t *testing.T) {
 		})
 	}
 }
+
+func TestMatcherUpgradeNeedsNoRestartNote(t *testing.T) {
+	w := connWorld(t, "")
+	if err := link(w.bridge, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(w.bridge, ".claude", "settings.json")
+	write(t, f, hookSettings())
+	if w.restartNote("111", "startup") {
+		t.Fatal("nothing declared, so no note")
+	}
+	write(t, f, withoutBash(hookSettings()))
+	if w.restartNote("111", "clear") {
+		t.Fatal("a matcher-only upgrade needs no restart note")
+	}
+	if data, _ := os.ReadFile(f); string(data) != hookSettings() || !strings.Contains(string(data), "|Bash") {
+		t.Fatalf("the session start should add the matcher:\n%s", data)
+	}
+}

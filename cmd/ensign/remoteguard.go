@@ -438,6 +438,7 @@ func classifyTool(name string, args []string, depth int) string {
 	return ""
 }
 
+// gitChangesRemote reports whether a git command line (the words after git) writes to a remote: a push, unless it names an explicit filesystem path, or a git lfs push, lock or unlock, a git subtree push, a git svn dcommit or a git p4 submit. Global options before the subcommand are skipped, and only the value of -C, -c, --git-dir, --work-tree, --namespace, --config-env and --super-prefix is skipped with them; the value of any other global option is read as the subcommand.
 func gitChangesRemote(args []string) bool {
 	i := 0
 	for i < len(args) && strings.HasPrefix(args[i], "-") {
@@ -605,6 +606,7 @@ func ghAPIWrites(args []string) bool {
 	return field || input
 }
 
+// isReadMethod reports whether an HTTP method is GET or HEAD, in any case; any other method, including an empty one, is not a read.
 func isReadMethod(m string) bool {
 	m = strings.ToUpper(m)
 	return m == "GET" || m == "HEAD"
@@ -613,6 +615,7 @@ func isReadMethod(m string) bool {
 // curlShortWithValue are the short options of curl that take a value, other than -X, -d, -F and -T, which are handled by name.
 const curlShortWithValue = "oHuAebcmwxKEyYzrCDPQtU"
 
+// curlChangesRemote reports whether a curl command line (the words after curl) can change a remote. An explicit -X or --request method decides it, so a missing value or any method other than GET or HEAD counts as a write; otherwise it is a write when it sends data (-d, -F, -T, --data*, --json, --form, --upload-file) and does not turn that into a query with -G or --get.
 func curlChangesRemote(args []string) bool {
 	var method string
 	var hasMethod, data, get bool
@@ -667,6 +670,7 @@ func curlChangesRemote(args []string) bool {
 	return data && !get
 }
 
+// wgetChangesRemote reports whether a wget command line (the words after wget) can change a remote: any --post-data, --post-file, --body-data or --body-file, or a --method that is not GET or HEAD, where a missing or empty method counts as a write.
 func wgetChangesRemote(args []string) bool {
 	for i, w := range args {
 		name, val, hasVal := strings.Cut(w, "=")
@@ -685,6 +689,7 @@ func wgetChangesRemote(args []string) bool {
 	return false
 }
 
+// ensignChangesRemote reports whether an ensign command line (the words after ensign) publishes to a remote: github-pr, update, run, run-stage and resume always do, journal only for push and commit, and sequence only for release-run.
 func ensignChangesRemote(args []string) bool {
 	if len(args) == 0 {
 		return false

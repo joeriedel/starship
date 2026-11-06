@@ -201,7 +201,7 @@ func ensignShaped(settings string) bool {
 	return strings.Contains(settings, `"Bash(ensign:*)"`+strings.Join(append([]string{""}, tools...), ", "))
 }
 
-// connectorSignature is what a settings file carries for connectors.
+// connectorSignature is what a settings file carries for connectors. The Bash matcher and other non-connector hook changes are deliberately not part of it, because claude reloads hook changes in a running session (observed on Claude Code 2.1.319), so they need no restart note.
 func connectorSignature(settings string) string {
 	return fmt.Sprint(strings.Contains(settings, connectorMatcher), strings.Contains(settings, connectorMatcherPrev), strings.Contains(settings, connectorMatcherOld), connectorToolStrRe.FindAllString(settings, -1))
 }
@@ -295,9 +295,6 @@ func upgradeHookSettings(bridge string, bf *BridgeFile) error {
 		known = known || base == form || base == beforeHandback(form) || base == withoutBash(form) || base == beforeHandback(withoutBash(form))
 	}
 	known = known && ensignShaped(text)
-	if !declared && text != string(data) && withoutConnectors(text) == text {
-		return nil
-	}
 	if !known {
 		if !declared {
 			return nil
