@@ -332,7 +332,7 @@ func migrateWorkspaces(bridge string) string {
 		}
 	}
 	if len(commit) > 0 {
-		if err := git(bridge, append([]string{"commit", "-q", "-m", "Workspace paths move to each machine's machine.yaml", "--"}, commit...)...); err != nil {
+		if err := git(bridge, append([]string{"commit", "-q", "-m", "Workspace paths move to each machine's machine.yaml", "--"}, literalPathspecs(commit)...)...); err != nil {
 			left = append(left, commit...)
 		}
 	}

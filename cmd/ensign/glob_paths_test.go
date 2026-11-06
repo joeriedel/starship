@@ -383,3 +383,141 @@ func TestReadDirIfAny(t *testing.T) {
 		t.Errorf("real folder: entries = %v, err = %v", entries, err)
 	}
 }
+
+func TestJournalCommitTouchesOnlyTheLiteralName(t *testing.T) {
+	needGit(t)
+	const dir = "projects/supernova/tasks/"
+	bracketed, sibling := dir+"a[X]/task.md", dir+"aX/task.md"
+	for _, c := range []struct {
+		name   string
+		exists bool
+	}{{"absent", false}, {"unchanged", true}} {
+		t.Run(c.name, func(t *testing.T) {
+			w := newWorld(t)
+			write(t, filepath.Join(w.bridge, filepath.FromSlash(sibling)), "# sibling\n")
+			if c.exists {
+				write(t, filepath.Join(w.bridge, filepath.FromSlash(bracketed)), "# bracketed\n")
+			}
+			journalFixture(t, w)
+			head := runGit(t, w.bridge, "rev-parse", "HEAD")
+			write(t, filepath.Join(w.bridge, filepath.FromSlash(sibling)), "# sibling\n\nSee .starship/runs/20261105-190410-supernova-x/d1.log\n")
+
+			if err := checkJournalSources(w.bridge, []string{bracketed}); err != nil {
+				t.Errorf("the sibling's lines were checked for the bracketed name: %v", err)
+			}
+			var out bytes.Buffer
+			if err := cmdJournal([]string{"commit", "-m", "Bracketed", bracketed}, &out); err == nil {
+				t.Errorf("nothing changed under the bracketed name, so the commit should fail:\n%s", out.String())
+			}
+			if got := runGit(t, w.bridge, "rev-parse", "HEAD"); got != head {
+				t.Errorf("a commit was made: %s", runGit(t, w.bridge, "show", "--name-only", "--format=", "HEAD"))
+			}
+			if st := runGit(t, w.bridge, "status", "--porcelain", "--", dir); !strings.Contains(st, "aX/task.md") || !strings.HasPrefix(st, "M ") {
+				t.Errorf("the sibling should stay modified and unstaged: %q", st)
+			}
+		})
+	}
+}
+
+func TestJournalCommitRejectsEmptyFileName(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	write(t, filepath.Join(w.bridge, "log.md"), "# log\n")
+	journalFixture(t, w)
+	head := runGit(t, w.bridge, "rev-parse", "HEAD")
+	write(t, filepath.Join(w.bridge, "log.md"), "# log, edited\n")
+
+	for _, files := range [][]string{{""}, {"log.md", ""}} {
+		var out bytes.Buffer
+		if err := cmdJournal(append([]string{"commit", "-m", "Empty"}, files...), &out); err == nil || !strings.Contains(err.Error(), "empty file name") {
+			t.Errorf("files %q: err = %v", files, err)
+		}
+		if got := runGit(t, w.bridge, "rev-parse", "HEAD"); got != head {
+			t.Errorf("files %q: a commit was made: %s", files, runGit(t, w.bridge, "show", "--name-only", "--format=", "HEAD"))
+		}
+		if staged := runGit(t, w.bridge, "diff", "--cached", "--name-only"); staged != "" {
+			t.Errorf("files %q: staged %q", files, staged)
+		}
+		if st := runGit(t, w.bridge, "status", "--porcelain"); st != "M log.md" {
+			t.Errorf("files %q: status %q", files, st)
+		}
+	}
+}
+
+func TestCommitNotesLeavesJunkSiblingOfBracketedNote(t *testing.T) {
+	needGit(t)
+	w := linkedWorld(t)
+	journalFixture(t, w)
+	write(t, notesPath(w, "notes/.a/n.md"), "junk\n")
+	runGit(t, w.bridge, "add", "-f", "notes/.a/n.md")
+	runGit(t, w.bridge, "commit", "-q", "-m", "junk")
+	write(t, notesPath(w, "notes/.a/n.md"), "junk, edited\n")
+	write(t, notesPath(w, "notes/[.]a/n.md"), "note\n")
+	if note, _ := commitNotes(w.bridge); note == "" || note == notesCommitFailed {
+		t.Fatalf("note %q", note)
+	}
+	if got := committedNotes(t, w.bridge); got != "notes/[.]a/n.md" {
+		t.Errorf("committed %q, want only the bracketed note", got)
+	}
+	if st := runGit(t, w.bridge, "status", "--porcelain", "--", "notes/.a"); !strings.HasPrefix(st, "M ") {
+		t.Errorf("the hidden file should stay modified: %q", st)
+	}
+}
+
+func TestSplitHistoryAndMigrateIgnoreGlobSiblings(t *testing.T) {
+	needGit(t)
+	repo := func(t *testing.T) string {
+		t.Helper()
+		bridge := filepath.Join(t.TempDir(), "supernova[b]", "bridge")
+		newRepo(t, bridge)
+		return bridge
+	}
+	files := func(bridge string) string {
+		return runGit(t, bridge, "-c", "core.quotepath=off", "show", "--name-only", "--format=", "HEAD")
+	}
+
+	t.Run("splitHistory", func(t *testing.T) {
+		bridge := repo(t)
+		const dir = "projects/supernova/tasks/"
+		doc := "---\npipeline: coding\n---\n\n# t\n\n## Progress log\n\n- one.\n\n## Outstanding\n\n- x\n"
+		write(t, filepath.Join(bridge, dir, "a[X]", "task.md"), doc)
+		write(t, filepath.Join(bridge, dir, "aX", "task.md"), doc)
+		runGit(t, bridge, "add", "-A")
+		runGit(t, bridge, "commit", "-q", "-m", "tasks")
+		write(t, filepath.Join(bridge, dir, "aX", "task.md"), doc+"- dirty\n")
+
+		if note := splitHistory(bridge); note != "" {
+			t.Errorf("note: %q", note)
+		}
+		if _, err := os.Stat(filepath.Join(bridge, dir, "a[X]", "history.md")); err != nil {
+			t.Fatalf("the sibling's changes stopped the split: %v", err)
+		}
+		if got := files(bridge); got != dir+"a[X]/history.md\n"+dir+"a[X]/task.md" {
+			t.Errorf("committed %q", got)
+		}
+		if st := runGit(t, bridge, "status", "--porcelain", "--", "projects"); st != "M "+dir+"aX/task.md" {
+			t.Errorf("the sibling should stay modified: %q", st)
+		}
+	})
+
+	t.Run("migrateWorkspaces", func(t *testing.T) {
+		bridge := repo(t)
+		ws := filepath.ToSlash(t.TempDir())
+		write(t, filepath.Join(bridge, ".gitignore"), ".starship/\n")
+		write(t, filepath.Join(bridge, "projects", "a[X]", "project.yaml"), "workspace: "+ws+"\n")
+		write(t, filepath.Join(bridge, "projects", "aX", "project.yaml"), "# Project: aX\n")
+		runGit(t, bridge, "add", "-A")
+		runGit(t, bridge, "commit", "-q", "-m", "projects")
+		write(t, filepath.Join(bridge, "projects", "aX", "project.yaml"), "# Project: aX, edited\n")
+
+		if note := migrateWorkspaces(bridge); note == "" {
+			t.Fatalf("note: %q", note)
+		}
+		if got := files(bridge); got != ".gitignore\nprojects/a[X]/project.yaml" {
+			t.Errorf("committed %q", got)
+		}
+		if st := runGit(t, bridge, "status", "--porcelain"); st != "M projects/aX/project.yaml" {
+			t.Errorf("the sibling should stay modified: %q", st)
+		}
+	})
+}

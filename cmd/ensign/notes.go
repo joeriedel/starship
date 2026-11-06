@@ -96,16 +96,16 @@ func commitNotes(bridge string) (note string, synced bool) {
 	for _, f := range files {
 		if _, err := os.Stat(filepath.Join(bridge, filepath.FromSlash(f))); err == nil {
 			addable = append(addable, f)
-		} else if tracked, _ := gitOut(bridge, "ls-files", "--", f); tracked != "" {
+		} else if tracked, _ := gitOut(bridge, append([]string{"ls-files", "--"}, literalPathspecs([]string{f})...)...); tracked != "" {
 			addable = append(addable, f)
 		}
 	}
 	if len(addable) > 0 {
-		if err := git(bridge, append([]string{"add", "-A", "--"}, addable...)...); err != nil {
+		if err := git(bridge, append([]string{"add", "-A", "--"}, literalPathspecs(addable)...)...); err != nil {
 			return notesCommitFailed, false
 		}
 	}
-	if err := git(bridge, append([]string{"commit", "-q", "-m", notesCommitMessage, "--"}, files...)...); err != nil {
+	if err := git(bridge, append([]string{"commit", "-q", "-m", notesCommitMessage, "--"}, literalPathspecs(files)...)...); err != nil {
 		return notesCommitFailed, false
 	}
 	note = fmt.Sprintf(notesCommittedFmt, len(files))

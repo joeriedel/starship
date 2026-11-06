@@ -756,7 +756,7 @@ func splitHistory(bridge string) string {
 				return
 			}
 			if tracked {
-				dirty, err := gitOut(bridge, "status", "--porcelain", "--", tf, hf)
+				dirty, err := gitOut(bridge, "status", "--porcelain", "--", ":(literal)"+tf, ":(literal)"+hf)
 				if err != nil {
 					notes = append(notes, fmt.Sprintf("starship: could not read the git status of %s (%v), so its progress log was not split", rel, err))
 					return
@@ -798,9 +798,9 @@ func splitHistory(bridge string) string {
 		}()
 	}
 	if len(moved) > 0 && tracked {
-		if err := git(bridge, append([]string{"add", "--"}, moved...)...); err != nil {
+		if err := git(bridge, append([]string{"add", "--"}, literalPathspecs(moved)...)...); err != nil {
 			notes = append(notes, fmt.Sprintf("starship: split the progress logs but could not stage them: %v", err))
-		} else if err := git(bridge, append([]string{"commit", "-q", "-m", "Move each task's progress log into history.md", "--"}, moved...)...); err != nil {
+		} else if err := git(bridge, append([]string{"commit", "-q", "-m", "Move each task's progress log into history.md", "--"}, literalPathspecs(moved)...)...); err != nil {
 			notes = append(notes, fmt.Sprintf("starship: split the progress logs but could not commit them: %v", err))
 		}
 	}

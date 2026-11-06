@@ -155,6 +155,11 @@ func cmdJournal(args []string, out io.Writer) error {
 		return usage
 	}
 	files := args[3:]
+	for _, f := range files {
+		if f == "" {
+			return fmt.Errorf("an empty file name was given; pass the files to commit, or none to commit all journal changes")
+		}
+	}
 	if len(files) == 0 {
 		if files, err = journalChanges(bridge); err != nil {
 			return err
@@ -172,16 +177,16 @@ func cmdJournal(args []string, out io.Writer) error {
 	for _, f := range files {
 		if _, err := os.Stat(filepath.Join(bridge, filepath.FromSlash(f))); err == nil {
 			addable = append(addable, f)
-		} else if tracked, _ := gitOut(bridge, "ls-files", "--", f); tracked != "" {
+		} else if tracked, _ := gitOut(bridge, append([]string{"ls-files", "--"}, literalPathspecs([]string{f})...)...); tracked != "" {
 			addable = append(addable, f)
 		}
 	}
 	if len(addable) > 0 {
-		if err := git(bridge, append([]string{"add", "-A", "--"}, addable...)...); err != nil {
+		if err := git(bridge, append([]string{"add", "-A", "--"}, literalPathspecs(addable)...)...); err != nil {
 			return err
 		}
 	}
-	if err := git(bridge, append([]string{"commit", "-q", "-m", args[2], "--"}, files...)...); err != nil {
+	if err := git(bridge, append([]string{"commit", "-q", "-m", args[2], "--"}, literalPathspecs(files)...)...); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "committed %d file(s)\n", len(files))
@@ -199,7 +204,7 @@ func checkJournalSources(bridge string, args []string) error {
 	var files []string
 	tracked := map[string]bool{}
 	if hasHead {
-		out, _ := gitOut(bridge, append([]string{"diff", "--name-only", "--relative", "HEAD", "--"}, args...)...)
+		out, _ := gitOut(bridge, append([]string{"diff", "--name-only", "--relative", "HEAD", "--"}, literalPathspecs(args)...)...)
 		for _, f := range strings.Split(out, "\n") {
 			if f != "" {
 				files = append(files, f)
@@ -207,10 +212,10 @@ func checkJournalSources(bridge string, args []string) error {
 			}
 		}
 	} else {
-		out, _ := gitOut(bridge, append([]string{"ls-files", "--"}, args...)...)
+		out, _ := gitOut(bridge, append([]string{"ls-files", "--"}, literalPathspecs(args)...)...)
 		files = append(files, strings.Split(out, "\n")...)
 	}
-	out, _ := gitOut(bridge, append([]string{"ls-files", "-o", "--exclude-standard", "--"}, args...)...)
+	out, _ := gitOut(bridge, append([]string{"ls-files", "-o", "--exclude-standard", "--"}, literalPathspecs(args)...)...)
 	files = append(files, strings.Split(out, "\n")...)
 
 	var found []string
@@ -225,7 +230,7 @@ func checkJournalSources(bridge string, args []string) error {
 		lines := strings.Split(string(data), "\n")
 		var added []int
 		if tracked[rel] {
-			diff, _ := gitOut(bridge, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD", "--", rel)
+			diff, _ := gitOut(bridge, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD", "--", ":(literal)"+rel)
 			added = addedLines(diff)
 		} else {
 			for i := range lines {
@@ -314,7 +319,7 @@ func pushBridge(bridge string, out io.Writer) error {
 	stashNote := ""
 	if len(conflicted) > 0 {
 		// Unmerged index entries would block every later pull, so leave the markers as plain modifications.
-		if err := git(bridge, append([]string{"reset", "-q", "--"}, conflicted...)...); err != nil {
+		if err := git(bridge, append([]string{"reset", "-q", "--"}, literalPathspecs(conflicted)...)...); err != nil {
 			return fmt.Errorf("clearing the unmerged state of %s failed: %w", strings.Join(conflicted, ", "), err)
 		}
 		// A file the pushed commits deleted is untracked now; committing it would bring it back.
