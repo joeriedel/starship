@@ -65,7 +65,7 @@ Each later layer may extend or override the one before it, except locked invaria
   edits there, and to a development bridge's `control-plane: path`, and points at the
   project route instead. A development bridge's path should not also be the workspace of
   its starship project.
-- **Edits stay inside each agent's folders.** A PreToolUse hook checks every Edit, Write and NotebookEdit against the folders the caller may edit and denies the rest, naming the folders. The session may edit the bridge, the system temp folder, `~/.claude` and the folders in `bridge.yaml`'s `session-edit` list. A live coder or style reviewer may edit the run's code folders, its scratch folder and temp. Any other agent may edit temp and, if it belongs to a run, that run's scratch folder. Shell writes are not detected; the refusal and the role texts say the limit covers them too.
+- **Edits stay inside each agent's folders.** A PreToolUse hook checks every Edit, Write and NotebookEdit against the folders the caller may edit and denies the rest, naming the folders. The session may edit the bridge, the system temp folder, `~/.claude` and the folders in `bridge.yaml`'s `session-edit` list. A live coder or style reviewer may edit the run's code folders, its scratch folder and temp. Any other agent may edit temp and, if it belongs to a run, that run's scratch folder. Shell writes are not detected; the refusal and the role texts say the limit covers them too. Separately, a read-only agent's Bash is refused when it changes a remote (§7).
 
 ---
 
@@ -812,9 +812,13 @@ One binary, `ensign hook <event>`, called from harness hooks and git hooks. Outs
 bridge every event is a no-op. Most invocations take a file lock on the run; these return
 before the driver takes it: `SessionStart`, `Stop`, `UserPromptSubmit` when the prompt is
 `help`, `help <topic>` or `status`, `PreToolUse` for any tool but `Agent`, `Task`,
-`SubagentHandback` and, for an agent rather than the session, `Edit`, `Write` and `NotebookEdit` (which open the run to find the agent's folders), and `PostToolUse` for a call that launched no background task. Of
+`SubagentHandback` and, for an agent rather than the session, `Edit`, `Write` and `NotebookEdit` (which open the run to find the agent's folders); `Bash` returns before the bridge lookup and the lock for every caller, and `PostToolUse` for a call that launched no background task. Of
 these, only `help` and `status` take the lock, briefly, to read the run, so they can wait
 behind a holder; the rest, `help <topic>` included, take no lock.
+
+**PreToolUse (Bash)**
+
+The matcher includes `Bash`, ahead of the connector tail. For a call with a non-empty `agent_id` and `agent_type` `explorer` or `reviewer`, `cmdHook` classifies the command right after decoding, before the bridge lookup, and denies one that changes a remote. Every other role, and the session, returns at once with no file read, process spawn or lock; a missing or non-string `command` passes. Refused: `git push` (also `git lfs push|lock|unlock`, `subtree push`, `svn dcommit`, `p4 submit`), `gh` except a read allow-list, `gh api` writes, curl and wget writes, the `ensign` commands that push (`github-pr`, `journal push|commit`, `update`, `run`, `run-stage`, `resume`, `sequence release-run`), and registry publishes (npm, pnpm, yarn, cargo, docker, twine, gem). Text that only mentions such a command passes: the classifier (`remoteguard.go`) is quote-aware, follows `$(...)`, backticks and subshells, skips heredoc bodies and comments, and looks through wrappers (`env`, `sudo`, `xargs`, `find -exec`, `sh -c`, `eval`, `cmd /c`). A `git push` to an explicit filesystem path passes, so probing can happen in a scratch repository; `--dry-run` gets no exception. Limit: this guards against accidents, not as a security boundary. Git aliases, scripts and Makefiles that push, `ssh`, `scp`, `rsync` and variables holding a command are not looked into, and Bash writes to files are still not blocked for anyone. The role texts for the explorer and reviewer state the rule. An existing bridge gets the matcher through `upgradeHookSettings` at SessionStart (the forms without `Bash` stay known); a CRLF file with no connector parts on an undeclared bridge is left alone, as for every settings change. No restart note is given, so a running claude keeps its old hooks until restarted.
 
 **PreToolUse (Edit, Write, NotebookEdit)**
 

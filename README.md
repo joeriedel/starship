@@ -86,6 +86,8 @@ When an agent finishes, a SubagentStop hook reads its report. If the outcome is 
 
 The same PreToolUse hook checks every Edit, Write and NotebookEdit against the folders the caller may edit. The session gets the bridge, coders and style reviewers get their run's code and scratch folders, and other agents get temp and their run's scratch folder. This check doesn't cover shell commands, so a Bash write isn't blocked.
 
+The same hook refuses a Bash command from a read-only agent (an explorer or a reviewer) that changes a remote: a `git push`, a `gh` write, a registry publish, or an `ensign` command that pushes. A push to a local path is allowed, so git behaviour can be probed in a scratch repository. This catches accidents; it isn't a security boundary.
+
 `help` and `status` never reach the model. The UserPromptSubmit hook answers them directly and stops the turn.
 
 ## Task records
