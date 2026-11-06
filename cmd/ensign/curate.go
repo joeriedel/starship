@@ -429,7 +429,7 @@ func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 		if d.Outcome == "noted" {
 			r.State.noteOnce(feedbackRelayNote)
 		} else if d.Outcome == s.Advisory {
-			r.State.noteOnce(missingNote(d))
+			r.State.noteOnce(missingNote(d.Dim))
 		}
 		return ""
 	}

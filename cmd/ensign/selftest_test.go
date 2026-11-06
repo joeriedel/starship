@@ -568,3 +568,37 @@ func TestProbeHookCommandSurvivesShellSpecialPath(t *testing.T) {
 		t.Fatalf("script args = %q", got)
 	}
 }
+
+func TestAgentResultHas(t *testing.T) {
+	line := func(v any) string {
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
+	call := func(id, typ string) string {
+		return line(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{
+			map[string]any{"type": "tool_use", "id": id, "name": "Agent", "input": map[string]any{"subagent_type": typ}}}}})
+	}
+	result := func(id string, content any) string {
+		return line(map[string]any{"type": "user", "message": map[string]any{"content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": id, "content": content}}}})
+	}
+	blocks := []any{map[string]any{"type": "text", "text": "report: " + handbackToken}}
+	tests := []struct {
+		name  string
+		lines []string
+		want  bool
+	}{
+		{"text blocks", []string{call("t1", "probe-handback"), result("t1", blocks)}, true},
+		{"string", []string{call("t1", "probe-handback"), result("t1", "report: "+handbackToken)}, true},
+		{"crlf and noise", []string{"not json", call("t1", "probe-handback") + "\r", result("t1", "report: "+handbackToken) + "\r"}, true},
+		{"no token", []string{call("t1", "probe-handback"), result("t1", "Done.")}, false},
+		{"other agent", []string{call("t1", "probe-leaf"), result("t1", blocks)}, false},
+		{"result of another call", []string{call("t1", "probe-handback"), result("t2", blocks)}, false},
+		{"no result", []string{call("t1", "probe-handback")}, false},
+	}
+	for _, tt := range tests {
+		if got := agentResultHas(tt.lines, "probe-handback", handbackToken); got != tt.want {
+			t.Errorf("%s: got %v", tt.name, got)
+		}
+	}
+}

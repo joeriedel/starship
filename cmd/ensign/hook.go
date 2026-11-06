@@ -526,7 +526,12 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 		recordFacts(r, d)
 		detail += ": " + summary
 	}
-	os.WriteFile(filepath.Join(r.Dir, "reports", d.ID+".md"), []byte(report), 0o644)
+	reportFile := filepath.Join(r.Dir, "reports", d.ID+".md")
+	if os.WriteFile(reportFile, []byte(report), 0o644) == nil && s.Curates == "brag-feedback" && outcome == "noted" {
+		if rel, err := filepath.Rel(r.Snap.Bridge, reportFile); err == nil {
+			r.State.noteOnce("feedback for " + d.Dim + " is in " + filepath.ToSlash(rel))
+		}
+	}
 	r.State.log("report", s.ID, d.ID, detail)
 	if r.State.terminal() {
 		return
@@ -576,18 +581,18 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 			return
 		}
 		d.Outcome = s.Advisory
-		r.State.noteOnce(missingNote(d))
+		r.State.noteOnce(missingNote(d.Dim))
 		outcome, _ = joined()
 	}
 	m.apply(d.Scope, s, outcome)
 }
 
 // missingNote is the run note for a feedback dispatch that produced nothing.
-func missingNote(d *Dispatch) string { return "feedback for " + d.Dim + " is missing" }
+func missingNote(item string) string { return "feedback for " + item + " is missing" }
 
 // advisoryMissing records that an advisory dispatch produced nothing: it takes the stage's advisory outcome, spends no stop budget, and the join goes on.
 func advisoryMissing(r *RunFiles, m *machine, d *Dispatch, s *Stage) {
-	r.State.noteOnce(missingNote(d))
+	r.State.noteOnce(missingNote(d.Dim))
 	completeDispatch(r, m, d, s, s.Advisory, "", nil, "")
 }
 
@@ -1353,32 +1358,38 @@ func stageRoleAnywhere(bridge, role string) (found bool, unread []string, listFa
 	return false, unread, listFailed
 }
 
+// agentFilesNamed scans the bridge's .claude/agents for the files whose agent name is role, the name Claude Code knows a role by. It returns the last such file's content and how many there are. A file that can't be read or named is skipped, and the first such error is returned along with the matches.
+func agentFilesNamed(bridge, role string) ([]byte, int, error) {
+	files, err := filesIn(filepath.Join(bridge, ".claude", "agents"), ".md")
+	if err != nil {
+		return nil, 0, err
+	}
+	var data []byte
+	var first error
+	matches := 0
+	for _, f := range files {
+		d, err := os.ReadFile(f)
+		if err == nil {
+			var name string
+			if name, err = agentName(f, d); err == nil && name == role {
+				data = d
+				matches++
+			}
+		}
+		if err != nil && first == nil {
+			first = err
+		}
+	}
+	return data, matches, first
+}
+
 // readOnlyRole reports whether the definition in the bridge's .claude/agents, the file Claude Code uses, of the one agent named role, grants only Read, Grep, Glob and Bash. It fails closed: no file, more than one, a file that can't be read, no tools line, an empty list or any other tool is not read-only.
 func readOnlyRole(bridge, role string) bool {
 	if role == "" || strings.ContainsAny(role, `/\:`) || strings.Contains(role, "..") {
 		return false
 	}
-	files, err := filesIn(filepath.Join(bridge, ".claude", "agents"), ".md")
-	if err != nil {
-		return false
-	}
-	var data []byte
-	matches := 0
-	for _, f := range files {
-		d, err := os.ReadFile(f)
-		if err != nil {
-			return false
-		}
-		name, err := agentName(f, d)
-		if err != nil {
-			return false
-		}
-		if name == role {
-			data = d
-			matches++
-		}
-	}
-	if matches != 1 {
+	data, matches, err := agentFilesNamed(bridge, role)
+	if err != nil || matches != 1 {
 		return false
 	}
 	m := frontmatterToolsLoc(data)

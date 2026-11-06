@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,7 +82,7 @@ func TestBragRunGoesStraightToTheBragStage(t *testing.T) {
 		t.Fatal(why)
 	}
 	p := w.decodedPromptOf(id)
-	for _, want := range []string{"Nova shipped the launch checklist", "INSTR-TEXT", "STYLE-TEXT", "## Document: supernova-focal", "- Alpha", "D2", "Use only the entries with `status: active`"} {
+	for _, want := range []string{"Nova shipped the launch checklist", "INSTR-TEXT", "STYLE-TEXT", "## Document: supernova-focal", "- Alpha", "D2", "Use every entry, candidates included"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("the prompt lacks %q:\n%s", want, p)
 		}
@@ -93,7 +94,7 @@ func TestBragRunGoesStraightToTheBragStage(t *testing.T) {
 		t.Errorf("brag file = %q", got)
 	}
 	notes := strings.Join(w.state().Notes, "\n")
-	if !strings.Contains(notes, "supernova-focal has active entries with no listed theme, left out unless its instructions bring them in: D2") {
+	if !strings.Contains(notes, "supernova-focal has entries with no listed theme, left out unless its instructions bring them in: D2") {
 		t.Errorf("notes lack the left-out ids:\n%s", notes)
 	}
 	if strings.Contains(notes, "without") {
@@ -595,5 +596,275 @@ func TestValidateAdvisoryAndEmpty(t *testing.T) {
 				t.Errorf("want %q in:\n%s", c.want, got)
 			}
 		})
+	}
+}
+
+// stageItems is the frozen item list of each stage of the session's run, by stage id.
+func stageItems(t *testing.T, w *world) map[string][]string {
+	t.Helper()
+	r, err := openSessionRun(w.bridge, w.sid)
+	if err != nil || r == nil {
+		t.Fatalf("no active run: %v", err)
+	}
+	defer r.close()
+	out := map[string][]string{}
+	for _, s := range r.Snap.Pipeline.Stages {
+		out[s.ID] = s.Dimensions
+	}
+	return out
+}
+
+func twoFocalWorld(t *testing.T) *world {
+	t.Helper()
+	w := bragWorld(t, true)
+	w.propose("supernova-focal", "Nova shipped the launch checklist")
+	w.propose("supernova-focal2", "Nova fixed the gate")
+	return w
+}
+
+func TestRunDocumentNarrowsBothStages(t *testing.T) {
+	w := twoFocalWorld(t)
+	w.run("--pipeline", "document-curate", "--document", "supernova-focal")
+	items := stageItems(t, w)
+	for _, id := range []string{"curate", "brag", "feedback"} {
+		if got := strings.Join(items[id], ","); got != "supernova-focal" {
+			t.Errorf("stage %s items = %q", id, got)
+		}
+	}
+	if st := w.state(); st.Document != "supernova-focal" {
+		t.Errorf("State.Document = %q", st.Document)
+	}
+	if got := pendingDocFiles(w, "supernova-focal2"); len(got) != 1 {
+		t.Errorf("the other document's proposals = %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(w.bridge, "notes/focal/2027.brag.md")); err == nil {
+		t.Error("the other document's brag file was written")
+	}
+	if id, _ := w.spawn("", "", "curator"); id == "" {
+		t.Fatal("the curator was refused")
+	}
+	if id, _ := w.spawn("", "", "curator"); id != "" {
+		t.Error("a second curator was allowed")
+	}
+}
+
+func TestRunDocumentWithoutTheFlagKeepsEveryDocument(t *testing.T) {
+	w := twoFocalWorld(t)
+	w.run("--pipeline", "document-curate")
+	items := stageItems(t, w)
+	if got := strings.Join(items["curate"], ","); got != "supernova-focal,supernova-focal2" {
+		t.Errorf("curate items = %q", got)
+	}
+}
+
+func TestRunDocumentRefusals(t *testing.T) {
+	w := twoFocalWorld(t)
+	if err := w.runErr("--pipeline", "document-curate", "--document", "supernova-nowhere"); err == nil || !strings.Contains(err.Error(), "supernova-nowhere") {
+		t.Errorf("undeclared: %v", err)
+	}
+	if err := w.runErr("--pipeline", "skill-curate", "--document", "supernova-focal"); err == nil || !strings.Contains(err.Error(), "no stage over pending-documents or focal-documents") {
+		t.Errorf("pipeline without document stages: %v", err)
+	}
+}
+
+func TestRunDocumentWithNothingToDoNamesIt(t *testing.T) {
+	w := docWorld(t, "notes/supernova-log.md")
+	if err := w.runErr("--pipeline", "document-curate", "--document", "supernova-log"); err == nil || !strings.Contains(err.Error(), "document supernova-log has nothing to curate") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestRunDocumentIgnoresAnotherDocumentsProblem(t *testing.T) {
+	w := twoFocalWorld(t)
+	by := filepath.Join(w.bridge, "bridge.yaml")
+	data, _ := os.ReadFile(by)
+	write(t, by, string(data)+"  supernova-log:\n    path: notes/supernova-log.md\n    rubric: notes/missing-rubric.md\n")
+	w.propose("supernova-log", "Nova logged the burn")
+	if err := w.runErr("--pipeline", "document-curate"); err == nil || !strings.Contains(err.Error(), "supernova-log") {
+		t.Fatalf("the whole run should be refused for the broken document: %v", err)
+	}
+	w.run("--pipeline", "document-curate", "--document", "supernova-focal")
+	if got := strings.Join(stageItems(t, w)["brag"], ","); got != "supernova-focal" {
+		t.Errorf("brag items = %q", got)
+	}
+}
+
+func TestCurationAgentFileUnderAnotherFileName(t *testing.T) {
+	w := bragWorld(t, false)
+	agents := filepath.Join(w.bridge, ".claude", "agents")
+	data, err := os.ReadFile(filepath.Join(agents, "brag-writer.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(agents, "brag-writer.md"))
+	write(t, filepath.Join(agents, "my-writer.md"), string(data))
+	out := w.run("--pipeline", "document-curate")
+	if strings.Contains(out, "linked") {
+		t.Errorf("link ran:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(agents, "brag-writer.md")); err == nil {
+		t.Error("brag-writer.md was created")
+	}
+}
+
+func TestRunDocumentDryRunAndRetry(t *testing.T) {
+	w := twoFocalWorld(t)
+	out := w.run("--pipeline", "document-curate", "--document", "supernova-focal", "--dry-run")
+	if !strings.Contains(out, "[supernova-focal]") || strings.Contains(out, "supernova-focal2") {
+		t.Errorf("dry run:\n%s", out)
+	}
+	w.run("--pipeline", "document-curate", "--document", "supernova-focal")
+	old, err := openRun(w.bridge, w.state().Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.close()
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var buf bytes.Buffer
+	snap, err := retryRun(w.bridge, old, "it stopped", "everything", &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := w.runState(snap.Run); st.Document != "supernova-focal" {
+		t.Errorf("retry State.Document = %q", st.Document)
+	}
+	for _, s := range snap.Pipeline.Stages {
+		if s.Parallel != nil && strings.Join(s.Dimensions, ",") != "supernova-focal" {
+			t.Errorf("retry stage %s items = %v", s.ID, s.Dimensions)
+		}
+	}
+}
+
+func TestFeedbackNoteNamesTheReportFile(t *testing.T) {
+	w := bragWorld(t, false)
+	id := bragStart(t, w)
+	w.stop(id, "brag-writer", bragMessage("body\n"), true)
+	rev, _ := w.spawn("", "", "brag-reviewer")
+	if r := w.stop(rev, "brag-reviewer", feedbackMessage("Claim one is unsupported."), true); r != "" {
+		t.Fatal(r)
+	}
+	st := w.state()
+	prefix := "feedback for supernova-focal is in "
+	var rel string
+	for _, n := range st.Notes {
+		if strings.HasPrefix(n, prefix) {
+			rel = strings.TrimPrefix(n, prefix)
+		}
+	}
+	if rel == "" || strings.Contains(rel, `\`) || strings.Contains(rel, "unsupported") {
+		t.Fatalf("notes = %v", st.Notes)
+	}
+	if !strings.HasPrefix(rel, ".starship/runs/"+st.Run+"/reports/") {
+		t.Errorf("path = %s", rel)
+	}
+	if _, err := os.Stat(filepath.Join(w.bridge, filepath.FromSlash(rel))); err != nil {
+		t.Errorf("the named report does not exist: %v", err)
+	}
+}
+
+func TestFeedbackMissingHasNoReportNote(t *testing.T) {
+	w := bragWorld(t, false)
+	id := bragStart(t, w)
+	w.stop(id, "brag-writer", bragMessage("body\n"), true)
+	rev, _ := w.spawn("", "", "brag-reviewer")
+	w.stop(rev, "brag-reviewer", "Nothing came back.\n\n```starship-report\noutcome: missing\nsummary: none\n```\n", true)
+	if notes := strings.Join(w.state().Notes, "\n"); strings.Contains(notes, " is in ") {
+		t.Errorf("notes = %s", notes)
+	}
+}
+
+func TestCurationAgentFilePreflight(t *testing.T) {
+	agent := func(w *world) string { return filepath.Join(w.bridge, ".claude", "agents", "brag-writer.md") }
+	t.Run("linked", func(t *testing.T) {
+		w := bragWorld(t, false)
+		os.RemoveAll(filepath.Join(w.bridge, ".claude"))
+		out := w.run("--pipeline", "document-curate")
+		if _, err := os.Stat(agent(w)); err != nil {
+			t.Errorf("the agent file was not linked: %v", err)
+		}
+		if !strings.Contains(out, "restart claude") {
+			t.Errorf("no restart line:\n%s", out)
+		}
+	})
+	t.Run("directory existed", func(t *testing.T) {
+		w := bragWorld(t, false)
+		os.Remove(agent(w))
+		out := w.run("--pipeline", "document-curate")
+		if _, err := os.Stat(agent(w)); err != nil || strings.Contains(out, "restart claude") {
+			t.Errorf("%v\n%s", err, out)
+		}
+	})
+	t.Run("dry run", func(t *testing.T) {
+		w := bragWorld(t, false)
+		os.RemoveAll(filepath.Join(w.bridge, ".claude"))
+		out := w.run("--pipeline", "document-curate", "--dry-run")
+		if _, err := os.Stat(filepath.Join(w.bridge, ".claude")); err == nil {
+			t.Error("a dry run created agent files")
+		}
+		if !strings.Contains(out, ".claude/agents/") || !strings.Contains(out, "would run ensign link") {
+			t.Errorf("dry run:\n%s", out)
+		}
+	})
+	t.Run("run live", func(t *testing.T) {
+		w := bragWorld(t, false)
+		w.run("--pipeline", "document-curate")
+		os.Remove(agent(w))
+		err := w.runErr("--pipeline", "document-curate")
+		if err == nil || !strings.Contains(err.Error(), "brag-writer") || !strings.Contains(err.Error(), ".claude/agents/brag-writer.md") || !strings.Contains(err.Error(), "ensign link") {
+			t.Errorf("err = %v", err)
+		}
+		if _, err := os.Stat(agent(w)); err == nil {
+			t.Error("link ran under a live run")
+		}
+	})
+}
+
+func TestLeftOutEntriesIncludeCandidates(t *testing.T) {
+	d := Doc{Entries: []Entry{
+		{ID: "D1", Status: "candidate", Theme: "Nowhere"},
+		{ID: "D2", Status: "candidate", Theme: "Alpha"},
+		{ID: "D3", Status: "active", Theme: "Nowhere"},
+	}}
+	got := leftOutEntries([]string{"Alpha", "Beta"}, d)
+	if len(got) != 2 || got[0].ID != "D1" || got[1].ID != "D3" {
+		t.Errorf("left out = %+v", got)
+	}
+}
+
+func TestStopAdvisoryNoteReadsTheSame(t *testing.T) {
+	if got := missingNote("supernova-focal"); got != "feedback for supernova-focal is missing" {
+		t.Errorf("note = %q", got)
+	}
+}
+
+func TestCurationAgentFileIgnoresUnrelatedBrokenFile(t *testing.T) {
+	w := bragWorld(t, false)
+	agents := filepath.Join(w.bridge, ".claude", "agents")
+	write(t, filepath.Join(agents, "README.md"), "no frontmatter\n")
+	write(t, filepath.Join(agents, "supernova-notes.md"), "---\nname: [\n---\n")
+	out := w.run("--pipeline", "document-curate")
+	if strings.Contains(out, "linked") || strings.Contains(out, "is missing") {
+		t.Errorf("the unrelated files were read as a missing agent:\n%s", out)
+	}
+	write(t, filepath.Join(agents, "supernova-reader.md"), "---\nname: supernova-reader\ntools: Read\n---\n")
+	if readOnlyRole(w.bridge, "supernova-reader") {
+		t.Error("readOnlyRole must fail closed while an unrelated file is broken")
+	}
+}
+
+func TestCurationAgentFileBrokenOwnFileIsNotMissing(t *testing.T) {
+	w := bragWorld(t, false)
+	agents := filepath.Join(w.bridge, ".claude", "agents")
+	write(t, filepath.Join(agents, "brag-writer.md"), "---\nname: [\n---\n")
+	for _, args := range [][]string{{"--pipeline", "document-curate"}, {"--pipeline", "document-curate", "--dry-run"}} {
+		err := w.runErr(args...)
+		if err == nil || !strings.Contains(err.Error(), "brag-writer.md") || !strings.Contains(err.Error(), "broken") || strings.Contains(err.Error(), "missing") {
+			t.Errorf("%v: err = %v", args, err)
+		}
+	}
+	if data, _ := os.ReadFile(filepath.Join(agents, "brag-writer.md")); string(data) != "---\nname: [\n---\n" {
+		t.Errorf("link rewrote the broken file:\n%s", data)
 	}
 }

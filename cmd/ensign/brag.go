@@ -149,8 +149,8 @@ func bragContext(r *RunFiles, name string, d *Dispatch) (string, error) {
 			ids[i] = focalEntryID("D", e.ID)
 		}
 		list := strings.Join(ids, ", ")
-		fmt.Fprintf(&b, "These active entries have no listed theme and are left out unless the instructions bring them in: %s.\n", list)
-		notes = append(notes, fmt.Sprintf("%s has active entries with no listed theme, left out unless its instructions bring them in: %s", name, list))
+		fmt.Fprintf(&b, "These entries have no listed theme and are left out unless the instructions bring them in: %s.\n", list)
+		notes = append(notes, fmt.Sprintf("%s has entries with no listed theme, left out unless its instructions bring them in: %s", name, list))
 	} else {
 		b.WriteString("None.\n")
 	}

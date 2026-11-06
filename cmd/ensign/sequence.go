@@ -2952,7 +2952,7 @@ const currentStateHeading = "## Current state"
 
 // retryRun queues a new run for a failed one, with the diagnosis in its work item.
 func retryRun(bridge string, old *RunFiles, diagnosis, left string, out io.Writer) (*Snapshot, error) {
-	o := runOpts{start: old.Snap.Start, staleOK: old.State.StaleOK, retryOf: old.State.Run, retryBase: old.State.Base, location: old.Snap.Location, subtask: old.Snap.Subtask, rebuild: old.State.Rebuild, rules: old.Snap.Rules,
+	o := runOpts{start: old.Snap.Start, staleOK: old.State.StaleOK, retryOf: old.State.Run, retryBase: old.State.Base, location: old.Snap.Location, subtask: old.Snap.Subtask, rebuild: old.State.Rebuild, document: old.State.Document, rules: old.Snap.Rules,
 		currentState: "\n\n" + currentStateHeading + "\n\nThis is a retry. The workspace holds the previous attempt's work, uncommitted changes included; build on it.\n\nWhy the previous attempt failed: " + diagnosis + "\n\nWhat is left: " + left + "\n"}
 	if old.Snap.Narrowed {
 		o.sides = sideNames(old.Snap.Sides)

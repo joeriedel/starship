@@ -115,6 +115,7 @@ type State struct {
 	Extra      map[string]int `json:"extra,omitempty"`        // budget added on resume
 	Resume     *ResumePoint   `json:"resume,omitempty"`       // where an ask-user run continues
 	Answers    []string       `json:"answers,omitempty"`      // the user's answers on resume
+	Document   string         `json:"document,omitempty"`     // document-curate: the one document this run is narrowed to
 	Rebuild    bool           `json:"rebuild,omitempty"`      // style-generate: rebuild from every source
 	RetryOf    string         `json:"retry_of,omitempty"`     // the failed run this one retries; its leftover changes are kept
 	Carried    []string       `json:"carried,omitempty"`      // a retry: the paths already dirty when it started, committed with the coder's files
@@ -854,6 +855,7 @@ type runOpts struct {
 	location, subtask              string
 	sides, dependencies            []string
 	dry, sync, rebuild, staleOK    bool
+	document                       string
 	// A retry inside a sequence: the failed run's id and base, its rules (kept as frozen), and the "## Current state" section that ends the new work item.
 	retryOf, retryBase, currentState string
 	rules                            []Rule
@@ -862,7 +864,7 @@ type runOpts struct {
 // parseRunArgs reads the flags shared by `ensign run` and `ensign sequence run`; cmd names the command in the usage line.
 func parseRunArgs(cmd string, args []string) (runOpts, error) {
 	var o runOpts
-	usage := fmt.Errorf("usage: %s (<project>/<task> | --pipeline <name> [--project <p>]) [--location <name>] [--subtask <name>] [--sides <a,b,...>] [--dependency <location>=<branch>] [--start <stage>] [--sync] [--rebuild] [--stale-branch] [--dry-run]", cmd)
+	usage := fmt.Errorf("usage: %s (<project>/<task> | --pipeline <name> [--project <p>]) [--location <name>] [--subtask <name>] [--sides <a,b,...>] [--dependency <location>=<branch>] [--start <stage>] [--sync] [--rebuild] [--document <name>] [--stale-branch] [--dry-run]", cmd)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dry-run":
@@ -873,7 +875,7 @@ func parseRunArgs(cmd string, args []string) (runOpts, error) {
 			o.rebuild = true
 		case "--stale-branch":
 			o.staleOK = true
-		case "--pipeline", "--project", "--location", "--subtask", "--sides", "--dependency":
+		case "--pipeline", "--project", "--location", "--subtask", "--sides", "--dependency", "--document":
 			if i+1 >= len(args) {
 				return o, fmt.Errorf("%s needs a value", args[i])
 			}
@@ -899,6 +901,8 @@ func parseRunArgs(cmd string, args []string) (runOpts, error) {
 				}
 			case "--subtask":
 				o.subtask = args[i+1]
+			case "--document":
+				o.document = args[i+1]
 			default:
 				o.location = args[i+1]
 			}
@@ -920,6 +924,95 @@ func parseRunArgs(cmd string, args []string) (runOpts, error) {
 		return o, usage
 	}
 	return o, nil
+}
+
+// isDocumentOver reports whether a parallel stage's list is the declared documents.
+func isDocumentOver(over string) bool {
+	return over == "pending-documents" || over == "focal-documents"
+}
+
+// eachStage calls f on every stage in list, nested stages included.
+func eachStage(list []*Stage, f func(*Stage)) {
+	for _, s := range list {
+		f(s)
+		eachStage(s.Stages, f)
+	}
+}
+
+// checkDocumentFlag is why --document cannot narrow this run: the document is not declared, or no stage of the pipeline is over documents.
+func checkDocumentFlag(c *Config, name string) error {
+	if _, err := findDeclaredDocument(c.Bridge, name); err != nil {
+		return fmt.Errorf("--document: %v", err)
+	}
+	over := false
+	eachStage(c.Pipeline.Stages, func(s *Stage) {
+		if s.Parallel != nil && isDocumentOver(s.Parallel.Over) {
+			over = true
+		}
+	})
+	if !over {
+		return fmt.Errorf("--document: pipeline %s has no stage over pending-documents or focal-documents", c.Pipeline.Name)
+	}
+	return nil
+}
+
+// curationAgentFiles checks that every curating stage's role has its agent file, which Claude Code needs to dispatch it. A missing file is linked when no run is live; a dry run only reports it.
+func curationAgentFiles(bridge string, stages []*Stage, dry bool, out io.Writer) error {
+	agentsDir := filepath.Join(bridge, ".claude", "agents")
+	hasAgent := func(role string) bool {
+		_, matches, _ := agentFilesNamed(bridge, role)
+		return matches > 0
+	}
+	var missing string
+	var broken error
+	eachStage(stages, func(s *Stage) {
+		if s.Curates == "" || s.Role == "" || missing != "" || broken != nil || hasAgent(s.Role) {
+			return
+		}
+		own := filepath.Join(agentsDir, s.Role+".md")
+		d, err := os.ReadFile(own)
+		if err == nil {
+			_, err = agentName(own, d)
+		}
+		if err != nil && !os.IsNotExist(err) {
+			broken = fmt.Errorf("the agent file .claude/agents/%s.md for role %s is broken: %v", s.Role, s.Role, err)
+			return
+		}
+		missing = s.Role
+	})
+	if broken != nil {
+		return broken
+	}
+	if missing == "" {
+		return nil
+	}
+	rel := ".claude/agents/" + missing + ".md"
+	if dry {
+		fmt.Fprintf(out, "%s is missing; a real run would run ensign link to create it\n", rel)
+		return nil
+	}
+	_, statErr := os.Stat(agentsDir)
+	live, err := liveRuns(bridge)
+	if err == nil && len(live) > 0 {
+		err = fmt.Errorf("run %s is active", live[0].id)
+	}
+	if err == nil {
+		err = link(bridge, false, nil)
+	}
+	if err == nil {
+		if !hasAgent(missing) {
+			err = fmt.Errorf("link did not create it")
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("the agent file %s for role %s is missing (%v); run ensign link once no run is live", rel, missing, err)
+	}
+	if statErr != nil {
+		fmt.Fprintf(out, "linked the missing agent file %s; restart claude before dispatching, since .claude/agents did not exist\n", rel)
+	} else {
+		fmt.Fprintf(out, "linked the missing agent file %s; claude picks it up within a few seconds\n", rel)
+	}
+	return nil
 }
 
 // cmdRun implements `ensign run <project>/<task> [--start <stage>] [--dry-run]`.
@@ -1256,13 +1349,36 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		return nil, err
 	}
 	errs := validate(c)
+	var docErr error
+	if o.document != "" {
+		docErr = checkDocumentFlag(c, o.document)
+		if docErr != nil {
+			errs = append(errs, docErr.Error())
+		}
+	}
+	idle := errNothingToCurate
+	if o.document != "" {
+		idle = fmt.Errorf("document %s has nothing to curate: no pending proposals and no brag file to write", o.document)
+	}
 	// A stage with an empty outcome treats "nothing to do" as no items; the run still needs one stage with something to do.
 	var resolve func(list []*Stage)
 	emptyStages, emptyOnly := 0, 0
 	resolve = func(list []*Stage) {
 		for _, s := range list {
 			if s.Parallel != nil && s.Parallel.Over != "dimensions" {
-				items, err := generatorItems(c, s.Parallel.Over, rebuild)
+				var items []string
+				var err error
+				if isDocumentOver(s.Parallel.Over) && o.document != "" {
+					if docErr != nil {
+						continue
+					}
+					items, err = documentItems(bridge, o.document, s.Parallel.Over)
+					if errors.Is(err, errNothingToCurate) && s.Parallel.Empty == "" {
+						err = idle
+					}
+				} else {
+					items, err = generatorItems(c, s.Parallel.Over, rebuild)
+				}
 				if s.Parallel.Empty != "" {
 					emptyStages++
 					if errors.Is(err, errNothingToCurate) {
@@ -1282,7 +1398,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	}
 	resolve(c.Pipeline.Stages)
 	if emptyStages > 0 && emptyOnly == emptyStages {
-		errs = append(errs, errNothingToCurate.Error())
+		errs = append(errs, idle.Error())
 	}
 	if start != "" {
 		if s, _, _ := c.Pipeline.find(start); s == nil {
@@ -1300,6 +1416,9 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	}
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("the run is not valid:\n  - %s", strings.Join(errs, "\n  - "))
+	}
+	if err := curationAgentFiles(bridge, c.Pipeline.Stages, dry, out); err != nil {
+		return nil, err
 	}
 	if !queued || dry {
 		printSummary(out, c, start)
@@ -1415,7 +1534,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		return nil, err
 	}
 	st := &State{Run: snap.Run, Session: session, Status: "pending", Spent: map[string]int{}, Scopes: map[string]*ScopeState{},
-		Sync: sync, Extra: map[string]int{}, Rebuild: rebuild, StaleOK: staleOK, Sequence: queued,
+		Sync: sync, Extra: map[string]int{}, Rebuild: rebuild, Document: o.document, StaleOK: staleOK, Sequence: queued,
 		RetryOf: o.retryOf, Base: o.retryBase}
 	first := c.Pipeline.Stages[0].ID
 	if start != "" {
@@ -1690,7 +1809,7 @@ func stopAdvisory(r *RunFiles, m *machine) bool {
 			}
 			b.Done, b.Outcome = true, s.Advisory
 		}
-		r.State.noteOnce("feedback for " + dim + " is missing")
+		r.State.noteOnce(missingNote(dim))
 	}
 	m.apply(leadScope(r), s, s.Advisory)
 	return true

@@ -171,6 +171,54 @@ func manualInTranscript(lines []string, token string) (ok bool, why string) {
 	return true, ""
 }
 
+// agentResultHas reports whether the transcript holds an Agent call for subagentType whose tool result contains token. A tool result's content is a string or a list of text blocks.
+func agentResultHas(lines []string, subagentType, token string) bool {
+	calls := map[string]bool{}
+	for _, line := range lines {
+		var rec struct {
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSuffix(line, "\r")), &rec) != nil {
+			continue
+		}
+		var blocks []struct {
+			Type  string `json:"type"`
+			ID    string `json:"id"`
+			Name  string `json:"name"`
+			Input struct {
+				SubagentType string `json:"subagent_type"`
+			} `json:"input"`
+			ToolUseID string          `json:"tool_use_id"`
+			Content   json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+			continue
+		}
+		for _, b := range blocks {
+			switch {
+			case b.Type == "tool_use" && (b.Name == "Agent" || b.Name == "Task") && b.Input.SubagentType == subagentType:
+				calls[b.ID] = true
+			case b.Type == "tool_result" && calls[b.ToolUseID]:
+				var text string
+				var parts []struct {
+					Text string `json:"text"`
+				}
+				if json.Unmarshal(b.Content, &text) != nil && json.Unmarshal(b.Content, &parts) == nil {
+					for _, p := range parts {
+						text += p.Text + "\n"
+					}
+				}
+				if strings.Contains(text, token) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // leafToken is the leaf probe's reply. Finding it in the result of the orchestrator's own
 // Agent call proves the dispatch ran in the foreground.
 const leafToken = "SELFTEST-LEAF-RESULT"
@@ -274,6 +322,12 @@ func cmdSelftest(out io.Writer) error {
 	askedBackground, foreground := backgroundProbe(events)
 	// The transcript's hook_additional_context record holds what the session was shown, which is a preview when the output is too large. The model's own willingness to repeat the markers is not reliable.
 	manualArrived, manualWhy := manualInTranscript(transcriptLines(events), token)
+	// The probe session's Agent call is for probe-orch; the orchestrator's own transcript holds the result of its Agent call for probe-handback, which is the dispatcher's view of a tools: Read agent's report.
+	dispatcherLines := transcriptLines(events)
+	for _, e := range orchStops {
+		t, _ := os.ReadFile(str(e, "agent_transcript_path"))
+		dispatcherLines = append(dispatcherLines, strings.Split(strings.TrimSpace(string(t)), "\n")...)
+	}
 	manualLeaked := false
 	for _, e := range append(leafStops, orchStops...) {
 		t, _ := os.ReadFile(str(e, "agent_transcript_path"))
@@ -290,6 +344,7 @@ func cmdSelftest(out io.Writer) error {
 		{"PreToolUse deny keeps an agent from starting", len(nested) >= 2 && len(deniedStops) == 0},
 		{"SubagentStop gives agent_type and agent_transcript_path; the report is the handback or last_assistant_message", stopReportProbe(events)},
 		{"PreToolUse deny of a SubagentHandback keeps the agent working, and a corrected handback gets through", handbackRedoProbe(events)},
+		{"the dispatcher sees a tools: Read agent's report as the Agent tool result", agentResultHas(dispatcherLines, "probe-handback", handbackToken)},
 		{"SubagentStop block makes the agent continue (stop_hook_active on the next stop)", stopContinues},
 		{"session_id is the same for the session and its agents", len(sessions) == 1},
 		{fmt.Sprintf("SessionStart output of %d bytes reaches the session whole (from the transcript)", manualLimit), manualArrived},

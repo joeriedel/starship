@@ -439,6 +439,31 @@ func focalDocuments(bridge string) ([]string, error) {
 	return out, nil
 }
 
+// documentItems resolves a pending-documents or focal-documents stage for a run narrowed to one document: that document alone, or errNothingToCurate when it has nothing for the stage. Only the selected document is checked for problems.
+func documentItems(bridge, name, over string) ([]string, error) {
+	d, err := findDeclaredDocument(bridge, name)
+	if err != nil {
+		return nil, err
+	}
+	if over == "focal-documents" {
+		if !isFocalDocument(bridge, d) {
+			return nil, errNothingToCurate
+		}
+	} else {
+		files, err := filesIn(pendingDocumentDir(bridge, name), ".yaml")
+		if err != nil {
+			return nil, fmt.Errorf("listing documents/pending/%s: %v", name, err)
+		}
+		if len(files) == 0 {
+			return nil, errNothingToCurate
+		}
+	}
+	if problems := documentProblems(bridge, []DeclaredDocument{d}); len(problems) > 0 {
+		return nil, errors.New(strings.Join(problems, "; "))
+	}
+	return []string{name}, nil
+}
+
 // pendingDocuments resolves a pending-documents stage: the declared documents with at least one proposal waiting. A pending folder for an undeclared name is skipped with a warning that names the folder only.
 func pendingDocuments(bridge string) ([]string, error) {
 	declared, err := loadDeclaredDocuments(bridge)

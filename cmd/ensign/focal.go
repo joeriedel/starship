@@ -157,11 +157,11 @@ func sortByTheme(d *Doc, themes []string) {
 	sort.SliceStable(d.Entries, func(i, j int) bool { return rank(d.Entries[i]) < rank(d.Entries[j]) })
 }
 
-// leftOutEntries are the active entries whose theme is not in themes, which the brag file leaves out unless the instructions bring them in.
+// leftOutEntries are the entries, candidates included, whose theme is not in themes, which the brag file leaves out unless the instructions bring them in.
 func leftOutEntries(themes []string, d Doc) []Entry {
 	var out []Entry
 	for _, e := range d.Entries {
-		if e.Status == "active" && !slices.Contains(themes, strings.TrimSpace(e.Theme)) {
+		if !slices.Contains(themes, strings.TrimSpace(e.Theme)) {
 			out = append(out, e)
 		}
 	}

@@ -154,7 +154,7 @@ func usage() {
   ensign task close <project>/<task>
   ensign task subtask <done|drop> <project>/<task> <name>
   ensign run <project>/<task> [--subtask <name>] [--start <stage>] [--sync] [--dependency <location>=<branch>] [--dry-run]
-  ensign run --pipeline <name> [--project <p>] [--rebuild] [--dry-run]
+  ensign run --pipeline <name> [--project <p>] [--rebuild] [--document <name>] [--dry-run]
   ensign run retire <run>
   ensign run stop <run>
   ensign run clear <run>
