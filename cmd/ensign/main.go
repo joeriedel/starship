@@ -592,13 +592,20 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	if keep, err := bf.keepRuns(); err != nil {
 		fmt.Fprintln(stderr, "starship:", err)
-	} else if res := gcRuns(bridge, keep, sessionStartGCCap); res.Removed > 0 {
-		show += fmt.Sprintf(" · cleaned up %d old runs", res.Removed)
-		if res.More {
-			show += " (more will be cleaned at the next session start)"
+	} else {
+		res := gcRuns(bridge, keep, sessionStartGCCap)
+		if res.Removed > 0 {
+			show += fmt.Sprintf(" · cleaned up %d old runs", res.Removed)
+			if res.More {
+				show += " (more will be cleaned at the next session start)"
+			}
 		}
-	} else if res.Failed > 0 {
-		show += fmt.Sprintf(" · could not delete %d old runs", res.Failed)
+		if res.Failed > 0 {
+			show += fmt.Sprintf(" · could not delete %d old runs", res.Failed)
+		}
+		if res.ScratchFailed > 0 {
+			show += fmt.Sprintf(" · could not empty %d scratch folders", res.ScratchFailed)
+		}
 	}
 	return reply(show, ctx.String())
 }

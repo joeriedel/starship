@@ -41,6 +41,7 @@ func (bf *BridgeFile) keepRuns() (int, error) {
 type gcResult struct {
 	Removed, Scratch, Links int
 	Failed                  int  // delete attempts that left the folder in place
+	ScratchFailed           int  // kept finished runs whose scratch folder could not be read or fully emptied
 	More                    bool // candidates remain because the cap on delete attempts was reached
 }
 
@@ -129,43 +130,61 @@ func gcRuns(bridge string, keep, max int) gcResult {
 		remove(dir)
 	}
 	for _, id := range kept {
-		if emptyScratchIfFinished(bridge, id) {
+		emptied, failed := emptyScratchIfFinished(bridge, id)
+		if emptied {
 			res.Scratch++
+		}
+		if failed {
+			res.ScratchFailed++
 		}
 	}
 	res.Links = dropDeadLinks(bridge)
 	return res
 }
 
-// emptyScratchIfFinished empties a run's scratch folder when the run is finished and the folder holds something. It reports whether it emptied it.
-func emptyScratchIfFinished(bridge, id string) bool {
+// emptyScratchIfFinished empties a run's scratch folder when the run is finished and the folder holds something. It reports whether it emptied it and whether the folder could not be read or fully emptied. A run that can't be opened, or isn't finished, is busy, not a failure.
+func emptyScratchIfFinished(bridge, id string) (emptied, failed bool) {
 	scratch := filepath.Join(runsDir(bridge), id, "scratch")
-	if items, err := os.ReadDir(scratch); err != nil || len(items) == 0 {
-		return false
+	items, err := os.ReadDir(scratch)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, false
+		}
+		fmt.Fprintf(os.Stderr, "warning: could not empty %s: %v\n", scratch, err)
+		return false, true
+	}
+	if len(items) == 0 {
+		return false, false
 	}
 	r, err := openRun(bridge, id)
 	if err != nil {
-		return false
+		return false, false
 	}
 	done := finishedRun(r.State)
 	r.close()
-	return done && emptyDir(scratch)
+	if !done {
+		return false, false
+	}
+	return emptyDir(scratch)
 }
 
-// emptyDir removes what is inside a folder and keeps the folder. A failure is only a warning.
-func emptyDir(dir string) bool {
+// emptyDir removes what is inside a folder and keeps the folder. It reports whether it emptied something and whether anything failed (a missing folder is not a failure). Each failure also warns on stderr.
+func emptyDir(dir string) (emptied, failed bool) {
 	items, err := os.ReadDir(dir)
 	if err != nil {
-		return false
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, false
+		}
+		fmt.Fprintf(os.Stderr, "warning: could not empty %s: %v\n", dir, err)
+		return false, true
 	}
-	ok := true
 	for _, it := range items {
 		if err := os.RemoveAll(filepath.Join(dir, it.Name())); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not empty %s: %v\n", dir, err)
-			ok = false
+			failed = true
 		}
 	}
-	return ok && len(items) > 0
+	return !failed && len(items) > 0, failed
 }
 
 // heldRuns returns the runs that open sequence steps still need: a failed step waits on its run for a retry, and a step left active points at its run. ok is false when a sequence file can't be read, and then gc must not delete anything because it can't tell which runs are needed.
@@ -641,6 +660,13 @@ func cmdGC(args []string, out io.Writer) error {
 		}
 	}
 	res := gcRuns(bridge, keep, 0)
-	fmt.Fprintf(out, "removed %d runs, emptied %d scratch folders, dropped %d session links\n", res.Removed, res.Scratch, res.Links)
+	fmt.Fprintf(out, "removed %d runs, emptied %d scratch folders, dropped %d session links", res.Removed, res.Scratch, res.Links)
+	if res.Failed > 0 {
+		fmt.Fprintf(out, ", could not delete %d runs", res.Failed)
+	}
+	if res.ScratchFailed > 0 {
+		fmt.Fprintf(out, ", could not empty %d scratch folders", res.ScratchFailed)
+	}
+	fmt.Fprintln(out)
 	return nil
 }

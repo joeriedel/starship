@@ -172,7 +172,7 @@ func TestSessionStartReportsFailedDeletes(t *testing.T) {
 	}
 }
 
-func TestSessionStartPartialDeleteFailureReportsCleaned(t *testing.T) {
+func TestSessionStartPartialDeleteFailureReportsBoth(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}
@@ -181,7 +181,7 @@ func TestSessionStartPartialDeleteFailureReportsCleaned(t *testing.T) {
 	fabricate(t, w, "20240101-000002-supernova", "success", true)
 	fabricate(t, w, "20240101-000003-supernova", "success", true)
 	show := sessionStartLine(t, w)
-	if !strings.Contains(show, "cleaned up 1 old runs") || strings.Contains(show, "could not delete") {
+	if !strings.Contains(show, "cleaned up 1 old runs") || !strings.Contains(show, "could not delete 1 old runs") {
 		t.Errorf("start line: %q", show)
 	}
 }
@@ -200,5 +200,116 @@ func TestGCCountsFailedDeletes(t *testing.T) {
 	fabricate(t, w, "20240101-000001-supernova", "success", true)
 	if res := gcRuns(w.bridge, 0, 0); res.Failed != 0 || res.Removed != 1 {
 		t.Fatalf("want 0 failed: %+v", res)
+	}
+}
+
+func TestGCCountsScratchFailed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	w := newWorld(t)
+	stickRun(t, fabricate(t, w, "20240101-000001-supernova", "success", true))
+	if res := gcRuns(w.bridge, 1, 0); res.ScratchFailed != 1 || res.Scratch != 0 || res.Failed != 0 {
+		t.Fatalf("want 1 scratch failed only: %+v", res)
+	}
+}
+
+func TestGCCountsUnreadableScratchFailed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	w := newWorld(t)
+	dir := fabricate(t, w, "20240101-000001-supernova", "success", true)
+	scratch := filepath.Join(dir, "scratch")
+	if err := os.Chmod(scratch, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(scratch, 0o755) })
+	if res := gcRuns(w.bridge, 1, 0); res.ScratchFailed != 1 || res.Scratch != 0 || res.Failed != 0 {
+		t.Fatalf("want 1 scratch failed only: %+v", res)
+	}
+}
+
+func TestGCEmptyOrMissingScratchIsNotAFailure(t *testing.T) {
+	w := newWorld(t)
+	empty := fabricate(t, w, "20240101-000001-supernova", "success", true)
+	if err := os.Remove(filepath.Join(empty, "scratch", "note.txt")); err != nil {
+		t.Fatal(err)
+	}
+	missing := fabricate(t, w, "20240101-000002-supernova", "success", true)
+	if err := os.RemoveAll(filepath.Join(missing, "scratch")); err != nil {
+		t.Fatal(err)
+	}
+	if res := gcRuns(w.bridge, 2, 0); res.ScratchFailed != 0 || res.Scratch != 0 {
+		t.Fatalf("want no scratch work: %+v", res)
+	}
+}
+
+func TestSessionStartReportsScratchFailed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	w := newWorld(t)
+	stickRun(t, fabricate(t, w, "20240101-000001-supernova", "success", true))
+	show := sessionStartLine(t, w)
+	if !strings.Contains(show, "could not empty 1 scratch folders") || strings.Contains(show, "cleaned up") {
+		t.Errorf("start line: %q", show)
+	}
+}
+
+func TestSessionStartReportsScratchFailedAlongsideCleaned(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	w := newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "success", true)
+	stickRun(t, fabricate(t, w, "20240101-000002-supernova", "success", true))
+	show := sessionStartLine(t, w)
+	if !strings.Contains(show, "cleaned up 1 old runs") || !strings.Contains(show, "could not empty 1 scratch folders") {
+		t.Errorf("start line: %q", show)
+	}
+}
+
+func TestSessionStartNoFailuresSaysNothingFailed(t *testing.T) {
+	w := newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "success", true)
+	fabricate(t, w, "20240101-000002-supernova", "success", true)
+	show := sessionStartLine(t, w)
+	if !strings.Contains(show, "cleaned up 1 old runs") || strings.Contains(show, "could not") {
+		t.Errorf("start line: %q", show)
+	}
+}
+
+func TestCmdGCReportsFailures(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	w := newWorld(t)
+	stickRun(t, fabricate(t, w, "20240101-000001-supernova", "success", true))
+	stickRun(t, fabricate(t, w, "20240101-000002-supernova", "success", true))
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	if err := cmdGC([]string{"1"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "could not delete 1 runs") || !strings.Contains(out.String(), "could not empty 1 scratch folders") {
+		t.Errorf("output: %q", out.String())
+	}
+}
+
+func TestCmdGCNoFailuresSaysNothingFailed(t *testing.T) {
+	w := newWorld(t)
+	fabricate(t, w, "20240101-000001-supernova", "success", true)
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	if err := cmdGC([]string{"0"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "could not") {
+		t.Errorf("output: %q", out.String())
 	}
 }
