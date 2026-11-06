@@ -117,6 +117,11 @@ func githubBranch(r *RunFiles) error {
 			return err
 		}
 	}
+	if exists && !r.State.StaleOK {
+		if err := checkRemoteCopy(ws, want, true, ffBase); err != nil {
+			return err
+		}
+	}
 	if cur == want {
 		return fastForward(ws, want, ffBase)
 	}
@@ -137,6 +142,11 @@ func githubBranch(r *RunFiles) error {
 	}
 	if err := git(ws, "fetch", "-q", "origin", base); err != nil {
 		return err
+	}
+	if !r.State.StaleOK {
+		if err := checkRemoteCopy(ws, want, false, base); err != nil {
+			return err
+		}
 	}
 	return git(ws, "switch", "-q", "-c", want, "origin/"+base)
 }
@@ -174,6 +184,78 @@ func checkNotBehind(ws, branch string) (ffBase string, err error) {
 		return "", fmt.Errorf("task branch %s is behind %s: origin/%s has commits it doesn't contain. Ask to update the branch (rebases it onto %s), or start the run again with --stale-branch to run on it as it is", branch, base, base, base)
 	}
 	return base, nil
+}
+
+// remoteTip returns the tip of a branch on origin, or "" if origin has no such branch.
+func remoteTip(ws, branch string) (string, error) {
+	out, err := gitOut(ws, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	return fields[0], nil
+}
+
+// inReflog reports whether a commit is in the local branch's reflog, so was pushed from here even before a rebase.
+func inReflog(ws, branch, tip string) bool {
+	log, err := gitOut(ws, "log", "-g", "--format=%H", "refs/heads/"+branch)
+	if err != nil {
+		return false
+	}
+	for _, h := range strings.Fields(log) {
+		if h == tip {
+			return true
+		}
+	}
+	return false
+}
+
+// isAncestor reports whether a commit is an ancestor of (or is) a ref.
+func isAncestor(ws, tip, ref string) bool {
+	return exec.Command("git", "-C", ws, "merge-base", "--is-ancestor", tip, ref).Run() == nil
+}
+
+// holdsTip reports whether a commit is one this workspace has: in the local branch's reflog (pushed from here, even before a rebase) or an ancestor of the branch.
+func holdsTip(ws, branch, tip string) bool {
+	return inReflog(ws, branch, tip) || isAncestor(ws, tip, "refs/heads/"+branch)
+}
+
+// checkRemoteCopy refuses a run when origin has the task branch with commits this workspace lacks. A tip the local branch holds is not a loss (one held only through the reflog is decided by asking git whether the push would pass, because --force-if-includes depends on reflog timing and update-ref would stamp a newer entry), nor is one already in origin/<base> when base is given, so base must have been fetched. An accepted tip becomes the tracking ref, or the later lease push fails as stale. A branch absent from origin has its tracking ref removed, as fetch --prune would, or the later push fails as stale.
+func checkRemoteCopy(ws, branch string, exists bool, base string) error {
+	tip, err := remoteTip(ws, branch)
+	if err != nil {
+		return fmt.Errorf("looking for %s on origin: %v", branch, err)
+	}
+	if tip == "" {
+		ref := "refs/remotes/origin/" + branch
+		if _, err := gitOut(ws, "rev-parse", "-q", "--verify", ref); err == nil {
+			if err := git(ws, "update-ref", "-d", ref); err != nil {
+				return fmt.Errorf("removing the stale %s: %v", ref, err)
+			}
+		}
+		return nil
+	}
+	held := exists && isAncestor(ws, tip, "refs/heads/"+branch)
+	if !held && exists && inReflog(ws, branch, tip) {
+		held = git(ws, "push", "-q", "--dry-run", "--force-with-lease", "--force-if-includes", "origin", branch) == nil
+	}
+	if !held && base != "" {
+		held = isAncestor(ws, tip, "origin/"+base)
+	}
+	if !held {
+		if !exists {
+			return fmt.Errorf("task branch %s exists on origin but not in this workspace, and starting the run would overwrite it. Fetch it and switch to it, or delete the remote branch if its commits aren't wanted, then start the run again", branch)
+		}
+		return fmt.Errorf("task branch %s on origin has commits this workspace doesn't, and pushing would destroy them. Bring them into the local branch, or delete the remote branch if they aren't wanted, then start the run again", branch)
+	}
+	// The tip was just proved held, so the lease now only guards what arrives later.
+	if err := git(ws, "update-ref", "refs/remotes/origin/"+branch, tip); err != nil {
+		return fmt.Errorf("recording %s as origin's copy of %s: %v", tip, branch, err)
+	}
+	return nil
 }
 
 // fastForward moves the checked-out task branch to origin/base. It does nothing when base is empty. Git refuses, and changes nothing, if uncommitted work overlaps the incoming commits.
@@ -319,7 +401,7 @@ func githubCI(r *RunFiles, deadline time.Time) (string, error) {
 	} else if d {
 		return "", fmt.Errorf("the workspace has uncommitted changes, so CI would not test them")
 	}
-	if err := git(ws, "push", "-q", "--force-with-lease", "-u", "origin", branch); err != nil {
+	if err := git(ws, "push", "-q", "--force-with-lease", "--force-if-includes", "-u", "origin", branch); err != nil {
 		return "", err
 	}
 	sha, _ := gitOut(ws, "rev-parse", "HEAD")
@@ -600,7 +682,7 @@ func githubOpenPR(bridge, task, location string) (string, error) {
 		return "", err
 	}
 	ws := c.Workspace
-	if err := git(ws, "push", "-q", "--force-with-lease", "-u", "origin", branch); err != nil {
+	if err := git(ws, "push", "-q", "--force-with-lease", "--force-if-includes", "-u", "origin", branch); err != nil {
 		return "", err
 	}
 	// Only an open pull request counts: a closed one for the same branch name is history.
@@ -628,37 +710,59 @@ func githubOpenPR(bridge, task, location string) (string, error) {
 }
 
 // githubMerge moves the default branch to a task's tested commit, if that is a
-// fast-forward, and removes the task branch. It returns the default branch's name.
-func githubMerge(bridge, task, location string) (string, string, error) {
+// fast-forward, and removes the task branch. It returns the default branch's name, the commit, and a note that is empty unless the branch was left on origin because it has commits this workspace doesn't.
+func githubMerge(bridge, task, location string) (string, string, string, error) {
 	c, branch, sha, err := tested(bridge, task, location)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	ws := c.Workspace
 	base, err := defaultBranch(ws)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if err := git(ws, "fetch", "-q", "origin", base); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if _, err := gitOut(ws, "merge-base", "--is-ancestor", "origin/"+base, sha); err != nil {
-		return "", "", fmt.Errorf("%s has moved since this task branched from it, so the tested commit can't go there as it is. Run the task again to rebase and retest it", base)
+		return "", "", "", fmt.Errorf("%s has moved since this task branched from it, so the tested commit can't go there as it is. Run the task again to rebase and retest it", base)
 	}
 	if err := git(ws, "push", "-q", "origin", sha+":refs/heads/"+base); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	git(ws, "push", "-q", "origin", "--delete", branch) // it may never have been pushed
+	note := deleteLandedRemote(ws, branch)
+	leaveLandedBranch(ws, branch, base, sha)
+	os.Remove(testedFile(bridge, task, c.Location))
+	return base, sha, note, nil
+}
+
+// deleteLandedRemote removes the landed task branch from origin if its tip is one this workspace holds, and returns a note when it leaves the branch there. The delete is pinned to the tip it checked, so a push arriving in between survives. It must run before the local branch and its reflog are deleted.
+func deleteLandedRemote(ws, branch string) string {
+	tip, err := remoteTip(ws, branch)
+	if err != nil {
+		return fmt.Sprintf("couldn't look for %s on origin (%v), so it was not deleted there", branch, err)
+	}
+	if tip == "" { // it may never have been pushed
+		return ""
+	}
+	if !holdsTip(ws, branch, tip) {
+		return fmt.Sprintf("%s was left on origin: it has commits this workspace doesn't", branch)
+	}
+	git(ws, "push", "-q", "origin", "--delete", "--force-with-lease="+branch+":"+tip, branch)
+	return ""
+}
+
+// leaveLandedBranch moves a workspace off the landed task branch onto base and deletes the branch. A refused merge is fine: the commit is on origin and uncommitted work stays as it is.
+func leaveLandedBranch(ws, branch, base, sha string) {
 	if currentBranch(ws) == branch {
 		if err := git(ws, "switch", "-q", base); err == nil {
-			git(ws, "merge", "-q", "--ff-only", sha)
+			// merge.autoStash=true makes git exit 0 on a conflicting stash pop, leaving conflict markers.
+			git(ws, "-c", "merge.autoStash=false", "merge", "-q", "--ff-only", sha)
 		}
 	}
 	if currentBranch(ws) != branch {
 		git(ws, "branch", "-q", "-D", branch)
 	}
-	os.Remove(testedFile(bridge, task, c.Location))
-	return base, sha, nil
 }
 
 type checkRun struct {
@@ -779,10 +883,13 @@ func cmdGithubPR(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "Pull request: %s\n", url)
 		return nil
 	}
-	base, sha, err := githubMerge(bridge, args[1], location)
+	base, sha, note, err := githubMerge(bridge, args[1], location)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Pushed to %s: %s\n", base, short(sha))
+	if note != "" {
+		fmt.Fprintf(out, "Note: %s\n", note)
+	}
 	return nil
 }

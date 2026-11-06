@@ -519,3 +519,323 @@ func TestGithubPRFastForwardRefusesOverlappingWork(t *testing.T) {
 		})
 	}
 }
+
+func TestLeaveLandedBranchKeepsEditsWithAutoStash(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ws := t.TempDir()
+	runGit(t, ws, "init", "-q", "-b", "main")
+	runGit(t, ws, "config", "merge.autoStash", "true")
+	a := filepath.Join(ws, "a")
+	write(t, a, "old\n")
+	runGit(t, ws, "add", "a")
+	runGit(t, ws, "commit", "-q", "-m", "base")
+	oldBase := runGit(t, ws, "rev-parse", "HEAD")
+	runGit(t, ws, "switch", "-q", "-c", "task/auth-refactor")
+	write(t, a, "new\n")
+	runGit(t, ws, "commit", "-qam", "task")
+	sha := runGit(t, ws, "rev-parse", "HEAD")
+	write(t, a, "old\n")
+	runGit(t, ws, "add", "a")
+	write(t, a, "old\nhalf done\n")
+
+	leaveLandedBranch(ws, "task/auth-refactor", "main", sha)
+
+	if got, _ := os.ReadFile(a); string(got) != "old\nhalf done\n" {
+		t.Errorf("the unstaged edit should be kept without conflict markers: %q", got)
+	}
+	if stash := runGit(t, ws, "stash", "list"); stash != "" {
+		t.Errorf("nothing should be stashed: %q", stash)
+	}
+	if head := runGit(t, ws, "rev-parse", "HEAD"); head != oldBase {
+		t.Errorf("HEAD should stay at the old base: %s != %s", head, oldBase)
+	}
+}
+
+// remoteTaskCommit adds a commit to origin's task branch from another clone, creating the branch from main if origin has none. It returns the new tip.
+func remoteTaskCommit(t *testing.T, remote, file string) string {
+	t.Helper()
+	other := cloneRemote(t, remote)
+	if runGit(t, ".", "--git-dir", remote, "branch", "--list", "task/*") == "" {
+		runGit(t, other, "switch", "-q", "-c", "task/auth-refactor")
+	} else {
+		runGit(t, other, "switch", "-q", "task/auth-refactor")
+	}
+	write(t, filepath.Join(other, file), "theirs\n")
+	runGit(t, other, "add", file)
+	runGit(t, other, "commit", "-q", "-m", "theirs")
+	runGit(t, other, "push", "-q", "origin", "task/auth-refactor")
+	return runGit(t, other, "rev-parse", "HEAD")
+}
+
+// localTaskCommit adds a commit to the workspace's task branch, creating it from main, and leaves the workspace on main.
+func localTaskCommit(t *testing.T, ws, file string) {
+	t.Helper()
+	if runGit(t, ws, "branch", "--list", "task/auth-refactor") == "" {
+		runGit(t, ws, "switch", "-q", "-c", "task/auth-refactor")
+	} else {
+		runGit(t, ws, "switch", "-q", "task/auth-refactor")
+	}
+	write(t, filepath.Join(ws, file), "mine\n")
+	runGit(t, ws, "add", file)
+	runGit(t, ws, "commit", "-q", "-m", "mine")
+	runGit(t, ws, "switch", "-q", "main")
+}
+
+func TestGithubPRRefusesRemoteCopyWeLack(t *testing.T) {
+	cases := map[string]func(t *testing.T, ws, remote string){
+		"local behind": func(t *testing.T, ws, remote string) {
+			localTaskCommit(t, ws, "mine.txt")
+			runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+			remoteTaskCommit(t, remote, "theirs.txt")
+		},
+		"diverged": func(t *testing.T, ws, remote string) {
+			localTaskCommit(t, ws, "mine.txt")
+			runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+			remoteTaskCommit(t, remote, "theirs.txt")
+			localTaskCommit(t, ws, "more.txt")
+		},
+		"no local branch, current tracking ref": func(t *testing.T, ws, remote string) {
+			remoteTaskCommit(t, remote, "theirs.txt")
+			runGit(t, ws, "fetch", "-q", "origin")
+		},
+		"no local branch, no tracking ref": func(t *testing.T, ws, remote string) {
+			remoteTaskCommit(t, remote, "theirs.txt")
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			w, ws, remote, _ := githubWorld(t, "success", localTest)
+			setup(t, ws, remote)
+			hadLocal := runGit(t, ws, "branch", "--list", "task/auth-refactor") != ""
+			tracking := func() string {
+				got, _ := gitOut(ws, "rev-parse", "-q", "--verify", "refs/remotes/origin/task/auth-refactor")
+				return got
+			}
+			before := tracking()
+			lead, why := startEmpty(w)
+			if lead != "" || !strings.Contains(why, "task branch task/auth-refactor") || !strings.Contains(why, "origin") {
+				t.Fatalf("the run should be refused naming the branch: %q %s", lead, why)
+			}
+			if b := currentBranch(ws); b != "main" {
+				t.Errorf("the workspace should stay on main, it is on %q", b)
+			}
+			if has := runGit(t, ws, "branch", "--list", "task/auth-refactor") != ""; has != hadLocal {
+				t.Errorf("the local task branch must not be created or removed (had %v, has %v)", hadLocal, has)
+			}
+			if after := tracking(); after != before {
+				t.Errorf("a refused run must leave the tracking ref alone: %q != %q", after, before)
+			}
+		})
+	}
+}
+
+func TestGithubPRAllowsRemoteCopyWeHave(t *testing.T) {
+	cases := map[string]func(t *testing.T, ws, remote string){
+		"equal": func(t *testing.T, ws, remote string) {
+			localTaskCommit(t, ws, "mine.txt")
+			runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+		},
+		"remote is an ancestor": func(t *testing.T, ws, remote string) {
+			localTaskCommit(t, ws, "mine.txt")
+			runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+			localTaskCommit(t, ws, "more.txt")
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			w, ws, remote, _ := githubWorld(t, "success", localTest)
+			setup(t, ws, remote)
+			if lead, why := startEmpty(w); lead == "" {
+				t.Fatalf("a remote copy we contain should not refuse the run: %s", why)
+			}
+		})
+	}
+}
+
+func TestGithubPRAllowsPreRebaseRemoteCopy(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	staleBranch(t, ws, remote, "news.txt", "meanwhile\n")
+	runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+	old := runGit(t, ".", "--git-dir", remote, "rev-parse", "task/auth-refactor")
+	if out, err := w.land("update"); err != nil {
+		t.Fatalf("update: %q %v", out, err)
+	}
+	lead := w.startLead()
+	w.codeChange(lead, ws)
+	if why, _ := w.runStage(); !strings.Contains(why, "Outcome: pass") {
+		t.Fatalf("the rebased branch should run: %s", why)
+	}
+	if _, err := w.land("pull-request"); err != nil {
+		t.Fatalf("the push after a rebase should succeed: %v", err)
+	}
+	if tip := runGit(t, ".", "--git-dir", remote, "rev-parse", "task/auth-refactor"); tip == old || tip != runGit(t, ws, "rev-parse", "task/auth-refactor") {
+		t.Errorf("origin should hold the rebased branch, got %s (was %s)", tip, old)
+	}
+}
+
+func TestGithubPRStaleBranchOverStartsOverRemoteCopy(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	localTaskCommit(t, ws, "mine.txt")
+	runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+	remoteTaskCommit(t, remote, "theirs.txt")
+	if lead, why := startEmpty(w, "--stale-branch"); lead == "" {
+		t.Fatalf("--stale-branch should take the branch as it is: %s", why)
+	}
+}
+
+func TestGithubPRCIPushKeepsCommitsThatArrivedDuringTheRun(t *testing.T) {
+	w, ws, remote, gh := githubWorld(t, "success", ciTest)
+	lead := w.startLead()
+	w.codeChange(lead, ws)
+	theirs := remoteTaskCommit(t, remote, "theirs.txt")
+	runGit(t, ws, "fetch", "-q", "origin")
+	if why, _ := w.runStage(); strings.Contains(why, "Outcome: pass") || gh.index("api ") >= 0 {
+		t.Errorf("the push should have been refused: %s %v", why, gh.calls)
+	}
+	if tip := runGit(t, ".", "--git-dir", remote, "rev-parse", "task/auth-refactor"); tip != theirs {
+		t.Errorf("origin's commit was overwritten: %s != %s", tip, theirs)
+	}
+}
+
+func TestGithubPRPullRequestPushKeepsCommitsThatArrivedDuringTheRun(t *testing.T) {
+	w, ws, remote, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	theirs := remoteTaskCommit(t, remote, "theirs.txt")
+	runGit(t, ws, "fetch", "-q", "origin")
+	if _, err := w.land("pull-request"); err == nil {
+		t.Error("the push should have been refused")
+	}
+	if tip := runGit(t, ".", "--git-dir", remote, "rev-parse", "task/auth-refactor"); tip != theirs {
+		t.Errorf("origin's commit was overwritten: %s != %s", tip, theirs)
+	}
+}
+
+func TestGithubPRMergeLeavesCommitsWeLack(t *testing.T) {
+	w, ws, remote, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	theirs := remoteTaskCommit(t, remote, "theirs.txt")
+	out, err := w.land("merge")
+	if err != nil || !strings.Contains(out, "Pushed to main:") || !strings.Contains(out, "task/auth-refactor was left on origin") {
+		t.Fatalf("the landing should succeed and name the branch left behind: %q %v", out, err)
+	}
+	if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got != "two" {
+		t.Errorf("the tested commit should be on main, got %q", got)
+	}
+	if tip := runGit(t, ".", "--git-dir", remote, "rev-parse", "task/auth-refactor"); tip != theirs {
+		t.Errorf("origin's commit was deleted: %s != %s", tip, theirs)
+	}
+}
+
+func TestGithubPRMergeDeletesPushedBranch(t *testing.T) {
+	w, ws, remote, gh := githubWorld(t, "success", ciTest)
+	w.passingRun(ws, gh)
+	if out := runGit(t, ".", "--git-dir", remote, "branch", "--list", "task/*"); out == "" {
+		t.Fatal("CI should have pushed the branch")
+	}
+	out, err := w.land("merge")
+	if err != nil || strings.Contains(out, "left on origin") {
+		t.Fatalf("merge: %q %v", out, err)
+	}
+	if out := runGit(t, ".", "--git-dir", remote, "branch", "--list", "task/*"); out != "" {
+		t.Errorf("the landed branch should be gone from origin: %q", out)
+	}
+}
+
+func TestGithubPRAllowsRemoteBranchAlreadyInMain(t *testing.T) {
+	w, ws, remote, gh := githubWorld(t, "success", localTest)
+	runGit(t, cloneRemote(t, remote), "push", "-q", "origin", "main:refs/heads/task/auth-refactor")
+	w.passingRun(ws, gh)
+	if _, err := w.land("pull-request"); err != nil {
+		t.Fatalf("the push over a remote branch already in main should succeed: %v", err)
+	}
+}
+
+func TestGithubPRAllowsHeldRemoteTipBeyondTrackingRef(t *testing.T) {
+	w, ws, _, gh := githubWorld(t, "success", localTest)
+	localTaskCommit(t, ws, "mine.txt")
+	runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+	localTaskCommit(t, ws, "more.txt")
+	runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+	runGit(t, ws, "update-ref", "refs/remotes/origin/task/auth-refactor", "main")
+	w.passingRun(ws, gh)
+	if _, err := w.land("pull-request"); err != nil {
+		t.Fatalf("the push should succeed with a held tip and an older tracking ref: %v", err)
+	}
+}
+
+func TestGithubPRRefusesReflogOnlyRemoteTipBehindTrackingRef(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	localTaskCommit(t, ws, "mine.txt")
+	runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+	first := runGit(t, ws, "rev-parse", "task/auth-refactor")
+	runGit(t, ws, "switch", "-q", "task/auth-refactor")
+	runGit(t, ws, "commit", "-q", "--amend", "-m", "rewritten")
+	runGit(t, ws, "switch", "-q", "main")
+	runGit(t, ws, "push", "-q", "--force", "origin", "task/auth-refactor")
+	second := runGit(t, ws, "rev-parse", "refs/remotes/origin/task/auth-refactor")
+	runGit(t, cloneRemote(t, remote), "push", "-q", "--force", "origin", first+":refs/heads/task/auth-refactor")
+	lead, why := startEmpty(w)
+	if lead != "" || !strings.Contains(why, "task/auth-refactor") {
+		t.Fatalf("a tip held only in the reflog, with the tracking ref elsewhere, should refuse the run naming the branch: %q %q", lead, why)
+	}
+	if got := runGit(t, ws, "rev-parse", "refs/remotes/origin/task/auth-refactor"); got != second {
+		t.Errorf("the tracking ref moved to %s, it was %s", got, second)
+	}
+}
+
+func TestGithubPRRefusesReflogOnlyRemoteTipRefetchedOntoTrackingRef(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	localTaskCommit(t, ws, "mine.txt")
+	runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+	first := runGit(t, ws, "rev-parse", "task/auth-refactor")
+	runGit(t, ws, "switch", "-q", "task/auth-refactor")
+	runGit(t, ws, "commit", "-q", "--amend", "-m", "rewritten")
+	runGit(t, ws, "switch", "-q", "main")
+	runGit(t, ws, "push", "-q", "--force", "origin", "task/auth-refactor")
+	runGit(t, cloneRemote(t, remote), "push", "-q", "--force", "origin", first+":refs/heads/task/auth-refactor")
+	fetch := exec.Command("git", "-C", ws, "fetch", "-q", "origin")
+	fetch.Env = append(os.Environ(), "GIT_COMMITTER_DATE="+time.Now().Add(time.Hour).Format(time.RFC3339))
+	if out, err := fetch.CombinedOutput(); err != nil {
+		t.Fatalf("fetch: %v\n%s", err, out)
+	}
+	if got := runGit(t, ws, "rev-parse", "refs/remotes/origin/task/auth-refactor"); got != first {
+		t.Fatalf("the fetch should put the tracking ref on %s, it is at %s", first, got)
+	}
+	lead, why := startEmpty(w)
+	if lead != "" || !strings.Contains(why, "task/auth-refactor") {
+		t.Fatalf("a reflog-only tip that git would reject as updated since checkout should refuse the run naming the branch: %q %q", lead, why)
+	}
+}
+
+func TestGithubPRFastForwardsEmptyBranchWhoseRemoteCopyIsInMain(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	emptyBranch(t, ws, remote, "news.txt", "meanwhile\n", false)
+	other := cloneRemote(t, remote)
+	runGit(t, other, "push", "-q", "origin", "main:refs/heads/task/auth-refactor")
+	tip := runGit(t, other, "rev-parse", "HEAD")
+	if lead, why := startEmpty(w); lead == "" {
+		t.Fatalf("a remote copy already in main loses nothing: %s", why)
+	}
+	if got := runGit(t, ws, "rev-parse", "task/auth-refactor"); got != tip {
+		t.Errorf("the branch should be fast-forwarded to %s, it is at %s", tip, got)
+	}
+	if got := runGit(t, ws, "rev-parse", "refs/remotes/origin/task/auth-refactor"); got != tip {
+		t.Errorf("the tracking ref should be at origin's tip %s, it is at %s", tip, got)
+	}
+}
+
+func TestGithubPRDropsStaleTrackingRef(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	localTaskCommit(t, ws, "mine.txt")
+	runGit(t, ws, "push", "-q", "origin", "task/auth-refactor")
+	runGit(t, cloneRemote(t, remote), "push", "-q", "origin", "--delete", "task/auth-refactor")
+	if lead, why := startEmpty(w); lead == "" {
+		t.Fatalf("a branch deleted on origin should not refuse the run: %s", why)
+	}
+	if _, err := gitOut(ws, "rev-parse", "-q", "--verify", "refs/remotes/origin/task/auth-refactor"); err == nil {
+		t.Error("the stale tracking ref should be removed")
+	}
+	runGit(t, ws, "push", "-q", "--force-with-lease", "--force-if-includes", "origin", "task/auth-refactor")
+}

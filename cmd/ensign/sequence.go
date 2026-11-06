@@ -1714,9 +1714,12 @@ func runPublish(bridge, session string, seq *sequence, st *seqStep) (string, err
 	loc := precedingRunLocation(bridge, seq, st.N, st.Task)
 	if args, ok := strings.CutPrefix(st.Command, "ensign "); ok {
 		if strings.TrimSpace(args) == "github-pr merge" {
-			base, sha, err := githubMerge(bridge, st.Task, loc)
+			base, sha, note, err := githubMerge(bridge, st.Task, loc)
 			if err != nil {
 				return "", err
+			}
+			if note != "" {
+				return fmt.Sprintf("pushed to %s: %s. Note: %s", base, short(sha), note), nil
 			}
 			return fmt.Sprintf("pushed to %s: %s", base, short(sha)), nil
 		}
