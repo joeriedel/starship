@@ -4728,8 +4728,199 @@ func TestCarrySequenceReturnsAFailedRenameAndLeavesTheSequenceOnTheOldSession(t 
 		t.Error("nothing should be recorded for a retry")
 	}
 	entries, _ := filepath.Glob(sessionFile(w.bridge, "s2") + "*")
+	entries = slices.DeleteFunc(entries, func(e string) bool { return e == seqPath(w.bridge, "s2")+".lock" })
 	if len(entries) != 0 {
-		t.Errorf("no file should exist for the new session: %v", entries)
+		t.Errorf("no file but the lock should exist for the new session: %v", entries)
+	}
+}
+
+func TestCarrySequenceHoldsTheNewSessionLockWhileItRenames(t *testing.T) {
+	w, _ := carryWorld(t)
+	real := seqRename
+	t.Cleanup(func() { seqRename = real })
+	var tried error
+	seqRename = func(from, to string) error {
+		l := flock.New(seqPath(w.bridge, "s2") + ".lock")
+		locked, err := l.TryLock()
+		if locked {
+			l.Unlock()
+			tried = errors.New("the new session's lock was free during the rename")
+		} else if err != nil {
+			tried = err
+		}
+		return real(from, to)
+	}
+	if err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	if tried != nil {
+		t.Error(tried)
+	}
+	if !seqExists(w.bridge, "s2") || seqExists(w.bridge, w.sid) {
+		t.Error("the sequence should have moved")
+	}
+}
+
+func TestCarrySequenceLeavesTheSequenceWhenTheNewSessionLockIsHeldPastTheBound(t *testing.T) {
+	w, ids := carryWorld(t)
+	old := carryLockWait
+	t.Cleanup(func() { carryLockWait = old })
+	carryLockWait = 200 * time.Millisecond
+	l := flock.New(seqPath(w.bridge, "s2") + ".lock")
+	if err := l.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer l.Unlock()
+	err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{})
+	if err == nil || !strings.Contains(err.Error(), "stays on the earlier session") || !strings.Contains(err.Error(), "the new session's sequence lock is held") {
+		t.Fatalf("the held lock should be returned: %v", err)
+	}
+	if !seqExists(w.bridge, w.sid) || seqExists(w.bridge, "s2") {
+		t.Error("the sequence should stay on the old session")
+	}
+	for _, id := range ids[1:] {
+		if got := w.runState(id).Session; got != w.sid {
+			t.Errorf("run %s should not be rebound: %s", id, got)
+		}
+	}
+}
+
+func TestCarrySequenceDoesNotOverwriteASequenceTheNewSessionGainsWhileItsLockIsHeld(t *testing.T) {
+	w, _ := carryWorld(t)
+	old := carryLockWait
+	t.Cleanup(func() { carryLockWait = old })
+	carryLockWait = 30 * time.Second
+	l := flock.New(seqPath(w.bridge, "s2") + ".lock")
+	if err := l.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer l.Unlock()
+	before, err := os.ReadFile(seqPath(w.bridge, w.sid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	carried := make(chan error, 1)
+	go func() { carried <- carrySequence(w.bridge, w.sid, "s2", map[string]bool{}) }()
+	time.Sleep(200 * time.Millisecond)
+	write(t, seqPath(w.bridge, "s2"), `{"sequences":[]}`)
+	l.Unlock()
+	select {
+	case err := <-carried:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("carrySequence did not finish after the lock was released")
+	}
+	after, err := os.ReadFile(seqPath(w.bridge, w.sid))
+	if err != nil || string(after) != string(before) {
+		t.Errorf("the old session's sequence should be unchanged: %v", err)
+	}
+	if got, err := os.ReadFile(seqPath(w.bridge, "s2")); err != nil || string(got) != `{"sequences":[]}` {
+		t.Errorf("the new session's sequence should be unchanged: %q %v", got, err)
+	}
+}
+
+func queuedReports(bridge, session string) string {
+	var all []string
+	for _, seq := range readSeq(bridge, session).Sequences {
+		all = append(all, seq.Report)
+	}
+	return strings.Join(all, "\n")
+}
+
+func TestCarrySequenceReportsAFailedSaveOfTheMovedFileAndRebindsTheRuns(t *testing.T) {
+	w, ids := carryWorld(t)
+	real := seqSave
+	t.Cleanup(func() { seqSave = real })
+	calls := 0
+	seqSave = func(path string, v any) error {
+		calls++
+		if calls == 1 {
+			return errors.New("disk full")
+		}
+		return real(path, v)
+	}
+	if err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{}); err != nil {
+		t.Fatalf("a queued report is the way the session hears of it: %v", err)
+	}
+	if !seqExists(w.bridge, "s2") || seqExists(w.bridge, w.sid) {
+		t.Error("the sequence should be on the new session")
+	}
+	for _, id := range ids[1:] {
+		if got := w.runState(id).Session; got != "s2" {
+			t.Errorf("run %s should be rebound: %s", id, got)
+		}
+	}
+	if got := queuedReports(w.bridge, "s2"); strings.Count(got, "could not be updated") != 1 || !strings.Contains(got, "disk full") || !strings.Contains(got, "does not retry") {
+		t.Errorf("the failed save should be queued once:\n%s", got)
+	}
+}
+
+func TestCarrySequenceReturnsAFailedSaveOfTheMovedFileOnceWhenItCannotBeQueued(t *testing.T) {
+	w, ids := carryWorld(t)
+	real := seqSave
+	t.Cleanup(func() { seqSave = real })
+	seqSave = func(string, any) error { return errors.New("disk full") }
+	err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{})
+	if err == nil || strings.Count(err.Error(), "could not be updated") != 1 || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("the failed save should be returned once: %v", err)
+	}
+	for _, id := range ids[1:] {
+		if got := w.runState(id).Session; got != "s2" {
+			t.Errorf("run %s should be rebound: %s", id, got)
+		}
+	}
+}
+
+func TestCarrySequenceLeavesTheAdvanceOfARunThatFinishedInTheWindowToTheNextStop(t *testing.T) {
+	w, ids := carryWorld(t)
+	if err := renameSequenceLocked(w.bridge, w.sid, "s2"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := openRun(w.bridge, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status = "success"
+	r.State.FinishedAt = time.Now().UnixNano()
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+	if text, err := advanceSequence(w.bridge, w.sid); text != "" || err != nil {
+		t.Errorf("the finishing hook's advance on the old session should do nothing: %q %v", text, err)
+	}
+	if seqExists(w.bridge, w.sid) {
+		t.Error("the advance should not recreate the old session's sequence")
+	}
+	if got := readSeq(w.bridge, "s2").Sequences[0].Steps[0].Status; got != "active" {
+		t.Fatalf("the step on the new session should still be active: %s", got)
+	}
+	sequenceStop(w.bridge, &HookInput{SessionID: "s2"})
+	if got := readSeq(w.bridge, "s2").Sequences[0].Steps[0].Status; got != "done" {
+		t.Errorf("the next Stop on the new session should reconcile the finished run: %s", got)
+	}
+}
+
+func TestSequenceAddKeyedOnTheOldSessionAfterTheMoveCreatesAFreshSequenceThere(t *testing.T) {
+	w, _ := carryWorld(t)
+	if err := carrySequence(w.bridge, w.sid, "s2", map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(seqPath(w.bridge, "s2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seqAdd(w.bridge, w.sid, io.Discard, "", &seqStep{Kind: "do", Instruction: "tidy up"}); err != nil {
+		t.Fatal(err)
+	}
+	if !seqExists(w.bridge, w.sid) || len(readSeq(w.bridge, w.sid).Sequences) != 1 {
+		t.Error("the add should create a fresh sequence on the old session")
+	}
+	after, err := os.ReadFile(seqPath(w.bridge, "s2"))
+	if err != nil || string(after) != string(before) {
+		t.Errorf("the new session's sequence should not gain the step: %v", err)
 	}
 }
 
