@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -171,17 +172,43 @@ func manualInTranscript(lines []string, token string) (ok bool, why string) {
 	return true, ""
 }
 
-// agentResultHas reports whether the transcript holds an Agent call for subagentType whose tool result contains token. A tool result's content is a string or a list of text blocks.
-func agentResultHas(lines []string, subagentType, token string) bool {
+var agentIDLine = regexp.MustCompile(`(?m)^agentId:[ \t]*(\S+)`)
+
+// reportReachedDispatcher reports whether the report of a subagentType dispatch reaches the dispatcher: either the token is in the tool result of the Agent call, or that result names an agentId and a message delivered from that agent carries the token. A tool result's content is a string or a list of text blocks. Deliveries are matched after all lines are read, since one can precede the result.
+func reportReachedDispatcher(lines []string, subagentType, token string) bool {
 	calls := map[string]bool{}
+	agentIDs := map[string]bool{}
+	delivered := map[string]bool{}
 	for _, line := range lines {
 		var rec struct {
 			Message struct {
 				Content json.RawMessage `json:"content"`
 			} `json:"message"`
+			Origin     *deliveryOrigin `json:"origin"`
+			Attachment struct {
+				Type   string          `json:"type"`
+				Prompt string          `json:"prompt"`
+				Origin *deliveryOrigin `json:"origin"`
+			} `json:"attachment"`
 		}
 		if json.Unmarshal([]byte(strings.TrimSuffix(line, "\r")), &rec) != nil {
 			continue
+		}
+		if o := rec.Origin; o != nil && o.Kind == "peer" && o.From != "" {
+			var text string
+			json.Unmarshal(rec.Message.Content, &text)
+			if strings.Contains(o.Report+"\n"+text, token) {
+				delivered[o.From] = true
+			}
+		}
+		if o := rec.Attachment.Origin; rec.Attachment.Type == "queued_command" && o != nil && o.Kind == "peer" && o.From != "" {
+			text := o.Report
+			if text == "" {
+				text = rec.Attachment.Prompt
+			}
+			if strings.Contains(text, token) {
+				delivered[o.From] = true
+			}
 		}
 		var blocks []struct {
 			Type  string `json:"type"`
@@ -213,10 +240,55 @@ func agentResultHas(lines []string, subagentType, token string) bool {
 				if strings.Contains(text, token) {
 					return true
 				}
+				if m := agentIDLine.FindStringSubmatch(strings.ReplaceAll(text, "\r", "")); m != nil {
+					agentIDs[m[1]] = true
+				}
 			}
 		}
 	}
+	for id := range agentIDs {
+		if delivered[id] {
+			return true
+		}
+	}
 	return false
+}
+
+// deliveryOrigin is the origin of a message one agent delivers to another. Report is the exact report text of a hand-back.
+type deliveryOrigin struct {
+	Kind   string `json:"kind"`
+	From   string `json:"from"`
+	Report string `json:"handbackReportText"`
+}
+
+// reportLines prints the checks and the advisory check, and returns an error when a counted check failed. A failed advisory check says nothing about enforcement, which runs on hooks.
+func reportLines(out io.Writer, checks []selftestCheck, advisory selftestCheck, manualArrived bool, manualWhy string) error {
+	failed := 0
+	for _, c := range checks {
+		mark := "ok  "
+		if !c.ok {
+			mark, failed = "FAIL", failed+1
+		}
+		fmt.Fprintf(out, "  %s %s\n", mark, c.name)
+	}
+	if !manualArrived {
+		fmt.Fprintf(out, "  the session transcript is the evidence for the SessionStart output check: %s\n", manualWhy)
+	}
+	if advisory.ok {
+		fmt.Fprintf(out, "  ok   %s\n", advisory.name)
+	} else {
+		fmt.Fprintf(out, "  warn %s\n", advisory.name)
+		fmt.Fprintln(out, "       this does not affect enforcement; a lead on this Claude Code build may not see agents' reports, and hooks still record them in the run's reports folder")
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d harness checks failed; starship's enforcement may not work on this Claude Code build", failed, len(checks))
+	}
+	if advisory.ok {
+		fmt.Fprintln(out, "all harness checks passed")
+	} else {
+		fmt.Fprintln(out, "harness checks passed; one advisory check did not")
+	}
+	return nil
 }
 
 // leafToken is the leaf probe's reply. Finding it in the result of the orchestrator's own
@@ -344,7 +416,6 @@ func cmdSelftest(out io.Writer) error {
 		{"PreToolUse deny keeps an agent from starting", len(nested) >= 2 && len(deniedStops) == 0},
 		{"SubagentStop gives agent_type and agent_transcript_path; the report is the handback or last_assistant_message", stopReportProbe(events)},
 		{"PreToolUse deny of a SubagentHandback keeps the agent working, and a corrected handback gets through", handbackRedoProbe(events)},
-		{"the dispatcher sees a tools: Read agent's report as the Agent tool result", agentResultHas(dispatcherLines, "probe-handback", handbackToken)},
 		{"SubagentStop block makes the agent continue (stop_hook_active on the next stop)", stopContinues},
 		{"session_id is the same for the session and its agents", len(sessions) == 1},
 		{fmt.Sprintf("SessionStart output of %d bytes reaches the session whole (from the transcript)", manualLimit), manualArrived},
@@ -368,22 +439,8 @@ func cmdSelftest(out io.Writer) error {
 	if stopSawHandback {
 		fmt.Fprintln(out, "  note agents hand back outside auto mode too, so the SubagentStop block path cannot be checked")
 	}
-	failed := 0
-	for _, c := range checks {
-		mark := "ok  "
-		if !c.ok {
-			mark, failed = "FAIL", failed+1
-		}
-		fmt.Fprintf(out, "  %s %s\n", mark, c.name)
-	}
-	if !manualArrived {
-		fmt.Fprintf(out, "  the session transcript is the evidence for the SessionStart output check: %s\n", manualWhy)
-	}
-	if failed > 0 {
-		return fmt.Errorf("%d of %d harness checks failed; starship's enforcement may not work on this Claude Code build", failed, len(checks))
-	}
-	fmt.Fprintln(out, "all harness checks passed")
-	return nil
+	advisory := selftestCheck{"the dispatcher receives a tools: Read agent's report, as the Agent tool result or a delivered message", reportReachedDispatcher(dispatcherLines, "probe-handback", handbackToken)}
+	return reportLines(out, checks, advisory, manualArrived, manualWhy)
 }
 
 // probeHookCommand is the command line of a probe hook for the given event. It runs through a shell, which splits or mangles a spaced or backslashed path, so the path is forward-slashed and double-quoted, escaping only backslash, double quote, dollar and backtick: the four characters a POSIX shell treats specially inside double quotes. Go's strconv.Quote would leave $ and backtick live and emit \x escapes no shell reads.

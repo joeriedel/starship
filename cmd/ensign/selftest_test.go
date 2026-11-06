@@ -569,7 +569,7 @@ func TestProbeHookCommandSurvivesShellSpecialPath(t *testing.T) {
 	}
 }
 
-func TestAgentResultHas(t *testing.T) {
+func TestReportReachedDispatcher(t *testing.T) {
 	line := func(v any) string {
 		b, _ := json.Marshal(v)
 		return string(b)
@@ -581,6 +581,24 @@ func TestAgentResultHas(t *testing.T) {
 	result := func(id string, content any) string {
 		return line(map[string]any{"type": "user", "message": map[string]any{"content": []any{
 			map[string]any{"type": "tool_result", "tool_use_id": id, "content": content}}}})
+	}
+	pointer := func(agent string) []any {
+		return []any{map[string]any{"type": "text", "text": "  This agent's report was delivered to you as a message from \"" + agent + "\".\n  \nagentId: " + agent + "\n<usage>tool_uses: 1</usage>"}}
+	}
+	origin := func(agent string, report string) map[string]any {
+		o := map[string]any{"kind": "peer", "from": agent, "senderTaskId": agent, "name": "probe-handback", "handback": true}
+		if report != "" {
+			o["handbackReportText"] = report
+		}
+		return o
+	}
+	attachment := func(agent, report, prompt string) string {
+		return line(map[string]any{"type": "attachment", "attachment": map[string]any{
+			"type": "queued_command", "prompt": prompt, "origin": origin(agent, report)}})
+	}
+	userDelivery := func(agent, report string) string {
+		return line(map[string]any{"type": "user", "isMeta": true, "origin": origin(agent, report), "message": map[string]any{
+			"role": "user", "content": "<agent-message from=\"" + agent + "\">\n  " + report + "\n</agent-message>"}})
 	}
 	blocks := []any{map[string]any{"type": "text", "text": "report: " + handbackToken}}
 	tests := []struct {
@@ -595,10 +613,46 @@ func TestAgentResultHas(t *testing.T) {
 		{"other agent", []string{call("t1", "probe-leaf"), result("t1", blocks)}, false},
 		{"result of another call", []string{call("t1", "probe-handback"), result("t2", blocks)}, false},
 		{"no result", []string{call("t1", "probe-handback")}, false},
+		{"pointer and attachment", []string{call("t1", "probe-handback"), result("t1", pointer("a1")), attachment("a1", handbackToken, "x")}, true},
+		{"pointer and attachment with crlf", []string{call("t1", "probe-handback") + "\r", result("t1", pointer("a1")) + "\r", attachment("a1", handbackToken, "x") + "\r"}, true},
+		{"pointer and user delivery", []string{call("t1", "probe-handback"), result("t1", pointer("a1")), userDelivery("a1", handbackToken)}, true},
+		{"delivery before result", []string{attachment("a1", handbackToken, "x"), call("t1", "probe-handback"), result("t1", pointer("a1"))}, true},
+		{"delivery from another agent", []string{call("t1", "probe-handback"), result("t1", pointer("a1")), attachment("a2", handbackToken, "x")}, false},
+		{"delivery of another type", []string{call("t1", "probe-leaf"), result("t1", pointer("a1")), attachment("a1", handbackToken, "x")}, false},
+		{"token only in prompt", []string{call("t1", "probe-handback"), result("t1", pointer("a1")), attachment("a1", "", "<agent-message>\n  "+handbackToken+"\n</agent-message>")}, true},
+		{"pointer without delivery", []string{call("t1", "probe-handback"), result("t1", pointer("a1"))}, false},
+		{"async stub without delivery", []string{call("t1", "probe-handback"), result("t1", "Async agent launched.\nagentId: a1\n")}, false},
+		{"token in a stray line", []string{call("t1", "probe-handback"), result("t1", pointer("a1")), line(map[string]any{"type": "assistant", "note": handbackToken, "agentId": "a1"})}, false},
 	}
 	for _, tt := range tests {
-		if got := agentResultHas(tt.lines, "probe-handback", handbackToken); got != tt.want {
+		if got := reportReachedDispatcher(tt.lines, "probe-handback", handbackToken); got != tt.want {
 			t.Errorf("%s: got %v", tt.name, got)
+		}
+	}
+}
+
+func TestReportLines(t *testing.T) {
+	pass := selftestCheck{"first", true}
+	fail := selftestCheck{"second", false}
+	adv := func(ok bool) selftestCheck { return selftestCheck{"the advisory one", ok} }
+	var b strings.Builder
+	if err := reportLines(&b, []selftestCheck{pass}, adv(true), true, ""); err != nil || !strings.Contains(b.String(), "all harness checks passed") || strings.Contains(b.String(), "warn") {
+		t.Errorf("all pass: %v %q", err, b.String())
+	}
+	b.Reset()
+	err := reportLines(&b, []selftestCheck{pass}, adv(false), true, "")
+	if err != nil || strings.Contains(b.String(), "enforcement may not work") || strings.Contains(b.String(), "FAIL") ||
+		!strings.Contains(b.String(), "warn the advisory one") || !strings.Contains(b.String(), "one advisory check did not") {
+		t.Errorf("advisory fails: %v %q", err, b.String())
+	}
+	for _, a := range []bool{true, false} {
+		b.Reset()
+		err := reportLines(&b, []selftestCheck{pass, fail}, adv(a), false, "dropped")
+		if err == nil || !strings.Contains(err.Error(), "1 of 2 harness checks failed") || !strings.Contains(b.String(), "FAIL second") {
+			t.Errorf("counted fails (advisory %v): %v %q", a, err, b.String())
+		}
+		if i, j := strings.Index(b.String(), "FAIL second"), strings.Index(b.String(), "dropped"); j < i {
+			t.Errorf("evidence line before checks: %q", b.String())
 		}
 	}
 }
