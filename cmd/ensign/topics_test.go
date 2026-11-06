@@ -252,10 +252,24 @@ func TestSessionStartPointsAtRequestsTopic(t *testing.T) {
 	}
 }
 
+// sessionStartRoom is the room kept free under manualLimit for lines the budget tests can't foresee.
+const sessionStartRoom = 400
+
 // The notes commitNotes returns and the sync note can both reach the context; the worst of them is added to a full session start.
 func TestSessionStartFitsBudgetWithWorstNotes(t *testing.T) {
 	needGit(t)
 	w := linkedWorld(t)
+	// The focal worst case is committed with the bridge, so the commit note still counts only the 42 notes files.
+	yaml := "use: [focal-sheet]\ndocuments:\n"
+	for i := 0; i < 6; i++ {
+		yaml += fmt.Sprintf("  supernova-focal-%d-%s:\n    path: notes/reviews/%s-%d.md\n", i, strings.Repeat("a", 300), strings.Repeat("b", 300), i)
+	}
+	bridgeYAML := filepath.Join(w.bridge, "bridge.yaml")
+	data, err := os.ReadFile(bridgeYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, bridgeYAML, string(data)+yaml)
 	journalFixture(t, w)
 	write(t, filepath.Join(w.bridge, "notes", "log", "2026-11.md"), "x\n")
 	for i := 0; i < 40; i++ {
@@ -263,7 +277,7 @@ func TestSessionStartFitsBudgetWithWorstNotes(t *testing.T) {
 	}
 	write(t, filepath.Join(w.bridge, "notes", "inbox.md"), "call Ada\n")
 	ctx := w.startWithNotes("clear", strings.Repeat("Prefer small commits and explain each one.\n", 400))
-	for _, want := range []string{"too long to reprint", "and ", " more", "unsorted notes"} {
+	for _, want := range []string{"too long to reprint", "and ", " more", "unsorted notes", "sits outside", " more like it."} {
 		if !strings.Contains(ctx, want) {
 			t.Fatalf("the worst case should hold %q:\n%s", want, ctx)
 		}
@@ -277,9 +291,9 @@ func TestSessionStartFitsBudgetWithWorstNotes(t *testing.T) {
 	if len(w.bridge) < 200 {
 		size += (200 - len(w.bridge)) * strings.Count(ctx, w.bridge)
 	}
-	t.Logf("padded size %d, limit %d", size, manualLimit)
-	if size >= manualLimit {
-		t.Errorf("worst case session start text is %d characters with a 200-character bridge path; the budget is %d", size, manualLimit)
+	t.Logf("padded size %d, limit %d, room %d", size, manualLimit, sessionStartRoom)
+	if size > manualLimit-sessionStartRoom {
+		t.Errorf("worst case session start text is %d characters with a 200-character bridge path; the budget is %d less %d of room", size, manualLimit, sessionStartRoom)
 	}
 }
 
@@ -314,9 +328,9 @@ func TestSessionStartFitsBudgetWithLongBridgePath(t *testing.T) {
 			if len(w.bridge) < 200 {
 				size += (200 - len(w.bridge)) * strings.Count(ctx, w.bridge)
 			}
-			t.Logf("padded size %d, limit %d", size, manualLimit)
-			if size >= manualLimit {
-				t.Errorf("session start text is %d characters with a 200-character bridge path; the budget is %d", size, manualLimit)
+			t.Logf("padded size %d, limit %d, room %d", size, manualLimit, sessionStartRoom)
+			if size > manualLimit-sessionStartRoom {
+				t.Errorf("session start text is %d characters with a 200-character bridge path; the budget is %d less %d of room", size, manualLimit, sessionStartRoom)
 			}
 		})
 	}

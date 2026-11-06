@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,7 +81,6 @@ func TestSheetLeavesNoTraceWithoutUse(t *testing.T) {
 
 func sessionStartText(t *testing.T, w *world) string {
 	t.Helper()
-	write(t, filepath.Join(w.bridge, ".starship", "session.md"), "Supernova manual.\n")
 	res, code := w.hook("SessionStart", map[string]any{"source": "startup"})
 	if code != 0 {
 		t.Fatalf("SessionStart exited %d", code)
@@ -557,4 +557,44 @@ func TestFocalWarningsExtensionElsewhere(t *testing.T) {
 	if got := sessionStartText(t, w); strings.Contains(got, reads) {
 		t.Errorf("warned although bridge.yaml uses the sheet:\n%s", got)
 	}
+}
+
+func TestFocalWarningsStayShort(t *testing.T) {
+	long := strings.Repeat("a", 200)
+	t.Run("documents", func(t *testing.T) {
+		y := "use: [focal-sheet]\ndocuments:\n"
+		for i := 0; i < 5; i++ {
+			y += fmt.Sprintf("  supernova-focal-%d-%s:\n    path: notes/reviews/%d-%s.md\n", i, long, i, long)
+		}
+		w := connWorld(t, y)
+		got := focalWarnings(w.bridge)
+		if len(got) != 1 || !strings.HasSuffix(got[0], " And 4 more like it.") || strings.Count(got[0], "sits outside") != 1 {
+			t.Fatalf("want one line ending in the count of 4 more:\n%q", got)
+		}
+		if strings.Contains(got[0], long) || len(got[0]) > 300 {
+			t.Errorf("the line holds a full name or path:\n%s", got[0])
+		}
+	})
+	t.Run("projects and tasks", func(t *testing.T) {
+		w := newWorld(t)
+		for i := 0; i < 3; i++ {
+			name := fmt.Sprintf("supernova-%d-%s", i, long)
+			write(t, filepath.Join(w.bridge, "projects", name, "project.yaml"), "use: [focal-sheet]\n")
+		}
+		got := focalWarnings(w.bridge)
+		if len(got) != 1 || !strings.HasSuffix(got[0], " And 2 more like it.") || !strings.Contains(got[0], "project supernova-") {
+			t.Fatalf("want one line ending in the count of 2 more:\n%q", got)
+		}
+		if strings.Contains(got[0], long) || len(got[0]) > 300 {
+			t.Errorf("the line holds a full name:\n%s", got[0])
+		}
+	})
+	t.Run("one warning", func(t *testing.T) {
+		w := newWorld(t)
+		w.project("use: [focal-sheet]\n")
+		got := focalWarnings(w.bridge)
+		if len(got) != 1 || strings.Contains(got[0], "more like it") {
+			t.Errorf("a single warning should have no suffix:\n%q", got)
+		}
+	})
 }
