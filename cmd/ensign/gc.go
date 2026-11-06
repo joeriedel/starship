@@ -44,6 +44,8 @@ var (
 	gcRemoveAll = os.RemoveAll
 	gcReadDir   = os.ReadDir
 	gcRemoveRun = removeRunBy
+	gcStat      = os.Stat
+	gcTryLock   = func(l *flock.Flock) (bool, error) { return l.TryLock() }
 )
 
 // gcResult is what a cleanup did.
@@ -148,9 +150,13 @@ func gcRuns(bridge string, keep, max int) gcResult {
 			}
 			continue
 		}
-		_, err := os.Stat(filepath.Join(dir, "state.json"))
+		_, err := gcStat(filepath.Join(dir, "state.json"))
 		l.Unlock()
-		if !errors.Is(err, fs.ErrNotExist) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			skipped(dir, err)
+			continue
+		}
+		if err == nil {
 			continue
 		}
 		remove(dir)
@@ -298,7 +304,7 @@ func heldRuns(bridge string) (held map[string]bool, err error) {
 	return held, nil
 }
 
-// staleGCAge is how old a leftover <id>.gc file must be before a sweep removes it. A rename keeps the mtime, so this holds only because dropDeadLinks lets one sweeper run at a time.
+// staleGCAge is how old a leftover <id>.gc file must be before a sweep removes it. A rename keeps the mtime, so this holds only because dropDeadLinks lets one sweeper run at a time. It applies to dead-link and unknown .gc files; a session file's .gc is judged by its session instead (see retryKeptGC).
 const staleGCAge = 5 * time.Minute
 
 // pidRecordAge is how old a <pid>.pid record must be before a sweep removes it. Age, not liveness, because a session idle past it loses only the link to its earlier id, which is how /clear behaved before the record existed.
@@ -364,6 +370,34 @@ type linkSweep struct {
 type sessionSweep struct {
 	deadline time.Time
 	failed   int
+	readWarn map[string]bool // entries whose unreadable Info was already reported
+}
+
+// tryLock takes a lock without blocking and reports whether it is held. A lock that is busy is quiet; an error is reported and counted, except a missing sessions folder.
+func (s *sessionSweep) tryLock(l *flock.Flock) bool {
+	ok, err := gcTryLock(l)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "warning: could not lock %s: %v\n", l.Path(), err)
+			s.failed++
+		}
+		return false
+	}
+	return ok
+}
+
+// entryInfo is e.Info() for an entry of dir. An error other than a vanished file is reported and counted once per entry in a sweep, however many groups look at it.
+func (s *sessionSweep) entryInfo(dir string, e os.DirEntry) (fs.FileInfo, error) {
+	info, err := e.Info()
+	if err != nil && !errors.Is(err, fs.ErrNotExist) && !s.readWarn[e.Name()] {
+		if s.readWarn == nil {
+			s.readWarn = map[string]bool{}
+		}
+		s.readWarn[e.Name()] = true
+		fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", filepath.Join(dir, e.Name()), err)
+		s.failed++
+	}
+	return info, err
 }
 
 // remove removes a file, retrying a transient failure until the deadline. A file that is already gone (another gc got there first) is not a failure. It reports whether the file was removed.
@@ -394,10 +428,11 @@ func (s *sessionSweep) rename(oldpath, newpath string) bool {
 
 // sweepSessionFiles removes the per-session files of sessions untouched for sessionFileAge, then their lock and tmp files (see sweepLeftovers). A session's age is the newest mtime among its swept files and its link, because .pin is rewritten at every SessionStart while .task is not. A session with a live run or an open sequence keeps all its files. It must run before dead links are dropped, so a link still shows which runs a session owned.
 func sweepSessionFiles(bridge string, entries []os.DirEntry, s *sessionSweep) {
-	leftovers := leftoverGroups(entries)
+	dir := filepath.Join(bridge, ".starship", "sessions")
+	leftovers := leftoverGroups(dir, entries, s)
 	groups := map[string]*sweptSession{}
 	note := func(g *sweptSession, e os.DirEntry) {
-		info, err := e.Info()
+		info, err := s.entryInfo(dir, e)
 		if err != nil {
 			g.failed = true
 			return
@@ -437,7 +472,7 @@ func sweepSessionFiles(bridge string, entries []os.DirEntry, s *sessionSweep) {
 		}
 		if g.hasSeq {
 			l := flock.New(seqPath(bridge, id) + ".lock")
-			if ok, err := l.TryLock(); err != nil || !ok {
+			if !s.tryLock(l) {
 				continue
 			}
 			if !listed {
@@ -493,10 +528,10 @@ type sweptLeftovers struct {
 }
 
 // leftoverGroups finds the sessions with lock or tmp files in the snapshot and reads their ages. It runs before the swept files are renamed, because an entry's Info fails once its file is gone.
-func leftoverGroups(entries []os.DirEntry) map[string]*sweptLeftovers {
+func leftoverGroups(dir string, entries []os.DirEntry, s *sessionSweep) map[string]*sweptLeftovers {
 	groups := map[string]*sweptLeftovers{}
 	note := func(g *sweptLeftovers, e os.DirEntry) {
-		info, err := e.Info()
+		info, err := s.entryInfo(dir, e)
 		if err != nil {
 			g.failed = true
 			return
@@ -575,7 +610,7 @@ func sweepLeftovers(bridge string, groups map[string]*sweptLeftovers, s *session
 		held := true
 		for _, path := range paths {
 			l := flock.New(path)
-			if ok, err := l.TryLock(); err != nil || !ok {
+			if !s.tryLock(l) {
 				held = false
 				break
 			}
@@ -671,40 +706,100 @@ func reapSession(dir, id string, files []string, s *sessionSweep) {
 
 // settleSession judges a session whose files were renamed to .gc: it removes them all if the session is still stale, and otherwise restores each unless a newer file holds its name.
 func settleSession(dir, id string, files, renamed []string, s *sessionSweep) {
-	fresh := func(p string) bool {
-		info, err := os.Stat(p)
-		return err == nil && time.Since(info.ModTime()) <= sessionFileAge
-	}
-	stale := true
+	var paths []string
 	for _, orig := range renamed {
-		stale = stale && !fresh(orig+".gc")
+		paths = append(paths, orig+".gc")
 	}
 	for _, name := range files {
-		stale = stale && !fresh(filepath.Join(dir, name))
+		paths = append(paths, filepath.Join(dir, name))
 	}
-	for _, suf := range []string{"", ".task", ".pin", ".env", ".sequence", ".sequence.corrupt", ".writes", ".moved"} {
-		stale = stale && !fresh(filepath.Join(dir, id+suf))
-	}
+	paths = append(paths, sessionIDPaths(dir, id)...)
+	stale := staleSession(paths, s)
 	for _, orig := range renamed {
 		if stale {
 			s.remove(orig + ".gc")
 			continue
 		}
-		_, err := os.Stat(orig)
-		switch {
-		case err == nil:
-			s.remove(orig + ".gc")
-		case errors.Is(err, fs.ErrNotExist):
-			// A failed restore keeps the .gc, the only copy of a file in a session just judged live, unlike the dead-link restore, which drops it. A later sweep removes a kept .gc through s.remove once it is older than staleGCAge.
-			s.rename(orig+".gc", orig)
-		default:
-			fmt.Fprintf(os.Stderr, "warning: could not restore %s: %v\n", orig, err)
-			s.failed++
-		}
+		restoreGC(orig, s)
 	}
 }
 
-// dropDeadLinks removes session links (the bare <session-id> files) whose run folders are all gone, and returns how many, with how many session files it could not remove. It also removes <pid>.pid records older than pidRecordAge, and the per-session files, locks included, of sessions idle past sessionFileAge (see sweepSessionFiles); those files do not count as links, but failures on them do. Live links are only read. A link that looks dead is renamed to <id>.gc and judged again, so a concurrent rebind is restored rather than deleted. Only one sweeper runs at a time, under a non-blocking bridge-wide .sweep.lock (never removed); a call that can't take it skips the .gc removal and sweepSessionFiles and does the rest, so it never blocks. Lock order: .sweep.lock, then a session's .sequence.lock, then its .lock.
+// sessionIDPaths is the bare id and the fixed suffixes of a session's files.
+func sessionIDPaths(dir, id string) []string {
+	var paths []string
+	for _, suf := range []string{"", ".task", ".pin", ".env", ".sequence", ".sequence.corrupt", ".writes", ".moved"} {
+		paths = append(paths, filepath.Join(dir, id+suf))
+	}
+	return paths
+}
+
+// staleSession reports whether none of the paths was modified within sessionFileAge. A path that is missing is not fresh. A path that can't be read is reported and counted, and the session is not stale, so nothing is removed on a failed read.
+func staleSession(paths []string, s *sessionSweep) bool {
+	for _, p := range paths {
+		info, err := gcStat(p)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", p, err)
+			s.failed++
+			return false
+		}
+		if time.Since(info.ModTime()) <= sessionFileAge {
+			return false
+		}
+	}
+	return true
+}
+
+// restoreGC puts orig.gc back unless a newer file holds the name, in which case the .gc is dropped.
+func restoreGC(orig string, s *sessionSweep) {
+	_, err := gcStat(orig)
+	switch {
+	case err == nil:
+		s.remove(orig + ".gc")
+	case errors.Is(err, fs.ErrNotExist):
+		// A failed restore keeps the .gc, the only copy of a file in a session just judged live, unlike the dead-link restore, which drops it. A later sweep retries it (see retryKeptGC).
+		s.rename(orig+".gc", orig)
+	default:
+		fmt.Fprintf(os.Stderr, "warning: could not restore %s: %v\n", orig, err)
+		s.failed++
+	}
+}
+
+// retryKeptGC judges a session that has session-file .gc files older than staleGCAge, left by an earlier sweep that kept them, and removes them if the session is now stale or restores them if it is not. The judgment covers every .gc and file of the session in the snapshot and its fixed names, read now because sweepSessionFiles may have changed them. A session with a .sequence is judged under its .sequence.lock, the lock sweepSessionFiles holds while reaping it; if that is held the .gc files are left for a later sweep.
+func retryKeptGC(dir, id string, old []string, entries []os.DirEntry, s *sessionSweep) {
+	var paths []string
+	hasSeq := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if got, ok := sessionOfFile(strings.TrimSuffix(e.Name(), ".gc")); !ok || got != id {
+			continue
+		}
+		hasSeq = hasSeq || e.Name() == id+".sequence" || e.Name() == id+".sequence.gc"
+		paths = append(paths, filepath.Join(dir, e.Name()))
+	}
+	paths = append(paths, sessionIDPaths(dir, id)...)
+	if hasSeq {
+		l := flock.New(filepath.Join(dir, id+".sequence.lock"))
+		if !s.tryLock(l) {
+			return
+		}
+		defer l.Unlock()
+	}
+	stale := staleSession(paths, s)
+	for _, gc := range old {
+		if stale {
+			s.remove(gc)
+			continue
+		}
+		restoreGC(strings.TrimSuffix(gc, ".gc"), s)
+	}
+}
+
+// dropDeadLinks removes session links (the bare <session-id> files) whose run folders are all gone, and returns how many, with how many session files it could not remove. It also removes <pid>.pid records older than pidRecordAge, and the per-session files, locks included, of sessions idle past sessionFileAge (see sweepSessionFiles); those files do not count as links, but failures on them do. Live links are only read. A link that looks dead is renamed to <id>.gc and judged again, so a concurrent rebind is restored rather than deleted. Only one sweeper runs at a time, under a non-blocking bridge-wide .sweep.lock (never removed); a call that can't take it skips the .gc removal and sweepSessionFiles and does the rest, so it never blocks. A .gc of a session file older than staleGCAge is not removed on age: retryKeptGC judges its session and restores or removes it. Lock order: .sweep.lock, then a session's .sequence.lock, then its .lock.
 func dropDeadLinks(bridge string) linkSweep {
 	dir := filepath.Join(bridge, ".starship", "sessions")
 	var sw linkSweep
@@ -716,11 +811,17 @@ func dropDeadLinks(bridge string) linkSweep {
 	}
 	sweeper := flock.New(filepath.Join(dir, ".sweep.lock"))
 	swept := false
-	if ok, err := sweeper.TryLock(); ok && err == nil {
+	if ok, err := gcTryLock(sweeper); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) && plainFileOnPath(dir) == "" {
+			fmt.Fprintf(os.Stderr, "warning: could not lock %s: %v\n", sweeper.Path(), err)
+			s.failed++
+		}
+	} else if ok {
 		defer sweeper.Unlock()
 		swept = true
 		sweepSessionFiles(bridge, entries, s)
 	}
+	keptGC := map[string][]string{} // session id -> its old .gc files
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -745,8 +846,15 @@ func dropDeadLinks(bridge string) linkSweep {
 			continue
 		}
 		if time.Since(info.ModTime()) > maxAge {
+			if id, ok := sessionOfFile(strings.TrimSuffix(e.Name(), ".gc")); ok && strings.HasSuffix(e.Name(), ".gc") {
+				keptGC[id] = append(keptGC[id], filepath.Join(dir, e.Name()))
+				continue
+			}
 			s.remove(filepath.Join(dir, e.Name()))
 		}
+	}
+	for id, old := range keptGC {
+		retryKeptGC(dir, id, old, entries, s)
 	}
 	for _, e := range entries {
 		if e.IsDir() || strings.Contains(e.Name(), ".") {

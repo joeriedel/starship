@@ -1414,3 +1414,302 @@ func TestGCVanishedCandidateIsNotReportedAsUnopenable(t *testing.T) {
 		})
 	}
 }
+
+// statFailing fails a Stat for the paths with the suffix and passes the rest through.
+func statFailing(suffix string, err error) func(string) (fs.FileInfo, error) {
+	return func(p string) (fs.FileInfo, error) {
+		if strings.HasSuffix(p, suffix) {
+			return nil, err
+		}
+		return os.Stat(p)
+	}
+}
+
+func lockFailing(suffix string, ok bool, err error) func(*flock.Flock) (bool, error) {
+	return func(l *flock.Flock) (bool, error) {
+		if strings.HasSuffix(l.Path(), suffix) {
+			return ok, err
+		}
+		return l.TryLock()
+	}
+}
+
+func readEntries(t *testing.T, dir string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func TestDropDeadLinksLockErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ok   bool
+		err  error
+		want int
+	}{{"error", false, errSeam, 1}, {"missing", false, fs.ErrNotExist, 0}, {"held", false, nil, 0}} {
+		w := newWorld(t)
+		failSeam(t, &gcTryLock, lockFailing(".sweep.lock", tc.ok, tc.err))
+		var sw linkSweep
+		stderr := captureStderr(t, func() { sw = dropDeadLinks(w.bridge) })
+		if sw.Failed != tc.want || (tc.want == 0) != (stderr == "") || (tc.want > 0 && !strings.Contains(stderr, "could not lock")) {
+			t.Errorf("%s: failed = %d, stderr = %q", tc.name, sw.Failed, stderr)
+		}
+	}
+}
+
+func TestDropDeadLinksMissingSessionsFolderIsSilent(t *testing.T) {
+	w := newWorld(t)
+	os.RemoveAll(filepath.Join(w.bridge, ".starship", "sessions"))
+	var sw linkSweep
+	stderr := captureStderr(t, func() { sw = dropDeadLinks(w.bridge) })
+	if sw.Failed != 0 || sw.ListFailed || stderr != "" {
+		t.Errorf("sw = %+v, stderr = %q", sw, stderr)
+	}
+}
+
+func TestSweepSessionFilesLockErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ok   bool
+		err  error
+		want int
+	}{{"error", false, errSeam, 1}, {"missing", false, fs.ErrNotExist, 0}, {"held", false, nil, 0}} {
+		w := newWorld(t)
+		dir := filepath.Join(w.bridge, ".starship", "sessions")
+		files := sessFiles(t, w, "s1", oldAge, "")
+		oldFile(t, seqPath(w.bridge, "s1"), oldAge)
+		oldFile(t, filepath.Join(dir, "s2.lock"), oldAge)
+		failSeam(t, &gcTryLock, lockFailing(".lock", tc.ok, tc.err))
+		s := testSweep()
+		stderr := captureStderr(t, func() { sweepSessionFiles(w.bridge, readEntries(t, dir), s) })
+		// One failure for the .sequence.lock of s1 and one for the .lock of s2.
+		if s.failed != 2*tc.want || (tc.want == 0) != (stderr == "") || (tc.want > 0 && !strings.Contains(stderr, "could not lock")) {
+			t.Errorf("%s: failed = %d, stderr = %q", tc.name, s.failed, stderr)
+		}
+		if !allExist(files) || !exists(filepath.Join(dir, "s2.lock")) {
+			t.Errorf("%s: a session whose lock failed must be skipped", tc.name)
+		}
+	}
+}
+
+func TestSweepSessionFilesInfoFailure(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{{errSeam, 1}, {fs.ErrNotExist, 0}} {
+		w := newWorld(t)
+		dir := filepath.Join(w.bridge, ".starship", "sessions")
+		files := sessFiles(t, w, "s1", oldAge, "")
+		oldFile(t, filepath.Join(dir, "s1.lock"), oldAge)
+		entries := readEntries(t, dir)
+		for i, e := range entries {
+			if e.Name() == "s1.task" {
+				entries[i] = infoFailEntry{e, tc.err}
+			}
+		}
+		s := testSweep()
+		stderr := captureStderr(t, func() { sweepSessionFiles(w.bridge, entries, s) })
+		if s.failed != tc.want || (tc.want == 0) != (stderr == "") || (tc.want > 0 && !strings.Contains(stderr, "could not read")) {
+			t.Errorf("%v: failed = %d, stderr = %q", tc.err, s.failed, stderr)
+		}
+		if !allExist(files) || !exists(filepath.Join(dir, "s1.lock")) {
+			t.Errorf("%v: the group must be skipped", tc.err)
+		}
+	}
+}
+
+func TestLeftoverGroupsInfoFailure(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{{errSeam, 1}, {fs.ErrNotExist, 0}} {
+		w := newWorld(t)
+		dir := filepath.Join(w.bridge, ".starship", "sessions")
+		oldFile(t, filepath.Join(dir, "s1.lock"), oldAge)
+		entries := readEntries(t, dir)
+		for i, e := range entries {
+			if e.Name() == "s1.lock" {
+				entries[i] = infoFailEntry{e, tc.err}
+			}
+		}
+		s := testSweep()
+		var groups map[string]*sweptLeftovers
+		stderr := captureStderr(t, func() { groups = leftoverGroups(dir, entries, s) })
+		if s.failed != tc.want || (tc.want == 0) != (stderr == "") || !groups["s1"].failed {
+			t.Errorf("%v: failed = %d, stderr = %q", tc.err, s.failed, stderr)
+		}
+		sweepLeftovers(w.bridge, groups, s, func() ([]runInfo, error) { return nil, nil })
+		if !exists(filepath.Join(dir, "s1.lock")) {
+			t.Errorf("%v: the group must be skipped", tc.err)
+		}
+	}
+}
+
+func TestSweepLeftoversLockErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ok   bool
+		err  error
+		want int
+	}{{"error", false, errSeam, 1}, {"missing", false, fs.ErrNotExist, 0}, {"held", false, nil, 0}} {
+		w := newWorld(t)
+		dir := filepath.Join(w.bridge, ".starship", "sessions")
+		oldFile(t, filepath.Join(dir, "s1.lock"), oldAge)
+		s := testSweep()
+		groups := leftoverGroups(dir, readEntries(t, dir), s)
+		failSeam(t, &gcTryLock, lockFailing(".lock", tc.ok, tc.err))
+		stderr := captureStderr(t, func() {
+			sweepLeftovers(w.bridge, groups, s, func() ([]runInfo, error) { return nil, nil })
+		})
+		if s.failed != tc.want || (tc.want == 0) != (stderr == "") || !exists(filepath.Join(dir, "s1.lock")) {
+			t.Errorf("%s: failed = %d, stderr = %q", tc.name, s.failed, stderr)
+		}
+	}
+}
+
+func TestSettleSessionStatFailure(t *testing.T) {
+	setup := func(t *testing.T) (string, []string) {
+		w := newWorld(t)
+		dir := filepath.Join(w.bridge, ".starship", "sessions")
+		files := sessFiles(t, w, "s1", oldAge, "")
+		if err := os.Rename(files[0], files[0]+".gc"); err != nil {
+			t.Fatal(err)
+		}
+		return dir, files
+	}
+	dir, files := setup(t)
+	failSeam(t, &gcStat, statFailing("s1.pin", errSeam))
+	s := testSweep()
+	stderr := captureStderr(t, func() { settleSession(dir, "s1", baseNames(files), []string{files[0]}, s) })
+	if s.failed != 1 || !strings.Contains(stderr, "could not read") || !exists(files[1]) {
+		t.Errorf("failed = %d, stderr = %q", s.failed, stderr)
+	}
+	if exists(files[0]+".gc") && !exists(files[0]) || !exists(files[0]) && !exists(files[0]+".gc") {
+		t.Error("a failed read must lose no file")
+	}
+
+	dir, files = setup(t)
+	failSeam(t, &gcStat, statFailing("s1.pin", fs.ErrNotExist))
+	s = testSweep()
+	stderr = captureStderr(t, func() { settleSession(dir, "s1", baseNames(files), []string{files[0]}, s) })
+	if s.failed != 0 || stderr != "" || exists(files[0]+".gc") || exists(files[0]) {
+		t.Errorf("a missing file is not fresh: failed = %d, stderr = %q", s.failed, stderr)
+	}
+}
+
+func baseNames(files []string) []string {
+	var ns []string
+	for _, f := range files {
+		ns = append(ns, filepath.Base(f))
+	}
+	return ns
+}
+
+func TestGCRunsStateStatFailureKeepsFolder(t *testing.T) {
+	for _, tc := range []struct {
+		err         error
+		wantRemoved bool
+	}{{errSeam, false}, {fs.ErrNotExist, true}, {nil, true}} {
+		w := newWorld(t)
+		dir := filepath.Join(runsDir(w.bridge), "20240101-000001-supernova")
+		oldFile(t, filepath.Join(dir, "pipeline.json"), pipelineOnlyAge+time.Hour)
+		if tc.err != nil {
+			failSeam(t, &gcStat, statFailing("state.json", tc.err))
+		}
+		var res gcResult
+		stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 10, 0) })
+		if tc.wantRemoved {
+			if exists(dir) || res.OpenFailed != 0 || stderr != "" {
+				t.Errorf("%v: res = %+v, stderr = %q", tc.err, res, stderr)
+			}
+		} else if !exists(dir) || res.OpenFailed != 1 || !strings.Contains(stderr, "could not open run folder") {
+			t.Errorf("%v: res = %+v, stderr = %q", tc.err, res, stderr)
+		}
+	}
+}
+
+func TestKeptGCRetry(t *testing.T) {
+	// Each case has a live session s1 (a fresh .pin) unless stale is set, and an old s1.task.gc.
+	setup := func(t *testing.T, stale bool, gcAge time.Duration) (string, string) {
+		w := newWorld(t)
+		dir := filepath.Join(w.bridge, ".starship", "sessions")
+		pin := filepath.Join(dir, "s1.pin")
+		if stale {
+			oldFile(t, pin, oldAge)
+		} else {
+			write(t, pin, "x\n")
+		}
+		gc := filepath.Join(dir, "s1.task.gc")
+		write(t, gc, "kept\n")
+		past := time.Now().Add(-gcAge)
+		os.Chtimes(gc, past, past)
+		return w.bridge, filepath.Join(dir, "s1.task")
+	}
+	sweep := func(bridge string) (linkSweep, string) {
+		var sw linkSweep
+		stderr := captureStderr(t, func() { sw = dropDeadLinks(bridge) })
+		return sw, stderr
+	}
+	readTask := func(p string) string { b, _ := os.ReadFile(p); return string(b) }
+
+	bridge, task := setup(t, false, oldAge)
+	sw, stderr := sweep(bridge)
+	if readTask(task) != "kept\n" || exists(task+".gc") || sw.Failed != 0 || stderr != "" {
+		t.Errorf("restore: task %q, sw %+v, stderr %q", readTask(task), sw, stderr)
+	}
+
+	bridge, task = setup(t, false, oldAge)
+	write(t, task, "newer\n")
+	sw, stderr = sweep(bridge)
+	if readTask(task) != "newer\n" || exists(task+".gc") || sw.Failed != 0 || stderr != "" {
+		t.Errorf("recreated: task %q, sw %+v, stderr %q", readTask(task), sw, stderr)
+	}
+
+	bridge, task = setup(t, true, oldAge)
+	sw, stderr = sweep(bridge)
+	if exists(task) || exists(task+".gc") || sw.Failed != 0 {
+		t.Errorf("stale: sw %+v, stderr %q", sw, stderr)
+	}
+
+	bridge, task = setup(t, false, oldAge)
+	failSeam(t, &gcRename, func(string, string) error { return errSeam })
+	sw, stderr = sweep(bridge)
+	if !exists(task+".gc") || exists(task) || sw.Failed != 1 || !strings.Contains(stderr, "could not rename") {
+		t.Errorf("failed retry: sw %+v, stderr %q", sw, stderr)
+	}
+	gcRename = os.Rename
+
+	bridge, task = setup(t, false, oldAge)
+	failSeam(t, &gcStat, func(string) (fs.FileInfo, error) { return nil, errSeam })
+	sw, stderr = sweep(bridge)
+	if !exists(task+".gc") || exists(task) || sw.Failed == 0 || !strings.Contains(stderr, "could not read") {
+		t.Errorf("failed stat: sw %+v, stderr %q", sw, stderr)
+	}
+	gcStat = os.Stat
+
+	bridge, task = setup(t, true, oldAge)
+	oldFile(t, filepath.Join(filepath.Dir(task), "s1.sequence"), oldAge)
+	failSeam(t, &gcTryLock, lockFailing(".sequence.lock", false, nil))
+	sw, stderr = sweep(bridge)
+	if !exists(task+".gc") || sw.Failed != 0 || stderr != "" {
+		t.Errorf("held sequence lock: sw %+v, stderr %q", sw, stderr)
+	}
+	gcTryLock = func(l *flock.Flock) (bool, error) { return l.TryLock() }
+
+	bridge, task = setup(t, false, oldAge)
+	dead := filepath.Join(filepath.Dir(task), "deadid.gc")
+	oldFile(t, dead, staleGCAge+time.Hour)
+	sweep(bridge)
+	if exists(dead) {
+		t.Error("a dead-link .gc must still go by age")
+	}
+
+	bridge, task = setup(t, false, time.Minute)
+	sweep(bridge)
+	if !exists(task+".gc") || exists(task) {
+		t.Error("a .gc under staleGCAge must be left alone")
+	}
+}
