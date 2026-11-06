@@ -86,7 +86,8 @@ func currentBranch(ws string) string {
 }
 
 func dirty(ws string) (bool, error) {
-	s, err := gitOut(ws, "status", "--porcelain")
+	// User config must not hide untracked files from this check.
+	s, err := gitOut(ws, "status", "--porcelain", "--untracked-files=normal")
 	if err != nil {
 		return false, fmt.Errorf("git status: %v", err)
 	}
@@ -219,7 +220,8 @@ func githubUpdate(bridge, task, location string) (base, sha string, upToDate boo
 		return base, short(orig), true, nil
 	}
 	if out, err := exec.Command("git", "-C", ws, "rebase", "origin/"+base, want).CombinedOutput(); err != nil {
-		files, _ := gitZ(ws, "diff", "--name-only", "--diff-filter=U", "-z")
+		// User config must not narrow this listing: an omitted conflict would go unreported.
+		files, _ := gitZ(ws, "diff", "--name-only", "--diff-filter=U", "--no-relative", "--ignore-submodules=none", "-z")
 		git(ws, "rebase", "--abort")
 		if cur != "" && cur != want {
 			git(ws, "switch", "-q", cur)
@@ -338,8 +340,14 @@ func githubReady(r *RunFiles) error {
 	if err != nil {
 		return err
 	}
-	if !testPassed(r) {
-		if data, err := os.ReadFile(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)); err == nil {
+	data, markerErr := os.ReadFile(testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location))
+	noTestStage := false
+	if s, _, _ := r.Snap.Pipeline.find("test"); s == nil {
+		noTestStage = true
+	}
+	// A docs start on a pipeline with no test stage passes testPassed, but must not replace a marker that exists.
+	if !testPassed(r) || (noTestStage && startsAtDocs(r) && markerErr == nil) {
+		if markerErr == nil {
 			marker := strings.TrimSpace(string(data))
 			if sha == marker {
 				r.State.note(fmt.Sprintf("The task branch %s is at %s, which is still the tested commit", branch, short(sha)))
@@ -351,8 +359,12 @@ func githubReady(r *RunFiles) error {
 				return nil
 			}
 		}
-		r.State.note(fmt.Sprintf("The task branch %s is at %s. No test ran in this run, so the branch is not recorded as tested: `ensign run %s --start test` records it before it is published",
-			branch, short(sha), r.Snap.Task))
+		advice := fmt.Sprintf("`ensign run %s --start test`", r.Snap.Task)
+		if noTestStage {
+			advice = fmt.Sprintf("`ensign run %s`", r.Snap.Task)
+		}
+		r.State.note(fmt.Sprintf("The task branch %s is at %s. No test ran in this run, so the branch is not recorded as tested: %s records it before it is published",
+			branch, short(sha), advice))
 		return nil
 	}
 	f := testedFile(r.Snap.Bridge, r.Snap.Task, r.Snap.Location)

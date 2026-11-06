@@ -975,3 +975,63 @@ func TestCommitDocsPathsHookDoesNotSeeLiteralPathspecs(t *testing.T) {
 		t.Errorf("hook saw GIT_LITERAL_PATHSPECS = %s", got)
 	}
 }
+
+// noTestStage drops the test stage from the fixture's coding pipeline.
+func (w *world) noTestStage() {
+	w.t.Helper()
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	s := strings.Replace(string(data), "    ops:\n", "    ops:\n      - remove: test\n", 1)
+	if s == string(data) {
+		w.t.Fatal("the fixture's coding pipeline has no ops list")
+	}
+	write(w.t, p, s)
+}
+
+func TestDocsStartWithoutTestStageKeepsAnExistingMarker(t *testing.T) {
+	w, ws, _, sha := testedWorld(t, `{ paths: [docs] }`)
+	w.noTestStage()
+	lead := w.startLead("--start", "docs")
+	write(t, filepath.Join(ws, "lib.txt"), "three\n")
+	runGit(t, ws, "commit", "-qam", "never tested")
+	w.docsWith(lead, "updated", "docs/a.md", func() { write(t, filepath.Join(ws, "docs", "a.md"), "doc\n") })
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if got := w.markerSha(); got != sha {
+		t.Errorf("the marker must stay on the tested commit %s, got %s", sha, got)
+	}
+	if !w.hasNote("not recorded as tested") || w.hasNote("--start test") || !w.hasNote("ensign run supernova/auth-refactor`") {
+		t.Errorf("the note should advise a full run, not --start test: %v", w.state().Notes)
+	}
+}
+
+func TestDocsStartWithoutTestStageKeepsTheMarkerOverDocsCommits(t *testing.T) {
+	w, ws, _, sha := testedWorld(t, `{ paths: [docs] }`)
+	w.noTestStage()
+	lead := w.startLead("--start", "docs")
+	w.docsWith(lead, "updated", "docs/a.md", func() { write(t, filepath.Join(ws, "docs", "a.md"), "doc\n") })
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if got := w.markerSha(); got != sha {
+		t.Errorf("the marker must stay on the tested commit %s, got %s", sha, got)
+	}
+	if !w.hasNote("only @docs paths changed") {
+		t.Errorf("the note should say only docs changed: %v", w.state().Notes)
+	}
+}
+
+func TestDocsStartWithoutTestStageRecordsAMissingMarker(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	w.docsBinding(`{ paths: [docs] }`)
+	w.noTestStage()
+	lead := w.startLead("--start", "docs")
+	w.docsWith(lead, "updated", "docs/a.md", func() { write(t, filepath.Join(ws, "docs", "a.md"), "doc\n") })
+	if st := w.state(); st.Status != "success" {
+		t.Fatalf("status %s (%s)", st.Status, st.Reason)
+	}
+	if got, head := w.markerSha(), runGit(t, ws, "rev-parse", "HEAD"); got != head {
+		t.Errorf("with no marker the run records HEAD %s, got %q", head, got)
+	}
+}

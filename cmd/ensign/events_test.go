@@ -218,8 +218,13 @@ func TestWorkspaceRelative(t *testing.T) {
 		{"a/b/", "top.txt", "../../top.txt"},
 		{"a/b/", "x/y.txt", "../../x/y.txt"},
 	} {
-		if got := workspaceRelative(c.prefix, c.name); got != c.want {
+		if got := workspaceRelative(c.prefix, c.name, "linux"); got != c.want {
 			t.Errorf("workspaceRelative(%q, %q) = %q, want %q", c.prefix, c.name, got, c.want)
+		}
+	}
+	for goos, want := range map[string]string{"windows": "a.txt", "darwin": "a.txt", "linux": "../sub/a.txt"} {
+		if got := workspaceRelative("Sub/", "sub/a.txt", goos); got != want {
+			t.Errorf("workspaceRelative(Sub/, sub/a.txt, %s) = %q, want %q", goos, got, want)
 		}
 	}
 }

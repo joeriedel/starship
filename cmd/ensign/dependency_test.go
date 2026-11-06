@@ -1041,3 +1041,40 @@ func TestCatalogCommitPassRefusesAPathOutsideTheWorkspace(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestCatalogCommitPassCommitsAStagedGitlinkHiddenByConfig(t *testing.T) {
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	write(t, filepath.Join(ws, ".gitmodules"), "[submodule \"lib\"]\n\tpath = lib\n\turl = ./lib\n\tignore = all\n")
+	runGit(t, ws, "add", ".gitmodules")
+	runGit(t, ws, "commit", "-qm", "modules")
+	before := runGit(t, ws, "rev-parse", "HEAD")
+	lib := newRepo(t, filepath.Join(ws, "lib"))
+	runGit(t, ws, "add", "lib")
+	if got := runGit(t, ws, "diff", "--cached", "--name-only"); got != "" {
+		t.Fatalf("a plain diff should hide the staged gitlink, got %q", got)
+	}
+	r := unitRun(t, ws)
+	d := &Dispatch{ID: "d1", Summary: "linked", Fields: map[string][]string{"files": {"lib"}}}
+	if err := catalogCommitPass(r, d); err != nil {
+		t.Fatal(err)
+	}
+	if after := runGit(t, ws, "rev-parse", "HEAD"); after == before {
+		t.Error("the staged gitlink should have been committed")
+	}
+	if got := runGit(t, ws, "ls-tree", "HEAD", "lib"); !strings.Contains(got, "160000 commit "+runGit(t, lib, "rev-parse", "HEAD")) {
+		t.Errorf("HEAD should hold the gitlink, got %q", got)
+	}
+}
+
+func TestUntrackedFilesCountAsDirtyUnderShowUntrackedFilesNo(t *testing.T) {
+	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	runGit(t, ws, "config", "status.showUntrackedFiles", "no")
+	write(t, filepath.Join(ws, "stray.txt"), "x\n")
+	if d, err := dirty(ws); err != nil || !d {
+		t.Errorf("dirty = %v, %v; an untracked file must count", d, err)
+	}
+	r := unitRun(t, ws)
+	if err := catalogRecordBase(r); err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Errorf("catalogRecordBase should refuse an untracked file: %v", err)
+	}
+}

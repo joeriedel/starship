@@ -25,7 +25,8 @@ func catalogRecordBase(r *RunFiles) error {
 	if inside, err := gitOut(ws, "rev-parse", "--is-inside-work-tree"); err != nil || inside != "true" {
 		return fmt.Errorf("the workspace is not a git repository")
 	}
-	status, err := gitOut(ws, "status", "--porcelain")
+	// User config must not hide untracked files here: they would pass the clean-tree check.
+	status, err := gitOut(ws, "status", "--porcelain", "--untracked-files=normal")
 	if err != nil {
 		return fmt.Errorf("git status: %v", err)
 	}
@@ -148,7 +149,8 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 	if len(stray) > 0 {
 		return fmt.Errorf("files changed that the coder did not report: %s", strings.Join(stray, ", "))
 	}
-	staged, err := gitOut(ws, "diff", "--cached", "--name-only")
+	// User config must not hide a staged change: it would be dropped as "no changes to commit".
+	staged, err := gitOut(ws, "diff", "--cached", "--name-only", "--no-relative", "--ignore-submodules=none")
 	if err != nil {
 		return fmt.Errorf("git diff --cached: %v", err)
 	}

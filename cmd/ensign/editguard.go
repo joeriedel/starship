@@ -250,7 +250,8 @@ func commitDocsPaths(root string, paths []string, noVerify bool, args ...string)
 	if err := git(root, append([]string{"add", "--"}, paths...)...); err != nil {
 		return err
 	}
-	staged, err := gitOut(root, append([]string{"diff", "--cached", "--name-only", "--"}, paths...)...)
+	// User config must not hide a staged change: it would be skipped as "nothing to commit".
+	staged, err := gitOut(root, append([]string{"diff", "--cached", "--name-only", "--no-relative", "--ignore-submodules=none", "--"}, paths...)...)
 	if err != nil {
 		return fmt.Errorf("git diff --cached: %v", err)
 	}
