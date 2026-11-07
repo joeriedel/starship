@@ -129,9 +129,17 @@ func cmdTaskClose(bridge, task string, out io.Writer) error {
 	if err := writeClosed(bridge, task, taskFile); err != nil {
 		return err
 	}
-	for _, f := range append(testedFilesOf(bridge, task), publishRecordFile(bridge, task)) {
-		if err := removeRecord(f); err != nil {
-			fmt.Fprintf(out, "warning: task.close could not remove %s: %v\n", f, err)
+	if why := peerKeepsRecords(bridge, task); why != "" {
+		fmt.Fprintf(out, "warning: task.close kept the publish and tested records of %s, which share their file names with another task: %s; gc removes them once all are closed\n", task, why)
+	} else {
+		tested, err := testedFilesOf(bridge, task)
+		if err != nil {
+			fmt.Fprintf(out, "warning: task.close could not list the tested records of %s: %v\n", task, err)
+		}
+		for _, f := range append(tested, publishRecordFile(bridge, task)) {
+			if err := removeRecord(f); err != nil {
+				fmt.Fprintf(out, "warning: task.close could not remove %s: %v\n", f, err)
+			}
 		}
 	}
 	unlockPublish()
@@ -250,4 +258,27 @@ func markClosed(data []byte) ([]byte, error) {
 		out += eol
 	}
 	return []byte(out + eol + "## Status" + eol + eol + "Done." + eol), nil
+}
+
+// peerKeepsRecords says why a closed task's records must stay: the tasks could not be listed, or another task that encodes to the same record names is open or has a status that can't be read. It returns "" when every other such task is closed.
+func peerKeepsRecords(bridge, task string) string {
+	files, err := taskFiles(bridge)
+	if err != nil {
+		return fmt.Sprintf("the tasks could not be listed: %v", err)
+	}
+	enc := strings.ReplaceAll(task, "/", "--")
+	for _, f := range files {
+		peer := taskOfFile(f)
+		if peer == task || strings.ReplaceAll(peer, "/", "--") != enc {
+			continue
+		}
+		closed, err := taskIsClosed(f)
+		if err != nil {
+			return fmt.Sprintf("the status of %s can't be read: %v", peer, err)
+		}
+		if !closed {
+			return peer + " is open"
+		}
+	}
+	return ""
 }

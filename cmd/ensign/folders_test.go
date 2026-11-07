@@ -8,8 +8,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func mustLive(t *testing.T, bridge, session string) []string {
@@ -257,5 +259,191 @@ func TestFolderBusyErrorSaysAnotherSessionIsDoingWork(t *testing.T) {
 		if msg := e.Error(); strings.Contains(msg, "another session") {
 			t.Errorf("held %v wanted %v: the same session's refusal mentions another session: %s", m.held, m.wanted, msg)
 		}
+	}
+}
+
+// holdLanding takes the landing lock of a folder until the test ends.
+func holdLanding(t *testing.T, w *world, folder string) func() {
+	t.Helper()
+	unlock, err := lockLanding(w.bridge, folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once bool
+	release := func() {
+		if !once {
+			once = true
+			unlock()
+		}
+	}
+	t.Cleanup(release)
+	return release
+}
+
+func wantLandingBusy(t *testing.T, err error, folder string) {
+	t.Helper()
+	var busy *folderBusyError
+	if !errors.As(err, &busy) || !busy.landing || busy.run != "" {
+		t.Fatalf("want a landing refusal: %v", err)
+	}
+	if !strings.Contains(err.Error(), "a landing is under way in the code folder "+folder) || strings.Contains(err.Error(), "run ") {
+		t.Errorf("refusal text: %v", err)
+	}
+}
+
+func TestALandingHoldsItsFolderAgainstRuns(t *testing.T) {
+	w := newWorld(t)
+	c, err := loadConfigAt(w.bridge, "supernova/auth-refactor", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := c.Workspace
+	w.run("supernova/auth-refactor")
+	release := holdLanding(t, w, ws)
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+
+	wantLandingBusy(t, cmdRun([]string{"supernova/auth-refactor"}, &out), ws)
+	res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "go"})
+	ctx := dig(res, "hookSpecificOutput", "additionalContext")
+	if !strings.Contains(ctx, "was not started") || !strings.Contains(ctx, "a landing is under way") {
+		t.Errorf("go while a landing is under way: %v", res)
+	}
+	if all, err := listRuns(w.bridge); err != nil || len(all) != 1 || all[0].state.Status != "pending" {
+		t.Errorf("the run should stay pending: %v %v", all, err)
+	}
+	wantLandingBusy(t, folderHolder(w.bridge, &Snapshot{Workspace: ws + "/./x/.."}, w.sid), ws+"/./x/..")
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: t.TempDir()}, w.sid); err != nil {
+		t.Errorf("another folder is free: %v", err)
+	}
+	reads := &Snapshot{Workspace: t.TempDir(), Dependencies: []Dependency{{Location: "models", Path: ws}}}
+	wantLandingBusy(t, folderHolder(w.bridge, reads, w.sid), ws)
+
+	release()
+	w.approve()
+}
+
+func TestALandingHoldsItsFolderAgainstResume(t *testing.T) {
+	w := newWorld(t)
+	folder := t.TempDir()
+	a := w.liveStepRun(folder, "")
+	r, err := openRun(w.bridge, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status, r.State.Reason = "ask-user", "which way?"
+	r.State.Resume = &ResumePoint{Scope: "run", Stage: "code"}
+	r.save()
+	r.close()
+	release := holdLanding(t, w, folder)
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	wantLandingBusy(t, cmdResume([]string{"--answer", "left", "--run", a}, &out), folder)
+	if st := w.runState(a); st.Status != "ask-user" {
+		t.Fatalf("the refused resume left the run %s", st.Status)
+	}
+	release()
+	if err := cmdResume([]string{"--answer", "left", "--run", a}, &out); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestASequenceStepWaitsForALanding(t *testing.T) {
+	w := groupWorld(t, "01-client")
+	w.mustSeq("run", "supernova/t")
+	run, err := openRun(w.bridge, w.stepRuns(1)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := run.Snap.Workspace
+	run.close()
+	release := holdLanding(t, w, folder)
+	w.approve()
+	if st := w.step(1); st.Status != "pending" || !strings.Contains(st.Reason, "waiting: a landing is under way in the code folder "+folder) {
+		t.Fatalf("the step should wait for the landing: %s %q", st.Status, st.Reason)
+	}
+	res := w.stopHook()
+	reason := dig(res, "reason")
+	if res["decision"] != "block" || !strings.Contains(reason, "a landing is under way") || !strings.Contains(reason, "once the folder is free") || strings.Contains(reason, "once that run") {
+		t.Fatalf("the Stop hook should hold the turn and say what it waits for: %v", res)
+	}
+	for i := 1; i < seqStopBudget; i++ {
+		w.stopHook()
+	}
+	if res := w.stopHook(); res != nil {
+		t.Errorf("the holds are limited: %v", res)
+	}
+	release()
+	w.stopHook()
+	if st := w.step(1); st.Status != "active" {
+		t.Errorf("the step should start once the landing is released: %s %q", st.Status, st.Reason)
+	}
+}
+
+func TestLandingsInOneFolderShareTheLock(t *testing.T) {
+	w := newWorld(t)
+	folder := t.TempDir()
+	a := holdLanding(t, w, folder)
+	b := holdLanding(t, w, folder+"/./x/..")
+	for _, f := range []string{folder, folder + "/./x/.."} {
+		if on, err := landingUnderWay(w.bridge, f); err != nil || !on {
+			t.Errorf("%s: %v %v", f, on, err)
+		}
+	}
+	a()
+	if on, _ := landingUnderWay(w.bridge, folder); !on {
+		t.Error("the other landing still holds the folder")
+	}
+	b()
+	if on, err := landingUnderWay(w.bridge, folder); err != nil || on {
+		t.Errorf("the folder should be free: %v %v", on, err)
+	}
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: folder}, "s1"); err != nil {
+		t.Errorf("a run may start: %v", err)
+	}
+}
+
+func TestAPublishCommandHoldsTheLandingLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the command is a sh loop")
+	}
+	w := newWorld(t)
+	c, err := loadConfigAt(w.bridge, "supernova/auth-refactor", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.mustSeq("do", "placeholder")
+	dir := t.TempDir()
+	started, release := filepath.Join(dir, "started"), filepath.Join(dir, "release")
+	command := "touch " + shellQuote(started) + "; while [ ! -f " + shellQuote(release) + " ]; do sleep 0.05; done #"
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		sf.Sequences[0].Steps[0] = &seqStep{Kind: "publish", Task: "supernova/auth-refactor", Command: command, Status: "pending"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := approveSequence(w.bridge, w.sid)
+		done <- err
+	}()
+	for deadline := time.Now().Add(20 * time.Second); !exists(started); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the publish command never started")
+		}
+	}
+	if on, err := landingUnderWay(w.bridge, c.Workspace); err != nil || !on {
+		t.Errorf("the command runs under the landing lock: %v %v", on, err)
+	}
+	write(t, release, "x\n")
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if on, err := landingUnderWay(w.bridge, c.Workspace); err != nil || on {
+		t.Errorf("the lock should be free after the landing: %v %v", on, err)
 	}
 }

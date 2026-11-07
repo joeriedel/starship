@@ -11,7 +11,7 @@ When a session has moved, `ensign sequence run|publish|do|release`, a plain `ens
 When several runs of the session are live:
 
 - Pass `--run <id>` to `ensign next`, `ensign resume` and `ensign run-stage`; without it they refuse and name the live runs.
-- One run per code folder: start a run or a step there only when no other live run of any session holds the folder. Ensign refuses it otherwise; a step left waiting starts once the folder is free.
+- One run per code folder: start a run or a step there only when no other live run of any session holds the folder. Ensign refuses it otherwise; a step left waiting starts once the folder is free. A landing (a publish step, or `github-pr merge`) under way in the folder holds it too, and is not a run: the step waits with `a landing is under way in the code folder ...`.
 - Each run finishes on its own: write each one's journal account as it ends.
 
 When a run step names a task with subtasks:
@@ -33,7 +33,7 @@ A publish command runs under the session's sequence lock, so it can't call an `e
 
 A publish lands every location the preceding run step worked in, across all its subtask groups, dependencies first, and stops at the first failure; its report names what landed, what was never tried and what failed. After a failure, a new `ensign sequence publish supernova/<task>` lands only the locations left, and needs no run step before it.
 
-A task's publish lock is held for a whole publish step and for a direct `github-pr merge`, and never waits. A publish or direct merge started meanwhile is refused with `a publish of <task> is already under way`, and `ensign task close` is refused the same way and the task stays open: retry later, and close it again once the publish is done.
+A task's publish lock is held for a whole publish step and for a direct `github-pr merge`, and never waits. A publish or direct merge of the same task started meanwhile is refused with `a publish of <task> is already under way`, and `ensign task close` is refused the same way and the task stays open: retry later, and close it again once the publish is done.
 
 Drop pending steps of an approved sequence with `ensign sequence drop <seq>.<step>... --reason <why>` only when the user asks; it keeps the rest running, and dropping a run step drops its task's publish step.
 

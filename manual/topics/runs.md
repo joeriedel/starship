@@ -8,6 +8,7 @@
 - A run that only applies a dependency branch from a folder shares it with other such runs.
 - A run that works in a folder is refused while another live run holds it, working or only reading.
 - A run that only reads a folder is refused while another live run works in it.
+- A run is also refused while a landing (a publish step or `github-pr merge`) is under way in a folder it works in or reads: `a landing is under way in the code folder <folder>; start this once it has finished`. It names no run; wait for the landing, then start the run again. Landings in one folder do not refuse each other.
 - When a run is refused because a live run of another session holds the folder, tell the user another session is doing work, name the run and the folder, and stop. Never suggest retiring that run or speculate that it is dead.
 - Run `ensign run retire <run>` only when the user tells you to: only the user knows a run is hung or stuck.
 - Retire refuses a run of your own session (end that with `ensign run stop <run>`), a finished run and an unknown run. Retire is only for another session's run.

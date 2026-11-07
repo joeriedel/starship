@@ -53,8 +53,8 @@ var (
 // gcResult is what a cleanup did.
 type gcResult struct {
 	Removed, Scratch, Links int
-	Records                 int  // publish records of closed tasks removed
-	RecordsFailed           int  // closed tasks' publish records that could not be judged or removed
+	Records                 int  // publish records of closed or vanished tasks removed
+	RecordsFailed           int  // publish records that could not be judged or removed
 	Failed                  int  // delete attempts that left the folder in place
 	OpenFailed              int  // run folders due for deletion that could not be locked or opened, so were not judged
 	ScratchFailed           int  // kept finished runs whose scratch folder could not be read or fully emptied
@@ -439,13 +439,31 @@ func (s *sessionSweep) rename(oldpath, newpath string) bool {
 	return false
 }
 
+// taskOfFile is the <project>/<task> name of a task.md path.
+func taskOfFile(f string) string {
+	d := filepath.Dir(f)
+	return filepath.Base(filepath.Dir(filepath.Dir(d))) + "/" + filepath.Base(d)
+}
+
+// taskIsClosed reports whether the task.md at f has the status closed.
+func taskIsClosed(f string) (bool, error) {
+	var tf struct {
+		Status string `yaml:"status"`
+	}
+	front, _, err := splitFrontmatter(f)
+	if err == nil {
+		err = decodeFrontmatter(front, &tf)
+	}
+	return tf.Status == "closed", err
+}
+
 // recordSweep is what sweepClosedRecords did.
 type recordSweep struct {
 	Removed int // record files removed
 	Failed  int // listings, reads, locks and removals that went wrong
 }
 
-// sweepClosedRecords removes the .publish, .tested and @<location>.tested records of closed tasks, which close-time cleanup missed or a run finishing after the close recreated. A task name can't be recovered from an encoded file name, so each record is matched forward from the tasks on disk. An encoding is swept only when every task encoding to it is closed, none has a live run, and its publish lock is free; a busy lock is retried by the next gc. Records of tasks that no longer exist are left alone.
+// sweepClosedRecords removes the .publish, .tested and @<location>.tested records of closed tasks, which close-time cleanup missed or a run finishing after the close recreated, and the .publish, .tested and .base records (with @<location> forms) of tasks that no longer exist. A task name can't be recovered from an encoded file name, so each record is matched forward from the tasks on disk. An encoding is swept only when every task encoding to it is closed, none has a live run, and its publish lock is free; a busy lock is retried by the next gc. A closed task's .base stays, because nothing stops a squash after the close. A vanished task's records are swept only once the task has been missing for sessionFileAge, because a task can be absent briefly (a bridge checkout of another commit) and this also runs at session start; a stale .publish or .base would otherwise change a task re-created under that name. Absence is timed by an empty <enc>.vanished marker, created when the records are first seen without a task (nothing is swept on that pass) and removed with the records (kept while any record's removal failed, so the next gc retries it), or when the task is back or the records are gone; a record's own age says nothing about how long its task has been missing. Lock files (.publish.lock, .journal.lock, the landings') are never removed: unlinking a flock file can give two holders, other code re-creates them, and they are empty.
 func sweepClosedRecords(bridge string) recordSweep {
 	var sw recordSweep
 	dir := filepath.Join(bridge, ".starship", "tasks")
@@ -458,80 +476,105 @@ func sweepClosedRecords(bridge string) recordSweep {
 		return sw
 	}
 	records := map[string][]string{} // encoded task name -> its record file names
+	markers := map[string]bool{}     // encoded task names with a .vanished marker
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		name := e.Name()
 		var enc string
-		if base, ok := strings.CutSuffix(name, ".publish"); ok {
+		if base, ok := strings.CutSuffix(name, ".vanished"); ok {
+			markers[base] = true
+			continue
+		} else if base, ok := strings.CutSuffix(name, ".publish"); ok {
 			enc = base
-		} else if base, ok := strings.CutSuffix(name, ".tested"); ok {
+		} else {
+			base, ok := strings.CutSuffix(name, ".tested")
+			if !ok {
+				base, ok = strings.CutSuffix(name, ".base")
+			}
+			if !ok {
+				continue
+			}
 			var loc string
 			var hasLoc bool
 			if enc, loc, hasLoc = strings.Cut(base, "@"); hasLoc && !validName(loc) {
 				continue
 			}
-		} else {
-			continue
 		}
 		records[enc] = append(records[enc], name)
 	}
+	if len(records) == 0 && len(markers) == 0 {
+		return sw
+	}
+	s := &sessionSweep{deadline: time.Now().Add(retryWindow)}
+	marker := func(enc string) string { return filepath.Join(dir, enc+".vanished") }
+	for enc := range markers {
+		if records[enc] == nil && s.remove(marker(enc)) {
+			delete(markers, enc)
+		}
+	}
 	if len(records) == 0 {
+		sw.Failed += s.failed
 		return sw
 	}
 	files, err := taskFiles(bridge)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not list every task, so no publish record was removed: %v\n", err)
 		sw.Failed++
+		sw.Failed += s.failed
 		return sw
 	}
 	tasks := map[string]string{} // encoded task name -> a task encoding to it
 	open := map[string]bool{}
 	for _, f := range files {
-		d := filepath.Dir(f)
-		task := filepath.Base(filepath.Dir(filepath.Dir(d))) + "/" + filepath.Base(d)
+		task := taskOfFile(f)
 		enc := strings.ReplaceAll(task, "/", "--")
 		if records[enc] == nil {
 			continue
 		}
 		tasks[enc] = task
-		var tf struct {
-			Status string `yaml:"status"`
-		}
-		front, _, err := splitFrontmatter(f)
-		if err == nil {
-			err = decodeFrontmatter(front, &tf)
-		}
+		closed, err := taskIsClosed(f)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not read the status of %s, so its publish records are kept: %v\n", task, err)
 			sw.Failed++
 			open[enc] = true
-		} else if tf.Status != "closed" {
+		} else if !closed {
 			open[enc] = true
 		}
 	}
-	var encs []string
-	for enc := range tasks {
-		if !open[enc] {
+	var encs, orphans []string
+	for enc := range records {
+		if _, ok := tasks[enc]; !ok {
+			orphans = append(orphans, enc)
+		} else if !open[enc] {
 			encs = append(encs, enc)
 		}
 	}
-	if len(encs) == 0 {
+	s.deadline = time.Now().Add(retryWindow)
+	for enc := range markers {
+		if tasks[enc] != "" {
+			s.remove(marker(enc))
+		}
+	}
+	if len(encs) == 0 && len(orphans) == 0 {
+		sw.Failed += s.failed
 		return sw
 	}
 	sort.Strings(encs)
+	sort.Strings(orphans)
 	live, err := liveRuns(bridge)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not list the live runs, so no publish record was removed: %v\n", err)
 		sw.Failed++
+		sw.Failed += s.failed
 		return sw
 	}
 	liveEnc := map[string]bool{}
 	for _, ri := range live {
 		liveEnc[strings.ReplaceAll(ri.snap.Task, "/", "--")] = true
 	}
-	s := &sessionSweep{deadline: time.Now().Add(retryWindow)}
+	s.deadline = time.Now().Add(retryWindow)
 	for _, enc := range encs {
 		if liveEnc[enc] {
 			continue
@@ -541,8 +584,51 @@ func sweepClosedRecords(bridge string) recordSweep {
 			continue
 		}
 		for _, name := range records[enc] {
-			if s.remove(filepath.Join(dir, name)) {
+			if !strings.HasSuffix(name, ".base") && s.remove(filepath.Join(dir, name)) {
 				sw.Removed++
+			}
+		}
+		l.Unlock()
+	}
+	// vanishedLongEnough reports whether enc's marker is older than sessionFileAge; an unreadable marker counts as not.
+	vanishedLongEnough := func(enc string) bool {
+		info, err := gcStat(marker(enc))
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", marker(enc), err)
+				s.failed++
+			}
+			return false
+		}
+		return time.Since(info.ModTime()) > sessionFileAge
+	}
+	for _, enc := range orphans {
+		if !markers[enc] {
+			f, err := os.OpenFile(marker(enc), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+			if err == nil {
+				f.Close()
+			} else if !errors.Is(err, fs.ErrExist) {
+				fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", marker(enc), err)
+				s.failed++
+			}
+			continue
+		}
+		if liveEnc[enc] || !vanishedLongEnough(enc) {
+			continue
+		}
+		l := flock.New(taskStateFile(bridge, enc, "", ".publish.lock"))
+		if !s.tryLock(l) {
+			continue
+		}
+		if vanishedLongEnough(enc) {
+			failedBefore := s.failed
+			for _, name := range records[enc] {
+				if s.remove(filepath.Join(dir, name)) {
+					sw.Removed++
+				}
+			}
+			if s.failed == failedBefore {
+				s.remove(marker(enc))
 			}
 		}
 		l.Unlock()
@@ -1074,10 +1160,10 @@ func cmdGC(args []string, out io.Writer) error {
 		fmt.Fprintf(out, ", could not sweep %d session files", res.SessionFilesFailed)
 	}
 	if res.Records > 0 {
-		fmt.Fprintf(out, ", removed %d publish records of closed tasks", res.Records)
+		fmt.Fprintf(out, ", removed %d publish records of closed or vanished tasks", res.Records)
 	}
 	if res.RecordsFailed > 0 {
-		fmt.Fprintf(out, ", could not sweep %d publish records of closed tasks", res.RecordsFailed)
+		fmt.Fprintf(out, ", could not sweep %d publish records of closed or vanished tasks", res.RecordsFailed)
 	}
 	fmt.Fprintln(out)
 	if res.failed() {

@@ -1975,6 +1975,11 @@ func publishFailure(landed, never []string, failed string, err error, several bo
 
 // landLocation lands one location of a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell.
 func landLocation(bridge, session string, st *seqStep, loc string) (string, error) {
+	unlockLanding, err := lockLandingOf(bridge, st.Task, loc)
+	if err != nil {
+		return "", err
+	}
+	defer unlockLanding()
 	if args, ok := strings.CutPrefix(st.Command, "ensign "); ok {
 		if strings.TrimSpace(args) == "github-pr merge" {
 			base, sha, note, err := githubMerge(bridge, st.Task, loc)
@@ -2059,7 +2064,7 @@ func waitingText(st *seqStep) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	return strings.Join(lines, "\n") + "\nIt starts by itself once that run has finished; this turn is held only a few times for it."
+	return strings.Join(lines, "\n") + "\nIt starts by itself once the folder is free; this turn is held only a few times for it."
 }
 
 // sequenceStop holds a turn open while a step waits for the session to act on it. Each step gets seqStopBudget holds, as the sequence file's lock allows, then the turn may end. A deciding step is held once per failed attempt, because the session has then been told.

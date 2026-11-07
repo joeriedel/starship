@@ -1831,13 +1831,134 @@ func TestGCSweepKeepsAnEncodingAnOpenTaskShares(t *testing.T) {
 	wantGone(t, records, false)
 }
 
-func TestGCSweepLeavesRecordsOfTasksThatAreGone(t *testing.T) {
+// seedOrphan writes the publish, tested and base records of a task that does not exist, all old, and returns them.
+func seedOrphan(t *testing.T, w *world, task string) []string {
+	t.Helper()
+	var records []string
+	for _, f := range []string{taskStateFile(w.bridge, task, "", ".publish"), taskStateFile(w.bridge, task, "", ".tested"), taskStateFile(w.bridge, task, "client", ".tested"), taskStateFile(w.bridge, task, "", ".base"), taskStateFile(w.bridge, task, "client", ".base")} {
+		write(t, f, "x\n")
+		old := time.Now().Add(-2 * sessionFileAge)
+		if err := os.Chtimes(f, old, old); err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, f)
+	}
+	return records
+}
+
+func vanishedMarker(w *world, task string) string {
+	return taskStateFile(w.bridge, task, "", ".vanished")
+}
+
+// ageMarker writes task's .vanished marker, aged by age.
+func ageMarker(t *testing.T, w *world, task string, age time.Duration) string {
+	t.Helper()
+	m := vanishedMarker(w, task)
+	write(t, m, "")
+	old := time.Now().Add(-age)
+	if err := os.Chtimes(m, old, old); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestGCSweepFirstSeesAGoneTaskAndOnlyMarksIt(t *testing.T) {
 	w := newWorld(t)
-	records, _ := seedRecords(t, w, "supernova/ghost")
+	records := seedOrphan(t, w, "supernova/ghost")
+	lock := taskStateFile(w.bridge, "supernova/ghost", "", ".publish.lock")
+	write(t, lock, "")
 	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
 		t.Errorf("result: %+v", res)
 	}
 	wantGone(t, records, false)
+	wantGone(t, []string{lock}, false)
+	m := vanishedMarker(w, "supernova/ghost")
+	info, err := os.Stat(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(info.ModTime()) > time.Hour {
+		t.Errorf("marker mtime %v", info.ModTime())
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(m, old, old); err != nil {
+		t.Fatal(err)
+	}
+	gcRuns(w.bridge, 5, 0)
+	info, err = os.Stat(m)
+	if err != nil || time.Since(info.ModTime()) < 30*time.Minute {
+		t.Errorf("marker rewritten: %v %v", info, err)
+	}
+}
+
+func TestGCSweepsRecordsOfTasksGoneForLong(t *testing.T) {
+	w := newWorld(t)
+	records := seedOrphan(t, w, "supernova/ghost")
+	m := ageMarker(t, w, "supernova/ghost", sessionFileAge+time.Hour)
+	lock := taskStateFile(w.bridge, "supernova/ghost", "", ".publish.lock")
+	journal := taskStateFile(w.bridge, "supernova/ghost", "", ".journal.lock")
+	write(t, lock, "")
+	write(t, journal, "")
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 5 || res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, records, true)
+	wantGone(t, []string{m}, true)
+	wantGone(t, []string{lock, journal}, false)
+}
+
+func TestGCSweepKeepsRecordsOfTasksGoneBriefly(t *testing.T) {
+	w := newWorld(t)
+	records := seedOrphan(t, w, "supernova/ghost")
+	m := ageMarker(t, w, "supernova/ghost", time.Hour)
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, records, false)
+	wantGone(t, []string{m}, false)
+}
+
+func TestGCSweepKeepsRecordsOfAGoneTaskWithALiveRunOrAHeldLock(t *testing.T) {
+	w := newWorld(t)
+	records := seedOrphan(t, w, "supernova/ghost")
+	m := ageMarker(t, w, "supernova/ghost", sessionFileAge+time.Hour)
+	dir := fabricate(t, w, "20240101-000001-supernova", "pending", true)
+	if err := writeJSON(filepath.Join(dir, "pipeline.json"), &Snapshot{Task: "supernova/ghost"}); err != nil {
+		t.Fatal(err)
+	}
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
+		t.Errorf("result with a live run: %+v", res)
+	}
+	wantGone(t, append(records, m), false)
+	if err := writeJSON(filepath.Join(dir, "state.json"), &State{Run: "20240101-000001-supernova", Status: "success", Dispatches: []*Dispatch{}, History: []HistoryEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	holdPublishLock(t, w, "supernova/ghost")
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
+		t.Errorf("result with the publish lock held: %+v", res)
+	}
+	wantGone(t, append(records, m), false)
+}
+
+func TestGCSweepDropsTheMarkerWhenTheTaskIsBack(t *testing.T) {
+	w := newWorld(t)
+	w.frontTask("ghost", "status: open\n")
+	records := seedOrphan(t, w, "supernova/ghost")
+	m := ageMarker(t, w, "supernova/ghost", sessionFileAge+time.Hour)
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, records, false)
+	wantGone(t, []string{m}, true)
+}
+
+func TestGCSweepRemovesAStrayMarker(t *testing.T) {
+	w := newWorld(t)
+	m := ageMarker(t, w, "supernova/ghost", time.Hour)
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 0 || res.failed() {
+		t.Errorf("result: %+v", res)
+	}
+	wantGone(t, []string{m}, true)
 }
 
 func TestGCSweepKeepsRecordsOfATaskWithALiveRun(t *testing.T) {
@@ -1905,6 +2026,28 @@ func TestGCSweepRetriesAFailedRemoval(t *testing.T) {
 	wantGone(t, records, true)
 }
 
+func TestGCSweepKeepsTheMarkerWhileAnOrphanRecordRemains(t *testing.T) {
+	w := newWorld(t)
+	records := seedOrphan(t, w, "supernova/ghost")
+	m := ageMarker(t, w, "supernova/ghost", sessionFileAge+time.Hour)
+	old := gcRemove
+	gcRemove = func(p string) error {
+		if strings.HasSuffix(p, ".publish") {
+			return errSeam
+		}
+		return old(p)
+	}
+	res := gcRuns(w.bridge, 5, 0)
+	gcRemove = old
+	if res.Records != 4 || res.RecordsFailed != 1 || !res.failed() || !exists(m) {
+		t.Errorf("result: %+v, marker kept: %v", res, exists(m))
+	}
+	if res := gcRuns(w.bridge, 5, 0); res.Records != 1 || res.failed() {
+		t.Errorf("next gc: %+v", res)
+	}
+	wantGone(t, append(records, m), true)
+}
+
 func TestGCSweepKeepsRecordsOfAnUnreadableTask(t *testing.T) {
 	w := newWorld(t)
 	if err := os.MkdirAll(filepath.Join(w.bridge, "projects/supernova/tasks/a/task.md"), 0o755); err != nil {
@@ -1955,7 +2098,7 @@ func TestSessionStartSweepsClosedTasksRecords(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	show, _ := sessionStartReply(t, out.Bytes())
-	if !strings.Contains(show, "removed 3 publish records of closed tasks") {
+	if !strings.Contains(show, "removed 3 publish records of closed or vanished tasks") {
 		t.Errorf("summary: %q", show)
 	}
 	wantGone(t, records, true)

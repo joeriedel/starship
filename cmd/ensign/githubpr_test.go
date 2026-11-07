@@ -972,3 +972,38 @@ func TestGithubPRPrePushHookDoesNotRunAtStartOnReflogOnlyTip(t *testing.T) {
 		t.Error("the pre-push hook ran during the start")
 	}
 }
+
+func TestGithubPRMergeUnderAParentsLandingIsNotRefused(t *testing.T) {
+	w, ws, _, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	holdPublishLock(t, w, "supernova/auth-refactor")
+	t.Setenv(publishLockEnv, "supernova/auth-refactor")
+	holdLanding(t, w, ws)
+	if out, err := w.land("merge"); err != nil || !strings.Contains(out, "Pushed to main:") {
+		t.Fatalf("a merge under its parent's landing: %q %v", out, err)
+	}
+	if on, err := landingUnderWay(w.bridge, ws); err != nil || !on {
+		t.Errorf("the child's release must leave the parent's lock held: %v %v", on, err)
+	}
+}
+
+func TestAFailedLandingFreesTheLandingLock(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	if _, err := w.land("merge"); err == nil || !strings.Contains(err.Error(), "no passing run") {
+		t.Fatalf("merge with nothing tested: %v", err)
+	}
+	if on, err := landingUnderWay(w.bridge, ws); err != nil || on {
+		t.Errorf("the lock should be free after a failed landing: %v %v", on, err)
+	}
+	run := w.liveStepRun(ws, "")
+	if _, err := w.land("merge"); err == nil || !strings.Contains(err.Error(), "still going") {
+		t.Fatalf("a run approved before the landing is seen by it: %v", err)
+	}
+	if on, _ := landingUnderWay(w.bridge, ws); on {
+		t.Error("the lock should be free after the refused landing")
+	}
+	holdLanding(t, w, ws)
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: ws}, "s2", run); err == nil {
+		t.Error("a landing in the folder refuses a run")
+	}
+}

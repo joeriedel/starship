@@ -497,3 +497,61 @@ func TestCloseHeldPublishLockRefuses(t *testing.T) {
 		}
 	}
 }
+
+// collidingPeer makes the hand-made project supernova--b, whose task c has the record names of supernova/b--c.
+func collidingPeer(t *testing.T, w *world, task string) {
+	t.Helper()
+	write(t, filepath.Join(w.bridge, "projects/supernova--b/tasks/c/task.md"), task)
+}
+
+func TestCloseKeepsTheRecordsOfACollidingPeerThatIsNotClosed(t *testing.T) {
+	cases := []struct{ name, peer, why string }{
+		{"open", "---\nstatus: open\n---\n\n# c\n", "supernova--b/c is open"},
+		{"unreadable", "---\nstatus: [\n---\n\n# c\n", "can't be read"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.frontTask("b--c", "")
+			collidingPeer(t, w, c.peer)
+			records := []string{publishRecordFile(w.bridge, "supernova/b--c"), testedFile(w.bridge, "supernova/b--c", ""), testedFile(w.bridge, "supernova/b--c", "client")}
+			for _, f := range records {
+				write(t, f, "x\n")
+			}
+			out, err := closeTask(w, "b--c")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, "warning: task.close kept the publish and tested records of supernova/b--c") || !strings.Contains(out, c.why) {
+				t.Errorf("output: %s", out)
+			}
+			wantGone(t, records, false)
+		})
+	}
+}
+
+func TestCloseRemovesTheRecordsWhenTheCollidingPeerIsClosed(t *testing.T) {
+	w := newWorld(t)
+	w.frontTask("b--c", "")
+	collidingPeer(t, w, "---\nstatus: closed\n---\n\n# c\n")
+	records := []string{publishRecordFile(w.bridge, "supernova/b--c"), testedFile(w.bridge, "supernova/b--c", ""), testedFile(w.bridge, "supernova/b--c", "client")}
+	for _, f := range records {
+		write(t, f, "x\n")
+	}
+	out, err := closeTask(w, "b--c")
+	if err != nil || strings.Contains(out, "warning") {
+		t.Fatalf("close: %q %v", out, err)
+	}
+	wantGone(t, records, true)
+}
+
+func TestTestedFilesOfReportsAListingFailure(t *testing.T) {
+	w := newWorld(t)
+	if files, err := testedFilesOf(w.bridge, "supernova/a"); err != nil || len(files) != 0 {
+		t.Fatalf("a missing records folder is no records: %v %v", files, err)
+	}
+	write(t, filepath.Join(w.bridge, ".starship", "tasks"), "not a folder\n")
+	if _, err := testedFilesOf(w.bridge, "supernova/a"); err == nil {
+		t.Fatal("a records path that can't be listed should be an error")
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -518,9 +519,21 @@ func lockPublish(bridge, task string) (func(), error) {
 	return func() { l.Unlock() }, nil
 }
 
-// testedFilesOf lists every .tested record of a task: the one with no location, and one per location.
-func testedFilesOf(bridge, task string) []string {
-	entries, _ := os.ReadDir(filepath.Join(bridge, ".starship", "tasks"))
+// lockLandingOf takes the landing lock of the code folder a task's location lands in. A landing takes it before anything else, so tested sees every run approved before it and a later run is refused.
+func lockLandingOf(bridge, task, location string) (func(), error) {
+	c, err := loadConfigAt(bridge, task, location)
+	if err != nil {
+		return nil, err
+	}
+	return lockLanding(bridge, c.Workspace)
+}
+
+// testedFilesOf lists every .tested record of a task: the one with no location, and one per location. A missing records folder is no records.
+func testedFilesOf(bridge, task string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(bridge, ".starship", "tasks"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
 	e := strings.ReplaceAll(task, "/", "--")
 	var out []string
 	for _, ent := range entries {
@@ -531,7 +544,7 @@ func testedFilesOf(bridge, task string) []string {
 			out = append(out, filepath.Join(bridge, ".starship", "tasks", n))
 		}
 	}
-	return out
+	return out, nil
 }
 
 func publishRecorded(bridge, task string) bool {
@@ -873,7 +886,7 @@ func latestRunPassed(bridge, task, location string) error {
 	return fmt.Errorf("the latest run of %s did not pass (%s); run the task again", task, ri.state.Reason)
 }
 
-// tested finds a task's tested commit, and checks the task branch still holds it, or only @docs paths on top of it. It returns the branch head, so what lands includes those docs commits.
+// tested finds a task's tested commit (a landing has taken its folder's landing lock first, so no run can start in the folder after its live-run check), and checks the task branch still holds it, or only @docs paths on top of it. It returns the branch head, so what lands includes those docs commits.
 func tested(bridge, task, location string) (c *Config, branch, sha string, err error) {
 	live, err := liveRuns(bridge)
 	if err != nil {
@@ -1009,7 +1022,12 @@ func removeSameFolderMarkers(bridge, task, landed string) {
 	if err != nil {
 		return
 	}
-	for _, f := range testedFilesOf(bridge, task) {
+	files, err := testedFilesOf(bridge, task)
+	if err != nil {
+		// Like every landing helper this has no output path; gc, or the next run's githubBranch, deals with what is left.
+		return
+	}
+	for _, f := range files {
 		loc, ok := strings.CutPrefix(filepath.Base(f), strings.ReplaceAll(task, "/", "--")+"@")
 		loc = strings.TrimSuffix(loc, ".tested")
 		if !ok || loc == landed {
@@ -1175,6 +1193,11 @@ func cmdGithubPR(args []string, out io.Writer) error {
 		}
 		defer unlock()
 	}
+	unlockLanding, err := lockLandingOf(bridge, args[1], location)
+	if err != nil {
+		return err
+	}
+	defer unlockLanding()
 	base, sha, note, err := githubMerge(bridge, args[1], location)
 	if err != nil {
 		return err
