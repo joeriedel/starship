@@ -4,6 +4,7 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -279,5 +280,34 @@ func TestSequenceKeepGoingPublishFailsWhenTheRunListingFails(t *testing.T) {
 	pub := w.laterPublish(authTask)
 	if pub.Status != "failed" {
 		t.Errorf("a publish whose skip check can't list the runs is %s, want failed", pub.Status)
+	}
+}
+
+func TestGCKeepsAClearedRunWhenAPlainFileReadsAsNotExist(t *testing.T) {
+	w, dir := clearHeldWorld(t, "unparseable")
+	w.mark(t, authTask, "")
+	tasks := filepath.Join(w.bridge, ".starship", "tasks")
+	os.RemoveAll(tasks)
+	write(t, tasks, "x")
+	failSeam(t, &gcReadDir, func(p string) ([]os.DirEntry, error) {
+		if p == tasks {
+			return nil, fs.ErrNotExist
+		}
+		return os.ReadDir(p)
+	})
+	var res gcResult
+	captureStderr(t, func() { res = gcRuns(w.bridge, 1, 0) })
+	if !exists(dir) || res.OpenFailed != 1 {
+		t.Errorf("res = %+v, exists = %v", res, exists(dir))
+	}
+}
+
+func TestGCRemovesAClearedRunWhenTheTasksFolderIsMissing(t *testing.T) {
+	w, dir := clearHeldWorld(t, "unparseable")
+	os.RemoveAll(filepath.Join(w.bridge, ".starship", "tasks"))
+	var res gcResult
+	captureStderr(t, func() { res = gcRuns(w.bridge, 1, 0) })
+	if exists(dir) || res.Removed != 1 || res.failed() {
+		t.Errorf("res = %+v, exists = %v", res, exists(dir))
 	}
 }

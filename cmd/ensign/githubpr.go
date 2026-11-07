@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -813,8 +812,9 @@ func collapseDashes(s string) string {
 
 // markerCountedRuns returns the ids of the runs that count as a failed attempt against some .tested marker. A marker name has its task's slashes turned into dashes and so can't be decoded when a task name holds a double dash; it is matched on the encoded form, which may hold a run too long but never too short.
 func markerCountedRuns(bridge string) (map[string]bool, error) {
-	entries, err := os.ReadDir(filepath.Join(bridge, ".starship", "tasks"))
-	if errors.Is(err, fs.ErrNotExist) {
+	tasksDir := filepath.Join(bridge, ".starship", "tasks")
+	entries, err := gcReadDir(tasksDir)
+	if reallyMissing(tasksDir, err) {
 		return nil, nil
 	}
 	if err != nil {

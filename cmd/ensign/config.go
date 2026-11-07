@@ -2065,6 +2065,12 @@ func plainFileOnPath(p string) string {
 	}
 }
 
+// reallyMissing reports whether err says path is not there and no plain file sits on it.
+func reallyMissing(path string, err error) bool {
+	// Windows reports a plain file on the path as not-exist.
+	return errors.Is(err, fs.ErrNotExist) && plainFileOnPath(path) == ""
+}
+
 // filesIn lists the files in dir whose names end in suffix, as paths, in name order. It reads the folder rather than matching a pattern, so brackets in the path mean nothing. A missing dir has none.
 func filesIn(dir, suffix string) ([]string, error) {
 	entries, err := readDirIfAny(dir)

@@ -1907,3 +1907,35 @@ func TestSessionStartSweepsClosedTasksRecords(t *testing.T) {
 	}
 	wantGone(t, records, true)
 }
+
+func TestDeadLinkKeepsALinkWhenAPlainFileReadsAsNotExist(t *testing.T) {
+	w := newWorld(t)
+	link := filepath.Join(w.bridge, ".starship", "sessions", "plain")
+	write(t, link, "20240101-000001-supernova\n")
+	if !deadLink(w.bridge, link) {
+		t.Error("a missing run: dead")
+	}
+	fileAt(t, filepath.Join(runsDir(w.bridge), "20240101-000001-supernova"))
+	failSeam(t, &gcStat, statFailing("20240101-000001-supernova", fs.ErrNotExist))
+	if deadLink(w.bridge, link) {
+		t.Error("a plain file on the run path: not dead")
+	}
+}
+
+func TestSessionBusyWhenAPlainFileReadsAsNotExist(t *testing.T) {
+	w := newWorld(t)
+	write(t, sessionFile(w.bridge, "s7"), "20240101-000001-supernova\n")
+	if sessionBusy(w.bridge, "s7", nil) {
+		t.Error("a missing run: not busy")
+	}
+	fileAt(t, filepath.Join(runsDir(w.bridge), "20240101-000001-supernova"))
+	failSeam(t, &gcReadJSON, func(p string, v any) error {
+		if strings.HasSuffix(p, "state.json") {
+			return fs.ErrNotExist
+		}
+		return readJSON(p, v)
+	})
+	if !sessionBusy(w.bridge, "s7", nil) {
+		t.Error("a plain file on the run path: busy")
+	}
+}

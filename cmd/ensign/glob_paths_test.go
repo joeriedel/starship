@@ -585,3 +585,24 @@ func TestApplyCurationRefusesUnusableSkillName(t *testing.T) {
 		t.Errorf("nothing should be written: %v", matches)
 	}
 }
+
+func TestReallyMissing(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "supernova.txt")
+	fileAt(t, file)
+	if reallyMissing(file, fs.ErrNotExist) {
+		t.Error("not-exist on a plain file is not missing")
+	}
+	if reallyMissing(filepath.Join(file, "child", "grandchild"), fs.ErrNotExist) {
+		t.Error("not-exist beneath a plain file is not missing")
+	}
+	if !reallyMissing(filepath.Join(dir, "missing", "deeper"), fs.ErrNotExist) {
+		t.Error("not-exist with nothing there is missing")
+	}
+	if reallyMissing(filepath.Join(dir, "missing"), errSeam) {
+		t.Error("another error is not missing")
+	}
+	if reallyMissing(dir, nil) {
+		t.Error("no error is not missing")
+	}
+}

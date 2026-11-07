@@ -103,7 +103,7 @@ func TestImpactExtensionLoadsAndHelpsOnlyWhereUsed(t *testing.T) {
 	if got := requestCommands(plain.bridge); strings.Contains(got, "ensign help impact") {
 		t.Errorf("without use, impact shows its help:\n%s", got)
 	}
-	if got := helpText(plain.bridge, plain.session); strings.Contains(strings.ToLower(got), "impact") {
+	if got := helpText(plain.bridge, plain.sid); strings.Contains(strings.ToLower(got), "impact") {
 		t.Errorf("without use, help mentions impact:\n%s", got)
 	}
 }

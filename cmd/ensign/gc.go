@@ -46,6 +46,7 @@ var (
 	gcReadDir   = os.ReadDir
 	gcRemoveRun = removeRunBy
 	gcStat      = os.Stat
+	gcReadJSON  = readJSON
 	gcTryLock   = func(l *flock.Flock) (bool, error) { return l.TryLock() }
 )
 
@@ -338,7 +339,8 @@ func deadLink(bridge, file string) bool {
 		if strings.ContainsAny(id, `/\`) {
 			return false
 		}
-		if _, err := os.Stat(filepath.Join(runsDir(bridge), id)); !errors.Is(err, fs.ErrNotExist) {
+		runPath := filepath.Join(runsDir(bridge), id)
+		if _, err := gcStat(runPath); !reallyMissing(runPath, err) {
 			return false
 		}
 		named++
@@ -799,8 +801,9 @@ func sessionBusy(bridge, id string, runs []runInfo) bool {
 	}
 	for _, run := range linked {
 		var st State
-		err := readJSON(filepath.Join(runsDir(bridge), run, "state.json"), &st)
-		if errors.Is(err, fs.ErrNotExist) {
+		statePath := filepath.Join(runsDir(bridge), run, "state.json")
+		err := gcReadJSON(statePath, &st)
+		if reallyMissing(statePath, err) {
 			continue
 		}
 		if err != nil || !finishedRun(&st) {
