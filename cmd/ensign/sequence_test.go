@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -4370,33 +4371,124 @@ func TestFinishIfTerminalWarnsWhenTheAdvanceFailureCannotBeQueued(t *testing.T) 
 
 func TestFinishIfTerminalDoesNotAdvanceAFinishedRunAgain(t *testing.T) {
 	w := newWorld(t)
-	w.mustSeq("run", "supernova/auth-refactor")
+	w.project(`  coding2: {}
+`)
+	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	data, _ := os.ReadFile(p)
+	write(t, p, strings.Replace(string(data), "      - set:    { budgets.test: 2 }\n",
+		"      - set:    { budgets.test: 1 }\n      - set:    { on-exhausted.test: { ask-user: \"another cycle?\" } }\n", 1))
+	w.mustSeq("run", "supernova/auth-refactor", "--start", "test")
 	w.approve()
+	lead, why := w.spawn("", "", "orchestrator")
+	if lead == "" {
+		t.Fatalf("lead refused: %s", why)
+	}
+	w.leaf(lead, "tester", "fail")
+	w.leaf(lead, "coder", "compiled")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+	w.leaf(lead, "tester", "fail")
+	w.wantStatus("paused")
+	plant := seqPath(w.bridge, w.sid) + ".tmp"
+	if err := os.Mkdir(plant, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	r, err := openRun(w.bridge, w.step(1).Run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.close()
-	(&machine{snap: r.Snap, st: r.State}).fail("handler", "boom")
-	if err := os.Mkdir(seqPath(w.bridge, w.sid)+".tmp", 0o755); err != nil {
-		t.Fatal(err)
+	if !r.State.Finished || r.State.Status != "ask-user" {
+		t.Fatalf("the ask-user run should be finished: %s finished=%v", r.State.Status, r.State.Finished)
 	}
 	var stderr bytes.Buffer
-	if err := finishIfTerminal(r, false, &stderr); err != nil || !strings.Contains(stderr.String(), "could not advance the sequence") {
-		t.Fatalf("the first call should advance: %q %v", stderr.String(), err)
-	}
-	stderr.Reset()
-	r.warn = nil
 	if err := finishIfTerminal(r, false, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	if stderr.Len() > 0 || r.warn != nil {
-		t.Errorf("the second call should not advance: %q %v", stderr.String(), r.warn)
+		t.Errorf("a finished run should not be advanced again: %q %v", stderr.String(), r.warn)
 	}
-	// Resume clears Finished, so a resumed run that finishes again advances.
-	r.State.Finished = false
+	r.close()
+	if err := os.Remove(plant); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := cmdResume([]string{"--answer", "yes"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	w.wantStatus("active")
+	if err := os.Mkdir(plant, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r, err = openRun(w.bridge, w.step(1).Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.close()
+	if r.State.Finished {
+		t.Fatal("a resume should clear Finished")
+	}
+	(&machine{snap: r.Snap, st: r.State}).fail("handler", "boom")
 	if err := finishIfTerminal(r, false, &stderr); err != nil || !strings.Contains(stderr.String(), "could not advance the sequence") {
 		t.Errorf("a run finishing again after a resume should advance: %q %v", stderr.String(), err)
+	}
+}
+
+// seqDiedWorld is a sequence run whose lead is up and whose plain test stage died, with the lead not yet stopped.
+func seqDiedWorld(t *testing.T) (*world, string) {
+	t.Helper()
+	w := plainWorld(t, "kill -9 $PPID")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	lead, why := w.spawn("", "", "orchestrator")
+	if lead == "" {
+		t.Fatalf("lead refused: %s", why)
+	}
+	return w, dieAtTest(t, w, lead)
+}
+
+// stopDead stops the lead through cmdHook and returns what the advances wrote: os.Stderr and the hook's stderr writer. The hook's stdout only relays the first advance's warning as a system message.
+func stopDead(t *testing.T, w *world, lead string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	saved := os.Stderr
+	os.Stderr = f
+	t.Cleanup(func() { os.Stderr = saved })
+	data, _ := json.Marshal(map[string]any{
+		"hook_event_name": "SubagentStop", "transcript_path": w.session, "session_id": w.sid,
+		"agent_id": lead, "agent_type": "orchestrator", "last_assistant_message": "waiting",
+		"agent_transcript_path": agentTranscript(w.session, lead),
+	})
+	var out, errb bytes.Buffer
+	code := cmdHook("SubagentStop", bytes.NewReader(data), &out, &errb)
+	os.Stderr = saved
+	if code != 0 || strings.Contains(out.String(), `"block"`) {
+		t.Fatalf("the stop should pass: %d %s %s", code, out.String(), errb.String())
+	}
+	own, _ := os.ReadFile(f.Name())
+	return string(own) + errb.String()
+}
+
+func TestLeadStopAdvancesTheSequenceOnceForADeadStage(t *testing.T) {
+	w, lead := seqDiedWorld(t)
+	if err := os.Mkdir(seqPath(w.bridge, w.sid)+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := stopDead(t, w, lead); strings.Count(got, "could not advance the sequence") != 1 {
+		t.Errorf("the run should be advanced exactly once: %q", got)
+	}
+}
+
+func TestLeadStopWithADeadStageEndsASequenceStepInStopMode(t *testing.T) {
+	w, lead := seqDiedWorld(t)
+	stopDead(t, w, lead)
+	w.wantStatus("decide")
+	if st := w.runState(w.step(1).Run); st.Status != "error" || !st.Finished {
+		t.Errorf("run %s finished=%v", st.Status, st.Finished)
 	}
 }
 

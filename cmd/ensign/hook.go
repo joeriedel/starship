@@ -462,12 +462,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 			return nil, nil // waiting on its own background task
 		}
 		if d.spendStop() {
-			notices := stopOrphanedServices(r, m, deadline)
 			m.fail("lead-stopped", "the lead stopped before the pipeline finished")
-			if notices != "" {
-				// The run is terminal, so the lead's next stop sets d.Done and ends.
-				return block(m.expect(s.ID) + "\n" + notices), nil
-			}
 			d.Done = true
 			return nil, nil
 		}
@@ -1065,11 +1060,17 @@ func cmdNext(args []string, out io.Writer) error {
 			continue
 		}
 		if s := m.stage(d.Stage); s != nil && plainStage(r.Snap, s) {
+			// A plain dispatch with no outcome was stopped with the run. If its owner was gone, cmdRunStop wrote no report and printed its notices then; if run-stage was still running, it wrote the report afterwards.
+			report := filepath.Join(r.Dir, "reports", d.ID+".md")
 			noticesNote := ""
 			if len(readNotices(r, d)) > 0 {
 				noticesNote = "; it has notices from the stage's commands, to carry into your report as written"
 			}
-			fmt.Fprintf(out, "Stage %q (run by ensign) finished: %s. Its report: %s%s\n", d.Stage, d.Outcome, filepath.Join(r.Dir, "reports", d.ID+".md"), noticesNote)
+			if d.Outcome != "" {
+				fmt.Fprintf(out, "Stage %q (run by ensign) finished: %s. Its report: %s%s\n", d.Stage, d.Outcome, report, noticesNote)
+			} else if _, err := os.Stat(report); err == nil {
+				fmt.Fprintf(out, "Stage %q (run by ensign) was stopped with the run, and the run did not use its result. Its report: %s%s\n", d.Stage, report, noticesNote)
+			}
 		} else if s != nil {
 			if line := agentReportsLine(r, m, i); line != "" {
 				fmt.Fprintln(out, line)

@@ -353,3 +353,22 @@ func TestRetireRefusalPointsAtStop(t *testing.T) {
 		t.Fatalf("retire of the session's own run: %v", err)
 	}
 }
+
+func TestLeadStoppingWithNothingRunningFailsTheRun(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	for i := 0; i < stopBudget-1; i++ {
+		if r := w.stop(lead, "orchestrator", "waiting", false); !strings.Contains(r, "the pipeline is not finished") {
+			t.Fatalf("an early stop should be blocked: %q", r)
+		}
+	}
+	if r := w.stop(lead, "orchestrator", "waiting", false); r != "" {
+		t.Fatalf("the stop that spends the budget should pass: %s", r)
+	}
+	w.wantFailed("lead-stopped")
+	for _, d := range w.state().Dispatches {
+		if d.Role == "orchestrator" && !d.Done {
+			t.Fatalf("the lead should be done: %+v", d)
+		}
+	}
+}

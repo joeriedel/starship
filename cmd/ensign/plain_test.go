@@ -242,9 +242,15 @@ func TestHookSettingsMatchBashAndUpgradeFromBefore(t *testing.T) {
 // is called, and waits until it is running. wait returns the command's output.
 func gatedPlainRun(t *testing.T) (w *world, run string, release func(), wait func() string) {
 	t.Helper()
+	return gatedPlainRunAfter(t, "")
+}
+
+// gatedPlainRunAfter is gatedPlainRun with a shell prefix, such as a notice write, run before the stage's command signals it started.
+func gatedPlainRunAfter(t *testing.T, prefix string) (w *world, run string, release func(), wait func() string) {
+	t.Helper()
 	dir := t.TempDir()
 	started, gate := filepath.Join(dir, "started"), filepath.Join(dir, "gate")
-	w = plainWorld(t, "touch "+started+"; i=0; while [ ! -f "+gate+" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; echo gated")
+	w = plainWorld(t, prefix+"touch "+started+"; i=0; while [ ! -f "+gate+" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; echo gated")
 	lead := w.startLead()
 	w.toTest(lead)
 	run = w.state().Run
@@ -486,7 +492,12 @@ func diedRun(t *testing.T) (w *world, lead string) {
 // diedRunIn is diedRun for a world whose test command kills its run-stage.
 func diedRunIn(t *testing.T, w *world) (*world, string) {
 	t.Helper()
-	lead := w.startLead()
+	return w, dieAtTest(t, w, w.startLead())
+}
+
+// dieAtTest takes the run of a lead started either way to its plain test stage and has the stage's `ensign run-stage` die there; it returns the lead.
+func dieAtTest(t *testing.T, w *world, lead string) string {
+	t.Helper()
 	w.toTest(lead)
 	exe, err := os.Executable()
 	if err != nil {
@@ -501,7 +512,7 @@ func diedRunIn(t *testing.T, w *world) (*world, string) {
 	if d := st.Dispatches[len(st.Dispatches)-1]; d.Stage != "test" || d.Done {
 		t.Fatalf("the test dispatch should be left running: %+v", d)
 	}
-	return w, lead
+	return lead
 }
 
 func TestDeadRunStageIsReportedAndRecordedAsError(t *testing.T) {
@@ -1167,6 +1178,34 @@ func TestLeadStopKeepsNoticesOfADeadStageOnATerminalRun(t *testing.T) {
 	}
 }
 
+func TestLastLeadStopKeepsNoticesOfADeadStage(t *testing.T) {
+	w := plainWorld(t, "echo n-before >> $STARSHIP_NOTICES; kill -9 $PPID")
+	lead := w.startLead()
+	for i := 0; i < stopBudget-1; i++ {
+		if r := w.stop(lead, "orchestrator", "waiting", false); !strings.Contains(r, "the pipeline is not finished") {
+			t.Fatalf("an early stop should be blocked: %q", r)
+		}
+	}
+	if got := w.stopsLeft(lead); got != 1 {
+		t.Fatalf("the lead's next stop should be its last, %d left", got)
+	}
+	dieAtTest(t, w, lead)
+	if r := w.stop(lead, "orchestrator", "waiting", false); !strings.Contains(r, "The run is finished: error") || !strings.Contains(r, "Stop and report this.\n\nNotices") || !strings.Contains(r, "- n-before\n") {
+		t.Fatalf("the last stop should block with the notice: %q", r)
+	}
+	if st := w.state(); st.Status != "error" {
+		t.Fatalf("status %s", st.Status)
+	}
+	if r := w.stop(lead, "orchestrator", "waiting", false); r != "" {
+		t.Fatalf("the next stop should end: %s", r)
+	}
+	for _, d := range w.state().Dispatches {
+		if d.Role == "orchestrator" && !d.Done {
+			t.Fatalf("the lead should be done: %+v", d)
+		}
+	}
+}
+
 func TestLeadStopKeepsNoticesOfADeadStageWhenTheRunGoesOn(t *testing.T) {
 	pw := plainWorld(t, "echo n-before >> $STARSHIP_NOTICES; kill -9 $PPID")
 	pf := filepath.Join(pw.bridge, "projects/supernova/project.yaml")
@@ -1357,5 +1396,53 @@ func TestNextWhileAStageRuns(t *testing.T) {
 	}
 	if got := w.next(); strings.Contains(got, agentReportsNote) || !strings.Contains(got, "Budgets used") {
 		t.Fatalf("a running stage has no report to name: %s", got)
+	}
+}
+
+// nextOut runs `ensign next` for a run by id; after a stop the session is unbound, so it needs --run.
+func (w *world) nextOut(run string) string {
+	w.t.Helper()
+	var out bytes.Buffer
+	if err := cmdNext([]string{"--bridge", w.bridge, "--run", run}, &out); err != nil {
+		w.t.Fatal(err)
+	}
+	return out.String()
+}
+
+func TestNextOnARunStoppedDuringAPlainStageNamesItsReportOnceItEnds(t *testing.T) {
+	w, run, release, wait := gatedPlainRunAfter(t, "echo gate-note >> $STARSHIP_NOTICES; ")
+	st := w.state()
+	report := filepath.Join(w.bridge, ".starship", "runs", run, "reports", st.Dispatches[len(st.Dispatches)-1].ID+".md")
+	if _, err := w.stopRun(run); err != nil {
+		t.Fatal(err)
+	}
+	got := w.nextOut(run)
+	if strings.Contains(got, "finished: .") || strings.Contains(got, "Its report:") || !strings.Contains(got, "The run is finished: error (cancelled") {
+		t.Errorf("next should only say the run was stopped: %q", got)
+	}
+	release()
+	wait()
+	got = w.nextOut(run)
+	if strings.Contains(got, "finished: .") || !strings.Contains(got, "was stopped with the run, and the run did not use its result. Its report: "+report+"; it has notices") || !strings.Contains(got, "The run is finished: error (cancelled") {
+		t.Errorf("next should name the report the stage wrote after the stop: %q", got)
+	}
+}
+
+func TestNextOnARunStoppedAfterAPlainStageKeepsItsLine(t *testing.T) {
+	w := plainWorld(t, "echo 1 failed; exit 1")
+	lead := w.startLead()
+	w.toTest(lead)
+	if _, err := w.runStage(); err != nil {
+		t.Fatal(err)
+	}
+	run := w.state().Run
+	st := w.state()
+	report := w.reportPath(st.Dispatches[len(st.Dispatches)-1])
+	if _, err := w.stopRun(run); err != nil {
+		t.Fatal(err)
+	}
+	got := w.nextOut(run)
+	if !strings.Contains(got, `(run by ensign) finished: fail. Its report: `+report) || !strings.Contains(got, "The run is finished: error (cancelled") {
+		t.Errorf("the finished line should stay: %q", got)
 	}
 }
