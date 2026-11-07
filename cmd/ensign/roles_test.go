@@ -43,11 +43,11 @@ func TestRoleAndBriefDocumentationRules(t *testing.T) {
 		}
 	}
 	checks := map[string][]string{
-		"roles/coder.md":               {`(?i)write code, not documentation`, `(?i)don't change paths declared in .@docs.`},
-		"roles/reviewer.md":            {`(?i)review code only, not documentation`, `(?i)even when it is in the diff`},
+		"roles/coder.md":               {`(?i)write code, not documentation`, `(?i)don't change paths declared in .@docs.`, `(?i)made wrong or stale, wherever it lives, is part of the change, not scope creep`},
+		"roles/reviewer.md":            {`(?i)review code only, not documentation`, `(?i)even when it is in the diff`, `(?i)staleness the change caused isn't pre-existing`},
 		"briefs/review/correctness.md": {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},
 		"briefs/review/public.md":      {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},
-		"roles/orchestrator.md":        {`(?i)documentation isn't reviewed`, `(?i)even when it is in the diff`, `(?i)fact from outside the project names its source and date`, `(?i)quotes and snapshots stay out`, `(?i)numbered claim to confirm, each with the code location to confirm it against`, `(?i)a .checked. line that doesn't cover the text it wrote`},
+		"roles/orchestrator.md":        {`(?i)documentation isn't reviewed`, `(?i)even when it is in the diff`, `(?i)fact from outside the project names its source and date`, `(?i)quotes and snapshots stay out`, `(?i)numbered claim to confirm, each with the code location to confirm it against`, `(?i)a .checked. line that doesn't cover the text it wrote`, `(?i)an out-of-scope never covers it`, `(?i)unfinished fallout \(the change caused it and no loop reached the coder\)`, `(?i)neither sent to the coder nor unfinished fallout`},
 	}
 	for rel, res := range checks {
 		body := read(rel)

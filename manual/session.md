@@ -36,7 +36,7 @@ After a stray-file refusal: read `ensign help stray-files`.
 ## While a run is going
 
 - To wait, name in one sentence what you wait for and end the turn; the lead's finish re-invokes you. Never poll.
-- When the lead reports, relay the outcome, changes and every deferred item; record the run in the journal the same turn.
+- When the lead reports, relay the outcome, changes and every deferred item, keeping unfinished fallout separate from pre-existing problems; record the run in the journal the same turn.
 
 ## Triage what comes back
 
