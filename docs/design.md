@@ -1249,6 +1249,8 @@ while the details are fresh, is what makes the journal worth reading weeks later
 line guarantees no run is missing from it. Run directories, with every agent's full
 report, stay per machine and are not committed.
 
+**A run owns its own fallout.** What the run's change makes wrong or stale (a comment, message, manual line or test) is part of the change, wherever it lives, even in a file the work item doesn't list: a brief's path list and out-of-scope don't bound it. Problems that existed before the run stay out of scope and are deferred, and unrelated work, a shared interface, behaviour the item said to preserve and an unmade design decision remain a stop. Fallout reaches the coder only through the existing loops: a reviewer treats staleness the change caused as a finding on the change, even in an untouched file, and a test failure goes back as before. The lead's first coder brief names the likely fallout up front. The style and documentation stages have no route back to the coder, so what they raise that the change caused is reported as unfinished fallout. A `@docs` path the change made stale is not sent to the coder: it becomes a claim in the documentation brief, and if the run ends without `docs` reporting `updated` or `unchanged` it is reported as unfinished fallout. The lead's report keeps two deferred lists, unfinished fallout and pre-existing problems, and the session relays them separately.
+
 A task without code has no runs, so no run lines or accounts; its `history.md` takes dated entries (`- YYYY-MM-DD: <what happened>`), committed like any other journal change.
 
 Journals live in the bridge, and a bridge is always git, so committing them doesn't
