@@ -1146,11 +1146,11 @@ func TestGCSessionFileThatCannotBeRemovedFails(t *testing.T) {
 			}
 			w = fresh(t)
 			out, err := runGC(t, w, "500")
-			if err == nil || !strings.Contains(out, ", could not remove 1 session files") {
+			if err == nil || !strings.Contains(out, ", could not sweep 1 session files") {
 				t.Errorf("err = %v, output = %q", err, out)
 			}
 			w = fresh(t)
-			if show := sessionStartLine(t, w); !strings.Contains(show, " · could not remove 1 session files") {
+			if show := sessionStartLine(t, w); !strings.Contains(show, " · could not sweep 1 session files") {
 				t.Errorf("start line: %q", show)
 			}
 		})
@@ -1180,6 +1180,12 @@ func TestGCDeadLinkThatCannotBeRenamedFails(t *testing.T) {
 	if res.SessionFilesFailed != 1 || res.Links != 0 || !exists(link) || !strings.Contains(stderr, "warning: could not rename "+link) {
 		t.Errorf("res = %+v, stderr = %q", res, stderr)
 	}
+	w = newWorld(t)
+	write(t, filepath.Join(w.bridge, ".starship", "sessions", "dead"), "20240101-000009-supernova\n")
+	out, err := runGC(t, w, "500")
+	if err == nil || !strings.Contains(out, ", could not sweep 1 session files") {
+		t.Errorf("err = %v, output = %q", err, out)
+	}
 }
 
 func TestGCRestoreThatFailsWarnsAndCountsOnce(t *testing.T) {
@@ -1205,6 +1211,53 @@ func TestGCRestoreThatFailsWarnsAndCountsOnce(t *testing.T) {
 	}
 	if exists(link + ".gc") {
 		t.Error("the renamed link must not be left behind")
+	}
+}
+
+// reboundDuringRestore fakes the rename of a dead-looking link so the session rebinds to a live run right after the link is renamed away, and, if newer is set, a newer binding then holds the link's name.
+func reboundDuringRestore(t *testing.T, w *world, newer string) string {
+	t.Helper()
+	fabricate(t, w, "20240101-000001-supernova", "running", true)
+	link := filepath.Join(w.bridge, ".starship", "sessions", "rebound")
+	write(t, link, "20240101-000009-supernova\n")
+	failSeam(t, &gcRename, func(old, new string) error {
+		err := os.Rename(old, new)
+		write(t, new, "20240101-000001-supernova\n")
+		if newer != "" {
+			write(t, link, newer)
+		}
+		return err
+	})
+	return link
+}
+
+func TestGCRestoreStatFailureKeepsTheGCAndCountsOnce(t *testing.T) {
+	w := newWorld(t)
+	link := reboundDuringRestore(t, w, "")
+	failSeam(t, &gcStat, statFailing("rebound", errSeam))
+	var sw linkSweep
+	stderr := captureStderr(t, func() { sw = dropDeadLinks(w.bridge) })
+	if sw.Failed != 1 || sw.Links != 0 || strings.Count(stderr, "warning: could not restore session link "+link) != 1 {
+		t.Errorf("sweep = %+v, stderr = %q", sw, stderr)
+	}
+	if got, err := os.ReadFile(link + ".gc"); err != nil || string(got) != "20240101-000001-supernova\n" {
+		t.Errorf("the kept .gc = %q, %v", got, err)
+	}
+}
+
+func TestGCRestoreYieldsToANewerBinding(t *testing.T) {
+	w := newWorld(t)
+	link := reboundDuringRestore(t, w, "20240101-000002-supernova\n")
+	var sw linkSweep
+	stderr := captureStderr(t, func() { sw = dropDeadLinks(w.bridge) })
+	if sw.Failed != 0 || sw.Links != 0 || stderr != "" {
+		t.Errorf("sweep = %+v, stderr = %q", sw, stderr)
+	}
+	if got, err := os.ReadFile(link); err != nil || string(got) != "20240101-000002-supernova\n" {
+		t.Errorf("the link = %q, %v", got, err)
+	}
+	if exists(link + ".gc") {
+		t.Error("the superseded .gc must be removed")
 	}
 }
 

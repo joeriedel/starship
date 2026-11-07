@@ -58,7 +58,7 @@ type gcResult struct {
 	Failed                  int  // delete attempts that left the folder in place
 	OpenFailed              int  // run folders due for deletion that could not be locked or opened, so were not judged
 	ScratchFailed           int  // kept finished runs whose scratch folder could not be read or fully emptied
-	SessionFilesFailed      int  // session files that could not be removed, renamed or restored
+	SessionFilesFailed      int  // failed operations on session files (lock, read, remove, rename or restore)
 	ListFailed              bool // the runs folder could not be listed, so no run was considered for deletion
 	HeldFailed              bool // the held sessions could not be listed, so no run was deleted and no scratch folder emptied
 	SessionsListFailed      bool // the sessions folder could not be listed, so no session file was considered
@@ -375,7 +375,7 @@ func sessionOfFile(name string) (string, bool) {
 // linkSweep is what dropDeadLinks did.
 type linkSweep struct {
 	Links      int  // dead session links removed
-	Failed     int  // session files that could not be removed, renamed or restored
+	Failed     int  // failed operations on session files (lock, read, remove, rename or restore)
 	ListFailed bool // the sessions folder could not be listed
 }
 
@@ -885,7 +885,7 @@ func restoreGC(orig string, s *sessionSweep) {
 	case err == nil:
 		s.remove(orig + ".gc")
 	case errors.Is(err, fs.ErrNotExist):
-		// A failed restore keeps the .gc, the only copy of a file in a session just judged live, unlike the dead-link restore, which drops it. A later sweep retries it (see retryKeptGC).
+		// A failed restore keeps the .gc, the only copy of a file in a session just judged live, unlike the dead-link restore, which drops it when the rename fails. A later sweep retries it (see retryKeptGC).
 		s.rename(orig+".gc", orig)
 	default:
 		fmt.Fprintf(os.Stderr, "warning: could not restore %s: %v\n", orig, err)
@@ -925,7 +925,7 @@ func retryKeptGC(dir, id string, old []string, entries []os.DirEntry, s *session
 	}
 }
 
-// dropDeadLinks removes session links (the bare <session-id> files) whose run folders are all gone, and returns how many, with how many session files it could not remove. It also removes <pid>.pid records older than pidRecordAge, and the per-session files, locks included, of sessions idle past sessionFileAge (see sweepSessionFiles); those files do not count as links, but failures on them do. Live links are only read. A link that looks dead is renamed to <id>.gc and judged again, so a concurrent rebind is restored rather than deleted. Only one sweeper runs at a time, under a non-blocking bridge-wide .sweep.lock (never removed); a call that can't take it skips the .gc removal and sweepSessionFiles and does the rest, so it never blocks. A .gc of a session file older than staleGCAge is not removed on age: retryKeptGC judges its session and restores or removes it. Lock order: .sweep.lock, then a session's .sequence.lock, then its .lock.
+// dropDeadLinks removes session links (the bare <session-id> files) whose run folders are all gone, and returns how many, with how many operations on session files (lock, read, remove, rename or restore) failed. It also removes <pid>.pid records older than pidRecordAge, and the per-session files, locks included, of sessions idle past sessionFileAge (see sweepSessionFiles); those files do not count as links, but failures on them do. Live links are only read. A link that looks dead is renamed to <id>.gc and judged again, so a concurrent rebind is restored rather than deleted. Only one sweeper runs at a time, under a non-blocking bridge-wide .sweep.lock (never removed); a call that can't take it skips the .gc removal and sweepSessionFiles and does the rest, so it never blocks. A .gc of a session file older than staleGCAge is not removed on age: retryKeptGC judges its session and restores or removes it. Lock order: .sweep.lock, then a session's .sequence.lock, then its .lock.
 func dropDeadLinks(bridge string) linkSweep {
 	dir := filepath.Join(bridge, ".starship", "sessions")
 	var sw linkSweep
@@ -1001,7 +1001,11 @@ func dropDeadLinks(bridge string) linkSweep {
 			continue
 		}
 		// Rebound in between: restore it unless a newer binding is already in place.
-		if _, err := os.Stat(orig); errors.Is(err, fs.ErrNotExist) {
+		_, err := gcStat(orig)
+		switch {
+		case err == nil:
+			s.remove(tmp)
+		case errors.Is(err, fs.ErrNotExist):
 			err := retry(time.Until(s.deadline), isTransientFileError, func() error { return gcRename(tmp, orig) })
 			if err != nil {
 				before := s.failed
@@ -1012,8 +1016,10 @@ func dropDeadLinks(bridge string) linkSweep {
 					s.failed++
 				}
 			}
-		} else {
-			s.remove(tmp)
+		default:
+			// The tmp stays, possibly the only copy of a live binding; as a bare-id .gc it is not retried by retryKeptGC but removed by the age sweep once older than staleGCAge.
+			fmt.Fprintf(os.Stderr, "warning: could not restore session link %s: %v\n", orig, err)
+			s.failed++
 		}
 	}
 	sw.Failed = s.failed
@@ -1065,7 +1071,7 @@ func cmdGC(args []string, out io.Writer) error {
 		fmt.Fprint(out, ", could not list the session files")
 	}
 	if res.SessionFilesFailed > 0 {
-		fmt.Fprintf(out, ", could not remove %d session files", res.SessionFilesFailed)
+		fmt.Fprintf(out, ", could not sweep %d session files", res.SessionFilesFailed)
 	}
 	if res.Records > 0 {
 		fmt.Fprintf(out, ", removed %d publish records of closed tasks", res.Records)
