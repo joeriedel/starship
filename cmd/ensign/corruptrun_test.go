@@ -235,11 +235,92 @@ func TestRunRetireAndStopPointAtClear(t *testing.T) {
 	}
 }
 
+func TestRunRetireAndStopAdviceMatchesClear(t *testing.T) {
+	cases := []struct {
+		name  string
+		plant func(t *testing.T, w *world)
+		clear bool // the message offers run clear, so clear must succeed
+		want  string
+	}{
+		{"corrupt state", func(t *testing.T, w *world) {
+			write(t, filepath.Join(plantRun(t, w.bridge, clearID, "running"), "state.json"), "{not json")
+		}, true, "state.json"},
+		{"corrupt pipeline, live state", func(t *testing.T, w *world) {
+			write(t, filepath.Join(plantRun(t, w.bridge, clearID, "running"), "pipeline.json"), "{not json")
+		}, true, "pipeline.json"},
+		{"finished, corrupt pipeline", func(t *testing.T, w *world) {
+			w.plantUnreadablePipelineRun(clearID, "error", true, 1, false)
+		}, false, "keep-runs"},
+		{"finished, missing pipeline", func(t *testing.T, w *world) {
+			w.plantUnreadablePipelineRun(clearID, "error", true, 1, true)
+		}, false, "has finished (error)"},
+		{"ask-user, corrupt pipeline", func(t *testing.T, w *world) {
+			w.plantUnreadablePipelineRun(clearID, "ask-user", true, 1, false)
+		}, false, "has finished (ask-user)"},
+		{"success, corrupt pipeline", func(t *testing.T, w *world) {
+			w.plantUnreadablePipelineRun(clearID, "success", true, 1, false)
+		}, false, "has finished (success)"},
+		{"never started, no fault, corrupt pipeline", func(t *testing.T, w *world) {
+			dir := plantRun(t, w.bridge, clearID, "error")
+			if err := writeJSON(filepath.Join(dir, "state.json"), State{Run: clearID, Status: "error", Reason: noFaultPrefixes[1] + "by the sequence", FinishedAt: 1}); err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(dir, "pipeline.json"), "{not json")
+		}, false, "has finished (error)"},
+		{"pipeline only", func(t *testing.T, w *world) {
+			pipelineOnlyRun(t, w, clearID, time.Minute)
+		}, false, "no state.json"},
+		{"bad budgets", func(t *testing.T, w *world) {
+			dir := plantRun(t, w.bridge, clearID, "running")
+			write(t, filepath.Join(dir, "pipeline.json"), `{"pipeline":{"budgets":{"loop":1,"coder-loop":2}}}`)
+		}, false, "budgets"},
+		{"plain file", func(t *testing.T, w *world) {
+			write(t, filepath.Join(runsDir(w.bridge), clearID), "x")
+		}, false, "no run " + clearID},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := newWorld(t)
+			c.plant(t, w)
+			var out bytes.Buffer
+			for verb, f := range map[string]func() error{
+				"retire": func() error { return w.inBridge(func() error { return cmdRunRetire([]string{clearID}, &out) }) },
+				"stop":   func() error { return w.inBridge(func() error { return cmdRunStop([]string{clearID}, &out, &out) }) },
+			} {
+				err := f()
+				if err == nil || !strings.Contains(err.Error(), c.want) {
+					t.Fatalf("%s: %v, want %q", verb, err, c.want)
+				}
+				if strings.Contains(c.name, "ask-user") && strings.Contains(err.Error(), "keep-runs") {
+					t.Errorf("%s: claims the cleanup removes an ask-user run: %v", verb, err)
+				}
+				if strings.Contains(c.name, "success") && strings.Contains(err.Error(), "lifts its hold") {
+					t.Errorf("%s: claims a success run holds a publish: %v", verb, err)
+				}
+				if strings.Contains(c.name, "no fault") && strings.Contains(err.Error(), "lifts its hold") {
+					t.Errorf("%s: claims a no-fault run holds a publish: %v", verb, err)
+				}
+				if offers := strings.Contains(err.Error(), "ensign run clear"); offers != c.clear {
+					t.Errorf("%s: offers clear %v, want %v: %v", verb, offers, c.clear, err)
+				}
+			}
+			if _, err := w.runClear(clearID); (err == nil) != c.clear {
+				t.Errorf("clear: %v, but the message offers it: %v", err, c.clear)
+			}
+		})
+	}
+}
+
 // plantUnreadablePipelineRun writes a finished run of the auth task whose pipeline.json can't be read.
 func (w *world) plantUnreadablePipelineRun(id, status string, started bool, finished int64, missing bool) {
 	w.t.Helper()
 	dir := filepath.Join(runsDir(w.bridge), id)
-	writeJSON(filepath.Join(dir, "state.json"), State{Run: id, Status: status, Started: started, Reason: "tests failed", FinishedAt: finished})
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		w.t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(dir, "state.json"), State{Run: id, Status: status, Started: started, Reason: "tests failed", FinishedAt: finished}); err != nil {
+		w.t.Fatal(err)
+	}
 	if missing {
 		return
 	}

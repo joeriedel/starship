@@ -1066,15 +1066,37 @@ func cmdRun(args []string, out io.Writer) error {
 	return err
 }
 
-// openRunError is the error a command gives when openRun fails: a run folder that is there but can't be opened points at `ensign run clear`, and one that is not there is no run.
+// openRunError is the error a command gives when openRun fails. Its advice depends on how readRunInfo classes the folder: only a run whose state.json or live pipeline.json can't be read is pointed at `ensign run clear`, since that is all clear accepts. A folder that is not there is no run, and a path that is not a folder is not a run either.
 func openRunError(bridge, id string, err error) error {
-	if _, serr := os.Stat(filepath.Join(runsDir(bridge), id)); serr == nil {
-		return fmt.Errorf("run %s can't be opened (%w); if its files are damaged, `ensign run clear %s` ends it", id, err, id)
+	dir := filepath.Join(runsDir(bridge), id)
+	fi, serr := os.Stat(dir)
+	if serr != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("no run %s", id)
+		}
+		return err
 	}
-	if errors.Is(err, fs.ErrNotExist) {
+	if !fi.IsDir() {
 		return fmt.Errorf("no run %s", id)
 	}
-	return err
+	var ri runInfo
+	class, _ := readRunInfo(dir, &ri)
+	switch class {
+	case runStateUnreadable, runPipelineUnreadable:
+		return fmt.Errorf("run %s can't be opened (%w); if its files are damaged, `ensign run clear %s` ends it", id, err, id)
+	case runFinishedNoPipeline:
+		msg := fmt.Sprintf("run %s can't be opened (%v): it has finished (%s) and blocks nothing bridge-wide; only its pipeline.json can't be read.", id, err, ri.state.Status)
+		if finishedRun(&ri.state) {
+			msg += " The cleanup removes it once it is past keep-runs."
+		}
+		if ri.state.Status != "success" && !retiredWithoutFault(&ri.state) {
+			msg += " A new passing run of its task lifts its hold on a publish."
+		}
+		return errors.New(msg)
+	case runNoState:
+		return fmt.Errorf("run %s can't be opened (%w): it has no state.json and blocks nothing", id, err)
+	}
+	return fmt.Errorf("run %s can't be opened (%w)", id, err)
 }
 
 // clearedReason is the reason of a run ended by `ensign run clear`. It must not start with a noFaultPrefixes entry: the run counts as failed.
