@@ -375,7 +375,7 @@ func openSoleSessionRun(bridge, session string) (*RunFiles, error) {
 	return openRunIfExists(bridge, id)
 }
 
-// openRunIfExists opens a run, or returns nil, nil when it has none: a folder that is gone, or a finished run whose pipeline can't be used, which nothing can unbind.
+// openRunIfExists opens a run, or returns nil, nil when there is none to open: its folder, state.json or pipeline.json is gone, or it is a terminal run (success, error or ask-user) whose pipeline can't be used. A link to such a terminal run must not fail its session's hooks; the session's next bind drops it.
 func openRunIfExists(bridge, id string) (*RunFiles, error) {
 	if id == "" {
 		return nil, nil
@@ -830,7 +830,7 @@ type runClass int
 const (
 	runReadable           runClass = iota // both files read
 	runNoState                            // no state.json: a creation gap or leftover, which gc owns
-	runFinishedNoPipeline                 // a terminal state and a pipeline.json that can't be read
+	runFinishedNoPipeline                 // a terminal state (success, error or ask-user) and a pipeline.json that can't be read
 	runStateUnreadable                    // state.json exists and can't be read
 	runPipelineUnreadable                 // a state that is not terminal and a pipeline.json that can't be read; state.json is written second, so this is no creation gap
 )
@@ -850,6 +850,44 @@ func readRunInfo(dir string, ri *runInfo) (runClass, error) {
 		return runPipelineUnreadable, err
 	}
 	return runReadable, nil
+}
+
+// readRunClass is readRunInfo for `ensign run clear` and the advice about it: a pipeline.json that parses but fails budget canonicalization, as openRun finds it, counts as one that can't be read.
+func readRunClass(dir string, ri *runInfo) (runClass, error) {
+	class, err := readRunInfo(dir, ri)
+	if class != runReadable || ri.snap.Pipeline == nil {
+		return class, err
+	}
+	if err := ri.snap.Pipeline.canonicalizeBudgets(); err != nil {
+		if ri.state.terminal() {
+			return runFinishedNoPipeline, err
+		}
+		return runPipelineUnreadable, err
+	}
+	return class, nil
+}
+
+// clearAccepts says whether `ensign run clear` ends a run of this class: one whose state.json can't be read, a live one whose pipeline.json can't, or an ask-user one, which can't resume without it. A run that has finished (success or error) holds nothing.
+func clearAccepts(class runClass, st *State) bool {
+	switch class {
+	case runStateUnreadable, runPipelineUnreadable:
+		return true
+	case runFinishedNoPipeline:
+		return st.Status == "ask-user"
+	}
+	return false
+}
+
+// finishedNoPipelineFacts is what a success or error run with a pipeline.json that can't be read means for the bridge, as the sentences openRunError and `ensign run clear` give.
+func finishedNoPipelineFacts(st *State) string {
+	msg := fmt.Sprintf("has finished (%s) and blocks nothing bridge-wide; only its pipeline.json can't be read.", st.Status)
+	if finishedRun(st) {
+		msg += " The cleanup removes it once it is past keep-runs."
+	}
+	if st.Status != "success" && !retiredWithoutFault(st) {
+		msg += " A new passing run of its task lifts its hold on a publish."
+	}
+	return msg
 }
 
 // scanRuns reads every run in the bridge, newest first, without locking. unreadable holds the finished runs whose pipeline.json can't be read, which listRuns leaves out; their snap is empty. A run that can't be ruled out as live fails the scan: one whose state.json can't be read, or a non-terminal one whose pipeline.json can't be read. Skipping it would hide it from the checks that refuse while a run is live.
@@ -1122,7 +1160,7 @@ func cmdRun(args []string, out io.Writer) error {
 	return err
 }
 
-// openRunError is the error a command gives when openRun fails. Its advice depends on how readRunInfo classes the folder: only a run whose state.json or live pipeline.json can't be read is pointed at `ensign run clear`, since that is all clear accepts. A folder that is not there is no run, and a path that is not a folder is not a run either.
+// openRunError is the error a command gives when openRun fails. Its advice depends on how readRunClass classes the folder: a run is pointed at `ensign run clear` only when clearAccepts says it takes it: a state.json that can't be read, a live run whose pipeline.json can't be read or fails budget canonicalization, or an ask-user run in that case. A folder that is not there is no run, and a path that is not a folder is not a run either.
 func openRunError(bridge, id string, err error) error {
 	dir := filepath.Join(runsDir(bridge), id)
 	fi, serr := os.Stat(dir)
@@ -1136,20 +1174,15 @@ func openRunError(bridge, id string, err error) error {
 		return fmt.Errorf("no run %s", id)
 	}
 	var ri runInfo
-	class, _ := readRunInfo(dir, &ri)
-	switch class {
-	case runStateUnreadable, runPipelineUnreadable:
+	class, _ := readRunClass(dir, &ri)
+	switch {
+	case class == runFinishedNoPipeline && ri.state.Status == "ask-user":
+		return fmt.Errorf("run %s can't be opened (%v): it is waiting on a question and can't resume, because its pipeline.json can't be read; `ensign run clear %s` ends it as a failed run. A new passing run of its task lifts its hold on a publish.", id, err, id)
+	case clearAccepts(class, &ri.state):
 		return fmt.Errorf("run %s can't be opened (%w); if its files are damaged, `ensign run clear %s` ends it", id, err, id)
-	case runFinishedNoPipeline:
-		msg := fmt.Sprintf("run %s can't be opened (%v): it has finished (%s) and blocks nothing bridge-wide; only its pipeline.json can't be read.", id, err, ri.state.Status)
-		if finishedRun(&ri.state) {
-			msg += " The cleanup removes it once it is past keep-runs."
-		}
-		if ri.state.Status != "success" && !retiredWithoutFault(&ri.state) {
-			msg += " A new passing run of its task lifts its hold on a publish."
-		}
-		return errors.New(msg)
-	case runNoState:
+	case class == runFinishedNoPipeline:
+		return fmt.Errorf("run %s can't be opened (%v): it %s", id, err, finishedNoPipelineFacts(&ri.state))
+	case class == runNoState:
 		return fmt.Errorf("run %s can't be opened (%w): it has no state.json and blocks nothing", id, err)
 	}
 	return fmt.Errorf("run %s can't be opened (%w)", id, err)
@@ -1158,7 +1191,7 @@ func openRunError(bridge, id string, err error) error {
 // clearedReason is the reason of a run ended by `ensign run clear`. It must not start with a noFaultPrefixes entry: the run counts as failed.
 const clearedReason = "cleared with ensign run clear: its files could not be read"
 
-// cmdRunClear is `ensign run clear <run>`: it ends a run whose files can't be read, the runs listRuns fails on, as a failed run and keeps its folder. It needs no session, since a damaged run can keep a session from getting ready.
+// cmdRunClear is `ensign run clear <run>`: it ends a run whose files can't be read, the runs listRuns fails on, and an ask-user run that can't resume for want of its pipeline.json, as a failed run and keeps its folder. It needs no session, since a damaged run can keep a session from getting ready.
 func cmdRunClear(args []string, out io.Writer) error {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
 		return errors.New("usage: ensign run clear <run>")
@@ -1202,18 +1235,26 @@ func cmdRunClear(args []string, out io.Writer) error {
 		defer l.Unlock()
 	}
 	ri := runInfo{id: id}
-	class, cause := readRunInfo(dir, &ri)
-	switch class {
-	case runNoState:
-		return fmt.Errorf("run %s has no state.json: it blocks nothing, and the next cleanup removes the folder", id)
-	case runReadable:
-		if ri.state.terminal() {
-			return fmt.Errorf("run %s has finished (%s) and its files can be read; there is nothing to clear", id, ri.state.Status)
+	class, cause := readRunClass(dir, &ri)
+	if !clearAccepts(class, &ri.state) {
+		switch class {
+		case runNoState:
+			if _, err := os.Stat(filepath.Join(dir, "pipeline.json")); err == nil {
+				return fmt.Errorf("run %s has no state.json: it blocks nothing, and a cleanup removes the folder once its pipeline.json is %d minutes old", id, int(pipelineOnlyAge.Minutes()))
+			}
+			return fmt.Errorf("run %s has no state.json and no pipeline.json: it blocks nothing and no cleanup removes it; if nothing is creating it, the folder can be deleted by hand", id)
+		case runReadable:
+			if ri.state.Status == "ask-user" {
+				return fmt.Errorf("run %s is waiting on a question and its files can be read; there is nothing to clear", id)
+			}
+			if ri.state.terminal() {
+				return fmt.Errorf("run %s has finished (%s) and its files can be read; there is nothing to clear", id, ri.state.Status)
+			}
+			return fmt.Errorf("run %s is a live run with readable files; `ensign run retire %s` ends it for another session, `ensign run stop %s` for its own", id, id, id)
 		}
-		return fmt.Errorf("run %s is a live run with readable files; `ensign run retire %s` ends it for another session, `ensign run stop %s` for its own", id, id, id)
-	case runFinishedNoPipeline:
-		return fmt.Errorf("run %s has finished (%s) and blocks nothing bridge-wide; only its pipeline.json can't be read. A new passing run of its task lifts its hold on a publish", id, ri.state.Status)
+		return fmt.Errorf("run %s %s", id, finishedNoPipelineFacts(&ri.state))
 	}
+	askUser := class == runFinishedNoPipeline
 	statePath := filepath.Join(dir, "state.json")
 	now := time.Now().UnixNano()
 	if class == runStateUnreadable {
@@ -1244,10 +1285,15 @@ func cmdRunClear(args []string, out io.Writer) error {
 			}
 		}
 	}
-	if class == runPipelineUnreadable {
+	if class == runPipelineUnreadable || askUser {
 		st := ri.state
-		st.FinishedAt = now
 		st.Status, st.Reason = "error", clearedReason
+		if askUser {
+			// It ended when it asked: a later FinishedAt would put it after a pass that already lifted its hold.
+			st.resetPosition()
+		} else {
+			st.FinishedAt = now
+		}
 		if err := writeJSON(statePath, st); err != nil {
 			return err
 		}
@@ -1261,7 +1307,12 @@ func cmdRunClear(args []string, out io.Writer) error {
 	if class == runStateUnreadable {
 		fmt.Fprint(out, ", and the state.json it had is kept as state.json.corrupt there")
 	}
-	fmt.Fprintf(out, ". The code folders were left as they are. Anything the run started, such as services, was not stopped, because its files can't be read. It counts as a failed run of its task, so the task must pass again before it can publish.\n")
+	fmt.Fprintf(out, ". The code folders were left as they are. Anything the run started, such as services, was not stopped, because its files can't be read.")
+	if askUser {
+		fmt.Fprintf(out, " It counts as a failed run of its task from when it asked, so a passing run of the task after that lifts its hold on a publish.\n")
+	} else {
+		fmt.Fprintf(out, " It counts as a failed run of its task, so the task must pass again before it can publish.\n")
+	}
 	return nil
 }
 

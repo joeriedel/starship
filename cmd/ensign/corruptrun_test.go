@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -152,11 +153,28 @@ func TestRunClearRefusalsChangeNothing(t *testing.T) {
 			writeJSON(filepath.Join(dir, "state.json"), &State{Run: clearID, Status: "error"})
 			write(t, filepath.Join(dir, "pipeline.json"), "{not json")
 			return nil
-		}, clearID, "blocks nothing"},
+		}, clearID, "lifts its hold"},
+		{"finished with a fault, bad budgets", func(t *testing.T, w *world, dir string) func() {
+			plantBadRun(t, w, clearID, "error", "tests failed", "budgets", 1)
+			return nil
+		}, clearID, "lifts its hold"},
+		{"success, corrupt pipeline", func(t *testing.T, w *world, dir string) func() {
+			w.plantUnreadablePipelineRun(clearID, "success", true, 1, false)
+			return nil
+		}, clearID, "keep-runs"},
+		{"readable ask-user", func(t *testing.T, w *world, dir string) func() {
+			plantBadRun(t, w, clearID, "ask-user", "which?", "good", 1)
+			return nil
+		}, clearID, "waiting on a question"},
 		{"pipeline only", func(t *testing.T, w *world, dir string) func() {
 			os.Remove(filepath.Join(dir, "state.json"))
 			return nil
-		}, clearID, "no state.json"},
+		}, clearID, "5 minutes old"},
+		{"neither file", func(t *testing.T, w *world, dir string) func() {
+			os.Remove(filepath.Join(dir, "state.json"))
+			os.Remove(filepath.Join(dir, "pipeline.json"))
+			return nil
+		}, clearID, "deleted by hand"},
 		{"run lock held", func(t *testing.T, w *world, dir string) func() {
 			corruptState(t, dir)
 			l := flock.New(filepath.Join(dir, "lock"))
@@ -187,6 +205,13 @@ func TestRunClearRefusalsChangeNothing(t *testing.T) {
 			_, err := w.runClear(c.id)
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Errorf("want a refusal with %q, got %v", c.want, err)
+			} else {
+				if strings.Contains(c.name, "success") && strings.Contains(err.Error(), "lifts its hold") {
+					t.Errorf("a success holds nothing: %v", err)
+				}
+				if strings.Contains(c.name, "readable ask-user") && strings.Contains(err.Error(), "has finished") {
+					t.Errorf("an ask-user run has not finished: %v", err)
+				}
 			}
 			after := runFiles(t, dir)
 			if len(before) != len(after) {
@@ -256,7 +281,16 @@ func TestRunRetireAndStopAdviceMatchesClear(t *testing.T) {
 		}, false, "has finished (error)"},
 		{"ask-user, corrupt pipeline", func(t *testing.T, w *world) {
 			w.plantUnreadablePipelineRun(clearID, "ask-user", true, 1, false)
-		}, false, "has finished (ask-user)"},
+		}, true, "waiting on a question"},
+		{"ask-user, missing pipeline", func(t *testing.T, w *world) {
+			w.plantUnreadablePipelineRun(clearID, "ask-user", true, 1, true)
+		}, true, "waiting on a question"},
+		{"ask-user, bad budgets", func(t *testing.T, w *world) {
+			plantBadRun(t, w, clearID, "ask-user", "which?", "budgets", 1)
+		}, true, "waiting on a question"},
+		{"finished, bad budgets", func(t *testing.T, w *world) {
+			plantBadRun(t, w, clearID, "error", "tests failed", "budgets", 1)
+		}, false, "has finished (error)"},
 		{"success, corrupt pipeline", func(t *testing.T, w *world) {
 			w.plantUnreadablePipelineRun(clearID, "success", true, 1, false)
 		}, false, "has finished (success)"},
@@ -273,7 +307,7 @@ func TestRunRetireAndStopAdviceMatchesClear(t *testing.T) {
 		{"bad budgets", func(t *testing.T, w *world) {
 			dir := plantRun(t, w.bridge, clearID, "running")
 			write(t, filepath.Join(dir, "pipeline.json"), `{"pipeline":{"budgets":{"loop":1,"coder-loop":2}}}`)
-		}, false, "budgets"},
+		}, true, "ensign run clear"},
 		{"plain file", func(t *testing.T, w *world) {
 			write(t, filepath.Join(runsDir(w.bridge), clearID), "x")
 		}, false, "no run " + clearID},
@@ -291,8 +325,12 @@ func TestRunRetireAndStopAdviceMatchesClear(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), c.want) {
 					t.Fatalf("%s: %v, want %q", verb, err, c.want)
 				}
-				if strings.Contains(c.name, "ask-user") && strings.Contains(err.Error(), "keep-runs") {
-					t.Errorf("%s: claims the cleanup removes an ask-user run: %v", verb, err)
+				if strings.Contains(c.name, "ask-user") {
+					for _, bad := range []string{"has finished", "blocks nothing", "keep-runs"} {
+						if strings.Contains(err.Error(), bad) {
+							t.Errorf("%s: says %q of an ask-user run: %v", verb, bad, err)
+						}
+					}
 				}
 				if strings.Contains(c.name, "success") && strings.Contains(err.Error(), "lifts its hold") {
 					t.Errorf("%s: claims a success run holds a publish: %v", verb, err)
@@ -709,4 +747,86 @@ func TestRunClearKeepsTheLinkWhenStateCannotBeCopied(t *testing.T) {
 	if ids, err := sessionRuns(w.bridge, "s1"); err != nil || len(ids) != 1 || ids[0] != clearID {
 		t.Errorf("the session link should survive: %v, %v", ids, err)
 	}
+}
+
+func TestRunClearEndsAnAskUserRunWithABadPipeline(t *testing.T) {
+	for _, kind := range []string{"unparseable", "missing", "budgets"} {
+		t.Run(kind, func(t *testing.T) {
+			w := newWorld(t)
+			t.Setenv("STARSHIP_SESSION", "")
+			dir := plantBadRun(t, w, clearID, "ask-user", "which?", kind, 42)
+			st := State{Run: clearID, Session: "s1", Status: "ask-user", Reason: "which?", FinishedAt: 42, Resume: &ResumePoint{}, Scopes: map[string]*ScopeState{"main": {Stage: "code", Branches: map[string]string{"a": "b"}}}}
+			writeJSON(filepath.Join(dir, "state.json"), st)
+			if err := os.MkdirAll(filepath.Dir(sessionFile(w.bridge, "s1")), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeSessionRuns(w.bridge, "s1", []string{clearID}); err != nil {
+				t.Fatal(err)
+			}
+			out, err := w.runClear(clearID)
+			if err != nil {
+				t.Fatalf("clear: %v", err)
+			}
+			if !strings.Contains(out, "Cleared run "+clearID) || strings.Contains(out, "must pass again") {
+				t.Errorf("output: %s", out)
+			}
+			var got State
+			if err := readRunState(dir, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != "error" || got.Reason != clearedReason || got.FinishedAt != 42 || got.Resume != nil {
+				t.Errorf("state %+v", got)
+			}
+			if sc := got.Scopes["main"]; sc == nil || sc.Stage != "" || sc.Branches != nil {
+				t.Errorf("scope %+v", sc)
+			}
+			if ids, _ := sessionRuns(w.bridge, "s1"); len(ids) != 0 {
+				t.Errorf("session links %v", ids)
+			}
+		})
+	}
+}
+
+func TestGCRemovesAClearedAskUserRunUnlessAMarkerNeedsIt(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		t.Run(fmt.Sprint("marked ", marked), func(t *testing.T) {
+			w := newWorld(t)
+			t.Setenv("STARSHIP_SESSION", "")
+			dir := plantBadRun(t, w, clearHeldID, "ask-user", "which?", "unparseable", 200)
+			other := plantRun(t, w.bridge, "20240101-000009-supernova-other", "success")
+			write(t, filepath.Join(other, "scratch", "x"), "x")
+			if res := gcRuns(w.bridge, 1, 0); res.Removed != 0 || !exists(dir) {
+				t.Fatalf("an ask-user run is never removed: %+v", res)
+			}
+			if _, err := w.runClear(clearHeldID); err != nil {
+				t.Fatal(err)
+			}
+			if marked {
+				w.mark(t, authTask, "")
+			}
+			gcRuns(w.bridge, 1, 0)
+			if exists(dir) == !marked {
+				t.Errorf("marked %v, exists %v", marked, exists(dir))
+			}
+		})
+	}
+}
+
+func TestClearedAskUserRunKeepsItsPlaceAgainstAPass(t *testing.T) {
+	const runID = "99999999-999991-supernova-auth-refactor"
+	later := time.Now().Add(time.Hour).UnixNano()
+	w, ws, remote, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	mainBefore := remoteMain(t, remote)
+	plantBadRun(t, w, runID, "ask-user", "which?", "unparseable", later)
+	t.Setenv("STARSHIP_SESSION", "")
+	if _, err := w.runClear(runID); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STARSHIP_SESSION", w.sid)
+	w.wantRefused(remote, mainBefore)
+	pass := w.runState(w.state().Run)
+	pass.FinishedAt = later + int64(time.Hour)
+	writeJSON(filepath.Join(runsDir(w.bridge), pass.Run, "state.json"), pass)
+	w.wantLands(remote)
 }

@@ -150,6 +150,14 @@ func (m *machine) budgetLine() string {
 	return strings.Join(parts, ", ")
 }
 
+// resetPosition drops where the run was: each scope's stage and branches, and the resume point.
+func (st *State) resetPosition() {
+	for _, sc := range st.Scopes {
+		sc.Stage, sc.Branches = "", nil
+	}
+	st.Resume = nil
+}
+
 // finish ends the run with a terminal transition.
 func (m *machine) finish(t Transition, why string) {
 	switch {
@@ -162,10 +170,7 @@ func (m *machine) finish(t Transition, why string) {
 	}
 	m.st.FinishedAt = time.Now().UnixNano()
 	if m.st.Status != "ask-user" {
-		for _, sc := range m.st.Scopes {
-			sc.Stage, sc.Branches = "", nil
-		}
-		m.st.Resume = nil
+		m.st.resetPosition()
 	}
 	m.st.log("finish", "", "", m.st.Status+" — "+m.st.Reason)
 }
