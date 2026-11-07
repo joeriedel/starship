@@ -16,6 +16,7 @@ Stage order, budgets and outcomes are enforced by hooks, not by you.
 
 - **Run the `next` command at the start and after every stage finishes**, and dispatch
   exactly what it says. It knows the budgets and where each outcome led.
+- **Run `next` the moment a stage reports; never end your turn to wait for a notification.** Ending a turn with no stage running spends your stop budget, and the third such stop ends the run. The only turn you may end is the one in which a background `ensign run-stage` or a dispatched agent is still running (see Waiting).
 - **A refused dispatch is information.** Read the reason and do what it asks. Never try
   to route around it with a different role or wording.
 - **Some stages ensign runs itself.** When a project's tests are plain, `next` gives an `ensign run-stage` command instead of a tester to dispatch. Run it as a background shell command, end your turn to wait for it, and rule on its output as you would a tester's report. Its report may carry notices from the stage's commands: they are not findings and need no ruling. If `next` reports the stage's command died, run `ensign run-stage` to record it as an error and rule on it as an error. Then run `next`.
@@ -114,6 +115,7 @@ You are re-invoked automatically when a dispatched agent finishes.
 
 - **To wait, write one sentence naming the stage you're waiting on, and end the turn.**
   No polling, no `sleep`, never read an agent's output file.
+- **Wait only for a stage that is running.** A stage that has reported needs `next`, not a wait.
 - **A stage has finished only when its completion arrives.** Never brief from what you
   expect it to find.
 - **Your report is sent once,** after the run is finished — never to wait.

@@ -341,15 +341,8 @@ func githubUpdate(bridge, task, location string) (base, sha string, upToDate boo
 		return "", "", false, err
 	}
 	defer unlock()
-	live, err := liveRuns(bridge)
-	if err != nil {
+	if err := taskRunning(bridge, task); err != nil {
 		return "", "", false, err
-	}
-	for _, ri := range live {
-		// A queued sequence run has not started, so it does not hold the task.
-		if ri.snap.Task == task && !ri.state.queued() {
-			return "", "", false, fmt.Errorf("a run of %s is still going; wait for it to finish", task)
-		}
 	}
 	ws, want := c.Workspace, taskBranch(task)
 	orig, err := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want)
@@ -401,7 +394,21 @@ func githubUpdate(bridge, task, location string) (base, sha string, upToDate boo
 	return base, short(head), false, nil
 }
 
-// runsHolding lists the approved live runs that work in or read a code folder, as folderHolder counts them. The caller holds the folder's landing or update lock, so none can start there while it looks.
+// taskRunning refuses while a run of the task is still going. A queued sequence run has not started, so it does not hold the task.
+func taskRunning(bridge, task string) error {
+	live, err := liveRuns(bridge)
+	if err != nil {
+		return err
+	}
+	for _, ri := range live {
+		if ri.snap.Task == task && !ri.state.queued() {
+			return &busyError{fmt.Errorf("a run of %s is still going; wait for it to finish", task)}
+		}
+	}
+	return nil
+}
+
+// runsHolding lists the approved live runs that work in or read a code folder or one inside or around it, as folderHolder counts them. The caller holds the folder's landing or update lock, so none can start there while it looks.
 func runsHolding(bridge, folder string) ([]runInfo, error) {
 	live, err := liveRuns(bridge)
 	if err != nil {
@@ -413,7 +420,7 @@ func runsHolding(bridge, folder string) ([]runInfo, error) {
 			continue
 		}
 		works, reads := folderHolds(&ri.snap)
-		if slices.ContainsFunc(slices.Concat(works, reads), func(f string) bool { return sameFolder(f, folder, runtime.GOOS) }) {
+		if slices.ContainsFunc(slices.Concat(works, reads), func(f string) bool { return foldersOverlap(f, folder, runtime.GOOS) }) {
 			held = append(held, ri)
 		}
 	}
@@ -545,7 +552,7 @@ func lockPublish(bridge, task string) (func(), error) {
 	if ok, err := l.TryLock(); err != nil {
 		return nil, fmt.Errorf("locking the publish of %s: %w", task, err)
 	} else if !ok {
-		return nil, fmt.Errorf("a publish of %s is already under way", task)
+		return nil, &busyError{fmt.Errorf("a publish of %s is already under way", task)}
 	}
 	return func() { l.Unlock() }, nil
 }
@@ -919,15 +926,8 @@ func latestRunPassed(bridge, task, location string) error {
 
 // tested finds a task's tested commit (a landing has taken its folder's landing lock first, so no run can start in the folder after its live-run check; pull-request has not), and checks the task branch still holds it, or only @docs paths on top of it. It returns the branch head, so what lands includes those docs commits.
 func tested(bridge, task, location string) (c *Config, branch, sha string, err error) {
-	live, err := liveRuns(bridge)
-	if err != nil {
+	if err := taskRunning(bridge, task); err != nil {
 		return nil, "", "", err
-	}
-	for _, ri := range live {
-		// A queued sequence run has not started, so it does not hold the task.
-		if ri.snap.Task == task && !ri.state.queued() {
-			return nil, "", "", fmt.Errorf("a run of %s is still going; wait for it to finish", task)
-		}
 	}
 	c, err = loadConfigAt(bridge, task, location)
 	if err != nil {
@@ -1008,9 +1008,19 @@ func noRunOffBranch(bridge, ws, landed string) error {
 		if cur != landed && sameFolder(ri.snap.Workspace, ws, runtime.GOOS) && cur == taskBranch(ri.snap.Task) {
 			continue
 		}
-		return fmt.Errorf("run %s (%s) of %s holds the code folder %s and is not on its own branch there (the folder is on %s); wait for it to finish", ri.id, ri.state.Status, ri.snap.Task, ws, orDetached(cur))
+		return &busyError{fmt.Errorf("run %s (%s) of %s holds the code folder %s and is not on its own branch there (the folder is on %s); wait for it to finish", ri.id, ri.state.Status, ri.snap.Task, ws, orDetached(cur))}
 	}
 	return nil
+}
+
+// noRunHolds refuses a landing in a code folder while an approved run of any task holds it, works in it or reads it, in the folder or one inside or around it. The caller holds the folder's landing lock, which stops a run from starting in the folder, in a folder around it or in a folder inside it, whether the run works there or only reads.
+func noRunHolds(bridge, ws string) error {
+	holders, err := runsHolding(bridge, ws)
+	if err != nil || len(holders) == 0 {
+		return err
+	}
+	ri := holders[0]
+	return &busyError{fmt.Errorf("run %s (%s) of %s holds the code folder %s; wait for it to finish", ri.id, ri.state.Status, ri.snap.Task, ws)}
 }
 
 // githubMerge moves the default branch to a task's tested commit, if that is a

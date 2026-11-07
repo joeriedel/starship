@@ -272,19 +272,19 @@ func TestDirectEditClosedByWritesGo(t *testing.T) {
 func TestDirtyNotice(t *testing.T) {
 	w := newWorld(t)
 	ws := w.workspace()
-	if got := dirtyNotice(&Snapshot{Workspace: ws}); got != "" {
+	if got := dirtyNotice(false, &Snapshot{Workspace: ws}); got != "" {
 		t.Errorf("a workspace that is not a git repository gets no notice: %q", got)
 	}
 	runGit(t, ws, "init", "-q", "-b", "main")
 	write(t, filepath.Join(ws, "a.go"), "package a\n")
 	runGit(t, ws, "add", "-A")
 	runGit(t, ws, "commit", "-q", "-m", "base")
-	if got := dirtyNotice(&Snapshot{Workspace: ws}); got != "" {
+	if got := dirtyNotice(false, &Snapshot{Workspace: ws}); got != "" {
 		t.Errorf("a clean workspace gets no notice: %q", got)
 	}
 	write(t, filepath.Join(ws, "b.go"), "package b\n")
 	write(t, filepath.Join(ws, "a.go"), "package a // edited\n")
-	got := dirtyNotice(&Snapshot{Workspace: ws}, &Snapshot{Workspace: ws})
+	got := dirtyNotice(false, &Snapshot{Workspace: ws}, &Snapshot{Workspace: ws})
 	if strings.Count(got, "uncommitted") != 1 || !strings.Contains(got, ws) || !strings.Contains(got, "2 uncommitted path(s)") || !strings.Contains(got, "b.go") || !strings.Contains(got, "ask how to proceed") {
 		t.Errorf("notice: %q", got)
 	}
@@ -293,6 +293,20 @@ func TestDirtyNotice(t *testing.T) {
 	}
 	if out, err := w.seq("run", "supernova/auth-refactor"); err != nil || !strings.Contains(out, "2 uncommitted path(s)") {
 		t.Errorf("a sequence step prints the notice: %v\n%s", err, out)
+	}
+}
+
+func TestDirtyNoticeOfARunAlreadyStartingDoesNotAskForGo(t *testing.T) {
+	w := newWorld(t)
+	ws := w.workspace()
+	runGit(t, ws, "init", "-q", "-b", "main")
+	write(t, filepath.Join(ws, "a.go"), "package a\n")
+	runGit(t, ws, "add", "-A")
+	runGit(t, ws, "commit", "-q", "-m", "base")
+	write(t, filepath.Join(ws, "b.go"), "package b\n")
+	got := dirtyNotice(true, &Snapshot{Workspace: ws})
+	if !strings.Contains(got, "1 uncommitted path(s)") || strings.Contains(got, "before you ask for go") || !strings.Contains(got, "halt the sequence") {
+		t.Errorf("notice: %q", got)
 	}
 }
 

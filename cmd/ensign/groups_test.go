@@ -94,6 +94,16 @@ func TestSubtaskGroups(t *testing.T) {
 	if got := strings.Join(groupsOf(sub("1", "client"), sub("2", "server")), " "); got != "1 2" {
 		t.Errorf("locations in one folder: %s", got)
 	}
+	nested := filepath.Join(w.sideFolder("client"), "inner")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := setLocationPath(w.bridge, "supernova", "server", nested); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(groupsOf(sub("1", "client"), sub("2", "server")), " "); got != "1 2" {
+		t.Errorf("locations in nested folders: %s", got)
+	}
 }
 
 func TestSequenceGroupStartsEveryRunAndListsGroups(t *testing.T) {
@@ -122,6 +132,44 @@ func TestSequenceGroupStartsEveryRunAndListsGroups(t *testing.T) {
 	}
 	if l := sequenceListing(w.bridge, w.sid); !strings.Contains(l, "group 2: 02-client (client) [running], 03-server (server) [running]") {
 		t.Errorf("listing:\n%s", l)
+	}
+}
+
+func TestNextSubtaskGroupReportsAnUncommittedWorkspace(t *testing.T) {
+	w := groupWorld(t, "01-models", "02-client")
+	server := w.sideFolder("client")
+	runGit(t, server, "init", "-q", "-b", "main")
+	write(t, filepath.Join(server, "a.go"), "package a\n")
+	runGit(t, server, "add", "-A")
+	runGit(t, server, "commit", "-q", "-m", "base")
+	write(t, filepath.Join(server, "b.go"), "package b\n")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	w.passLoc(w.leadOf(w.stepRuns(1)[0]))
+	if st := w.step(1); st.Group != 2 || st.Status != "active" {
+		t.Fatalf("the second group should be under way: %+v", st)
+	}
+	got := takeSequenceReports(w.bridge, w.sid)
+	if !strings.Contains(got, "The workspace "+server+" has 1 uncommitted path(s): b.go") || strings.Contains(got, "before you ask for go") {
+		t.Errorf("the sequence's report should carry the notice for the run it started:\n%s", got)
+	}
+}
+
+func TestSequenceRetryReportsAnUncommittedWorkspace(t *testing.T) {
+	w := groupWorld(t, "01-client")
+	client := w.sideFolder("client")
+	runGit(t, client, "init", "-q", "-b", "main")
+	write(t, filepath.Join(client, "a.go"), "package a\n")
+	runGit(t, client, "add", "-A")
+	runGit(t, client, "commit", "-q", "-m", "base")
+	w.mustSeq("run", "supernova/t")
+	w.approve()
+	w.failRun(w.leadOf(w.stepRuns(1)[0]))
+	w.wantStatus("decide")
+	write(t, filepath.Join(client, "b.go"), "package b\n")
+	out := w.retryStep("1")
+	if !strings.Contains(out, "The workspace "+client+" has 1 uncommitted path(s): b.go") || strings.Contains(out, "before you ask for go") {
+		t.Errorf("the retry should carry the notice for the run it started:\n%s", out)
 	}
 }
 
@@ -635,7 +683,7 @@ func holdPublishLock(t *testing.T, w *world, task string) {
 	t.Cleanup(func() { l.Unlock() })
 }
 
-func TestPublishRefusedWhileThePublishLockIsHeld(t *testing.T) {
+func TestPublishWaitsWhileThePublishLockIsHeld(t *testing.T) {
 	w, _, restore := failedPublish(t)
 	restore()
 	file := publishRecordFile(w.bridge, "supernova/t")
@@ -646,8 +694,8 @@ func TestPublishRefusedWhileThePublishLockIsHeld(t *testing.T) {
 	holdPublishLock(t, w, "supernova/t")
 	w.mustSeq("publish", "supernova/t")
 	w.approve()
-	w.wantStatus("done", "failed", "failed")
-	if got := w.step(3).Reason; !strings.Contains(got, "a publish of supernova/t is already under way") {
+	w.wantStatus("done", "failed", "pending")
+	if got := w.step(3).Reason; !strings.Contains(got, "waiting: a publish of supernova/t is already under way") {
 		t.Errorf("the step should say why: %q", got)
 	}
 	if after, _ := os.ReadFile(file); string(after) != string(before) {

@@ -318,8 +318,12 @@ func directAsk(bridge, session, folder, work string, out io.Writer) error {
 	return nil
 }
 
-// dirtyNotice tells the session, after it creates a run, which of the runs' workspaces have uncommitted changes, so it can tell the user before asking for go. A workspace that is not a git repository, or whose status can't be read, is left out.
-func dirtyNotice(snaps ...*Snapshot) string {
+// dirtyNotice tells the session, after it creates a run, which of the runs' workspaces have uncommitted changes, so it can tell the user before asking for go. With started, the runs are already being started by an approved sequence, so there is no go to wait for. A workspace that is not a git repository, or whose status can't be read, is left out.
+func dirtyNotice(started bool, snaps ...*Snapshot) string {
+	advice := "Tell the user and ask how to proceed before you ask for go."
+	if started {
+		advice = "The run is already being started by the sequence: tell the user now, and halt the sequence if they don't want it to go on."
+	}
 	var seen []string
 	var b strings.Builder
 	for _, snap := range snaps {
@@ -338,7 +342,7 @@ func dirtyNotice(snaps ...*Snapshot) string {
 			if len(paths) > len(shown) {
 				more = ", ..."
 			}
-			fmt.Fprintf(&b, "The workspace %s has %d uncommitted path(s): %s%s. Tell the user and ask how to proceed before you ask for go. A run does not set them aside: with github-pr on the task branch they are committed with the run's work, on another branch the run is refused, and git-catalog refuses a dirty tree.\n", ws, len(paths), strings.Join(shown, ", "), more)
+			fmt.Fprintf(&b, "The workspace %s has %d uncommitted path(s): %s%s. %s A run does not set them aside: with github-pr on the task branch they are committed with the run's work, on another branch the run is refused, and git-catalog refuses a dirty tree.\n", ws, len(paths), strings.Join(shown, ", "), more, advice)
 		}
 	}
 	return b.String()

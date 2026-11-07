@@ -325,6 +325,36 @@ func TestALandingHoldsItsFolderAgainstRuns(t *testing.T) {
 	w.approve()
 }
 
+func TestALandingOrUpdateInsideHoldsAParentRun(t *testing.T) {
+	w := newWorld(t)
+	parent := t.TempDir()
+	inner := filepath.Join(parent, "client")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snap := &Snapshot{Workspace: parent}
+	release := holdLanding(t, w, inner)
+	wantLandingBusy(t, folderHolder(w.bridge, snap, w.sid), inner)
+	reads := &Snapshot{Workspace: t.TempDir(), Dependencies: []Dependency{{Location: "models", Path: parent}}}
+	wantLandingBusy(t, folderHolder(w.bridge, reads, w.sid), inner)
+	release()
+	if err := folderHolder(w.bridge, reads, w.sid); err != nil {
+		t.Errorf("the landing is over, so a run that only reads the parent starts: %v", err)
+	}
+	if err := folderHolder(w.bridge, snap, w.sid); err != nil {
+		t.Errorf("the landing is over: %v", err)
+	}
+	unlock, err := lockUpdate(w.bridge, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	var busy *folderBusyError
+	if err := folderHolder(w.bridge, snap, w.sid); !errors.As(err, &busy) || !busy.update || busy.folder != inner {
+		t.Errorf("want an update refusal in %s: %v", inner, err)
+	}
+}
+
 func TestALandingHoldsItsFolderAgainstResume(t *testing.T) {
 	w := newWorld(t)
 	folder := t.TempDir()
@@ -533,5 +563,179 @@ func TestASequenceStepWaitsForAnUpdate(t *testing.T) {
 	w.approve()
 	if st := w.step(1); st.Status != "pending" || !strings.Contains(st.Reason, "waiting: an update is under way in the code folder "+folder) {
 		t.Fatalf("the step should wait for the update: %s %q", st.Status, st.Reason)
+	}
+}
+
+func TestFolderHolderSeesRunsInSubfoldersAndParents(t *testing.T) {
+	w := newWorld(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "client")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	holdingRun(t, w, "20260101-000001-sub", "s1", &Snapshot{Workspace: child})
+	var busy *folderBusyError
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: parent}, "s2"); !errors.As(err, &busy) || busy.run != "20260101-000001-sub" {
+		t.Fatalf("a run in a parent folder should wait for the one in its subfolder: %v", err)
+	}
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: filepath.Join(parent, "client2")}, "s2"); err != nil {
+		t.Fatalf("a sibling whose name starts the same is another folder: %v", err)
+	}
+	if h, err := runsHolding(w.bridge, parent); err != nil || len(h) != 1 {
+		t.Fatalf("runsHolding should see the run in the subfolder: %v %v", h, err)
+	}
+	if err := os.RemoveAll(filepath.Join(runsDir(w.bridge), "20260101-000001-sub")); err != nil {
+		t.Fatal(err)
+	}
+	holdingRun(t, w, "20260101-000002-parent", "s1", &Snapshot{Workspace: parent})
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: child}, "s2"); !errors.As(err, &busy) || busy.run != "20260101-000002-parent" {
+		t.Fatalf("a run in a subfolder should wait for the one in its parent: %v", err)
+	}
+	if h, err := runsHolding(w.bridge, child); err != nil || len(h) != 1 {
+		t.Fatalf("runsHolding should see the run in the parent: %v %v", h, err)
+	}
+}
+
+func TestRunsThatOnlyReadShareAcrossContainment(t *testing.T) {
+	w := newWorld(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "models")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dep := func(path, ws string) *Snapshot {
+		return &Snapshot{Workspace: ws, Dependencies: []Dependency{{Location: "models", Branch: "b", Path: path}}}
+	}
+	holdingRun(t, w, "20260101-000001-a", "s1", dep(parent, t.TempDir()))
+	if err := folderHolder(w.bridge, dep(child, t.TempDir()), "s2"); err != nil {
+		t.Fatalf("reads against reads share: %v", err)
+	}
+	var busy *folderBusyError
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: child}, "s2"); !errors.As(err, &busy) || busy.held != folderReads || busy.wanted != folderWorks {
+		t.Fatalf("a run working in a subfolder of a folder another reads is busy: %v", err)
+	}
+}
+
+func TestALandingOrUpdateInAParentHoldsASubfolder(t *testing.T) {
+	w := newWorld(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "client")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	release := holdLanding(t, w, parent)
+	var busy *folderBusyError
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: child}, "s1"); !errors.As(err, &busy) || !busy.landing || busy.folder != parent {
+		t.Fatalf("a landing in the parent should hold the subfolder: %v", err)
+	}
+	release()
+	holdUpdate(t, w, parent)
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: child}, "s1"); !errors.As(err, &busy) || !busy.update || busy.folder != parent {
+		t.Fatalf("an update in the parent should hold the subfolder: %v", err)
+	}
+}
+
+// publishStepWorld is a world whose first sequence is a single approved-on-go publish step running command in the task's workspace.
+func publishStepWorld(t *testing.T, command string) (*world, string) {
+	t.Helper()
+	w := newWorld(t)
+	c, err := loadConfigAt(w.bridge, "supernova/auth-refactor", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.mustSeq("do", "placeholder")
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		sf.Sequences[0].Steps[0] = &seqStep{Kind: "publish", Task: "supernova/auth-refactor", Command: command, Status: "pending"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return w, c.Workspace
+}
+
+func TestAPublishStepWaitsForAnUpdateThenLands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the command is sh")
+	}
+	marker := filepath.Join(t.TempDir(), "landed")
+	w, folder := publishStepWorld(t, "touch "+shellQuote(marker)+" #")
+	release := holdUpdate(t, w, folder)
+	if _, _, err := approveSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.step(1); st.Status != "pending" || !strings.Contains(st.Reason, "waiting: an update is under way in the code folder "+folder) || exists(marker) {
+		t.Fatalf("the publish should wait for the update: %s %q", st.Status, st.Reason)
+	}
+	res := w.stopHook()
+	if reason := dig(res, "reason"); res["decision"] != "block" || !strings.Contains(reason, "an update is under way") || !strings.Contains(reason, "once the folder is free") {
+		t.Fatalf("the Stop hook should hold the turn and say what the publish waits for: %v", res)
+	}
+	for i := 1; i < seqStopBudget; i++ {
+		w.stopHook()
+	}
+	if res := w.stopHook(); res != nil {
+		t.Errorf("the holds are limited: %v", res)
+	}
+	release()
+	w.stopHook()
+	if st := w.step(1); st.Status != "done" || !exists(marker) {
+		t.Errorf("the publish should land once the update is over: %s %q", st.Status, st.Reason)
+	}
+}
+
+func TestACustomPublishWaitsForRunsInTheFolder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the command is sh")
+	}
+	marker := filepath.Join(t.TempDir(), "landed")
+	w, folder := publishStepWorld(t, "touch "+shellQuote(marker)+" #")
+	sub := filepath.Join(folder, "pkg")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	holdingRun(t, w, "20260101-000001-other", "s2", &Snapshot{Task: "supernova/other", Workspace: sub})
+	if _, _, err := approveSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.step(1); st.Status != "pending" || !strings.Contains(st.Reason, "waiting: run 20260101-000001-other") || exists(marker) {
+		t.Fatalf("a run of another task in a subfolder holds the landing's folder: %s %q", st.Status, st.Reason)
+	}
+	r, err := openRun(w.bridge, "20260101-000001-other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status = "success"
+	r.save()
+	r.close()
+	w.stopHook()
+	if st := w.step(1); st.Status != "done" || !exists(marker) {
+		t.Errorf("the publish should land once the folder is free: %s %q", st.Status, st.Reason)
+	}
+}
+
+func TestACustomPublishWaitsForARunOfItsTask(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the command is sh")
+	}
+	w, _ := publishStepWorld(t, "true #")
+	holdingRun(t, w, "20260101-000001-own", "s2", &Snapshot{Task: "supernova/auth-refactor", Workspace: t.TempDir()})
+	if _, _, err := approveSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.step(1); st.Status != "pending" || !strings.Contains(st.Reason, "waiting: a run of supernova/auth-refactor is still going") {
+		t.Fatalf("the publish should wait for the run: %s %q", st.Status, st.Reason)
+	}
+}
+
+func TestAPublishThatFailsForAnotherReasonStillFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the command is sh")
+	}
+	w, _ := publishStepWorld(t, "echo boom; exit 3 #")
+	if _, _, err := approveSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.step(1); st.Status != "failed" || !strings.Contains(st.Reason, "boom") {
+		t.Fatalf("a failing command fails the step: %s %q", st.Status, st.Reason)
 	}
 }

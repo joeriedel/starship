@@ -660,6 +660,13 @@ func bindSession(bridge, session, run string) error {
 	return nil
 }
 
+// busyError is a refusal because something is under way that will end by itself: a publish step or a landing waits for it instead of failing.
+type busyError struct{ err error }
+
+func (e *busyError) Error() string { return e.err.Error() }
+
+func (e *busyError) Unwrap() error { return e.err }
+
 // folderBusyError is a run that can't start because another live run holds a code folder it needs, or because a landing or an update is under way there (landing or update, with no run named). held says how the other run holds it: it works in the folder, or it only reads it (applies a branch from it); wanted says the same for the run that can't start.
 type folderBusyError struct {
 	run, status, folder string
@@ -719,6 +726,40 @@ func landingLockFile(bridge, folder string) string { return folderLockFile(bridg
 
 func updateLockFile(bridge, folder string) string { return folderLockFile(bridge, "updates", folder) }
 
+// recordLockFolder writes the folder a lock file belongs to beside it, as <lock>.folder, so landingInside can find the locks held inside a folder. The folder file is plain, never locked, and written under lockFolders.
+func recordLockFolder(lock, folder string) error {
+	return os.WriteFile(lock+".folder", []byte(resolveEditFolder(folder, runtime.GOOS)), 0o644)
+}
+
+// landingInside reports the first folder strictly inside folder that a landing or an update holds, and which ("a landing" or "an update"); "" when none does. The caller holds lockFolders.
+func landingInside(bridge, folder string) (string, string, error) {
+	top := resolveEditFolder(folder, runtime.GOOS)
+	for _, kind := range []struct{ dir, what string }{{"landings", "a landing"}, {"updates", "an update"}} {
+		entries, err := readDirIfAny(filepath.Join(bridge, ".starship", kind.dir))
+		if err != nil {
+			return "", "", err
+		}
+		for _, e := range entries {
+			rec, ok := strings.CutSuffix(e.Name(), ".lock.folder")
+			if !ok {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(bridge, ".starship", kind.dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			inner := string(data)
+			if inner == "" || !pathWithin(inner, top, runtime.GOOS) || sameFolder(inner, top, runtime.GOOS) {
+				continue
+			}
+			if held, err := lockHeld(filepath.Join(bridge, ".starship", kind.dir, rec+".lock"), kind.what, inner); err != nil || held {
+				return inner, kind.what, err
+			}
+		}
+	}
+	return "", "", nil
+}
+
 // lockLanding marks a landing under way in a code folder until the returned func is called. The lock is shared, so landings in one folder (two tasks, or a publish command's child under its parent) don't refuse each other; a run starting there is refused by landingUnderWay, and a landing is refused while an update is under way there. Both the acquire and the probe run under lockFolders, so a probe never makes an acquire fail. Take it before checking that the landing's task has no live run.
 func lockLanding(bridge, folder string) (func(), error) {
 	fl, err := lockFolders(bridge)
@@ -729,17 +770,20 @@ func lockLanding(bridge, folder string) (func(), error) {
 	if updating, err := updateUnderWay(bridge, folder); err != nil {
 		return nil, err
 	} else if updating {
-		return nil, fmt.Errorf("an update is under way in the code folder %s; wait for it to finish", folder)
+		return nil, &busyError{fmt.Errorf("an update is under way in the code folder %s; wait for it to finish", folder)}
 	}
 	lock := landingLockFile(bridge, folder)
 	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		return nil, err
+	}
+	if err := recordLockFolder(lock, folder); err != nil {
 		return nil, err
 	}
 	l := flock.New(lock)
 	if ok, err := l.TryRLock(); err != nil {
 		return nil, fmt.Errorf("locking the landing in %s: %w", folder, err)
 	} else if !ok {
-		return nil, fmt.Errorf("the landing lock of %s is held exclusively", folder)
+		return nil, &busyError{fmt.Errorf("the landing lock of %s is held exclusively", folder)}
 	}
 	return func() { l.Unlock() }, nil
 }
@@ -758,6 +802,9 @@ func lockUpdate(bridge, folder string) (func(), error) {
 	}
 	lock := updateLockFile(bridge, folder)
 	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		return nil, err
+	}
+	if err := recordLockFolder(lock, folder); err != nil {
 		return nil, err
 	}
 	l := flock.New(lock)
@@ -800,6 +847,12 @@ func sameFolder(a, b, goos string) bool {
 	return foldPath(resolveEditFolder(a, goos), goos) == foldPath(resolveEditFolder(b, goos), goos)
 }
 
+// foldersOverlap reports whether two code folders are one, or one is inside the other, as the edit guard compares paths.
+func foldersOverlap(a, b, goos string) bool {
+	a, b = resolveEditFolder(a, goos), resolveEditFolder(b, goos)
+	return pathWithin(a, b, goos) || pathWithin(b, a, goos)
+}
+
 // folderHolds are the code folders a run takes. It works in every folder it builds, tests or writes into: its workspace and each side's. It only reads the checkouts of the dependency branches it applies, unless it works in them too.
 func folderHolds(snap *Snapshot) (works, reads []string) {
 	for _, sd := range snap.sides() {
@@ -815,7 +868,7 @@ func folderHolds(snap *Snapshot) (works, reads []string) {
 	return works, reads
 }
 
-// folderHolder finds the run, other than those in skip, that holds a code folder the snapshot's run needs: an approved run that has not finished. Failing that, a landing or an update under way in one of the folders holds it. The caller holds lockFolders. A run that works in a folder excludes every other run that works in it or reads it; runs that only read a folder share it. It returns nil when the folders are free. session is the session of the run that wants them.
+// folderHolder finds the run, other than those in skip, that holds a code folder the snapshot's run needs: an approved run that has not finished, in the same folder or one inside or around it. Failing that, a landing or an update under way in one of the folders, a folder around it or a folder inside it holds it, whether the run works in the folder or only reads it. The caller holds lockFolders. A run that works in a folder excludes every other run that works in it or reads it; runs that only read a folder share it. It returns nil when the folders are free. session is the session of the run that wants them.
 func folderHolder(bridge string, snap *Snapshot, session string, skip ...string) error {
 	myWorks, myReads := folderHolds(snap)
 	if len(myWorks) == 0 && len(myReads) == 0 {
@@ -824,7 +877,7 @@ func folderHolder(bridge string, snap *Snapshot, session string, skip ...string)
 	find := func(mine, theirs []string) string {
 		for _, m := range mine {
 			for _, t := range theirs {
-				if sameFolder(m, t, runtime.GOOS) {
+				if foldersOverlap(m, t, runtime.GOOS) {
 					return t
 				}
 			}
@@ -855,15 +908,21 @@ func folderHolder(bridge string, snap *Snapshot, session string, skip ...string)
 		}
 	}
 	for _, f := range append(slices.Clone(myWorks), myReads...) {
-		if landing, err := landingUnderWay(bridge, f); err != nil {
+		around, what, err := landingAround(bridge, f)
+		if err != nil {
 			return err
-		} else if landing {
-			return &folderBusyError{folder: f, landing: true}
 		}
-		if updating, err := updateUnderWay(bridge, f); err != nil {
-			return err
-		} else if updating {
-			return &folderBusyError{folder: f, update: true}
+		if around == "" {
+			around, what, err = landingInside(bridge, f)
+			if err != nil {
+				return err
+			}
+		}
+		if around != "" {
+			if around == resolveEditFolder(f, runtime.GOOS) {
+				around = f
+			}
+			return &folderBusyError{folder: around, landing: what == "a landing", update: what == "an update"}
 		}
 	}
 	return nil
@@ -1206,7 +1265,7 @@ func cmdRun(args []string, out io.Writer) error {
 	}
 	snap, err := createRun(bridge, o, false, out)
 	if err == nil && snap != nil {
-		fmt.Fprint(out, dirtyNotice(snap))
+		fmt.Fprint(out, dirtyNotice(false, snap))
 	}
 	return err
 }
@@ -1658,8 +1717,11 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		}
 	}
 	if unfinished {
-		if onlyWaitingSequenceUnfinished(bridge, session) {
+		switch waiting, building := onlyWaitingSequenceUnfinished(bridge, session); {
+		case building:
 			return nil, fmt.Errorf("this session has a sequence waiting for go; add the run with ensign sequence run, or ensign sequence discard first")
+		case waiting:
+			return nil, fmt.Errorf("this session has a sequence waiting for go again; add the run with ensign sequence run, type go to approve it, or ensign sequence halt first")
 		}
 		return nil, fmt.Errorf("this session has a sequence in progress; add the run with ensign sequence run, or ensign sequence halt first")
 	}

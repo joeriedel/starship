@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -419,6 +420,31 @@ func TestPlainRunRefusedWhileASequenceIsOpen(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ensign sequence discard") || strings.Contains(err.Error(), "ensign sequence halt") {
 		t.Fatalf("a sequence waiting for go should be cleared with discard, not halt: %v", err)
+	}
+}
+
+func TestPlainRunWithOnlyAReturnedSequenceIsToldItWaitsForGo(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "tell the user")
+	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
+		sf.Sequences[0].Returned = "sequence 1 was halted"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if readSeq(w.bridge, w.sid).openSeq() != nil {
+		t.Fatal("a returned sequence is not the one being built")
+	}
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	err := cmdRun([]string{"supernova/auth-refactor"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "waiting for go") || strings.Contains(err.Error(), "in progress") {
+		t.Fatalf("a returned sequence waits for go: %v", err)
+	}
+	if !strings.Contains(err.Error(), "ensign sequence halt") || strings.Contains(err.Error(), "ensign sequence discard") {
+		t.Fatalf("discard leaves a returned sequence alone, so the advice is go or halt: %v", err)
 	}
 }
 
@@ -3250,7 +3276,7 @@ func wantFailedPublishReportedOnce(t *testing.T, w *world, task string, atPrompt
 	}
 }
 
-// failedPublishAdvancedByResume is a stop-mode run, publish sequence whose run passed with the publish still pending, so that `ensign resume` is the advance that runs the publish. The resumed run is saved as running before the advance, so the publish is refused because that run is still going.
+// failedPublishAdvancedByResume is a stop-mode run, publish sequence whose run passed with the publish still pending, so that `ensign resume` is the advance that tries the publish. The resumed run is saved as running before the advance, so the publish waits for it; once the run ends, a plain advance runs the publish again and it fails, because the first publish already used up the tested record.
 func failedPublishAdvancedByResume(t *testing.T) (*world, string) {
 	w, ws, _, _ := githubWorld(t, "success", localTest)
 	task := "supernova/auth-refactor"
@@ -3290,11 +3316,23 @@ func failedPublishAdvancedByResume(t *testing.T) (*world, string) {
 	if err := cmdResume([]string{"--answer", "left", "--run", runID}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if got := w.step(2).Status; got != "failed" {
-		t.Fatalf("the resume's advance should fail the publish, it is %s", got)
+	if st := w.step(2); st.Status != "pending" || !strings.Contains(st.Reason, "waiting: a run of "+task+" is still going") {
+		t.Fatalf("the resume's advance should leave the publish waiting for the resumed run: %s %q", st.Status, st.Reason)
 	}
-	if got := w.step(2).Reason; !strings.Contains(got, "still going") {
-		t.Fatalf("the publish should be refused because the resumed run is live, its reason is %q", got)
+	r, err = openRun(w.bridge, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.State.Status = "success"
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+	if _, err := advanceSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.step(2); st.Status != "failed" || !strings.Contains(st.Reason, "no passing run") {
+		t.Fatalf("the publish should fail once the run has ended: %s %q", st.Status, st.Reason)
 	}
 	return w, task
 }
@@ -5162,6 +5200,56 @@ func TestPublishRunsACustomCommandOncePerLocation(t *testing.T) {
 	}
 }
 
+func TestPublishWaitingAtABusyLocationLandsOnlyWhatIsLeft(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "t", "models, client, server")
+	log := filepath.Join(t.TempDir(), "log")
+	c, err := loadConfigAt(w.bridge, task, "client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &seqStep{N: 1, Kind: "run", Task: task, Earlier: []string{"models"}, Runs: []*seqRun{{Run: "r1", Location: "client"}, {Run: "r2", Location: "server"}}}
+	pub := &seqStep{N: 2, Kind: "publish", Task: task, Command: `echo "$(basename "$PWD")" >> ` + shellQuote(log) + ` #`}
+	seq := &sequence{Steps: []*seqStep{run, pub}}
+	unlock, err := lockUpdate(w.bridge, c.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runPublish(w.bridge, w.sid, seq, pub)
+	if b := (*busyError)(nil); !errors.As(err, &b) || !strings.HasPrefix(err.Error(), "landed models (); waiting at client: ") || !strings.HasSuffix(err.Error(), "; not yet tried server") || strings.Contains(err.Error(), "failed") {
+		t.Fatalf("got %v", err)
+	}
+	if got := readPublishRecord(w.bridge, task); !reflect.DeepEqual(got, []string{"client", "server"}) {
+		t.Errorf("the record lists what is left: %v", got)
+	}
+	unlock()
+	out, err := runPublish(w.bridge, w.sid, seq, pub)
+	if err != nil || out != "landed models (), client (), server ()" {
+		t.Fatalf("got %q, %v", out, err)
+	}
+	if got, _ := os.ReadFile(log); string(got) != "models\nclient\nserver\n" {
+		t.Errorf("each location lands once:\n%s", got)
+	}
+	if publishRecorded(w.bridge, task) {
+		t.Error("everything landed, so no record is left")
+	}
+}
+
+func TestPublishWaitingWithTheRecordGoneHasNothingLeftToLand(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "t", "models, client, server")
+	log := filepath.Join(t.TempDir(), "log")
+	run := &seqStep{N: 1, Kind: "run", Task: task, Earlier: []string{"models"}, Runs: []*seqRun{{Run: "r1", Location: "client"}, {Run: "r2", Location: "server"}}}
+	pub := &seqStep{N: 2, Kind: "publish", Task: task, Landing: true, Landed: []string{"models ()"}, Command: `echo "$(basename "$PWD")" >> ` + shellQuote(log) + ` #`}
+	out, err := runPublish(w.bridge, w.sid, &sequence{Steps: []*seqStep{run, pub}}, pub)
+	if err != nil || out != "nothing was left to land; earlier attempts landed models ()" {
+		t.Fatalf("got %q, %v", out, err)
+	}
+	if got, _ := os.ReadFile(log); len(got) != 0 {
+		t.Errorf("nothing should land again:\n%s", got)
+	}
+}
+
 func TestPublishFailureOfACustomCommandNamesTheLocation(t *testing.T) {
 	w := locationsWorld(t)
 	task := locTask(t, w, "t", "models, client, server")
@@ -5180,6 +5268,19 @@ func TestPublishFailureOfACustomCommandNamesTheLocation(t *testing.T) {
 	}
 	if publishRecorded(w.bridge, task) {
 		t.Error("nothing is left, so the record is gone")
+	}
+}
+
+func TestPublishFailureAfterAnEarlierAttemptNamesWhatItLanded(t *testing.T) {
+	w := locationsWorld(t)
+	task := locTask(t, w, "t", "models, client")
+	if err := writePublishRecord(w.bridge, task, []string{"client"}); err != nil {
+		t.Fatal(err)
+	}
+	pub := &seqStep{N: 1, Kind: "publish", Task: task, Landing: true, Landed: []string{"models ()"}, Command: `echo boom >&2; exit 1 #`}
+	_, err := runPublish(w.bridge, w.sid, &sequence{Steps: []*seqStep{pub}}, pub)
+	if err == nil || !strings.HasPrefix(err.Error(), "landed models (); client failed: ") || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("got %v", err)
 	}
 }
 

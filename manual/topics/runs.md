@@ -4,7 +4,7 @@
 
 ## Uncommitted edits before a run
 
-`ensign run` (and a sequence step added with `ensign sequence run`) prints a notice when the workspace has uncommitted changes; a direct edit leaves such changes. Tell the user and ask how to proceed before you ask for `go`. A run does not set them aside: with github-pr on the task branch the run's commit sweeps them in with the coder's work, on another branch the run is refused at its first dispatch, and git-catalog refuses to record a dirty tree. Commit them first (with the user's approval) or put them away, as the user decides.
+`ensign run` (and a sequence step added with `ensign sequence run`) prints a notice when the workspace has uncommitted changes; a direct edit leaves such changes. Tell the user and ask how to proceed before you ask for `go`. A run a sequence creates after it is approved (the next subtask group, or a retry) gives the same notice, in the sequence's report or the retry's output, and starts without waiting: tell the user at once and `ensign sequence halt` if they don't want it to go on. A run does not set them aside: with github-pr on the task branch the run's commit sweeps them in with the coder's work, on another branch the run is refused at its first dispatch, and git-catalog refuses to record a dirty tree. Commit them first (with the user's approval) or put them away, as the user decides.
 
 ## Folders held by another session's run
 
@@ -12,7 +12,7 @@
 - A run that only applies a dependency branch from a folder shares it with other such runs.
 - A run that works in a folder is refused while another live run holds it, working or only reading.
 - A run that only reads a folder is refused while another live run works in it.
-- A run is also refused while a landing (a publish step or `github-pr merge`) is under way in a folder it works in or reads: `a landing is under way in the code folder <folder>; start this once it has finished`. It names no run; wait for the landing, then start the run again. Landings in one folder do not refuse each other.
+- A run is also refused while a landing (a publish step or `github-pr merge`) is under way in a folder it works in or reads, a folder around it or a folder inside it: `a landing is under way in the code folder <folder>; start this once it has finished`. It names no run; wait for the landing, then start the run again. Landings in one folder do not refuse each other.
 - An update (`github-pr update`) under way in a folder refuses a run the same way: `an update is under way in the code folder <folder>; start this once it has finished`. Wait for it, then start the run again.
 - A landing is refused while an approved run of another task holds the folder (works or reads) and is not on its own branch there yet; the refusal names the run: wait for that run to finish. An update is refused while any approved run holds the folder, unless the branch is already up to date.
 - When a run is refused because a live run of another session holds the folder, tell the user another session is doing work, name the run and the folder, and stop. Never suggest retiring that run or speculate that it is dead.

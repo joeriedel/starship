@@ -44,6 +44,8 @@ type seqStep struct {
 	Instruction string    `json:"instruction,omitempty"`
 	Version     string    `json:"version,omitempty"`  // release: the version to release, fixed when the step is added
 	Location    string    `json:"location,omitempty"` // release: the project location whose @release runs
+	Landing     bool      `json:"landing,omitempty"`  // publish: it has begun landing, so its later attempts land only what the publish record says is left
+	Landed      []string  `json:"landed,omitempty"`   // publish: what earlier attempts landed before one had to wait, as "location (outcome)"
 	Started     bool      `json:"started,omitempty"`  // release: release-run has begun the project's @release command
 	Token       string    `json:"token,omitempty"`    // release: identifies this start, so the result finds the step if the sequence moved to another session
 	Headline    string    `json:"headline,omitempty"`
@@ -533,16 +535,17 @@ func sequenceUnfinished(bridge, session string) (bool, error) {
 	return false, nil
 }
 
-// onlyWaitingSequenceUnfinished reports whether the sequence being built, which waits for go, has unfinished steps and no approved sequence does, so discard is the way to clear it.
-func onlyWaitingSequenceUnfinished(bridge, session string) bool {
+// onlyWaitingSequenceUnfinished reports whether no approved sequence has unfinished steps but one waiting for go does, so go or halt clears it; building is true when that is the sequence being built, which discard clears too. A returned sequence waits for go again.
+func onlyWaitingSequenceUnfinished(bridge, session string) (waiting, building bool) {
 	sf := readSeq(bridge, session)
 	for _, seq := range sf.Sequences {
 		if seq.Approved && seq.unfinished() {
-			return false
+			return false, false
 		}
+		waiting = waiting || seq.waiting() && seq.unfinished()
 	}
 	open := sf.openSeq()
-	return open != nil && open.unfinished()
+	return waiting, open != nil && open.unfinished()
 }
 
 func sequenceListing(bridge, session string) string {
@@ -974,7 +977,7 @@ func headlineWithSubtasks(h string, subtasks []string) string {
 	return h
 }
 
-// subtaskGroups splits subtasks, in order, into groups of consecutive ones that can run side by side: their locations are unrelated (neither depends on the other, directly or through others) and their code folders differ. A subtask without a location works in the run's default workspace, so it is a group of its own.
+// subtaskGroups splits subtasks, in order, into groups of consecutive ones that can run side by side: their locations are unrelated (neither depends on the other, directly or through others) and their code folders neither match nor nest. A subtask without a location works in the run's default workspace, so it is a group of its own.
 func subtaskGroups(bridge, task string, subs []subtask) [][]subtask {
 	project, _, _ := strings.Cut(task, "/")
 	locs, err := loadLocations(bridge, project)
@@ -984,7 +987,7 @@ func subtaskGroups(bridge, task string, subs []subtask) [][]subtask {
 		}
 		pa, errA := locationPathFor(bridge, project, a.Location)
 		pb, errB := locationPathFor(bridge, project, b.Location)
-		return errA != nil || errB != nil || sameFolder(pa, pb, runtime.GOOS)
+		return errA != nil || errB != nil || foldersOverlap(pa, pb, runtime.GOOS)
 	}
 	var groups [][]subtask
 	for _, s := range subs {
@@ -1088,6 +1091,11 @@ func (sf *seqFile) nextSubtaskGroup(bridge string, seq *sequence, st *seqStep, d
 	if err != nil {
 		fail(err)
 		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(dirtyNotice(true, snaps...)), "\n") {
+		if line != "" {
+			seq.queue(line)
+		}
 	}
 	fresh := newRunStep(task, max(st.Group, 1)+1, snaps)
 	st.Earlier = append(st.Earlier, st.runLocations(bridge)...)
@@ -1464,6 +1472,11 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 				}
 				st.Position = sf.position(st)
 				out, err := runPublish(bridge, session, seq, st)
+				if b := (*busyError)(nil); errors.As(err, &b) {
+					st.Reason = "waiting: " + err.Error()
+					parts = append(parts, fmt.Sprintf("step %s can't start yet: %v", st.ref(), err))
+					return parts, nil
+				}
 				if err != nil {
 					st.Status, st.Reason = "failed", err.Error()
 					sf.failed(bridge, seq, st)
@@ -1979,25 +1992,46 @@ func runPublish(bridge, session string, seq *sequence, st *seqStep) (string, err
 		return "", err
 	}
 	defer unlock()
-	targets := publishTargets(bridge, seq, st.N, st.Task)
+	var targets []string
+	if st.Landing {
+		// The record goes when its last location lands elsewhere or the task closes, so none left means all landed.
+		if targets = readPublishRecord(bridge, st.Task); len(targets) == 0 {
+			if len(st.Landed) == 0 {
+				return "nothing was left to land", nil
+			}
+			return "nothing was left to land; earlier attempts landed " + strings.Join(st.Landed, ", "), nil
+		}
+	} else {
+		targets = publishTargets(bridge, seq, st.N, st.Task)
+	}
 	if len(targets) == 1 && !publishRecorded(bridge, st.Task) {
 		return landLocation(bridge, session, st, targets[0])
 	}
 	left := slices.Clone(targets)
 	var landed []string
+	several := len(targets) > 1 || len(st.Landed) > 0
 	fail := func(failed string, err error) (string, error) {
-		return "", publishFailure(landed, left, failed, err, len(targets) > 1)
+		return "", publishFailure(append(slices.Clone(st.Landed), landed...), left, failed, err, several, false)
 	}
 	if err := writePublishRecord(bridge, st.Task, left); err != nil {
 		return fail("", err)
 	}
+	st.Landing = true
 	for i, loc := range targets {
 		out, err := landLocation(bridge, session, st, loc)
 		if err != nil {
-			left = targets[i+1:]
-			return "", publishFailure(landed, left, loc, err, len(targets) > 1)
+			busy := errors.As(err, new(*busyError))
+			failure := publishFailure(append(slices.Clone(st.Landed), landed...), targets[i+1:], loc, err, several, busy)
+			if busy {
+				st.Landed = append(st.Landed, landed...)
+			}
+			if busy {
+				// The record still lists this location, so the step lands from here once it is free.
+				failure = &busyError{failure}
+			}
+			return "", failure
 		}
-		if len(targets) > 1 {
+		if several {
 			landed = append(landed, fmt.Sprintf("%s (%s)", loc, out))
 		} else {
 			landed = append(landed, out)
@@ -2007,16 +2041,27 @@ func runPublish(bridge, session string, seq *sequence, st *seqStep) (string, err
 			return fail("", err)
 		}
 	}
-	if len(targets) == 1 {
+	if !several {
 		return landed[0], nil
 	}
-	return "landed " + strings.Join(landed, ", "), nil
+	return "landed " + strings.Join(append(slices.Clone(st.Landed), landed...), ", "), nil
 }
 
-// publishFailure words a failed publish. With several targets everything but the error is on the first line: what landed, what was never tried, then the failed location and its error.
-func publishFailure(landed, never []string, failed string, err error, several bool) error {
+// publishFailure words a failed publish. With several targets everything but the error is on the first line: what landed, what was never tried, then the failed location and its error. A location that is only busy is worded as waiting, with what was not yet tried after it.
+func publishFailure(landed, never []string, failed string, err error, several, busy bool) error {
 	if !several {
 		return err
+	}
+	if busy {
+		var parts []string
+		if len(landed) > 0 {
+			parts = append(parts, "landed "+strings.Join(landed, ", "))
+		}
+		parts = append(parts, fmt.Sprintf("waiting at %s: %v", failed, err))
+		if len(never) > 0 {
+			parts = append(parts, "not yet tried "+strings.Join(never, ", "))
+		}
+		return errors.New(strings.Join(parts, "; "))
 	}
 	var parts []string
 	if len(landed) > 0 {
@@ -2033,7 +2078,7 @@ func publishFailure(landed, never []string, failed string, err error, several bo
 	return errors.New(strings.Join(parts, "; "))
 }
 
-// landLocation lands one location of a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell.
+// landLocation lands one location of a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell once no run of the task and no run in the folder is going. A refusal because something is under way is a *busyError.
 func landLocation(bridge, session string, st *seqStep, loc string) (string, error) {
 	unlockLanding, err := lockLandingOf(bridge, st.Task, loc)
 	if err != nil {
@@ -2055,6 +2100,12 @@ func landLocation(bridge, session string, st *seqStep, loc string) (string, erro
 	}
 	c, err := loadConfigAt(bridge, st.Task, loc)
 	if err != nil {
+		return "", err
+	}
+	if err := taskRunning(bridge, st.Task); err != nil {
+		return "", err
+	}
+	if err := noRunHolds(bridge, c.Workspace); err != nil {
 		return "", err
 	}
 	// The command runs under the session's sequence lock; withSeq refuses an ensign child of it for this session at once, where it would wait out the handler timeout.
@@ -2120,7 +2171,7 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 	return
 }
 
-// waitingText says what a run step waits for when its run, or the step, is waiting for a busy code folder, else "".
+// waitingText says what a run or publish step waits for when its run, or the step, is waiting for a busy code folder or a landing, else "".
 func waitingText(st *seqStep) string {
 	var lines []string
 	if strings.HasPrefix(st.Reason, "waiting:") {
@@ -2184,7 +2235,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 				}
 				// Holds spent on a wait must not use up the holds that prompt the session to dispatch the lead once the step starts.
 				blocks := &st.Blocks
-				waitable := st.Kind == "run" && !seq.Halted && (st.Status == "pending" || st.holds())
+				waitable := (st.Kind == "run" || st.Kind == "publish") && !seq.Halted && (st.Status == "pending" || st.holds())
 				if waitable && todo == "" {
 					blocks = &st.WaitBlocks
 				}
@@ -2601,14 +2652,14 @@ func cmdSequence(args []string, out io.Writer) error {
 			if err != nil || snap == nil {
 				return err
 			}
-			fmt.Fprint(out, dirtyNotice(snap))
+			fmt.Fprint(out, dirtyNotice(false, snap))
 			return seqAdd(bridge, session, out, name, newRunStep(snap.Task, 0, []*Snapshot{snap}))
 		}
 		snaps, err := createGroupRuns(bridge, o.task, group, nil, o.staleOK, &o, out)
 		if err != nil {
 			return err
 		}
-		fmt.Fprint(out, dirtyNotice(snaps...))
+		fmt.Fprint(out, dirtyNotice(false, snaps...))
 		return seqAdd(bridge, session, out, name, newRunStep(o.task, 1, snaps))
 	case "publish":
 		if len(rest) != 1 {
@@ -3056,6 +3107,9 @@ func cmdSequence(args []string, out io.Writer) error {
 				text = sf.listing(bridge)
 			}
 			fmt.Fprint(out, text)
+			if err == nil {
+				fmt.Fprint(out, dirtyNotice(true, fresh...))
+			}
 			return err
 		})
 		if err != nil {
