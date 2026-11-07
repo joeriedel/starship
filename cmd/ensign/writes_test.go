@@ -168,8 +168,8 @@ func TestConnectorWritesSettings(t *testing.T) {
 	if !strings.Contains(want, `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep"`) || !strings.Contains(want, `"allow": ["Bash(ensign:*)", "mcp__supernova_mail__send", "mcp__supernova_wiki__post"]`) {
 		t.Fatalf("matcher and allow:\n%s", want)
 	}
-	if connectorSignature(hookSettings()) == connectorSignature(want) {
-		t.Fatal("turning writes on must change the signature, so the restart note shows")
+	if hookSettings() == want {
+		t.Fatal("turning writes on must change the settings")
 	}
 	b := t.TempDir()
 	f := filepath.Join(b, ".claude", "settings.json")
@@ -231,7 +231,7 @@ func TestWriteDecisionTable(t *testing.T) {
 			t.Errorf("%s: denied=%v %q, want %q", c.name, denied, reason, c.want)
 		}
 	}
-	if _, reason := w.callTool("", "", "mcp__supernova_other__thing", postA); !strings.Contains(reason, "restart claude") {
+	if _, reason := w.callTool("", "", "mcp__supernova_other__thing", postA); !strings.Contains(reason, "next session start") {
 		t.Errorf("an undeclared tool's reason says to add it and restart: %q", reason)
 	}
 	if _, reason := w.callTool("", "", wikiPost, postA); !strings.Contains(reason, "ensign help writes") || !strings.Contains(reason, "repeat this call unchanged") {
@@ -729,22 +729,6 @@ func TestStopWithUnreadableWritesState(t *testing.T) {
 	}
 	if res := w.replyStop("nothing", true); res != nil {
 		t.Errorf("a stop already forced to continue is let through: %v", res)
-	}
-}
-
-func TestSessionStartWarnsWritesNotGuarded(t *testing.T) {
-	w := writesWorld(t)
-	if err := link(w.bridge, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	write(t, filepath.Join(w.bridge, ".claude", "settings.json"), hookSettings())
-	res, _ := w.hook("SessionStart", map[string]any{"source": "startup"})
-	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); !strings.Contains(ctx, "connector writes are not guarded") {
-		t.Errorf("a settings change with writes declared must warn: %q", ctx)
-	}
-	res, _ = w.hook("SessionStart", map[string]any{"source": "startup"})
-	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); strings.Contains(ctx, "not guarded") {
-		t.Errorf("no warning when nothing changed: %q", ctx)
 	}
 }
 

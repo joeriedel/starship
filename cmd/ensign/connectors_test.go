@@ -298,11 +298,11 @@ func TestConnectorSessionStartPullsDeclaration(t *testing.T) {
 	if string(got) != hookSettingsFor(true, []string{"mcp__supernova_mail__read_message"}) {
 		t.Fatalf("a declaration pulled by the sync must keep its settings:\n%s", got)
 	}
-	if show := dig(res, "systemMessage"); !strings.Contains(show, "restart claude") {
-		t.Fatalf("a pulled declaration needs the restart note: %q", show)
+	if show := dig(res, "systemMessage"); !strings.Contains(show, "restart") {
+		t.Fatalf("a pulled declaration that adds a role needs the restart note: %q", show)
 	}
 	if ctx := dig(res, "hookSpecificOutput", "additionalContext"); !strings.Contains(ctx, "restarted") {
-		t.Fatalf("a pulled declaration needs the restart note in the context: %q", ctx)
+		t.Fatalf("a pulled declaration that adds a role needs the restart note in the context: %q", ctx)
 	}
 	res, _ = w.hook("SessionStart", map[string]any{"source": "startup"})
 	if show := dig(res, "systemMessage"); strings.Contains(show, "restart") {
@@ -330,8 +330,8 @@ func TestConnectorSessionStartNotReady(t *testing.T) {
 	}
 	write(t, f, hookSettings())
 	show, ctx := start()
-	if strings.Contains(show, "not ready") || !strings.Contains(ctx, "STARSHIP-READY") || !strings.Contains(show, "restart claude") || !strings.Contains(ctx, "restarted") {
-		t.Fatalf("a rewrite of the connector settings should be ready and ask for a restart: %q %q", show, ctx)
+	if strings.Contains(show, "not ready") || !strings.Contains(ctx, "STARSHIP-READY") || strings.Contains(show, "restart") || strings.Contains(ctx, "restarted") {
+		t.Fatalf("a rewrite of the connector settings should be ready and need no restart: %q %q", show, ctx)
 	}
 	if got, _ := os.ReadFile(f); string(got) != hookSettingsFor(true, []string{"mcp__supernova_mail__read_message"}) {
 		t.Fatalf("settings not rewritten:\n%s", got)
@@ -607,8 +607,8 @@ func TestResourceToolsUpgradeFromOlderMatcher(t *testing.T) {
 	want := hookSettingsFor(true, []string{supernovaRead})
 	older := strings.Replace(want, "|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep", "", 1)
 	write(t, f, older)
-	if connectorSignature(older) == connectorSignature(want) {
-		t.Fatal("the older matcher must differ in signature, so the restart notice shows")
+	if older == want {
+		t.Fatal("the older matcher must differ from the wanted form")
 	}
 	if err := upgradeHookSettings(b, bf); err != nil {
 		t.Fatal(err)
@@ -618,8 +618,8 @@ func TestResourceToolsUpgradeFromOlderMatcher(t *testing.T) {
 	}
 	// Moving a tool between roles keeps the settings' tool set; the role definitions carry the change.
 	moved := hookSettingsFor(true, connectorTools(map[string][]string{"scout": {supernovaRead}}))
-	if connectorSignature(moved) != connectorSignature(want) {
-		t.Fatal("moving a tool between roles must not change the settings signature")
+	if moved != want {
+		t.Fatal("moving a tool between roles must not change the settings")
 	}
 
 	edited := strings.Replace(hookSettings(), "SubagentHandback", "SubagentHandback|mcp__.*|ReadMcpResourceTool|Read|Grep", 1)
@@ -631,7 +631,7 @@ func TestResourceToolsUpgradeFromOlderMatcher(t *testing.T) {
 	}
 }
 
-func TestResourceToolsSessionStartRestartNotice(t *testing.T) {
+func TestResourceToolsSessionStartNeedsNoRestartNotice(t *testing.T) {
 	w := connWorld(t, readerRules)
 	if err := link(w.bridge, false, nil); err != nil {
 		t.Fatal(err)
@@ -640,8 +640,8 @@ func TestResourceToolsSessionStartRestartNotice(t *testing.T) {
 	older := strings.Replace(hookSettingsFor(true, []string{supernovaRead}), "|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep", "", 1)
 	write(t, f, older)
 	res, _ := w.hook("SessionStart", map[string]any{"source": "startup"})
-	if show := dig(res, "systemMessage"); strings.Contains(show, "not ready") || !strings.Contains(show, "restart claude") {
-		t.Fatalf("an upgrade from the older matcher needs the restart notice: %q", show)
+	if show := dig(res, "systemMessage"); strings.Contains(show, "not ready") || strings.Contains(show, "restart") {
+		t.Fatalf("an upgrade from the older matcher needs no restart notice: %q", show)
 	}
 }
 
@@ -815,5 +815,107 @@ func TestReadGrepRequiredOnlyForReader(t *testing.T) {
 	err := upgradeHookSettings(b, reader)
 	if err == nil || !strings.Contains(err.Error(), `"Read" matcher`) || !strings.Contains(err.Error(), `"Grep" matcher`) || !strings.Contains(err.Error(), "reads of reader/sources/ would not be checked") || strings.Contains(err.Error(), "connector calls would not") {
 		t.Fatalf("a reader declaration lacking Read and Grep should be reported for sources: %v", err)
+	}
+}
+
+func TestBashGuardNote(t *testing.T) {
+	handEdited := strings.Replace(withoutBash(hookSettings()), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
+	withMatcher := func(m string) string {
+		return strings.Replace(hookSettings(), "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|Bash", m, 1)
+	}
+	nonEnsign := `{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "supernova-lint"}]}]}}`
+	for _, c := range []struct {
+		name, settings string
+		note           string
+	}{
+		{"base form", hookSettings(), ""},
+		{"hand-edited without Bash", handEdited, "no Bash matcher"},
+		{"invalid JSON", "{", "can't be read"},
+		{"star", withMatcher("*"), ""},
+		{"empty", withMatcher(""), ""},
+		{"dot star", withMatcher(".*"), ""},
+		{"group", withMatcher("(Bash|Read)"), ""},
+		{"alternation", withMatcher("Edit|Bash"), ""},
+		{"longer name", withMatcher("Bashful"), "no Bash matcher"},
+		{"comma list", withMatcher("Edit,Bash"), ""},
+		{"comma space list", withMatcher("Edit, Bash"), ""},
+		{"space after bar", withMatcher("Edit| Bash"), ""},
+		{"unanchored pattern", withMatcher("Read|sh$"), ""},
+		{"dot", withMatcher("Bas."), ""},
+		{"lowercase", withMatcher("bash"), "no Bash matcher"},
+		{"prefix", withMatcher("Ba"), "no Bash matcher"},
+		{"bad pattern", withMatcher("[x"), "no Bash matcher"},
+		{"list with bad pattern", withMatcher("Edit|Bash|[x"), "no Bash matcher"},
+		{"non-ensign hook", nonEnsign, "no Bash matcher"},
+	} {
+		b := t.TempDir()
+		write(t, filepath.Join(b, ".claude", "settings.json"), c.settings)
+		got := bashGuardNote(b)
+		if c.note == "" && got != "" || c.note != "" && (!strings.Contains(got, c.note) || !strings.Contains(got, "aren't stopped from pushing")) {
+			t.Errorf("%s: note %q, want one with %q", c.name, got, c.note)
+		}
+	}
+	if got := bashGuardNote(t.TempDir()); !strings.Contains(got, "can't be read") {
+		t.Errorf("a missing file: %q", got)
+	}
+}
+
+func TestSessionStartNotesMissingBashGuard(t *testing.T) {
+	for _, declared := range []bool{false, true} {
+		extra, handEdited := "", strings.Replace(withoutBash(hookSettings()), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
+		if declared {
+			extra = readerRules
+			handEdited = strings.Replace(hookSettingsFor(true, []string{"mcp__supernova_mail__read_message"}), "SubagentHandback|Bash", "SubagentHandback", 1)
+			handEdited = strings.Replace(handEdited, `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
+		}
+		w := connWorld(t, extra)
+		if err := link(w.bridge, false, nil); err != nil {
+			t.Fatal(err)
+		}
+		f := filepath.Join(w.bridge, ".claude", "settings.json")
+		write(t, f, handEdited)
+		res, code := w.hook("SessionStart", map[string]any{"source": "startup"})
+		show, ctx := dig(res, "systemMessage"), dig(res, "hookSpecificOutput", "additionalContext")
+		if code != 0 || strings.Contains(show, "not ready") || !strings.Contains(ctx, "STARSHIP-READY") {
+			t.Fatalf("declared=%v: a bridge without the guard stays ready: %d %q %q", declared, code, show, ctx)
+		}
+		if !strings.Contains(ctx, "no Bash matcher") || !strings.Contains(show, "read-only guard missing: see .claude/settings.json") {
+			t.Errorf("declared=%v: the note is missing: %q %q", declared, show, ctx)
+		}
+		if got, _ := os.ReadFile(f); string(got) != handEdited {
+			t.Errorf("declared=%v: the hand-edited file must stay as it is", declared)
+		}
+		write(t, f, hookSettingsFor(declared, map[bool][]string{true: {"mcp__supernova_mail__read_message"}}[declared]))
+		res, _ = w.hook("SessionStart", map[string]any{"source": "startup"})
+		if show, ctx := dig(res, "systemMessage"), dig(res, "hookSpecificOutput", "additionalContext"); strings.Contains(show, "guard") || strings.Contains(ctx, "Bash matcher") {
+			t.Errorf("declared=%v: a guarded bridge gets no note: %q %q", declared, show, ctx)
+		}
+	}
+}
+
+func TestBashGuardNoteAfterFailedWrite(t *testing.T) {
+	b := t.TempDir()
+	f := filepath.Join(b, ".claude", "settings.json")
+	for _, c := range []struct {
+		name, settings string
+		note           bool
+	}{
+		{"known form without Bash", withoutBash(hookSettings()), true},
+		{"known form with Bash", hookSettingsWith(0, 0), false},
+	} {
+		write(t, f, c.settings)
+		if err := os.Chmod(f, 0o444); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte(c.settings), 0o644); err == nil {
+			t.Skip("the file can be written despite being read-only, as for a privileged user")
+		}
+		if err := upgradeHookSettings(b, &BridgeFile{}); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := bashGuardNote(b); (got != "") != c.note {
+			t.Errorf("%s: note %q, want note %v", c.name, got, c.note)
+		}
+		os.Chmod(f, 0o644)
 	}
 }

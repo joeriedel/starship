@@ -201,11 +201,6 @@ func ensignShaped(settings string) bool {
 	return strings.Contains(settings, `"Bash(ensign:*)"`+strings.Join(append([]string{""}, tools...), ", "))
 }
 
-// connectorSignature is what a settings file carries for connectors. The Bash matcher and other non-connector hook changes are deliberately not part of it, because claude reloads hook changes in a running session (observed on Claude Code 2.1.319), so they need no restart note.
-func connectorSignature(settings string) string {
-	return fmt.Sprint(strings.Contains(settings, connectorMatcher), strings.Contains(settings, connectorMatcherPrev), strings.Contains(settings, connectorMatcherOld), connectorToolStrRe.FindAllString(settings, -1))
-}
-
 // agentsSignature is the connector-relevant state of a bridge's role definitions: which files there are and each one's frontmatter tools: value. Other edits to a role's prompt are not part of it.
 func agentsSignature(bridge string) string {
 	// A folder that cannot be listed contributes no roles to the signature: it is compared before and after a sync, and an unreadable folder reads as no roles in both.
@@ -266,6 +261,58 @@ func missingConnectorSettings(data []byte, tools []string, reader bool) ([]strin
 	}
 	return missing, nil
 }
+
+// bashGuardNote is the session line for a bridge whose settings.json does not carry the read-only guard, the Bash entry in the matcher of the ensign PreToolUse hook, or "" when it does. It reads the file as it stands, so a rewrite that failed shows. The guard stops accidents and is not a security boundary, so a missing one is a note and not a not-ready error.
+func bashGuardNote(bridge string) string {
+	f := filepath.Join(bridge, ".claude", "settings.json")
+	data, err := os.ReadFile(f)
+	var s struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Matcher string `json:"matcher"`
+				Hooks   []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	if err == nil {
+		err = json.Unmarshal(data, &s)
+	}
+	if err != nil {
+		return fmt.Sprintf("starship: %s can't be read (%v), so explorers and reviewers aren't stopped from pushing", f, err)
+	}
+	for _, e := range s.Hooks.PreToolUse {
+		if !matcherMatches(e.Matcher, "Bash") {
+			continue
+		}
+		for _, h := range e.Hooks {
+			if strings.Contains(h.Command, " hook PreToolUse") {
+				return ""
+			}
+		}
+	}
+	return fmt.Sprintf("starship: %s has no Bash matcher on the ensign PreToolUse hook, so explorers and reviewers aren't stopped from pushing; add |Bash to that matcher", f)
+}
+
+// matcherMatches reports whether a hook matcher selects the tool as Claude Code 2.1.319 reads one: empty or * selects every tool; a matcher of only letters, digits, _, |, comma, space and - is a list of names split on | and comma, trimmed and compared exactly; anything else is an unanchored regular expression, and one that doesn't compile selects nothing. Go's regexp differs from the JavaScript engine on some syntax (a lookahead doesn't compile here), so such a matcher gets a false note. The reverse also exists: a matcher Go compiles and matches but JavaScript rejects or reads differently, such as (?i)bash or \ABash, gets no note although the hook may not fire on Bash. Both are accepted: it takes an unusual hand-edited matcher, and the guard stops accidents and isn't a security boundary.
+func matcherMatches(matcher, tool string) bool {
+	if matcher == "" || matcher == "*" {
+		return true
+	}
+	if matcherList.MatchString(matcher) {
+		for _, name := range strings.FieldsFunc(matcher, func(r rune) bool { return r == '|' || r == ',' }) {
+			if strings.TrimSpace(name) == tool {
+				return true
+			}
+		}
+		return false
+	}
+	re, err := regexp.Compile(matcher)
+	return err == nil && re.MatchString(tool)
+}
+
+var matcherList = regexp.MustCompile(`^[a-zA-Z0-9_|, -]+$`)
 
 // upgradeHookSettings brings a bridge's settings.json up to date (a timeout on the PreToolUse and SubagentStop hooks, the PostToolUse hook, SubagentHandback, and the connector parts bridge.yaml calls for) when it is a form ensign wrote, with or without connector parts, and commits that. Any other file is left alone, but when connectors are declared and it can't enforce them an error says what is missing. An invalid declaration is an error too.
 func upgradeHookSettings(bridge string, bf *BridgeFile) error {

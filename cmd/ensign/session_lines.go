@@ -21,8 +21,9 @@ func contextChars(s string) int { return len(utf16.Encode([]rune(s))) }
 const (
 	// Nothing else matters when starship isn't working in this session.
 	linePriorityNotReady = iota
-	// A restart is the one fix the user can't miss, and until it happens the guards don't apply.
+	// A restart is the one fix the user can't miss, and until it happens the changed role definitions don't apply.
 	linePriorityConnectorRestart
+	linePriorityBashGuard
 	linePriorityCarryErr
 	linePriorityLeftBehindHold
 	linePriorityStrandedRetire

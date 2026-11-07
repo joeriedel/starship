@@ -1193,16 +1193,16 @@ func pidRecord(bridge, pid string) string {
 	return filepath.Join(bridge, ".starship", "sessions", pid+".pid")
 }
 
-// processBaseline returns the connector and agents signatures the claude process pid started with: those recorded by its first SessionStart, or the given current ones, which it records, when there is no record or the source is startup (a new process that reused an old pid). A new process that reuses an old pid and starts with source resume reads the stale record, so it gets a false restart note until its next restart; telling that apart from an in-process /resume needs a process-instance identity.
-func processBaseline(bridge, pid, source, connectors, agents string) (string, string) {
+// processBaseline returns the agents signature the claude process pid started with: the one recorded by its first SessionStart, or the given current one, which it records, when there is no record or the source is startup (a new process that reused an old pid). A new process that reuses an old pid and starts with source resume reads the stale record, so it gets a false restart note until its next restart; telling that apart from an in-process /resume needs a process-instance identity. The record's file name and its Connectors field are from when it held a settings signature too; an old record still parses.
+func processBaseline(bridge, pid, source, agents string) string {
 	file := filepath.Join(bridge, ".starship", "sessions", pid+".connectors")
 	var base struct{ Connectors, Agents string }
 	if data, err := os.ReadFile(file); err == nil && source != "startup" && json.Unmarshal(data, &base) == nil {
-		return base.Connectors, base.Agents
+		return base.Agents
 	}
-	data, _ := json.Marshal(struct{ Connectors, Agents string }{connectors, agents})
+	data, _ := json.Marshal(struct{ Agents string }{agents})
 	writeFile(file, string(data))
-	return connectors, agents
+	return agents
 }
 
 // carryBind binds a run to the session that continues its own; a variable so a test can fail it.

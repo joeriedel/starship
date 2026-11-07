@@ -137,19 +137,20 @@ func (w *world) restartNote(pid, source string) bool {
 }
 
 func TestRestartNoteLastsUntilProcessRestarts(t *testing.T) {
-	w := connWorld(t, "")
+	w := connWorld(t, readerRules)
 	if err := link(w.bridge, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(w.bridge, ".claude", "settings.json"), hookSettings())
 	for _, pid := range []string{"111", "222"} {
 		if w.restartNote(pid, "startup") {
-			t.Fatalf("pid %s: nothing declared, so no note", pid)
+			t.Fatalf("pid %s: no role changed, so no note", pid)
 		}
 	}
-	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+repoRoot(t)+"\n"+readerRules)
+	role := filepath.Join(w.bridge, ".claude", "agents", "supernova-scout.md")
+	write(t, role, "---\nname: supernova-scout\ntools: Read\n---\nbody\n")
 	if !w.restartNote("111", "clear") {
-		t.Fatal("the process that saw the rewrite needs the note")
+		t.Fatal("the process that saw the role change needs the note")
 	}
 	for _, c := range []struct{ pid, source string }{{"111", "clear"}, {"111", "resume"}, {"111", "compact"}, {"222", "resume"}} {
 		if !w.restartNote(c.pid, c.source) {
@@ -171,7 +172,9 @@ func TestRestartNoteLastsUntilProcessRestarts(t *testing.T) {
 	if !w.restartNote("222", "clear") {
 		t.Error("pid 222 still runs with what it started with")
 	}
-	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+repoRoot(t)+"\n")
+	if err := os.Remove(role); err != nil {
+		t.Fatal(err)
+	}
 	if w.restartNote("222", "clear") {
 		t.Error("a change reverted to what the process started with stops the note")
 	}
@@ -183,8 +186,19 @@ func TestRestartNoteWithoutPidIsOneShot(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(w.bridge, ".claude", "settings.json"), hookSettings())
+	// A generated role missing and the manifest gone make the session start's link write the role again.
+	roles, _ := filepath.Glob(filepath.Join(w.bridge, ".claude", "agents", "*.md"))
+	if len(roles) == 0 {
+		t.Fatal("link generated no role to remove")
+	}
+	if err := os.Remove(roles[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(w.bridge, ".starship", "link.yaml")); err != nil {
+		t.Fatal(err)
+	}
 	if !w.restartNote("", "startup") {
-		t.Fatal("the rewrite needs the note")
+		t.Fatal("the role change needs the note")
 	}
 	if w.restartNote("", "clear") {
 		t.Error("with no CLAUDE_PID the note shows once")
@@ -418,5 +432,27 @@ func TestMatcherUpgradeNeedsNoRestartNote(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(f); string(data) != hookSettings() || !strings.Contains(string(data), "|Bash") {
 		t.Fatalf("the session start should add the matcher:\n%s", data)
+	}
+}
+
+func TestSettingsRewriteNeedsNoRestartNote(t *testing.T) {
+	for name, extra := range map[string]string{"reader": readerRules, "writes": writesYAML} {
+		w := connWorld(t, extra)
+		if err := link(w.bridge, false, nil); err != nil {
+			t.Fatal(err)
+		}
+		f := filepath.Join(w.bridge, ".claude", "settings.json")
+		write(t, f, hookSettings())
+		res, code := w.hook("SessionStart", map[string]any{"source": "startup"})
+		if code != 0 {
+			t.Fatalf("%s: SessionStart exited %d", name, code)
+		}
+		show, ctx := dig(res, "systemMessage"), dig(res, "hookSpecificOutput", "additionalContext")
+		if data, _ := os.ReadFile(f); string(data) == hookSettings() {
+			t.Fatalf("%s: the declaration should have rewritten the settings", name)
+		}
+		if strings.Contains(show, "restart") || strings.Contains(ctx, "restarted") || strings.Contains(ctx, "not guarded") {
+			t.Errorf("%s: a settings rewrite alone needs no note: %q %q", name, show, ctx)
+		}
 	}
 }

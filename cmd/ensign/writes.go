@@ -297,7 +297,7 @@ func writeDecision(bridge string, in *HookInput, rules map[string][]string, writ
 		if slices.Contains(connectorTools(rules), tool) || !strings.HasPrefix(tool, "mcp__") {
 			return sessionReadDenial(rules, tool)
 		}
-		return denial(fmt.Sprintf("%s is in neither connectors nor connector_writes in bridge.yaml, so it counts as a write and is refused; the user must add it to connector_writes and restart claude (ensign help writes)", tool))
+		return denial(fmt.Sprintf("%s is in neither connectors nor connector_writes in bridge.yaml, so it counts as a write and is refused; the user must add it to connector_writes, and its allow entry arrives at the next session start: /compact, /clear or restarting claude (ensign help writes)", tool))
 	}
 	if in.SessionID == "" {
 		return denial(fmt.Sprintf("%s is refused: the hook input has no session, so no approved write can be found", tool))
@@ -480,7 +480,7 @@ func writesAdd(bridge, session, tool string, stdin io.Reader, show func(*writesF
 	case !on:
 		return errors.New("connector writes are off: bridge.yaml has no connector_writes:")
 	case !slices.Contains(writes, tool):
-		return fmt.Errorf("%s is not in connector_writes in bridge.yaml; the user must add it and restart claude", tool)
+		return fmt.Errorf("%s is not in connector_writes in bridge.yaml; the user must add it, and its allow entry arrives at the next session start (/compact, /clear or restarting claude)", tool)
 	}
 	raw, err := io.ReadAll(stdin)
 	if err != nil {

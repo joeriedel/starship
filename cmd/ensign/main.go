@@ -450,12 +450,10 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		prev = strings.TrimSpace(string(data))
 		writeFile(pidRecord(bridge, pid), in.SessionID+"\n")
 	}
-	// A running claude keeps the settings and agents it started with, so they are read before the sync can change them, and ahead of every not-ready return.
-	settingsFile := filepath.Join(bridge, ".claude", "settings.json")
-	before, _ := os.ReadFile(settingsFile)
-	connectorsFrom, agentsFrom := connectorSignature(string(before)), agentsSignature(bridge)
+	// A running claude keeps the role definitions it started with, so they are read before the sync can change them, and ahead of every not-ready return.
+	agentsFrom := agentsSignature(bridge)
 	if pid := claudePID(); pid != "" {
-		connectorsFrom, agentsFrom = processBaseline(bridge, pid, in.Source, connectorsFrom, agentsFrom)
+		agentsFrom = processBaseline(bridge, pid, in.Source, agentsFrom)
 	}
 	clearErr := clearMoved(bridge, in.SessionID)
 	carryErr := errors.Join(clearErr, carryOverSession(bridge, in, prev))
@@ -566,19 +564,20 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if err := upgradeHookSettings(bridge, bf); err != nil {
 		return notReady(err)
 	}
-	after, _ := os.ReadFile(settingsFile)
-	restart := connectorsFrom != connectorSignature(string(after))
 	_, writesDeclared, _ := bf.connectorWrites()
+	var guardMissing bool
+	if note := bashGuardNote(bridge); note != "" {
+		lines.add(linePriorityBashGuard, note)
+		guardMissing = true
+	}
+	var restart bool
 	if rules, err := bf.connectorRules(); err == nil && (rules != nil || writesDeclared) && agentsFrom != agentsSignature(bridge) {
 		restart = true
 	}
 	removeOldExe(bridge)
 	ready := fmt.Sprintf("STARSHIP-READY ensign %s bridge %s\n", version, bridge)
 	if restart {
-		lines.add(linePriorityConnectorRestart, "starship: the connector settings in .claude/settings.json changed; claude must be restarted for them to apply")
-		if writesDeclared {
-			lines.add(linePriorityConnectorRestart, "starship: until claude is restarted, connector writes are not guarded")
-		}
+		lines.add(linePriorityConnectorRestart, "starship: the role definitions in .claude/agents changed; claude must be restarted for them to apply")
 	}
 	lines.add(linePriorityStrandedRetire, retryStrandedRetires(bridge, in.SessionID))
 	// The manual goes to the session through this hook, not CLAUDE.md, because Claude
@@ -620,7 +619,10 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	show := "Starship ready · bridge " + filepath.Base(bridge)
 	if restart {
-		show += " · connector settings changed: restart claude for them to apply"
+		show += " · role definitions changed: restart claude for them to apply"
+	}
+	if guardMissing {
+		show += " · read-only guard missing: see .claude/settings.json"
 	}
 	if version != "" && version != "dev" {
 		show += " · " + version

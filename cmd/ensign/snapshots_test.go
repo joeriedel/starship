@@ -247,8 +247,8 @@ func TestSettingsCarryReadAndGrepOnlyWhenDeclared(t *testing.T) {
 	f := filepath.Join(b, ".claude", "settings.json")
 	prev := strings.Replace(d, "|Read|Grep", "", 1)
 	write(t, f, prev)
-	if connectorSignature(prev) == connectorSignature(d) {
-		t.Fatal("the previous form differs in signature, so the restart notice shows")
+	if prev == d {
+		t.Fatal("the previous form differs from the declared one")
 	}
 	bf := &BridgeFile{Connectors: map[string][]string{"reader": {supernovaRead}}}
 	if err := upgradeHookSettings(b, bf); err != nil {

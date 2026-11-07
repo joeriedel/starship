@@ -438,21 +438,40 @@ func classifyTool(name string, args []string, depth int) string {
 	return ""
 }
 
-// gitChangesRemote reports whether a git command line (the words after git) writes to a remote: a push, unless it names an explicit filesystem path, or a git lfs push, lock or unlock, a git subtree push, a git svn dcommit or a git p4 submit. Global options before the subcommand are skipped, and only the value of -C, -c, --git-dir, --work-tree, --namespace, --config-env and --super-prefix is skipped with them; the value of any other global option is read as the subcommand.
+// gitChangesRemote reports whether a git command line (the words after git) writes to a remote: a push, unless it names an explicit filesystem path, or a git lfs push, lock or unlock, a git subtree push, a git svn dcommit or a git p4 submit. Global options before the subcommand are skipped: the options git is known to give a value (-C, -c, --attr-source and so on) take the next word with them, and the known flags and the words with an = take none. An option not on either list may or may not take a value, so the word after it is tried as the subcommand and, if it is not a write, skipped as the option's value. That errs on the side of refusing: `git --future-flag log push` is refused, though git would read log as the subcommand, so that a push behind a global option a later git adds is still caught.
 func gitChangesRemote(args []string) bool {
 	i := 0
 	for i < len(args) && strings.HasPrefix(args[i], "-") {
-		switch args[i] {
-		case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix":
+		w := args[i]
+		switch {
+		case slices.Contains(gitValueOptions, w):
 			i++
+		case slices.Contains(gitFlagOptions, w) || strings.Contains(w, "="):
+		default:
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				if gitSubcommandChangesRemote(args[i+1], args[i+2:]) {
+					return true
+				}
+				i++
+			}
 		}
 		i++
 	}
 	if i >= len(args) {
 		return false
 	}
-	rest := args[i+1:]
-	switch args[i] {
+	return gitSubcommandChangesRemote(args[i], args[i+1:])
+}
+
+// gitValueOptions are the global options git takes a value for as the next word; with an = the value is part of the word.
+var gitValueOptions = []string{"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--attr-source"}
+
+// gitFlagOptions are the global options git takes no value for.
+var gitFlagOptions = []string{"-p", "--paginate", "-P", "--no-pager", "--no-replace-objects", "--no-lazy-fetch", "--no-optional-locks", "--no-advice", "--bare", "--exec-path", "--html-path", "--man-path", "--info-path", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "-v", "--version", "-h", "--help"}
+
+// gitSubcommandChangesRemote reports whether the git subcommand sub with the words rest after it writes to a remote.
+func gitSubcommandChangesRemote(sub string, rest []string) bool {
+	switch sub {
 	case "push":
 		return !pushesToPath(rest)
 	case "lfs":
