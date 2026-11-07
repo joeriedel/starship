@@ -7,6 +7,8 @@ folder, and starship fetches what it needs into it. Run everything below from th
 the user named, which should be empty. If it already holds files, including a clone of
 this repository, stop and ask the user what to do with them; don't delete or move them.
 
+Claude Code 2.1.317 or newer is expected. `ensign setup` (which `init` runs) prints a warning when the installed one is older, and refuses nothing.
+
 1. Download the newest release's `ensign` for this machine, and let it set up the bridge:
 
    ```

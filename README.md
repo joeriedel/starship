@@ -10,7 +10,7 @@ Each task keeps a journal in a git repo you own, so you can read back what happe
 
 ## Getting started
 
-You need Claude Code and git, on Linux, Windows or macOS. If you use the `github-pr` extension, git must be 2.30 or newer. Claude handles the rest of the setup.
+You need Claude Code 2.1.317 or newer (`ensign setup` warns on an older one and refuses nothing) and git, on Linux, Windows or macOS. If you use the `github-pr` extension, git must be 2.30 or newer. Claude handles the rest of the setup.
 
 ### 1. Make a bridge
 
