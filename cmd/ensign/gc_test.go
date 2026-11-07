@@ -801,6 +801,21 @@ func TestGCKeepsPipelineOnlyFolderWhenLockHeld(t *testing.T) {
 	}
 }
 
+func TestGCKeepsPipelineOnlyFolderWhoseStateAppearsBeforeTheRecheck(t *testing.T) {
+	w := newWorld(t)
+	dir := pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
+	state := filepath.Join(dir, "state.json")
+	failSeam(t, &gcStat, func(p string) (fs.FileInfo, error) {
+		if p == state {
+			write(t, p, "{}")
+		}
+		return os.Stat(p)
+	})
+	if res := gcRuns(w.bridge, 500, 0); !exists(dir) || res.Removed != 0 {
+		t.Fatalf("a folder whose state.json exists once the lock is held must stay: %+v", res)
+	}
+}
+
 func TestGCKeepsPipelineOnlyFolderHeldBySequence(t *testing.T) {
 	w := newWorld(t)
 	dir := pipelineOnlyRun(t, w, "20240101-000001-supernova", pipelineOnlyAge+time.Minute)
@@ -2112,9 +2127,17 @@ func TestDeadLinkKeepsALinkWhenAPlainFileReadsAsNotExist(t *testing.T) {
 		t.Error("a missing run: dead")
 	}
 	fileAt(t, filepath.Join(runsDir(w.bridge), "20240101-000001-supernova"))
-	failSeam(t, &gcStat, statFailing("20240101-000001-supernova", fs.ErrNotExist))
+	consulted := false
+	fake := statFailing("20240101-000001-supernova", fs.ErrNotExist)
+	failSeam(t, &gcStat, func(p string) (fs.FileInfo, error) {
+		consulted = consulted || strings.HasSuffix(p, "20240101-000001-supernova")
+		return fake(p)
+	})
 	if deadLink(w.bridge, link) {
 		t.Error("a plain file on the run path: not dead")
+	}
+	if !consulted {
+		t.Error("the gcStat seam was never asked about the run path")
 	}
 }
 
@@ -2125,13 +2148,18 @@ func TestSessionBusyWhenAPlainFileReadsAsNotExist(t *testing.T) {
 		t.Error("a missing run: not busy")
 	}
 	fileAt(t, filepath.Join(runsDir(w.bridge), "20240101-000001-supernova"))
+	consulted := false
 	failSeam(t, &gcReadJSON, func(p string, v any) error {
 		if strings.HasSuffix(p, "state.json") {
+			consulted = true
 			return fs.ErrNotExist
 		}
 		return readJSON(p, v)
 	})
 	if !sessionBusy(w.bridge, "s7", nil) {
 		t.Error("a plain file on the run path: busy")
+	}
+	if !consulted {
+		t.Error("the gcReadJSON seam was never asked about state.json")
 	}
 }

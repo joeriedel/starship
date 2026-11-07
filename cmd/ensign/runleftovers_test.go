@@ -289,14 +289,22 @@ func TestGCKeepsAClearedRunWhenAPlainFileReadsAsNotExist(t *testing.T) {
 	tasks := filepath.Join(w.bridge, ".starship", "tasks")
 	os.RemoveAll(tasks)
 	write(t, tasks, "x")
+	consulted := false
 	failSeam(t, &gcReadDir, func(p string) ([]os.DirEntry, error) {
 		if p == tasks {
+			consulted = true
 			return nil, fs.ErrNotExist
 		}
 		return os.ReadDir(p)
 	})
 	var res gcResult
-	captureStderr(t, func() { res = gcRuns(w.bridge, 1, 0) })
+	stderr := captureStderr(t, func() { res = gcRuns(w.bridge, 1, 0) })
+	if !consulted {
+		t.Error("the gcReadDir seam was never asked about the tasks folder")
+	}
+	if !strings.Contains(stderr, fs.ErrNotExist.Error()) {
+		t.Errorf("the tested-records listing must come from the gcReadDir seam, so its error is the seam's: %q", stderr)
+	}
 	if !exists(dir) || res.OpenFailed != 1 {
 		t.Errorf("res = %+v, exists = %v", res, exists(dir))
 	}

@@ -424,7 +424,7 @@ func TestSessionIsToldRequestCommands(t *testing.T) {
 			t.Errorf("missing %q:\n%s", want, cmds)
 		}
 	}
-	if strings.Contains(helpText(w.bridge, w.session), "ensign") {
+	if strings.Contains(helpText(w.bridge, w.sid), "ensign") {
 		t.Errorf("help must not mention ensign")
 	}
 }

@@ -161,6 +161,7 @@ func gcRuns(bridge string, keep, max int) gcResult {
 			}
 			continue
 		}
+		// A save mid-replace holds this lock, so past TryLock state.json is settled and the unlocked first-pass read needs no not-found retry.
 		_, err := gcStat(filepath.Join(dir, "state.json"))
 		l.Unlock()
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {

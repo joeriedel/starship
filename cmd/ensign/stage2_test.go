@@ -1620,7 +1620,7 @@ func planetCP(t *testing.T, w *world) string {
 }
 
 func helpBoth(w *world) (string, string) {
-	return helpText(w.bridge, w.session), requestCommands(w.bridge)
+	return helpText(w.bridge, w.sid), requestCommands(w.bridge)
 }
 
 func TestHelpNamesBrokenPipelineFiles(t *testing.T) {
