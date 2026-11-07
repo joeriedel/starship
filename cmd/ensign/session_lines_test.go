@@ -276,3 +276,32 @@ func TestCouldNotRecordWithOverflowIsNotHeld(t *testing.T) {
 		t.Errorf("nothing should be held for a session without an id: %q", held)
 	}
 }
+
+// sessionLinesFloor is the least allowance the situational lines may be left with: room for the collapse line (about 75 characters) plus one of the largest realistic lines (a broken-extension row runs 200-400 characters).
+const sessionLinesFloor = 500
+
+// worstCaseAllowance is the allowance for the given manual with the longest realistic bridge path, version, project and task.
+func worstCaseAllowance(manual string) int {
+	bridge := "/supernova" + strings.Repeat("b", 190)
+	version := "supernova" + strings.Repeat("v", 11)
+	project := "supernova" + strings.Repeat("p", 21)
+	task := project + "/supernova" + strings.Repeat("t", 20)
+	head := readyHeading(version, bridge) + "\n" + manual
+	return sessionLinesAllowance(head, contextChars(reprintPointer(project, task)))
+}
+
+func TestManualLeavesRoomForSessionLines(t *testing.T) {
+	manual, err := os.ReadFile(filepath.Join(repoRoot(t), "manual", "session.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := worstCaseAllowance(string(manual)); got < sessionLinesFloor {
+		t.Errorf("the session lines are left %d characters in the worst case, under the floor of %d: the manual has grown into their room, so trim manual/session.md", got, sessionLinesFloor)
+	}
+}
+
+func TestSessionLinesFloorHasTeeth(t *testing.T) {
+	if got := worstCaseAllowance(strings.Repeat("x", manualLimit)); got >= sessionLinesFloor {
+		t.Errorf("a manual of %d bytes leaves %d, which is not under the floor of %d", manualLimit, got, sessionLinesFloor)
+	}
+}

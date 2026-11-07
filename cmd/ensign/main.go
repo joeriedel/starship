@@ -575,7 +575,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		restart = true
 	}
 	removeOldExe(bridge)
-	ready := fmt.Sprintf("STARSHIP-READY ensign %s bridge %s\n", version, bridge)
+	ready := readyHeading(version, bridge)
 	if restart {
 		lines.add(linePriorityConnectorRestart, "starship: the role definitions in .claude/agents changed; claude must be restarted for them to apply")
 	}
@@ -606,7 +606,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		project, _, _ := strings.Cut(task, "/")
 		if block, err := projectNotes(bridge, project); err == nil && block != "" {
 			reprint = block
-			pointer = fmt.Sprintf("\nnotes      projects/%s/project.md is too long to reprint here; run `ensign task open %s` to see it again\n", project, task)
+			pointer = reprintPointer(project, task)
 		}
 	}
 	ctx := head + lines.render(bridge, in.SessionID, head, contextChars(pointer))
@@ -934,4 +934,12 @@ func finishIfTerminal(r *RunFiles, wasTerminal bool, stderr io.Writer) error {
 		}
 	}
 	return nil
+}
+
+func readyHeading(version, bridge string) string {
+	return fmt.Sprintf("STARSHIP-READY ensign %s bridge %s\n", version, bridge)
+}
+
+func reprintPointer(project, task string) string {
+	return fmt.Sprintf("\nnotes      projects/%s/project.md is too long to reprint here; run `ensign task open %s` to see it again\n", project, task)
 }

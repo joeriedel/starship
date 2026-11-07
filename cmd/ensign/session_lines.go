@@ -82,9 +82,14 @@ const (
 	collapseNotHeldFmt = "starship: %d more session-start lines did not fit and could not be held.\n"
 )
 
+// sessionLinesAllowance is the number of characters the lines may take once the fixed text and the extra reserved characters are counted against the session-start budget.
+func sessionLinesAllowance(fixed string, extra int) int {
+	return manualLimit - sessionStartRoom - contextChars(fixed) - extra
+}
+
 // render is the text of the lines for a reply whose fixed text, with extra characters more reserved, takes the rest of the budget. Lines that don't fit are held for the session and counted in a last line. Holding is best effort: a failure, or a start with no session id, changes the wording of that line.
 func (c *sessionLines) render(bridge, session, fixed string, extra int) string {
-	allowance := manualLimit - sessionStartRoom - contextChars(fixed) - extra
+	allowance := sessionLinesAllowance(fixed, extra)
 	reserve := max(contextChars(fmt.Sprintf(collapseHeldFmt, len(c.lines))), contextChars(fmt.Sprintf(collapseNotHeldFmt, len(c.lines))))
 	print, collapsed := fitSessionLines(c.lines, allowance, reserve)
 	var b strings.Builder
