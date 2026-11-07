@@ -160,10 +160,12 @@ type sequence struct {
 	Halted   bool   `json:"halted,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 	Closed   bool   `json:"closed,omitempty"` // its end has been reported
-	// QueueStart marks a sequence approved when no earlier approved sequence was still open, so it starts a new queue for the Step X/Y count
-	QueueStart bool       `json:"queue_start,omitempty"`
-	Steps      []*seqStep `json:"steps"`
-	Report     string     `json:"report,omitempty"` // one-shot text for the session: publish outcomes as they happen, a keep-going sequence's failure report when it closes, and a stop-mode sequence's sentence naming the release steps a skip cancelled; cleared once a Stop hook or prompt has delivered it
+	// QueueStart marks a sequence approved when no earlier approved sequence was still open, so it starts a new queue for the Step X/Y count; it is cleared when the sequence goes back to needing go
+	QueueStart bool `json:"queue_start,omitempty"`
+	// Returned says why an approved sequence went back to not approved: the sequence ahead of it halted or ended with a failed or skipped step. It is cleared by go.
+	Returned string     `json:"returned,omitempty"`
+	Steps    []*seqStep `json:"steps"`
+	Report   string     `json:"report,omitempty"` // one-shot text for the session: publish outcomes as they happen, a keep-going sequence's failure report when it closes, a stop-mode sequence's sentence naming the release steps a skip cancelled, and the line naming the approved sequences returned to not approved when a sequence ends halted or with a failed step; cleared once a Stop hook or prompt has delivered it
 }
 
 type seqFile struct {
@@ -412,7 +414,7 @@ func (s *seqStep) counts() bool {
 	return true
 }
 
-// position says where a step stands among all the steps that run in its queue, such as "Step 5/26": the approved sequences from one QueueStart to the next. Closed sequences stay in the count within the queue so that it doesn't restart when the next queued sequence begins. A file without marks is one queue from its first approved sequence.
+// position says where a step stands among all the steps that run in its queue, such as "Step 5/26": the approved sequences from one QueueStart to the next; a sequence returned to not approved is out of the count until go approves it again. Closed sequences stay in the count within the queue so that it doesn't restart when the next queued sequence begins. A file without marks is one queue from its first approved sequence.
 func (sf *seqFile) position(st *seqStep) string {
 	x, y := 0, 0
 	for _, seq := range sf.Sequences {
@@ -531,7 +533,7 @@ func sequenceUnfinished(bridge, session string) (bool, error) {
 	return false, nil
 }
 
-// onlyWaitingSequenceUnfinished reports whether the sequence waiting for go has unfinished steps and no approved sequence does, so discard is the way to clear it.
+// onlyWaitingSequenceUnfinished reports whether the sequence being built, which waits for go, has unfinished steps and no approved sequence does, so discard is the way to clear it.
 func onlyWaitingSequenceUnfinished(bridge, session string) bool {
 	sf := readSeq(bridge, session)
 	for _, seq := range sf.Sequences {
@@ -587,14 +589,61 @@ func (s *sequence) nextPending() *seqStep {
 	return nil
 }
 
-// openSeq is the newest sequence when it still waits for go.
+// openSeq is the sequence being built: the newest one, when it is not approved, not halted and not returned. A returned sequence is never built on, so a new step starts a sequence after it.
 func (sf *seqFile) openSeq() *sequence {
 	if n := len(sf.Sequences); n > 0 {
-		if s := sf.Sequences[n-1]; !s.Approved && !s.Halted {
+		if s := sf.Sequences[n-1]; !s.Approved && !s.Halted && s.Returned == "" {
 			return s
 		}
 	}
 	return nil
+}
+
+// waiting reports that the sequence waits for go: not approved, not halted and not closed.
+func (s *sequence) waiting() bool { return !s.Approved && !s.Halted && !s.Closed }
+
+// nextToApprove is the sequence go approves: the first that waits for go. Sequences that wait are the tail of the unclosed ones, so approving in this order keeps the approved ones ahead of the rest.
+func (sf *seqFile) nextToApprove() *sequence {
+	for _, s := range sf.Sequences {
+		if s.waiting() {
+			return s
+		}
+	}
+	return nil
+}
+
+// returnQueued puts every approved sequence queued behind a closing sequence back to not approved when it ended halted or with a failed or skipped step, and queues one line naming them on the closing sequence's report. Their steps are left as they are.
+func (sf *seqFile) returnQueued(closing *sequence) {
+	var why string
+	switch {
+	case closing.Halted:
+		why = "was halted"
+	case slices.ContainsFunc(closing.Steps, func(s *seqStep) bool { return s.Status == "failed" && strings.HasPrefix(s.Reason, skipPrefix) }):
+		why = "ended with a skipped step"
+	case slices.ContainsFunc(closing.Steps, func(s *seqStep) bool { return s.Status == "failed" || s.Status == "skipped" }):
+		why = "ended with a failed step"
+	default:
+		return
+	}
+	var names []string
+	after := false
+	for _, seq := range sf.Sequences {
+		if seq == closing {
+			after = true
+			continue
+		}
+		if after && seq.Approved && !seq.Closed && !seq.Halted {
+			if !seq.unfinished() {
+				seq.Closed = true
+				continue
+			}
+			seq.Approved, seq.QueueStart, seq.Returned = false, false, closing.label()+" "+why
+			names = append(names, seq.label())
+		}
+	}
+	if len(names) > 0 {
+		closing.Report = joinReport(closing.Report, fmt.Sprintf("%s %s, so %s went back to not approved. Each needs its own go from the user; nothing in them has changed.", closing.label(), why, strings.Join(names, ", ")))
+	}
 }
 
 func (sf *seqFile) step(seqN, n int) (*sequence, *seqStep) {
@@ -656,7 +705,7 @@ func (sf *seqFile) stepRef(arg string) (*sequence, *seqStep, error) {
 	return seq, st, nil
 }
 
-// add appends a step to the open sequence, starting one with the given name if the newest is approved or halted.
+// add appends a step to the open sequence, starting one with the given name if the newest is approved, halted or returned.
 func (sf *seqFile) add(st *seqStep, name string) {
 	seq := sf.openSeq()
 	if seq == nil {
@@ -667,9 +716,9 @@ func (sf *seqFile) add(st *seqStep, name string) {
 	seq.Steps = append(seq.Steps, st)
 }
 
-// isOpen reports that a sequence still matters to the session: it has unfinished steps and is either approved or the one awaiting go.
+// isOpen reports that a sequence still matters to the session: it has unfinished steps and is either approved or waiting for go.
 func (sf *seqFile) isOpen(seq *sequence) bool {
-	return len(seq.Steps) > 0 && !seq.Closed && seq.unfinished() && (seq.Approved || seq == sf.openSeq())
+	return len(seq.Steps) > 0 && !seq.Closed && seq.unfinished() && (seq.Approved || seq.waiting())
 }
 
 // listing renders the open sequences only, so it stays short however many sequences a session has run.
@@ -680,6 +729,7 @@ func (sf *seqFile) listingAll(bridge string) string { return sf.render(bridge, t
 
 func (sf *seqFile) render(bridge string, all bool) string {
 	var b strings.Builder
+	next := sf.nextToApprove()
 	for _, seq := range sf.Sequences {
 		if len(seq.Steps) == 0 || (!all && !sf.isOpen(seq)) {
 			continue
@@ -690,6 +740,9 @@ func (sf *seqFile) render(bridge string, all bool) string {
 		}
 		if seq.Halted {
 			state += ", halted: " + seq.Reason
+		}
+		if seq.Returned != "" {
+			state += ", returned because " + seq.Returned
 		}
 		fmt.Fprintf(&b, "%s (mode %s, %s)\n", seq.label(), seq.Mode, state)
 		for _, st := range seq.Steps {
@@ -720,7 +773,7 @@ func (sf *seqFile) render(bridge string, all bool) string {
 				}
 			}
 		}
-		if !seq.Approved && !seq.Halted {
+		if seq == next {
 			b.WriteString("type go to approve the sequence\n")
 		}
 	}
@@ -1364,6 +1417,7 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 						parts = append(parts, fmt.Sprintf("%s finished with %d skipped steps: %s.", seq.label(), len(skips), strings.Join(skips, ", ")))
 					}
 				}
+				sf.returnQueued(seq)
 				break
 			}
 			switch st.Kind {
@@ -1692,7 +1746,7 @@ func (sf *seqFile) failureReport(bridge string, seq *sequence) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s ran in keep-going mode and did not do everything:\n%s\nTell the user this now, in plain words: what failed and why, what was skipped or cancelled because of it, and the state of the folders. Nothing is waiting for a decision, and you must not retry, skip or accept anything; the user decides what happens next.", seq.label(), strings.Join(lines, "\n"))
+	return fmt.Sprintf("%s ran in keep-going mode and did not do everything:\n%s\nTell the user this now, in plain words: what failed and why, what was skipped or cancelled because of it, and the state of the folders. No step is waiting for a decision, and you must not retry, skip or accept anything; the user decides what happens next.", seq.label(), strings.Join(lines, "\n"))
 }
 
 // decideBriefText is the requirement on the session's message to the user, for stop mode; the Stop hook repeats itself, so it asks for the whole brief every time.
@@ -2020,20 +2074,30 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 		return "", false, nil
 	}
 	err = withSeq(bridge, session, func(sf *seqFile) error {
-		seq := sf.openSeq()
+		seq := sf.nextToApprove()
 		if seq == nil {
 			return nil
 		}
+		seq.Returned = ""
 		seq.QueueStart = !slices.ContainsFunc(sf.Sequences, func(o *sequence) bool { return o != seq && o.Approved && !o.Closed })
 		ok, seq.Approved = true, true
 		text = fmt.Sprintf("%s approved (%d steps).", seq.label(), len(seq.Steps))
+		var others []string
+		for _, o := range sf.Sequences {
+			if o.waiting() {
+				others = append(others, o.label())
+			}
+		}
+		if len(others) > 0 {
+			text += fmt.Sprintf(" Still waiting for go: %s; each needs its own go.", strings.Join(others, ", "))
+		}
 		parts, err := sf.advanceParts(bridge, session)
 		reports := sf.takeReports()
 		heldSeq, heldStep := sf.held()
 		if len(parts) > 0 {
 			text += " " + strings.Join(parts, "\n")
 		} else if heldStep != nil {
-			text += " It starts when the step in progress finishes."
+			text += " It follows the sequence in progress and starts if that one ends clean; if it halts or ends with a failed or skipped step, this one goes back to needing go."
 		}
 		if heldStep != nil {
 			text += "\n\n" + sf.nowAt(heldStep)
@@ -2586,7 +2650,7 @@ func cmdSequence(args []string, out io.Writer) error {
 		return withSeq(bridge, session, func(sf *seqFile) error {
 			seq := sf.openSeq()
 			if seq == nil {
-				return fmt.Errorf("there is no sequence waiting for go; add a step first")
+				return fmt.Errorf("there is no sequence being built; add a step first")
 			}
 			seq.Mode = rest[0]
 			fmt.Fprint(out, sf.listing(bridge))
@@ -2610,7 +2674,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				}
 			}
 			if cur == nil {
-				cur = sf.openSeq()
+				cur = sf.nextToApprove()
 			}
 			if cur == nil {
 				return fmt.Errorf("there is no sequence to halt")
@@ -2717,9 +2781,9 @@ func cmdSequence(args []string, out io.Writer) error {
 				switch {
 				case err != nil:
 					return err
-				case seq.Closed || (!seq.Approved && seq != open):
+				case seq.Closed || (!seq.Approved && seq != open && seq.Returned == ""):
 					return fmt.Errorf("step %s is in a closed or halted sequence; only steps of the sequence waiting for go or of an approved, open sequence can be dropped", st.ref())
-				case seq.Approved && st.Status != "pending":
+				case seq != open && st.Status != "pending":
 					return fmt.Errorf("step %s is %s; only pending steps can be dropped", st.ref(), st.Status)
 				}
 				drop[st] = true
@@ -2733,6 +2797,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				}
 			}
 			removed, cancelled := 0, false
+			var closedNos []string
 			for _, seq := range sf.Sequences {
 				if seq == open {
 					kept := seq.Steps[:0:0]
@@ -2757,6 +2822,10 @@ func cmdSequence(args []string, out io.Writer) error {
 						cancelled = true
 					}
 				}
+				if seq.Returned != "" && !seq.Closed && !seq.unfinished() {
+					seq.Closed = true
+					closedNos = append(closedNos, strconv.Itoa(seq.N))
+				}
 			}
 			if open != nil && len(open.Steps) == 0 {
 				sf.Sequences = sf.Sequences[:len(sf.Sequences)-1]
@@ -2769,6 +2838,11 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			if text == "" {
 				text = sf.listing(bridge)
+			}
+			if text == "" && len(closedNos) == 1 {
+				text = fmt.Sprintf("sequence %s has no steps left and is closed\n", closedNos[0])
+			} else if text == "" && len(closedNos) > 1 {
+				text = fmt.Sprintf("sequences %s have no steps left and are closed\n", strings.Join(closedNos, ", "))
 			}
 			if text == "" && removed > 0 {
 				text = "no steps are left waiting for go\n"
@@ -2795,7 +2869,10 @@ func cmdSequence(args []string, out io.Writer) error {
 				return fmt.Errorf("%s is already halted and closes when the step still active finishes", sf.Sequences[n-1].label())
 			}
 			if seq == nil {
-				return fmt.Errorf("there is no sequence waiting for go to discard; an approved sequence is stopped with ensign sequence halt")
+				if next := sf.nextToApprove(); next != nil {
+					return fmt.Errorf("no sequence is being built to discard; %s went back to needing go, and discard leaves it alone: type go to approve it, or ensign sequence halt to close it", next.label())
+				}
+				return fmt.Errorf("there is no sequence being built to discard; an approved sequence is stopped with ensign sequence halt")
 			}
 			sf.reconcile(bridge)
 			for _, st := range seq.Steps {

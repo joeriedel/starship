@@ -641,6 +641,8 @@ func TestSequenceDecisionKeepsALaterSequencesStepFromHoldingTheTurn(t *testing.T
 				}
 				if kind == "do" {
 					w.mustSeq("accept", "1.1")
+					w.wantStatus("failed", "pending")
+					w.approve()
 					w.wantStatus("failed", "active")
 				}
 			})
@@ -776,7 +778,7 @@ func TestSequenceKeepGoingReportCoversEveryKindOfFailure(t *testing.T) {
 	}
 }
 
-func TestSequenceKeepGoingReportRidesOnALaterSequencesTodo(t *testing.T) {
+func TestSequenceKeepGoingReportIsDeliveredOnceWhenALaterSequenceWentBack(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("run", "supernova/auth-refactor")
 	w.mustSeq("mode", "keep-going")
@@ -786,8 +788,8 @@ func TestSequenceKeepGoingReportRidesOnALaterSequencesTodo(t *testing.T) {
 	w.approve()
 	w.failRun(lead)
 	first := dig(w.stopHook(), "reason")
-	if !strings.Contains(first, "next supernova chore") || strings.Count(first, "ran in keep-going mode") != 1 {
-		t.Errorf("the report goes in the todo block once:\n%s", first)
+	if strings.Count(first, "ran in keep-going mode") != 1 || !strings.Contains(first, "sequence 2 went back to not approved") {
+		t.Errorf("the report is delivered once and names the sequence that went back:\n%s", first)
 	}
 	for i := 0; i < 3; i++ {
 		if again := dig(w.stopHook(), "reason"); strings.Contains(again, "ran in keep-going mode") {
@@ -2593,12 +2595,10 @@ func TestSequencePublishOfASkippedTaskIsCancelledInALaterSequence(t *testing.T) 
 		runGit(t, ws, "checkout", "-q", "task/auth-refactor")
 		w.mustSeq("skip", "1.1")
 		var out string
-		if queuedFirst {
-			out = dig(w.stopHook(), "reason")
-		} else {
+		if !queuedFirst {
 			w.mustSeq("publish", task)
-			out = w.goContext()
 		}
+		out = w.goContext()
 		if !strings.Contains(out, "step 2.1 (publish supernova/auth-refactor) cancelled: step 1.1 was skipped") || strings.Contains(out, "Step 0/") {
 			t.Errorf("queuedFirst=%v: the session should be told of the cancel, with no position:\n%s", queuedFirst, out)
 		}
@@ -2911,6 +2911,7 @@ func TestSequencePublishIsCancelledWhenTheRetrySucceededBeforeALaterSkip(t *test
 	lead, _ = w.spawn("", "", "orchestrator")
 	w.failRun(lead)
 	w.mustSeq("skip", "2.1")
+	w.approve()
 	w.wantStatus("done", "failed", "cancelled")
 	if got := runGit(t, ".", "--git-dir", remote, "rev-parse", "main"); got != mainBefore {
 		t.Errorf("nothing may be pushed to main: %s", got)
@@ -5432,5 +5433,281 @@ func TestSequenceDroppedReleaseWithSkipLikeReasonIsNotSaidToBeSkipCancelled(t *t
 	}
 	if got := w.released(); got != "" {
 		t.Errorf("nothing should have been released: %q", got)
+	}
+}
+
+// queuedBehind approves sequence 1, a run step in the given mode, and queues sequences 2 "second" and 3 "third", one do step each, approved behind it. It returns the lead of the run.
+func queuedBehind(t *testing.T, mode string) (*world, string) {
+	t.Helper()
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	if mode != modeStop {
+		w.mustSeq("mode", mode)
+	}
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.mustSeq("do", "second supernova chore", "--name", "second")
+	w.approve()
+	w.mustSeq("do", "third supernova chore", "--name", "third")
+	w.approve()
+	return w, lead
+}
+
+// wantReturned checks that the sequences after the first went back to not approved with their steps untouched, and that the first one's closing report names them once.
+func wantReturned(t *testing.T, w *world, why string) {
+	t.Helper()
+	sf := readSeq(w.bridge, w.sid)
+	if len(sf.Sequences) != 3 {
+		t.Fatalf("want 3 sequences:\n%s", sf.listingAll(w.bridge))
+	}
+	for _, seq := range sf.Sequences[1:] {
+		if seq.Approved || seq.Closed || seq.Halted || seq.QueueStart || !strings.Contains(seq.Returned, why) {
+			t.Errorf("%s should be returned (%q): %+v", seq.label(), why, seq)
+		}
+		if len(seq.Steps) != 1 || seq.Steps[0].Status != "pending" {
+			t.Errorf("%s should keep its pending step: %+v", seq.label(), seq.Steps)
+		}
+	}
+	reports := takeSequenceReports(w.bridge, w.sid)
+	if n := strings.Count(reports, "went back to not approved"); n != 1 || !strings.Contains(reports, `sequence 2 "second", sequence 3 "third" went back to not approved`) || !strings.Contains(reports, why) {
+		t.Errorf("the report should name both returned sequences once, got %d:\n%s", n, reports)
+	}
+	if again := takeSequenceReports(w.bridge, w.sid); again != "" {
+		t.Errorf("the report was delivered twice:\n%s", again)
+	}
+}
+
+func TestSequenceKeepGoingFailureReturnsTheApprovedSequencesBehindIt(t *testing.T) {
+	w, lead := queuedBehind(t, modeKeepGoing)
+	w.failRun(lead)
+	w.wantStatus("failed", "pending", "pending")
+	reason := dig(w.stopHook(), "reason")
+	if strings.Count(reason, "went back to not approved") != 1 || !strings.Contains(reason, `sequence 2 "second", sequence 3 "third"`) {
+		t.Errorf("the Stop hook should deliver the line once:\n%s", reason)
+	}
+	if again := dig(w.stopHook(), "reason"); strings.Contains(again, "went back to not approved") {
+		t.Errorf("the line was repeated:\n%s", again)
+	}
+	sf := readSeq(w.bridge, w.sid)
+	if sf.Sequences[1].Approved || sf.Sequences[2].Approved || !strings.Contains(sf.Sequences[1].Returned, "ended with a failed step") {
+		t.Errorf("both should be returned:\n%s", sf.listingAll(w.bridge))
+	}
+}
+
+func TestSequenceSkipInStopModeReturnsTheApprovedSequencesBehindIt(t *testing.T) {
+	w, lead := queuedBehind(t, modeStop)
+	w.failRun(lead)
+	w.mustSeq("skip", "1.1")
+	w.wantStatus("failed", "pending", "pending")
+	wantReturned(t, w, "ended with a skipped step")
+}
+
+func TestSequenceAcceptHaltReturnsTheApprovedSequencesBehindIt(t *testing.T) {
+	w, lead := queuedBehind(t, modeStop)
+	w.failRun(lead)
+	w.mustSeq("accept", "1.1")
+	w.wantStatus("failed", "pending", "pending")
+	wantReturned(t, w, "was halted")
+}
+
+func TestSequenceHaltWithARunActiveReturnsTheSequencesBehindItAtTheClose(t *testing.T) {
+	w, lead := queuedBehind(t, modeStop)
+	w.mustSeq("halt")
+	sf := readSeq(w.bridge, w.sid)
+	if sf.Sequences[0].Closed || !sf.Sequences[1].Approved || !sf.Sequences[2].Approved {
+		t.Fatalf("the halted sequence is still open and the others stay approved until it closes:\n%s", sf.listingAll(w.bridge))
+	}
+	w.failRun(lead)
+	if !readSeq(w.bridge, w.sid).Sequences[0].Closed {
+		t.Fatal("the run's end should close the halted sequence")
+	}
+	wantReturned(t, w, "was halted")
+}
+
+func TestSequenceHaltByHandReturnsTheApprovedSequenceBehindIt(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "first supernova chore")
+	w.approve()
+	w.mustSeq("do", "second supernova chore")
+	w.approve()
+	w.mustSeq("halt")
+	w.wantStatus("cancelled", "pending")
+	sf := readSeq(w.bridge, w.sid)
+	if seq := sf.Sequences[1]; seq.Approved || seq.Closed || !strings.Contains(seq.Returned, "was halted") {
+		t.Errorf("sequence 2 should be returned:\n%s", sf.listingAll(w.bridge))
+	}
+	if !strings.Contains(takeSequenceReports(w.bridge, w.sid), "sequence 2 went back to not approved") {
+		t.Error("the closing report should name sequence 2")
+	}
+}
+
+func TestSequenceCleanCloseStartsTheNextApprovedSequence(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("do", "first supernova chore")
+	w.approve()
+	w.mustSeq("do", "second supernova chore")
+	w.approve()
+	w.mustSeq("done", "1.1")
+	w.wantStatus("done", "active")
+	if r := readSeq(w.bridge, w.sid).Sequences[1].Returned; r != "" {
+		t.Errorf("nothing was returned: %q", r)
+	}
+}
+
+func TestSequenceReturnedSequencesNeedTheirOwnGoInOrder(t *testing.T) {
+	w, lead := queuedBehind(t, modeKeepGoing)
+	w.failRun(lead)
+	reply := w.goContext()
+	if !strings.Contains(reply, `sequence 2 "second" approved`) || !strings.Contains(reply, `Still waiting for go: sequence 3 "third"`) || strings.Count(reply, "went back to not approved") != 1 {
+		t.Errorf("the go reply should approve sequence 2, name sequence 3 and carry the report once:\n%s", reply)
+	}
+	w.wantStatus("failed", "active", "pending")
+	if readSeq(w.bridge, w.sid).Sequences[2].Approved {
+		t.Fatal("sequence 3 must not be approved by the first go")
+	}
+	w.mustSeq("done", "2.1")
+	w.wantStatus("failed", "done", "pending")
+	if seq := readSeq(w.bridge, w.sid).Sequences[2]; seq.Approved || seq.Returned == "" {
+		t.Fatalf("sequence 3 must wait for its own go: %+v", seq)
+	}
+	if reply := w.goContext(); !strings.Contains(reply, `sequence 3 "third" approved`) || !strings.Contains(reply, "third supernova chore") {
+		t.Errorf("the second go should start sequence 3:\n%s", reply)
+	}
+	w.wantStatus("failed", "done", "active")
+	if seq := readSeq(w.bridge, w.sid).Sequences[2]; seq.Returned != "" || !seq.Approved {
+		t.Errorf("go should clear the marker: %+v", seq)
+	}
+}
+
+func TestSequenceReportOfReturnedSequencesRidesOnTheNextPrompt(t *testing.T) {
+	w, lead := queuedBehind(t, modeKeepGoing)
+	w.failRun(lead)
+	if ctx := w.say("what happened?"); strings.Count(ctx, "went back to not approved") != 1 {
+		t.Errorf("the next prompt should carry the line once:\n%s", ctx)
+	}
+	if ctx := w.say("and now?"); strings.Contains(ctx, "went back to not approved") {
+		t.Errorf("the line was repeated:\n%s", ctx)
+	}
+}
+
+func TestSequenceStepAddedWhileSequencesAreReturnedStartsANewSequence(t *testing.T) {
+	w, lead := queuedBehind(t, modeKeepGoing)
+	w.failRun(lead)
+	w.mustSeq("do", "fourth supernova chore")
+	sf := readSeq(w.bridge, w.sid)
+	if len(sf.Sequences) != 4 || len(sf.Sequences[1].Steps) != 1 || len(sf.Sequences[2].Steps) != 1 || sf.Sequences[3].Returned != "" || sf.Sequences[3].Approved {
+		t.Fatalf("the step should start sequence 4:\n%s", sf.listingAll(w.bridge))
+	}
+	w.mustSeq("do", "fifth supernova chore")
+	if sf := readSeq(w.bridge, w.sid); len(sf.Sequences) != 4 || len(sf.Sequences[3].Steps) != 2 {
+		t.Errorf("a second step joins sequence 4:\n%s", sf.listingAll(w.bridge))
+	}
+	w.goContext()
+	sf = readSeq(w.bridge, w.sid)
+	if !sf.Sequences[1].Approved || sf.Sequences[2].Approved || sf.Sequences[3].Approved {
+		t.Errorf("go approves sequence 2 only:\n%s", sf.listingAll(w.bridge))
+	}
+}
+
+func TestSequenceListingShowsEveryWaitingSequenceAndAsksForGoOnce(t *testing.T) {
+	w, lead := queuedBehind(t, modeKeepGoing)
+	w.failRun(lead)
+	out := sequenceListing(w.bridge, w.sid)
+	if n := strings.Count(out, "returned because sequence 1 ended with a failed step"); n != 2 {
+		t.Errorf("both sequences should say why they went back, got %d:\n%s", n, out)
+	}
+	if n := strings.Count(out, "type go to approve the sequence"); n != 1 || strings.Index(out, "type go to approve the sequence") > strings.Index(out, "sequence 3") {
+		t.Errorf("go is asked for once, under sequence 2:\n%s", out)
+	}
+}
+
+func TestSequenceDropAndHaltReachAReturnedSequence(t *testing.T) {
+	w, lead := queuedBehind(t, modeKeepGoing)
+	w.failRun(lead)
+	_, err := w.seq("discard")
+	if err == nil || !strings.Contains(err.Error(), "went back to needing go") {
+		t.Errorf("discard should say what to do: %v", err)
+	}
+	w.mustSeq("drop", "3.1")
+	sf := readSeq(w.bridge, w.sid)
+	if len(sf.Sequences) != 3 || sf.Sequences[2].Steps[0].Status != "cancelled" || sf.Sequences[2].Approved {
+		t.Errorf("drop should cancel the step and keep the sequence:\n%s", sf.listingAll(w.bridge))
+	}
+	if !sf.Sequences[2].Closed {
+		t.Errorf("dropping its only step should close sequence 3:\n%s", sf.listingAll(w.bridge))
+	}
+	w.mustSeq("halt")
+	sf = readSeq(w.bridge, w.sid)
+	if s2 := sf.Sequences[1]; !s2.Halted || !s2.Closed || s2.Steps[0].Status != "cancelled" {
+		t.Errorf("halt should close the first waiting sequence:\n%s", sf.listingAll(w.bridge))
+	}
+	if s3 := sf.Sequences[2]; s3.Halted || s3.Approved {
+		t.Errorf("sequence 3 is left alone:\n%s", sf.listingAll(w.bridge))
+	}
+}
+
+func TestSequenceDroppingTheLastStepOfTwoReturnedSequencesNamesBoth(t *testing.T) {
+	w, lead := queuedBehind(t, modeKeepGoing)
+	w.failRun(lead)
+	if out := w.mustSeq("drop", "2.1", "3.1"); !strings.Contains(out, "sequences 2, 3 have no steps left and are closed") {
+		t.Errorf("dropping both steps should name both sequences:\n%s", out)
+	}
+}
+
+func TestSequenceDroppingEveryStepOfAReturnedSequenceClosesIt(t *testing.T) {
+	w, lead := queuedBehind(t, modeKeepGoing)
+	w.failRun(lead)
+	w.mustSeq("drop", "2.1")
+	sf := readSeq(w.bridge, w.sid)
+	if !sf.Sequences[1].Closed {
+		t.Fatalf("sequence 2 has nothing left to run and should be closed:\n%s", sf.listingAll(w.bridge))
+	}
+	if next := sf.nextToApprove(); next != sf.Sequences[2] {
+		t.Errorf("go should skip the closed sequence and take sequence 3, got %v", next)
+	}
+	out := sequenceListing(w.bridge, w.sid)
+	if strings.Contains(out, "second") || strings.Count(out, "type go to approve the sequence") != 1 || strings.Index(out, "type go to approve the sequence") < strings.Index(out, "sequence 3") {
+		t.Errorf("only sequence 3 is listed, with the go line under it:\n%s", out)
+	}
+	if out := w.mustSeq("drop", "3.1"); !strings.Contains(out, "sequence 3 has no steps left and is closed") {
+		t.Errorf("dropping the last step should say sequence 3 is closed:\n%s", out)
+	}
+	if waiting, err := goWaiting(w.bridge, w.sid); err != nil || waiting {
+		t.Errorf("nothing waits for go: %v, %v", waiting, err)
+	}
+	if out := sequenceListing(w.bridge, w.sid); strings.Contains(out, "type go") {
+		t.Errorf("nothing is listed to approve:\n%s", out)
+	}
+	w.mustSeq("do", "fourth supernova chore")
+	if out := sequenceListing(w.bridge, w.sid); strings.Count(out, "type go to approve the sequence") != 1 {
+		t.Errorf("the new sequence should ask for go:\n%s", out)
+	}
+}
+
+func TestSequenceQueuedSequenceWithNoStepsLeftIsClosedAtTheReset(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("mode", modeKeepGoing)
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.mustSeq("do", "second supernova chore", "--name", "second")
+	w.approve()
+	w.mustSeq("do", "third supernova chore", "--name", "third")
+	w.approve()
+	w.mustSeq("drop", "2.1")
+	w.failRun(lead)
+	sf := readSeq(w.bridge, w.sid)
+	if s2 := sf.Sequences[1]; !s2.Closed || s2.Returned != "" {
+		t.Errorf("sequence 2 should be closed, not returned:\n%s", sf.listingAll(w.bridge))
+	}
+	if s3 := sf.Sequences[2]; s3.Approved || s3.Returned == "" {
+		t.Errorf("sequence 3 should be returned:\n%s", sf.listingAll(w.bridge))
+	}
+	if next := sf.nextToApprove(); next != sf.Sequences[2] {
+		t.Errorf("go should take sequence 3, got %v", next)
+	}
+	reports := takeSequenceReports(w.bridge, w.sid)
+	if !strings.Contains(reports, `sequence 3 "third" went back to not approved`) || strings.Contains(reports, "second") {
+		t.Errorf("the report should name sequence 3 only:\n%s", reports)
 	}
 }

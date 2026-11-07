@@ -224,7 +224,7 @@ func goWaiting(bridge, session string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if sf.openSeq() != nil {
+	if sf.nextToApprove() != nil {
 		return true, nil
 	}
 	runs, err := listRuns(bridge)
