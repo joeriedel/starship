@@ -261,15 +261,21 @@ type deliveryOrigin struct {
 	Report string `json:"handbackReportText"`
 }
 
-// reportLines prints the checks and the advisory check, and returns an error when a counted check failed. A failed advisory check says nothing about enforcement, which runs on hooks.
+// reportLines prints the checks and the advisory check, and returns an error when a counted check failed. An inconclusive check is neither a pass nor a failure and is not counted. A failed advisory check says nothing about enforcement, which runs on hooks.
 func reportLines(out io.Writer, checks []selftestCheck, advisory selftestCheck, manualArrived bool, manualWhy string) error {
-	failed := 0
+	failed, inconclusive := 0, 0
 	for _, c := range checks {
-		mark := "ok  "
-		if !c.ok {
-			mark, failed = "FAIL", failed+1
+		switch {
+		case c.inconclusive != "":
+			inconclusive++
+			fmt.Fprintf(out, "  inconclusive %s\n", c.name)
+			fmt.Fprintf(out, "       %s, so the probe says nothing either way; run the selftest again\n", c.inconclusive)
+		case c.ok:
+			fmt.Fprintf(out, "  ok   %s\n", c.name)
+		default:
+			failed++
+			fmt.Fprintf(out, "  FAIL %s\n", c.name)
 		}
-		fmt.Fprintf(out, "  %s %s\n", mark, c.name)
 	}
 	if !manualArrived {
 		fmt.Fprintf(out, "  the session transcript is the evidence for the SessionStart output check: %s\n", manualWhy)
@@ -278,14 +284,26 @@ func reportLines(out io.Writer, checks []selftestCheck, advisory selftestCheck, 
 		fmt.Fprintf(out, "  ok   %s\n", advisory.name)
 	} else {
 		fmt.Fprintf(out, "  warn %s\n", advisory.name)
-		fmt.Fprintln(out, "       this does not affect enforcement; a lead on this Claude Code build may not see agents' reports, and hooks still record them in the run's reports folder")
+		fmt.Fprintln(out, "       this does not affect enforcement; a lead on this Claude Code build may not see agents' reports, and hooks still record them in the run's reports folder, which `ensign next` names")
+	}
+	unclear := ""
+	if inconclusive > 0 {
+		unclear = fmt.Sprintf("%d inconclusive", inconclusive)
 	}
 	if failed > 0 {
-		return fmt.Errorf("%d of %d harness checks failed; starship's enforcement may not work on this Claude Code build", failed, len(checks))
+		if unclear != "" {
+			unclear = " (" + unclear + ")"
+		}
+		return fmt.Errorf("%d of %d harness checks failed%s; starship's enforcement may not work on this Claude Code build", failed, len(checks)-inconclusive, unclear)
 	}
-	if advisory.ok {
+	switch {
+	case inconclusive > 0 && advisory.ok:
+		fmt.Fprintf(out, "no harness check failed, but %s, so not every check ran to a verdict; run the selftest again\n", unclear)
+	case inconclusive > 0:
+		fmt.Fprintf(out, "no harness check failed, but %s and one advisory check did not pass; run the selftest again\n", unclear)
+	case advisory.ok:
 		fmt.Fprintln(out, "all harness checks passed")
-	} else {
+	default:
 		fmt.Fprintln(out, "harness checks passed; one advisory check did not")
 	}
 	return nil
@@ -295,7 +313,21 @@ func reportLines(out io.Writer, checks []selftestCheck, advisory selftestCheck, 
 // Agent call proves the dispatch ran in the foreground.
 const leafToken = "SELFTEST-LEAF-RESULT"
 
+// cmdSelftest holds signals while the probes run, so that an interrupt kills the running session and still lets runSelftest remove its folders; the signal is then raised again so that ensign ends by it. SIGKILL can't be cleaned up after.
 func cmdSelftest(out io.Writer) error {
+	release := holdSignals()
+	err := runSelftest(out)
+	release()
+	reraiseHeldSignal()
+	return err
+}
+
+// errSelftestInterrupted is returned when a signal stopped the selftest.
+func errSelftestInterrupted() error {
+	return fmt.Errorf("interrupted by %s", caughtSignal())
+}
+
+func runSelftest(out io.Writer) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return fmt.Errorf("claude is not on PATH")
 	}
@@ -322,6 +354,9 @@ func cmdSelftest(out io.Writer) error {
 		`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". One of its steps is refused by a hook on purpose; `+
 		`that is expected, not an error.`,
 		"--allowedTools", "Agent,Bash", "--permission-mode", "auto")
+	if caughtSignal() != nil {
+		return errSelftestInterrupted()
+	}
 	if err != nil {
 		return err
 	}
@@ -336,22 +371,34 @@ func cmdSelftest(out io.Writer) error {
 		return err
 	}
 	defer os.RemoveAll(stopDir)
+	if caughtSignal() != nil {
+		return errSelftestInterrupted()
+	}
 	stopEvents, _, _, err := runProbeSession(stopDir, `This is a self-test of this project's hooks, which the user asked for. `+
 		`Use the Agent tool with subagent_type "probe-stop" and prompt "Reply with the word done." A hook asks the agent to continue once; that is expected. Then reply with the word finished.`,
 		"--allowedTools", "Agent")
+	if caughtSignal() != nil {
+		return errSelftestInterrupted()
+	}
 	if err != nil {
 		return err
 	}
 	stopContinues, stopSawHandback := stopBlockProbe(stopEvents)
 
 	fmt.Fprintln(out, "running a restart probe: a session, then the same session resumed…")
-	restart, err := runRestartProbe(self, token)
+	restart, err := runRestartProbe(out, self, token)
+	if caughtSignal() != nil {
+		return errSelftestInterrupted()
+	}
 	if err != nil {
 		return err
 	}
 
 	fmt.Fprintln(out, "running a background-task probe for the Stop input…")
 	stopBgEvents := runStopBackgroundProbe(self, token)
+	if caughtSignal() != nil {
+		return errSelftestInterrupted()
+	}
 
 	str := func(e map[string]any, k string) string { s, _ := e[k].(string); return s }
 	find := func(match func(map[string]any) bool) []map[string]any {
@@ -405,41 +452,39 @@ func cmdSelftest(out io.Writer) error {
 		t, _ := os.ReadFile(str(e, "agent_transcript_path"))
 		manualLeaked = manualLeaked || strings.Contains(string(t), manualStart)
 	}
-	checks := []struct {
-		name string
-		ok   bool
-	}{
-		{"SessionStart runs and gets CLAUDE_ENV_FILE", len(starts) > 0 && starts[0]["env_file"] == true},
-		{"SessionStart gets CLAUDE_PID, which links a session to its id after /clear", len(starts) > 0 && starts[0]["claude_pid"] == true},
-		{"PreToolUse fires for spawns inside a subagent, with agent_id", len(nested) > 0 && str(nested[0], "agent_id") != ""},
-		{"PreToolUse updatedInput reaches the spawned agent", injected},
-		{"PreToolUse deny keeps an agent from starting", len(nested) >= 2 && len(deniedStops) == 0},
-		{"SubagentStop gives agent_type and agent_transcript_path; the report is the handback or last_assistant_message", stopReportProbe(events)},
-		{"PreToolUse deny of a SubagentHandback keeps the agent working, and a corrected handback gets through", handbackRedoProbe(events)},
-		{"SubagentStop block makes the agent continue (stop_hook_active on the next stop)", stopContinues},
-		{"session_id is the same for the session and its agents", len(sessions) == 1},
-		{fmt.Sprintf("SessionStart output of %d bytes reaches the session whole (from the transcript)", manualLimit), manualArrived},
-		{"SessionStart output stays out of subagents", len(leafStops) > 0 && !manualLeaked},
-		{"PreToolUse sees a subagent's SubagentHandback call, with its message", len(handbacks) > 0},
-		{"SubagentStop background_tasks lists a background command, with the id PostToolUse saw", backgroundListed(events)},
-		{"an agent's Bash loads a setup file written after SessionStart", envLoaded(events)},
+	checks := []selftestCheck{
+		{"SessionStart runs and gets CLAUDE_ENV_FILE", len(starts) > 0 && starts[0]["env_file"] == true, ""},
+		{"SessionStart gets CLAUDE_PID, which links a session to its id after /clear", len(starts) > 0 && starts[0]["claude_pid"] == true, ""},
+		{"PreToolUse fires for spawns inside a subagent, with agent_id", len(nested) > 0 && str(nested[0], "agent_id") != "", ""},
+		{"PreToolUse updatedInput reaches the spawned agent", injected, ""},
+		{"PreToolUse deny keeps an agent from starting", len(nested) >= 2 && len(deniedStops) == 0, ""},
+		{"SubagentStop gives agent_type and agent_transcript_path; the report is the handback or last_assistant_message", stopReportProbe(events), ""},
+		{"PreToolUse deny of a SubagentHandback keeps the agent working, and a corrected handback gets through", handbackRedoProbe(events), ""},
+		{"SubagentStop block makes the agent continue (stop_hook_active on the next stop)", stopContinues, ""},
+		{"session_id is the same for the session and its agents", len(sessions) == 1, ""},
+		{fmt.Sprintf("SessionStart output of %d bytes reaches the session whole (from the transcript)", manualLimit), manualArrived, ""},
+		{"SessionStart output stays out of subagents", len(leafStops) > 0 && !manualLeaked, ""},
+		{"PreToolUse sees a subagent's SubagentHandback call, with its message", len(handbacks) > 0, ""},
+		{"SubagentStop background_tasks lists a background command, with the id PostToolUse saw", backgroundListed(events), ""},
+		{"an agent's Bash loads a setup file written after SessionStart", envLoaded(events), ""},
 	}
 	checks = append(checks, restartChecks(restart, out)...)
-	checks = append(checks, selftestCheck{"Stop background_tasks lists a background command, with the id PostToolUse saw", stopListsBackground(stopBgEvents)})
+	checks = append(checks, selftestCheck{"Stop background_tasks lists a background command, with the id PostToolUse saw", stopListsBackground(stopBgEvents), ""})
 	fmt.Fprintln(out, "running a connector probe against a stub MCP server…")
-	checks = append(checks, mcpChecks(runMCPProbe(self))...)
+	mcp := runMCPProbe(self)
+	if caughtSignal() != nil {
+		return errSelftestInterrupted()
+	}
+	checks = append(checks, mcpChecks(mcp)...)
 	if askedBackground {
-		checks = append(checks, struct {
-			name string
-			ok   bool
-		}{"PreToolUse turns a background dispatch into a foreground one", foreground})
+		checks = append(checks, selftestCheck{"PreToolUse turns a background dispatch into a foreground one", foreground, ""})
 	} else {
 		fmt.Fprintln(out, "  note the probe never asked for a background dispatch, so the foreground rewrite was not exercised")
 	}
 	if stopSawHandback {
 		fmt.Fprintln(out, "  note agents hand back outside auto mode too, so the SubagentStop block path cannot be checked")
 	}
-	advisory := selftestCheck{"the dispatcher receives a tools: Read agent's report, as the Agent tool result or a delivered message", reportReachedDispatcher(dispatcherLines, "probe-handback", handbackToken)}
+	advisory := selftestCheck{"the dispatcher receives a tools: Read agent's report, as the Agent tool result or a delivered message", reportReachedDispatcher(dispatcherLines, "probe-handback", handbackToken), ""}
 	return reportLines(out, checks, advisory, manualArrived, manualWhy)
 }
 
@@ -517,6 +562,9 @@ var probeTimeout = 10 * time.Minute
 
 // runProbeSession runs one claude -p in a probe folder and returns the hook events it logged, the session's reply and its session id. Pass --resume in claudeArgs to continue an earlier session in the same folder.
 func runProbeSession(dir, prompt string, claudeArgs ...string) ([]map[string]any, string, string, error) {
+	if sig := caughtSignal(); sig != nil {
+		return nil, "", "", fmt.Errorf("interrupted by %s", sig)
+	}
 	before := len(readProbeLog(dir))
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
@@ -870,10 +918,23 @@ type restartRun struct {
 	transcript []string
 }
 
-type restartProbe struct{ first, resumed restartRun }
+// restartStage is how far the restart probe got. The zero value is a resume that never started; firstFailed is a resume that never started because the first session failed.
+type restartStage int
 
-// runRestartProbe runs a session that starts a background agent, then resumes that session in the same folder and asks it to message the agent by id. When a step fails it returns what was observed so far, so restartChecks fails only the checks that needed the rest.
-func runRestartProbe(self, token string) (*restartProbe, error) {
+const (
+	resumeNotStarted restartStage = iota
+	firstFailed
+	resumeFailed
+	resumeCompleted
+)
+
+type restartProbe struct {
+	first, resumed restartRun
+	stage          restartStage
+}
+
+// runRestartProbe runs a session that starts a background agent, then resumes that session in the same folder and asks it to message the agent by id. Why it stopped early is written to out. When a step fails it returns what was observed so far and how far it got: restartChecks leaves a check inconclusive when the resume never started, and fails the session and source checks when the resumed session was attempted and failed, since `claude --resume` failing is itself evidence.
+func runRestartProbe(out io.Writer, self, token string) (*restartProbe, error) {
 	dir, err := newProbeDir(self, token, map[string]string{".claude/agents/probe-restart.md": selftestRestart})
 	if err != nil {
 		return nil, err
@@ -886,17 +947,21 @@ func runRestartProbe(self, token string) (*restartProbe, error) {
 			`Use the Agent tool with subagent_type "probe-restart", run_in_background set to true, and prompt "Use Bash to run: echo restart-one". `+
 			`When the agent has finished, reply with the word finished.`,
 		"--allowedTools", "Agent,Bash", "--permission-mode", "auto")
+	if caughtSignal() != nil {
+		return &p, nil
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "restart probe: the first session failed: %v\n", err)
+		fmt.Fprintf(out, "restart probe: the first session failed: %v\n", err)
+		p.stage = firstFailed
 		return &p, nil
 	}
 	agent := restartAgentID(p.first.events)
 	if agent == "" {
-		fmt.Fprintf(os.Stderr, "restart probe: the agent never stopped, so there is nothing to message: %s\n", truncate(result, 300))
+		fmt.Fprintf(out, "restart probe: the agent never stopped, so there is nothing to message: %s\n", truncate(result, 300))
 		return &p, nil
 	}
 	if p.first.session == "" {
-		fmt.Fprintln(os.Stderr, "restart probe: the first session reported no session_id")
+		fmt.Fprintln(out, "restart probe: the first session reported no session_id")
 		return &p, nil
 	}
 	p.resumed.events, _, p.resumed.session, err = runProbeSession(dir,
@@ -904,9 +969,16 @@ func runRestartProbe(self, token string) (*restartProbe, error) {
 			`Use the SendMessage tool to send the agent with id `+agent+` the message "Use Bash to run: echo restart-two". `+
 			`When the agent has finished, reply with the word finished.`,
 		"--resume", p.first.session, "--allowedTools", "Agent,Bash,SendMessage", "--permission-mode", "auto")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "restart probe: the resumed session failed: %v\n", err)
+	if caughtSignal() != nil {
+		return &p, nil
 	}
+	if err != nil {
+		fmt.Fprintf(out, "restart probe: the resumed session failed: %v\n", err)
+		p.stage = resumeFailed
+	} else {
+		p.stage = resumeCompleted
+	}
+	p.first.transcript = transcriptLines(p.first.events)
 	p.resumed.transcript = transcriptLines(p.resumed.events)
 	return &p, nil
 }
@@ -923,22 +995,36 @@ func runStopBackgroundProbe(self, token string) []map[string]any {
 		`This is a self-test of this project's hooks, which the user asked for. `+
 			`Use the Bash tool once, with command "sleep 30" and run_in_background set to true. Then reply with the word started at once. Do not wait for the command.`,
 		"--allowedTools", "Bash", "--permission-mode", "auto")
-	if err != nil {
+	if err != nil && caughtSignal() == nil {
 		fmt.Fprintf(os.Stderr, "stop background probe: the session failed: %v\n", err)
 		return nil
 	}
 	return events
 }
 
-// transcriptLines reads the session transcript named by the first event that carries one.
+// transcriptLines reads the session transcript named by the first event that carries one. It returns nil when no event names one or the file can't be read.
 func transcriptLines(events []map[string]any) []string {
 	for _, e := range events {
 		if path, _ := e["transcript_path"].(string); path != "" {
-			data, _ := os.ReadFile(path)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
 			return strings.Split(strings.TrimSpace(string(data)), "\n")
 		}
 	}
 	return nil
+}
+
+// sentMessage says whether the resumed turn called SendMessage: "true", "false" or "unknown". On the builds seen, --resume appends to the first session's file, so the first transcript can show the call when the resumed session logged no events. It can prove true but never false: false comes only from the resumed session's own lines in a session that completed.
+func sentMessage(stage restartStage, firstLines, resumedLines []string) string {
+	switch {
+	case calledSendMessage(resumedLines) || calledSendMessage(firstLines):
+		return "true"
+	case stage == resumeCompleted && len(resumedLines) > 0:
+		return "false"
+	}
+	return "unknown"
 }
 
 // restartAgentID is the id of the restart probe's agent, from its SubagentStop.
@@ -1021,9 +1107,121 @@ func agentPathKept(first, resumed []map[string]any) bool {
 	return id != "" && p != "" && stopPath(resumed, id) == p
 }
 
-type selftestCheck = struct {
-	name string
-	ok   bool
+// selftestCheck is one check and its verdict. A check with a reason in inconclusive has ok false, and counts as neither a pass nor a failure.
+type selftestCheck struct {
+	name         string
+	ok           bool
+	inconclusive string
+}
+
+type verdict int
+
+const (
+	verdictFail verdict = iota
+	verdictPass
+	verdictInconclusive
+)
+
+func (v verdict) check(name, why string) selftestCheck {
+	if v == verdictInconclusive {
+		return selftestCheck{name, false, why}
+	}
+	return selftestCheck{name, v == verdictPass, ""}
+}
+
+// agentRanResumed reports whether any agent ran in the resumed session: a Bash call with an agent_id, or the stop of the restart probe's agent.
+func agentRanResumed(resumed []map[string]any) bool {
+	for _, e := range resumed {
+		if id, _ := e["agent_id"].(string); e["hook_event_name"] == "PostToolUse" && e["tool_name"] == "Bash" && id != "" {
+			return true
+		}
+		if e["hook_event_name"] == "SubagentStop" && e["agent_type"] == "probe-restart" {
+			return true
+		}
+	}
+	return false
+}
+
+// agentStoppedAgain reports whether the resumed session saw a SubagentStop for the agent with this id.
+func agentStoppedAgain(resumed []map[string]any, id string) bool {
+	for _, e := range resumed {
+		if e["hook_event_name"] == "SubagentStop" && e["agent_id"] == id {
+			return true
+		}
+	}
+	return false
+}
+
+// agentKeptID reports whether the resumed session shows the agent under its first id: a Bash call or a stop.
+func agentKeptID(first, resumed []map[string]any) bool {
+	return agentRanAgain(first, resumed) || agentStoppedAgain(resumed, restartAgentID(first))
+}
+
+// restartNeverStarted says why the resume never started, from what the first session left.
+func restartNeverStarted(first []map[string]any) string {
+	if restartAgentID(first) == "" {
+		return "the first session ended no agent with an id, so the resumed session never started"
+	}
+	return "the first session reported no session_id, so the resumed session never started"
+}
+
+// restartAgentVerdicts judges whether the agent kept its agent_id and its transcript path across the restart, and says why when a check is inconclusive. When the resume never started, or the resumed session failed, or no agent ran in it, the probe says nothing either way; an agent that ran under another id, or stopped without keeping its path, is a real break.
+func restartAgentVerdicts(first, resumed []map[string]any, stage restartStage) (idKept, pathKept verdict, why string) {
+	id := restartAgentID(first)
+	switch stage {
+	case resumeNotStarted:
+		return verdictInconclusive, verdictInconclusive, restartNeverStarted(first)
+	case firstFailed:
+		return verdictInconclusive, verdictInconclusive, "the first session failed, so the resumed session never started"
+	case resumeFailed:
+		return verdictInconclusive, verdictInconclusive, "the resumed session failed, so nothing is known about the agent"
+	}
+	if !agentRanResumed(resumed) {
+		return verdictInconclusive, verdictInconclusive, "the session model did not get the agent to run in the resumed session"
+	}
+	kept, stopped := agentKeptID(first, resumed), agentStoppedAgain(resumed, id)
+	switch {
+	case !kept && !stopped:
+		return verdictFail, verdictFail, ""
+	case !stopped:
+		return verdictPass, verdictInconclusive, "the agent ran in the resumed session but its stop was not seen"
+	}
+	idKept, pathKept = verdictFail, verdictFail
+	if kept {
+		idKept = verdictPass
+	}
+	if agentPathKept(first, resumed) {
+		pathKept = verdictPass
+	}
+	return idKept, pathKept, ""
+}
+
+// calledSendMessage reports whether a transcript holds a SendMessage tool call by the assistant.
+func calledSendMessage(transcript []string) bool {
+	for _, line := range transcript {
+		var rec struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &rec) != nil || rec.Type != "assistant" {
+			continue
+		}
+		var blocks []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+			continue
+		}
+		for _, b := range blocks {
+			if b.Type == "tool_use" && b.Name == "SendMessage" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // restartChecks prints what the restart probe observed and returns its checks.
@@ -1031,13 +1229,21 @@ func restartChecks(p *restartProbe, out io.Writer) []selftestCheck {
 	id := restartAgentID(p.first.events)
 	fmt.Fprintf(out, "  restart probe: SessionStart source %q then %q\n", startSource(p.first.events), startSource(p.resumed.events))
 	fmt.Fprintf(out, "  restart probe: session ids %q then %q\n", p.first.session, p.resumed.session)
-	fmt.Fprintf(out, "  restart probe: agent id %q, then %q ran again; transcript path %q then %q\n",
-		id, map[bool]string{true: id, false: "none"}[agentRanAgain(p.first.events, p.resumed.events)],
-		stopPath(p.first.events, id), stopPath(p.resumed.events, id))
+	sent := sentMessage(p.stage, p.first.transcript, p.resumed.transcript)
+	fmt.Fprintf(out, "  restart probe: agent id %q, then %q seen again; transcript path %q then %q; the resumed turn called SendMessage: %s\n",
+		id, map[bool]string{true: id, false: "none"}[agentKeptID(p.first.events, p.resumed.events)],
+		stopPath(p.first.events, id), stopPath(p.resumed.events, id), sent)
+	idKept, pathKept, why := restartAgentVerdicts(p.first.events, p.resumed.events, p.stage)
+	sources := selftestCheck{"SessionStart carries source: startup, then resume", sourcesReported(p.first.events, p.resumed.events), ""}
+	tied := selftestCheck{"a resumed session keeps its id, or its transcript keeps records stamped with the first id", restartTied(p.first.session, p.resumed.session, p.resumed.transcript), ""}
+	if p.stage == resumeNotStarted || p.stage == firstFailed {
+		sources.ok, sources.inconclusive = false, why
+		tied.ok, tied.inconclusive = false, why
+	}
 	return []selftestCheck{
-		{"SessionStart carries source: startup, then resume", sourcesReported(p.first.events, p.resumed.events)},
-		{"a resumed session keeps its id, or its transcript keeps records stamped with the first id", restartTied(p.first.session, p.resumed.session, p.resumed.transcript)},
-		{"an agent resumed after a restart keeps its agent_id", agentRanAgain(p.first.events, p.resumed.events)},
-		{"an agent's transcript path survives a restart", agentPathKept(p.first.events, p.resumed.events)},
+		sources,
+		tied,
+		idKept.check("an agent resumed after a restart keeps its agent_id", why),
+		pathKept.check("an agent's transcript path survives a restart", why),
 	}
 }

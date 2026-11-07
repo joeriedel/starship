@@ -203,7 +203,9 @@ When all steps are done, reply with the word done.
 `
 	events, _, _, err := runProbeSession(dir, prompt, "--mcp-config", config, "--strict-mcp-config", "--allowedTools", "mcp__stub,Agent")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "connector probe: %v\n", err)
+		if caughtSignal() == nil {
+			fmt.Fprintf(os.Stderr, "connector probe: %v\n", err)
+		}
 		return mcpRun{}
 	}
 	return mcpRun{events: events, calls: readJSONLines(filepath.Join(dir, "mcp-stub.jsonl"))}
@@ -309,8 +311,8 @@ func mcpRoleProbe(events, calls []map[string]any) bool {
 // mcpChecks are the connector probe's checks.
 func mcpChecks(r mcpRun) []selftestCheck {
 	return []selftestCheck{
-		{"PreToolUse (matcher mcp__.*) sees an MCP call as mcp__<server>__<tool>, with agent_id and agent_type empty for the session and the agent's own for an agent, also a nested one", mcpIdentityProbe(r.events)},
-		{"PreToolUse deny keeps an MCP call from the server, for the session and for an agent", mcpDenyProbe(r.events, r.calls)},
-		{"an agent's tools: list grants the MCP tools it names and no others", mcpRoleProbe(r.events, r.calls)},
+		{"PreToolUse (matcher mcp__.*) sees an MCP call as mcp__<server>__<tool>, with agent_id and agent_type empty for the session and the agent's own for an agent, also a nested one", mcpIdentityProbe(r.events), ""},
+		{"PreToolUse deny keeps an MCP call from the server, for the session and for an agent", mcpDenyProbe(r.events, r.calls), ""},
+		{"an agent's tools: list grants the MCP tools it names and no others", mcpRoleProbe(r.events, r.calls), ""},
 	}
 }

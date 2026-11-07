@@ -1013,6 +1013,39 @@ func leadScope(r *RunFiles) string {
 	return ""
 }
 
+// agentReportsLine names the outcome and the saved report files of the agent stage whose dispatch i finished last, for a lead whose agents' reports did not reach it. A parallel stage has one report per branch of its latest round. It is empty while the stage still has a running or undispatched branch, and when no report file was written.
+func agentReportsLine(r *RunFiles, m *machine, i int) string {
+	last := r.State.Dispatches[i]
+	if m.running(last.Scope, last.Stage) > 0 {
+		return ""
+	}
+	if sc, s := r.State.Scopes[last.Scope], m.stage(last.Stage); sc != nil && s != nil && sc.Stage == last.Stage && len(sc.Branches) < len(s.Dimensions) {
+		return ""
+	}
+	seen := map[string]bool{}
+	var outcomes, paths []string
+	for j := i; j >= 0; j-- {
+		d := r.State.Dispatches[j]
+		if d.Scope != last.Scope {
+			continue
+		}
+		if d.Stage != last.Stage || seen[d.Dim] {
+			break
+		}
+		seen[d.Dim] = true
+		path := filepath.Join(r.Dir, "reports", d.ID+".md")
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		outcomes = append([]string{d.Outcome}, outcomes...)
+		paths = append([]string{path}, paths...)
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Stage %q finished: %s. If a report did not reach you, it is saved at: %s", last.Stage, strings.Join(outcomes, ", "), strings.Join(paths, ", "))
+}
+
 // cmdNext prints what the run's lead should dispatch next.
 func cmdNext(args []string, out io.Writer) error {
 	r, err := openRunByFlags(args, "ensign next [--bridge <dir>] [--run <id>]")
@@ -1037,6 +1070,10 @@ func cmdNext(args []string, out io.Writer) error {
 				noticesNote = "; it has notices from the stage's commands, to carry into your report as written"
 			}
 			fmt.Fprintf(out, "Stage %q (run by ensign) finished: %s. Its report: %s%s\n", d.Stage, d.Outcome, filepath.Join(r.Dir, "reports", d.ID+".md"), noticesNote)
+		} else if s != nil {
+			if line := agentReportsLine(r, m, i); line != "" {
+				fmt.Fprintln(out, line)
+			}
 		}
 		break
 	}

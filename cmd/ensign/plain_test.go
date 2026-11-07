@@ -1250,3 +1250,112 @@ func TestLastLeadHandbackIsLetThroughWithoutNotices(t *testing.T) {
 	}
 	w.wantFailed("lead-stopped")
 }
+
+// reportPath is where a dispatch's report is saved in the world's run.
+func (w *world) reportPath(d *Dispatch) string {
+	return filepath.Join(w.bridge, ".starship", "runs", w.state().Run, "reports", d.ID+".md")
+}
+
+const agentReportsNote = "If a report did not reach you, it is saved at: "
+
+func TestNextNamesAnAgentStageReport(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	if got := w.next(); strings.Contains(got, agentReportsNote) {
+		t.Fatalf("nothing has finished yet: %s", got)
+	}
+	w.leaf(lead, "coder", "compiled")
+	d := w.state().Dispatches[len(w.state().Dispatches)-1]
+	want := agentReportsNote + w.reportPath(d) + "\n"
+	got := w.next()
+	if !strings.Contains(got, `Stage "`+d.Stage+`" finished: compiled. `+want) {
+		t.Fatalf("next should name the outcome and the report file:\n%s", got)
+	}
+	if strings.Contains(got, "run by ensign") {
+		t.Fatalf("an agent stage is not run by ensign: %s", got)
+	}
+	if err := os.Remove(w.reportPath(d)); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.next(); strings.Contains(got, agentReportsNote) {
+		t.Fatalf("a report that was not written must not be named: %s", got)
+	}
+}
+
+func TestNextNamesEveryReportOfAParallelStage(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.leaf(lead, "coder", "compiled")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	ds := w.state().Dispatches
+	a, b := ds[len(ds)-2], ds[len(ds)-1]
+	if a.Stage != b.Stage {
+		t.Fatalf("the reviewers should share a stage: %s and %s", a.Stage, b.Stage)
+	}
+	want := `Stage "` + b.Stage + `" finished: clean, clean. ` + agentReportsNote + w.reportPath(a) + ", " + w.reportPath(b) + "\n"
+	if got := w.next(); !strings.Contains(got, want) {
+		t.Fatalf("next should name both reports:\n%s\nwant %s", got, want)
+	}
+}
+
+func TestNextNamesNothingWhileAParallelStageIsPartFinished(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.leaf(lead, "coder", "compiled")
+	w.leaf(lead, "reviewer", "clean")
+	if got := w.next(); strings.Contains(got, agentReportsNote) || strings.Contains(got, "finished:") {
+		t.Fatalf("a reviewer is still to be dispatched: %s", got)
+	}
+	if id, why := w.spawn(lead, "orchestrator", "reviewer"); id == "" {
+		t.Fatalf("spawning the second reviewer was refused: %s", why)
+	}
+	if got := w.next(); strings.Contains(got, agentReportsNote) || strings.Contains(got, "finished:") {
+		t.Fatalf("a reviewer is still running: %s", got)
+	}
+}
+
+func TestNextTakesNoReportFromAnEarlierRound(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.leaf(lead, "coder", "compiled")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "findings")
+	w.leaf(lead, "coder", "compiled")
+	w.leaf(lead, "reviewer", "clean")
+	if got := w.next(); strings.Contains(got, agentReportsNote) || strings.Contains(got, "finished:") {
+		t.Fatalf("the second round has one reviewer to dispatch: %s", got)
+	}
+	if id, why := w.spawn(lead, "orchestrator", "reviewer"); id == "" {
+		t.Fatalf("spawning the second round's reviewer was refused: %s", why)
+	}
+	if got := w.next(); strings.Contains(got, agentReportsNote) || strings.Contains(got, "finished:") {
+		t.Fatalf("the second round's reviewer is still running: %s", got)
+	}
+}
+
+func TestNextKeepsThePlainStageLine(t *testing.T) {
+	w := plainWorld(t, "echo 3 passed")
+	lead := w.startLead()
+	w.toTest(lead)
+	if _, err := w.runStage(); err != nil {
+		t.Fatal(err)
+	}
+	st := w.state()
+	d := st.Dispatches[len(st.Dispatches)-1]
+	got := w.next()
+	if !strings.Contains(got, `(run by ensign) finished: pass. Its report: `+w.reportPath(d)) || strings.Contains(got, agentReportsNote) {
+		t.Fatalf("the plain stage line should be unchanged: %s", got)
+	}
+}
+
+func TestNextWhileAStageRuns(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	if id, why := w.spawn(lead, "orchestrator", "coder"); id == "" {
+		t.Fatalf("spawning the coder was refused: %s", why)
+	}
+	if got := w.next(); strings.Contains(got, agentReportsNote) || !strings.Contains(got, "Budgets used") {
+		t.Fatalf("a running stage has no report to name: %s", got)
+	}
+}
