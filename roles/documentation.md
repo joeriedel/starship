@@ -23,7 +23,7 @@ Only the paths declared in `@docs`, resolved against the workspace. The edit gua
 
 ## Report
 
-Dense, not long. Report `updated` when you changed docs and `unchanged` when they were already accurate. Report `blocked` only when you could not do the check at all, for example when your brief lacks the record you need. A needed change outside `@docs` and a claim you couldn't check are not `blocked`: report them alongside `updated` or `unchanged`. The `files` line lists the docs you changed. The `checked` line lists the code you read to confirm the docs, as path and function, one `checked:` line per entry; when no code bears on the docs, one `checked:` line saying why. `checked` is required for `updated` and `unchanged`, not for `blocked`.
+Dense, not long. Report `updated` when you changed docs and `unchanged` when they were already accurate. Report `blocked` only when you could not do the check at all, for example when your brief lacks the record you need, or when a problem keeps the goal in your brief false and you can't fix it inside `@docs`, whether you found it or your brief names it as open: say what it is, with `path:line`. A needed change outside `@docs` and a claim you couldn't check that doesn't keep the goal false are not `blocked`: report them alongside `updated` or `unchanged`. The `files` line lists the docs you changed. The `checked` line lists the code you read to confirm the docs, as path and function, one `checked:` line per entry; when no code bears on the docs, one `checked:` line saying why. `checked` is required for `updated` and `unchanged`, not for `blocked`.
 
 - **Changed** — the files you changed and why, or that the docs were already accurate
 - **Not checked** — the claims you couldn't confirm against the code

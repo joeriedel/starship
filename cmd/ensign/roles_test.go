@@ -31,6 +31,8 @@ func TestRoleAndBriefDocumentationRules(t *testing.T) {
 		`(?i)report .updated. when you changed docs and .unchanged. when they were already accurate`,
 		`(?i)report .blocked. only when you could not do the check at all`,
 		`(?i)are not .blocked.: report them alongside`,
+		`(?i)when a problem keeps the goal in your brief false and you can't fix it inside .@docs.`,
+		`(?i)whether you found it or your brief names it as open`,
 		`(?i)the .files. line lists the docs you changed`,
 		`(?i)read the code behind every claim before you write it`,
 		`(?i)where the code and the brief disagree, the code wins`,
@@ -43,17 +45,29 @@ func TestRoleAndBriefDocumentationRules(t *testing.T) {
 		}
 	}
 	checks := map[string][]string{
-		"roles/coder.md":               {`(?i)write code, not documentation`, `(?i)don't change paths declared in .@docs.`, `(?i)made wrong or stale, wherever it lives, is part of the change, not scope creep`, `(?i)must leave no output in the working tree`, `(?i)bare .go build \./\.\.\.. writes a binary`, `(?i)go build -o <temp>`},
-		"roles/reviewer.md":            {`(?i)review code only, not documentation`, `(?i)even when it is in the diff`, `(?i)staleness the change caused isn't pre-existing`},
-		"briefs/review/correctness.md": {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},
+		"roles/coder.md":               {`(?i)write code, not documentation`, `(?i)don't change paths declared in .@docs.`, `(?i)made wrong or stale, wherever it lives, is part of the change, not scope creep`, `(?i)must leave no output in the working tree`, `(?i)bare .go build \./\.\.\.. writes a binary`, `(?i)go build -o <temp>`, `(?i)problem that keeps the goal in your brief false is part of the change too`, `(?i)it is not a concern to leave behind`},
+		"roles/reviewer.md":            {`(?i)review code only, not documentation`, `(?i)even when it is in the diff`, `(?i)staleness the change caused isn't pre-existing`, `(?i)pre-existing means outside the goal`, `(?i)keeps that goal false is a finding, however old`},
+		"briefs/review/correctness.md": {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`, `(?i)does its goal hold`},
 		"briefs/review/public.md":      {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},
-		"roles/orchestrator.md":        {`(?i)documentation isn't reviewed`, `(?i)even when it is in the diff`, `(?i)fact from outside the project names its source and date`, `(?i)quotes and snapshots stay out`, `(?i)numbered claim to confirm, each with the code location to confirm it against`, `(?i)a .checked. line that doesn't cover the text it wrote`, `(?i)an out-of-scope never covers it`, `(?i)unfinished fallout \(the change caused it and no loop reached the coder\)`, `(?i)neither sent to the coder nor unfinished fallout`},
+		"manual/topics/sequence.md":    {`(?i)reports .goal not met. hasn.t passed, whatever ensign recorded: a publish of that task directly behind it has already landed, so tell the user what landed`, `(?i)stops only the steps still to come, all of them; with none left there is no sequence to halt`},
+		"roles/orchestrator.md":        {`(?i)documentation isn't reviewed`, `(?i)even when it is in the diff`, `(?i)fact from outside the project names its source and date`, `(?i)quotes and snapshots stay out`, `(?i)numbered claim to confirm, each with the code location to confirm it against`, `(?i)a .checked. line that doesn't cover the text it wrote`, `(?i)an out-of-scope never covers it`, `(?i)unfinished fallout \(the change caused it and no loop reached the coder\)`, `(?i)neither sent to the coder nor unfinished fallout`, `(?i)bounds a problem that keeps the task's goal false`, `(?i)keeps the task.s goal false is not outside the work item either`, `(?i)if .next. reports success with one still open`, `(?i)lists each problem still open that keeps it false`, `(?i)keeps the goal false: it is an open problem, listed under the Outcome line with its location, because no stage is left to report .blocked.`, `(?i)made stale is neither sent to the coder nor unfinished fallout`, `(?i)report .goal not met.`, `(?i)"pre-existing" is never a reason to drop it`, `(?i)when .docs. will be skipped`, `(?i)the problem stays open and you report .goal not met.`, `(?i)is not a Deferred item: it becomes a claim for .docs. to fix`, `(?i)also no Deferred item: it becomes a claim for .docs. to fix`, `(?i)list each problem that keeps the goal false and is still open, with its location, whatever the outcome`},
 	}
 	for rel, res := range checks {
 		body := read(rel)
 		for _, re := range res {
 			if !regexp.MustCompile(re).MatchString(body) {
 				t.Errorf("%s does not match %q", rel, re)
+			}
+		}
+	}
+	for rel, res := range map[string][]string{
+		"roles/style-reviewer.md": {`(?i)declined`, `(?i)style issue`},
+		"roles/orchestrator.md":   {`(?i)style issue`},
+	} {
+		body := read(rel)
+		for _, re := range res {
+			if regexp.MustCompile(re).MatchString(body) {
+				t.Errorf("%s still matches %q", rel, re)
 			}
 		}
 	}

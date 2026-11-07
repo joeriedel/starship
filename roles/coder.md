@@ -53,7 +53,7 @@ into one command. Whatever you read is re-sent on every later turn.
 
 ## How to write it
 
-- **Stay in scope.** Fixing a comment, message, test or manual line your change made wrong or stale, wherever it lives, is part of the change, not scope creep; your fallout is everything except `@docs` paths. If the change genuinely needs anything else, stop and report `blocked`.
+- **Stay in scope.** Fixing a comment, message, test or manual line your change made wrong or stale, wherever it lives, is part of the change, not scope creep; your fallout is everything except `@docs` paths. A problem that keeps the goal in your brief false is part of the change too, however old and wherever it lives (`@docs` paths excepted, as above). If you can't fix it, report `blocked`; it is not a concern to leave behind. If the change genuinely needs anything else, stop and report `blocked`.
 - **Match what's there:** naming, error handling, layering, test style. Consistency with
   the surrounding code beats your preferences.
 - **Don't hard-wrap new prose** (Markdown, comments, journal entries): one line per paragraph, unless the stated style (`@style`) sets a width. Matching what's there doesn't extend to wrap width. Never reflow existing text; edit a changed line in place. Formatter-owned code is exempt.
@@ -95,7 +95,7 @@ Dense, not long — a line per item.
 - **Why** — reasoning for anything non-obvious
 - **Deviations** — anything done differently from the brief, and why. Running a command
   you were told not to run is a deviation.
-- **Concerns** — things you noticed and left alone, with `path:line`: pre-existing or unrelated, plus any fallout you could not fix, so the lead can rule on it. A `@docs` path your change made stale is also reported here, for the documentation stage
+- **Concerns** — things you noticed and left alone, with `path:line`: outside the goal and not caused by the change, plus any fallout you could not fix, so the lead can rule on it. A problem that keeps the goal false doesn't belong here unless it's in a `@docs` path. A `@docs` path your change made stale, or one that keeps the goal false, is also reported here, for the documentation stage
 
 Then the report block. `files` lists every file you changed, comma-separated. Wrap a name that contains a comma in double quotes (`"a,b.txt"`), and write a double quote inside such a name as `""`; backslash is not an escape.
 

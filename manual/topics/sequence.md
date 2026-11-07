@@ -35,6 +35,8 @@ A publish lands every location the preceding run step worked in, across all its 
 
 A task's publish lock is held for a whole publish step and for a direct `github-pr merge`, and never waits. A publish or direct merge of the same task started meanwhile is refused with `a publish of <task> is already under way`, and `ensign task close` is refused the same way and the task stays open: retry later, and close it again once the publish is done.
 
+A run whose lead reports `goal not met` hasn't passed, whatever ensign recorded: a publish of that task directly behind it has already landed, so tell the user what landed and let them decide on a revert. `ensign sequence halt --reason <why>` stops only the steps still to come, all of them; with none left there is no sequence to halt.
+
 Drop pending steps of an approved sequence with `ensign sequence drop <seq>.<step>... --reason <why>` only when the user asks; it keeps the rest running, and dropping a run step drops its task's publish step.
 
 Before `go` the sequence is yours to rebuild: `ensign sequence drop <seq>.<step>...` removes steps (the rest renumber; publish rule as above), `ensign sequence discard` removes the whole sequence so the next step starts a fresh one. To reorder or insert a step (say a `supernova` publish step between two runs), drop the later steps and add them again in the new order. `halt` stops work that has begun; don't use it to rebuild. Halt leaves a run with a lead running; end it with `ensign run stop <run>`.
