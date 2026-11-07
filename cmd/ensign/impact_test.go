@@ -14,6 +14,8 @@ import (
 // newImpactTask creates a task with no pipeline and returns its task.md.
 func newImpactTask(t *testing.T, w *world, name string) string {
 	t.Helper()
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
 	w.enter()
 	var out bytes.Buffer
 	if err := cmdTask([]string{"new", "supernova/" + name, "--pipeline", "none"}, &out); err != nil {
