@@ -447,3 +447,91 @@ func TestAPublishCommandHoldsTheLandingLock(t *testing.T) {
 		t.Errorf("the lock should be free after the landing: %v %v", on, err)
 	}
 }
+
+// holdUpdate takes the update lock of a folder until the test ends.
+func holdUpdate(t *testing.T, w *world, folder string) func() {
+	t.Helper()
+	unlock, err := lockUpdate(w.bridge, folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once bool
+	release := func() {
+		if !once {
+			once = true
+			unlock()
+		}
+	}
+	t.Cleanup(release)
+	return release
+}
+
+func wantUpdateBusy(t *testing.T, err error, folder string) {
+	t.Helper()
+	var busy *folderBusyError
+	if !errors.As(err, &busy) || !busy.update || busy.run != "" {
+		t.Fatalf("want an update refusal: %v", err)
+	}
+	if !strings.Contains(err.Error(), "an update is under way in the code folder "+folder) || strings.Contains(err.Error(), "run ") {
+		t.Errorf("refusal text: %v", err)
+	}
+}
+
+func TestAnUpdateHoldsItsFolderAgainstRuns(t *testing.T) {
+	w := newWorld(t)
+	c, err := loadConfigAt(w.bridge, "supernova/auth-refactor", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := c.Workspace
+	w.run("supernova/auth-refactor")
+	release := holdUpdate(t, w, ws)
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var out bytes.Buffer
+	wantUpdateBusy(t, cmdRun([]string{"supernova/auth-refactor"}, &out), ws)
+	wantUpdateBusy(t, folderHolder(w.bridge, &Snapshot{Workspace: ws + "/./x/.."}, w.sid), ws+"/./x/..")
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: t.TempDir()}, w.sid); err != nil {
+		t.Errorf("another folder is free: %v", err)
+	}
+	release()
+	if err := folderHolder(w.bridge, &Snapshot{Workspace: ws}, w.sid); err != nil {
+		t.Errorf("the folder is free once the update is done: %v", err)
+	}
+}
+
+func TestAnUpdateAndALandingRefuseEachOther(t *testing.T) {
+	w := newWorld(t)
+	ws := t.TempDir()
+	releaseLanding := holdLanding(t, w, ws)
+	if _, err := lockUpdate(w.bridge, ws); err == nil || !strings.Contains(err.Error(), "a landing is under way") {
+		t.Errorf("update during a landing: %v", err)
+	}
+	releaseLanding()
+	releaseUpdate := holdUpdate(t, w, ws)
+	if _, err := lockUpdate(w.bridge, ws); err == nil || !strings.Contains(err.Error(), "an update is already under way") {
+		t.Errorf("update during an update: %v", err)
+	}
+	if _, err := lockLanding(w.bridge, ws); err == nil || !strings.Contains(err.Error(), "an update is under way") {
+		t.Errorf("landing during an update: %v", err)
+	}
+	releaseUpdate()
+	holdLanding(t, w, ws)
+}
+
+func TestASequenceStepWaitsForAnUpdate(t *testing.T) {
+	w := groupWorld(t, "01-client")
+	w.mustSeq("run", "supernova/t")
+	run, err := openRun(w.bridge, w.stepRuns(1)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := run.Snap.Workspace
+	run.close()
+	holdUpdate(t, w, folder)
+	w.approve()
+	if st := w.step(1); st.Status != "pending" || !strings.Contains(st.Reason, "waiting: an update is under way in the code folder "+folder) {
+		t.Fatalf("the step should wait for the update: %s %q", st.Status, st.Reason)
+	}
+}

@@ -420,3 +420,22 @@ func TestDirectWaitsThroughStatusAndHelp(t *testing.T) {
 		t.Errorf("go after status: %q", ctx)
 	}
 }
+
+func TestDirectRefusedWhereAnUpdateIs(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	ws := w.workspace()
+	src := filepath.Join(ws, "src")
+	os.MkdirAll(src, 0o755)
+	release := holdUpdate(t, w, ws)
+	if _, err := w.direct("ask", src, "x"); err == nil || !strings.Contains(err.Error(), "an update is under way") {
+		t.Errorf("ask below an update: %v", err)
+	}
+	release()
+
+	w.openDirect(src)
+	holdUpdate(t, w, ws)
+	w.expectEdit("", "", filepath.Join(src, "a.go"), true)
+	if _, why := w.tryEdit("", "", filepath.Join(src, "new", "a.go")); !strings.Contains(why, "an update is under way") {
+		t.Errorf("update refusal: %s", why)
+	}
+}

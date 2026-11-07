@@ -216,8 +216,14 @@ func (w *world) leaf(lead, role, outcome string) {
 // liveStepRun starts a sequence step's run in the folder, the way startRun does, with a coder dispatch for agent when given.
 func (w *world) liveStepRun(folder, agent string) string {
 	w.t.Helper()
+	return w.liveStepRunOf("supernova/auth-refactor", folder, agent)
+}
+
+// liveStepRunOf is liveStepRun for any task.
+func (w *world) liveStepRunOf(task, folder, agent string) string {
+	w.t.Helper()
 	var out bytes.Buffer
-	snap, err := createRun(w.bridge, runOpts{task: "supernova/auth-refactor"}, true, &out)
+	snap, err := createRun(w.bridge, runOpts{task: task}, true, &out)
 	if err != nil {
 		w.t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ An `ask` while one is pending or open replaces it. `ensign direct close` also dr
 
 ## Refusals
 
-- A folder a live run holds, whether it works there or only reads it, or a landing is under way in it or in a folder around it: refused at `ask`, at `go`, and on every edit (a run in another session can start while the guard is open). A folder around a held one stays open for the rest of it.
+- A folder a live run holds, whether it works there or only reads it, or a landing or an update is under way in it or in a folder around it: refused at `ask`, at `go`, and on every edit (a run in another session can start while the guard is open). A folder around a held one stays open for the rest of it.
 - A folder a queued run of any session will start in, whether it works there or only reads it, approved or not yet: refused at `ask` and `go`.
 - A run or sequence waiting for go in this session, or pending connector writes: finish or discard them first.
 - The state file is not editable by file tools.

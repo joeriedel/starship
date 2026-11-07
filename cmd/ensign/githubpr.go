@@ -331,8 +331,17 @@ func fastForward(ws, branch, base string) error {
 }
 
 // githubUpdate rebases a task's branch onto the remote's default branch. A conflict leaves
-// the branch exactly as it was.
+// the branch exactly as it was. The rebase checks the task branch out, so it takes the folder's update lock and is refused while any approved run holds the folder; an up-to-date branch switches nothing and is answered either way.
 func githubUpdate(bridge, task, location string) (base, sha string, upToDate bool, err error) {
+	c, err := loadConfigAt(bridge, task, location)
+	if err != nil {
+		return "", "", false, err
+	}
+	unlock, err := lockUpdate(bridge, c.Workspace)
+	if err != nil {
+		return "", "", false, err
+	}
+	defer unlock()
 	live, err := liveRuns(bridge)
 	if err != nil {
 		return "", "", false, err
@@ -342,10 +351,6 @@ func githubUpdate(bridge, task, location string) (base, sha string, upToDate boo
 		if ri.snap.Task == task && !ri.state.queued() {
 			return "", "", false, fmt.Errorf("a run of %s is still going; wait for it to finish", task)
 		}
-	}
-	c, err := loadConfigAt(bridge, task, location)
-	if err != nil {
-		return "", "", false, err
 	}
 	ws, want := c.Workspace, taskBranch(task)
 	orig, err := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want)
@@ -364,6 +369,14 @@ func githubUpdate(bridge, task, location string) (base, sha string, upToDate boo
 	}
 	if !behind {
 		return base, short(orig), true, nil
+	}
+	holders, err := runsHolding(bridge, ws)
+	if err != nil {
+		return "", "", false, err
+	}
+	if len(holders) > 0 {
+		ri := holders[0]
+		return "", "", false, fmt.Errorf("run %s (%s) of %s holds the code folder %s, and the rebase would switch its branch; wait for it to finish", ri.id, ri.state.Status, ri.snap.Task, ws)
 	}
 	if out, err := exec.Command("git", "-C", ws, "rebase", "origin/"+base, want).CombinedOutput(); err != nil {
 		// User config must not narrow this listing: an omitted conflict would go unreported.
@@ -387,6 +400,25 @@ func githubUpdate(bridge, task, location string) (base, sha string, upToDate boo
 	}
 	head, _ := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/"+want)
 	return base, short(head), false, nil
+}
+
+// runsHolding lists the approved live runs that work in or read a code folder, as folderHolder counts them. The caller holds the folder's landing or update lock, so none can start there while it looks.
+func runsHolding(bridge, folder string) ([]runInfo, error) {
+	live, err := liveRuns(bridge)
+	if err != nil {
+		return nil, err
+	}
+	var held []runInfo
+	for _, ri := range live {
+		if !ri.state.Approved || ri.snap.Workspace == "" {
+			continue
+		}
+		works, reads := folderHolds(&ri.snap)
+		if slices.ContainsFunc(slices.Concat(works, reads), func(f string) bool { return sameFolder(f, folder, runtime.GOOS) }) {
+			held = append(held, ri)
+		}
+	}
+	return held, nil
 }
 
 func orDetached(b string) string {
@@ -519,7 +551,7 @@ func lockPublish(bridge, task string) (func(), error) {
 	return func() { l.Unlock() }, nil
 }
 
-// lockLandingOf takes the landing lock of the code folder a task's location lands in. A landing takes it before anything else, so tested sees every run approved before it and a later run is refused.
+// lockLandingOf takes the landing lock of the code folder a task's location lands in. A landing takes it before anything else, so tested sees every run approved before it and a later run is refused. A landing is refused while an update is under way in the folder.
 func lockLandingOf(bridge, task, location string) (func(), error) {
 	c, err := loadConfigAt(bridge, task, location)
 	if err != nil {
@@ -886,7 +918,7 @@ func latestRunPassed(bridge, task, location string) error {
 	return fmt.Errorf("the latest run of %s did not pass (%s); run the task again", task, ri.state.Reason)
 }
 
-// tested finds a task's tested commit (a landing has taken its folder's landing lock first, so no run can start in the folder after its live-run check), and checks the task branch still holds it, or only @docs paths on top of it. It returns the branch head, so what lands includes those docs commits.
+// tested finds a task's tested commit (a landing has taken its folder's landing lock first, so no run can start in the folder after its live-run check; pull-request has not), and checks the task branch still holds it, or only @docs paths on top of it. It returns the branch head, so what lands includes those docs commits.
 func tested(bridge, task, location string) (c *Config, branch, sha string, err error) {
 	live, err := liveRuns(bridge)
 	if err != nil {
@@ -966,6 +998,22 @@ func githubOpenPR(bridge, task, location string) (string, error) {
 	return url, nil
 }
 
+// noRunOffBranch refuses a landing in a code folder while an approved run holds it without being on its own task branch there: the run may not have switched yet, and the landing would delete or move the branch under it. A run is on its branch only when it works in this very folder and the folder is on its task branch, and never while the folder is on the landed branch: tested() has excluded the landing task's own runs, so a holder there belongs to another task, whose branch name may match only because taskBranch drops the project. The caller holds the folder's landing lock.
+func noRunOffBranch(bridge, ws, landed string) error {
+	holders, err := runsHolding(bridge, ws)
+	if err != nil {
+		return err
+	}
+	cur := currentBranch(ws)
+	for _, ri := range holders {
+		if cur != landed && sameFolder(ri.snap.Workspace, ws, runtime.GOOS) && cur == taskBranch(ri.snap.Task) {
+			continue
+		}
+		return fmt.Errorf("run %s (%s) of %s holds the code folder %s and is not on its own branch there (the folder is on %s); wait for it to finish", ri.id, ri.state.Status, ri.snap.Task, ws, orDetached(cur))
+	}
+	return nil
+}
+
 // githubMerge moves the default branch to a task's tested commit, if that is a
 // fast-forward, and removes the task branch. It returns the default branch's name, the commit, and a note that is empty unless the branch was left on origin because it has commits this workspace doesn't, or can't show it pushed.
 func githubMerge(bridge, task, location string) (string, string, string, error) {
@@ -974,6 +1022,9 @@ func githubMerge(bridge, task, location string) (string, string, string, error) 
 		return "", "", "", err
 	}
 	ws := c.Workspace
+	if err := noRunOffBranch(bridge, ws, branch); err != nil {
+		return "", "", "", err
+	}
 	base, err := defaultBranch(ws)
 	if err != nil {
 		return "", "", "", err
@@ -1015,8 +1066,12 @@ func dropLandedFromRecord(bridge, task, landed string) {
 	}
 }
 
-// removeSameFolderMarkers removes the .tested of each other location of the task that works in the landed location's folder: the landing deleted the task branch they tested, and collapseFolders may have dropped them from the publish. A location with no recorded folder is not compared.
+// removeSameFolderMarkers removes the .tested of each other location of the task that works in the landed location's folder: the landing deleted the task branch they tested, and collapseFolders may have dropped them from the publish. A location with no recorded folder is not compared. When another task encodes to the same record names, nothing is removed, as in close.
 func removeSameFolderMarkers(bridge, task, landed string) {
+	if peerKeepsRecords(bridge, task) != "" {
+		// Another task with the same record names would lose its markers; like close, leave them. This has no output path to say so on; gc, or the next run's githubBranch, deals with what is left.
+		return
+	}
 	project, _, _ := strings.Cut(task, "/")
 	landedPath, err := locationPathFor(bridge, project, landed)
 	if err != nil {

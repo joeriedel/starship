@@ -78,33 +78,36 @@ func runHolding(bridge, p, goos string, queued bool) (string, error) {
 	return "", nil
 }
 
-// landingAround reports the first of folder and its ancestors that a landing holds; "" when none does. A landing locks the exact folder it lands in, and one in a folder around a direct edit's folder lands over it too. The caller holds lockFolders.
-func landingAround(bridge, folder string) (string, error) {
+// landingAround reports the first of folder and its ancestors that a landing or an update holds, and which ("a landing" or "an update"); "" when none does. A landing or an update locks the exact folder it works in, and one in a folder around a direct edit's folder reaches it too. The caller holds lockFolders.
+func landingAround(bridge, folder string) (string, string, error) {
 	for p := resolveEditFolder(folder, runtime.GOOS); ; {
 		if landing, err := landingUnderWay(bridge, p); err != nil || landing {
-			return p, err
+			return p, "a landing", err
+		}
+		if updating, err := updateUnderWay(bridge, p); err != nil || updating {
+			return p, "an update", err
 		}
 		parent := filepath.Dir(p)
 		if parent == p {
-			return "", nil
+			return "", "", nil
 		}
 		p = parent
 	}
 }
 
-// directFolderBusy is why a direct edit can't be asked for or opened in folder: a live or queued run holds it or a folder around it, or a landing is under way in it or a folder around it. The caller holds lockFolders. It returns "" when the folder is free.
+// directFolderBusy is why a direct edit can't be asked for or opened in folder: a live or queued run holds it or a folder around it, or a landing or an update is under way in it or a folder around it. The caller holds lockFolders. It returns "" when the folder is free.
 func directFolderBusy(bridge, folder string) (string, error) {
 	if why, err := runHolding(bridge, folder, runtime.GOOS, true); why != "" || err != nil {
 		return why, err
 	}
-	landing, err := landingAround(bridge, folder)
-	if err != nil || landing == "" {
+	around, what, err := landingAround(bridge, folder)
+	if err != nil || around == "" {
 		return "", err
 	}
-	return fmt.Sprintf("a landing is under way in the code folder %s", landing), nil
+	return fmt.Sprintf("%s is under way in the code folder %s", what, around), nil
 }
 
-// directEdit decides a session's edit of resolved, a target outside the folders it may always edit: allowed inside the folder of its open direct edit unless a live run holds the target or a landing is under way around it. It returns the refusal text in held when the edit is within the open folder and a run or a landing holds the target.
+// directEdit decides a session's edit of resolved, a target outside the folders it may always edit: allowed inside the folder of its open direct edit unless a live run holds the target or a landing or an update is under way around it. It returns the refusal text in held when the edit is within the open folder and a run, a landing or an update holds the target.
 func directEdit(bridge, session, resolved, goos string) (allowed bool, held string, err error) {
 	if session == "" {
 		return false, "", nil
@@ -125,10 +128,10 @@ func directEdit(bridge, session, resolved, goos string) (allowed bool, held stri
 	if err != nil || held != "" {
 		return false, held, err
 	}
-	landing, err := landingAround(bridge, filepath.Dir(resolved))
-	if err != nil || landing != "" {
-		if landing != "" {
-			held = fmt.Sprintf("a landing is under way in the code folder %s", landing)
+	around, what, err := landingAround(bridge, filepath.Dir(resolved))
+	if err != nil || around != "" {
+		if around != "" {
+			held = fmt.Sprintf("%s is under way in the code folder %s", what, around)
 		}
 		return false, held, err
 	}

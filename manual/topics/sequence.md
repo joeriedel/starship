@@ -11,7 +11,7 @@ When a session has moved, `ensign sequence run|publish|do|release`, a plain `ens
 When several runs of the session are live:
 
 - Pass `--run <id>` to `ensign next`, `ensign resume` and `ensign run-stage`; without it they refuse and name the live runs.
-- One run per code folder: start a run or a step there only when no other live run of any session holds the folder. Ensign refuses it otherwise; a step left waiting starts once the folder is free. A landing (a publish step, or `github-pr merge`) under way in the folder holds it too, and is not a run: the step waits with `a landing is under way in the code folder ...`.
+- One run per code folder: start a run or a step there only when no other live run of any session holds the folder. Ensign refuses it otherwise; a step left waiting starts once the folder is free. A landing (a publish step, or `github-pr merge`) under way in the folder holds it too, and is not a run: the step waits with `a landing is under way in the code folder ...`; so does an update (`an update is under way in the code folder ...`). A publish step fails, and does not wait, when another task's approved run holds the folder without being on its own branch yet; run the publish again once that run has finished.
 - Each run finishes on its own: write each one's journal account as it ends.
 
 When a run step names a task with subtasks:

@@ -1064,3 +1064,23 @@ func TestLandingRemovesTheMarkersOfTheSameFolderOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestLandingSparesTheMarkersOfACollidingOpenPeer(t *testing.T) {
+	w := locationsWorld(t)
+	task := "supernova/b--c"
+	client, err := locationPathFor(w.bridge, "supernova", "client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := setLocationPath(w.bridge, "supernova", "server", client); err != nil {
+		t.Fatal(err)
+	}
+	collidingPeer(t, w, "---\nstatus: open\n---\n\n# c\n")
+	for _, l := range []string{"client", "server"} {
+		write(t, testedFile(w.bridge, task, l), "abc\n")
+	}
+	removeSameFolderMarkers(w.bridge, task, "client")
+	if _, err := os.Stat(testedFile(w.bridge, task, "server")); err != nil {
+		t.Errorf("the open peer's marker should stay: %v", err)
+	}
+}

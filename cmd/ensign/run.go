@@ -660,12 +660,13 @@ func bindSession(bridge, session, run string) error {
 	return nil
 }
 
-// folderBusyError is a run that can't start because another live run holds a code folder it needs, or because a landing is under way there (landing, with no run named). held says how the other run holds it: it works in the folder, or it only reads it (applies a branch from it); wanted says the same for the run that can't start.
+// folderBusyError is a run that can't start because another live run holds a code folder it needs, or because a landing or an update is under way there (landing or update, with no run named). held says how the other run holds it: it works in the folder, or it only reads it (applies a branch from it); wanted says the same for the run that can't start.
 type folderBusyError struct {
 	run, status, folder string
 	held, wanted        folderMode
 	otherSession        bool
 	landing             bool
+	update              bool
 }
 
 type folderMode int
@@ -680,6 +681,8 @@ func (e *folderBusyError) Error() string {
 	switch {
 	case e.landing:
 		return fmt.Sprintf("a landing is under way in the code folder %s; start this once it has finished", e.folder)
+	case e.update:
+		return fmt.Sprintf("an update is under way in the code folder %s; start this once it has finished", e.folder)
 	case e.held == folderWorks && e.wanted == folderWorks:
 		msg = fmt.Sprintf("run %s (%s) already holds the code folder %s; one run at a time works in a folder, so start this once that run has finished", e.run, e.status, e.folder)
 	case e.held == folderWorks:
@@ -706,19 +709,28 @@ func lockFolders(bridge string) (*flock.Flock, error) {
 	return l, nil
 }
 
-// landingLockFile is the lock file of the landings in a code folder, named by the folder as sameFolder compares it. These files are never removed: unlinking a flock file can give two holders. There is one per folder ever landed in or probed, so their number is bounded by the number of folders.
-func landingLockFile(bridge, folder string) string {
+// folderLockFile is the lock file of a kind of operation ("landings" or "updates") in a code folder, named by the folder as sameFolder compares it. These files are never removed: unlinking a flock file can give two holders. There is one per folder ever landed in, updated or probed, so their number is bounded by the number of folders.
+func folderLockFile(bridge, kind, folder string) string {
 	sum := sha256.Sum256([]byte(foldPath(resolveEditFolder(folder, runtime.GOOS), runtime.GOOS)))
-	return filepath.Join(bridge, ".starship", "landings", hex.EncodeToString(sum[:])+".lock")
+	return filepath.Join(bridge, ".starship", kind, hex.EncodeToString(sum[:])+".lock")
 }
 
-// lockLanding marks a landing under way in a code folder until the returned func is called. The lock is shared, so landings in one folder (two tasks, or a publish command's child under its parent) don't refuse each other; a run starting there is refused by landingUnderWay. Both the acquire and the probe run under lockFolders, so a probe never makes an acquire fail. Take it before checking that the landing's task has no live run.
+func landingLockFile(bridge, folder string) string { return folderLockFile(bridge, "landings", folder) }
+
+func updateLockFile(bridge, folder string) string { return folderLockFile(bridge, "updates", folder) }
+
+// lockLanding marks a landing under way in a code folder until the returned func is called. The lock is shared, so landings in one folder (two tasks, or a publish command's child under its parent) don't refuse each other; a run starting there is refused by landingUnderWay, and a landing is refused while an update is under way there. Both the acquire and the probe run under lockFolders, so a probe never makes an acquire fail. Take it before checking that the landing's task has no live run.
 func lockLanding(bridge, folder string) (func(), error) {
 	fl, err := lockFolders(bridge)
 	if err != nil {
 		return nil, err
 	}
 	defer fl.Unlock()
+	if updating, err := updateUnderWay(bridge, folder); err != nil {
+		return nil, err
+	} else if updating {
+		return nil, fmt.Errorf("an update is under way in the code folder %s; wait for it to finish", folder)
+	}
 	lock := landingLockFile(bridge, folder)
 	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
 		return nil, err
@@ -732,16 +744,50 @@ func lockLanding(bridge, folder string) (func(), error) {
 	return func() { l.Unlock() }, nil
 }
 
+// lockUpdate marks an update under way in a code folder until the returned func is called. It is exclusive, and refused while a landing or another update is under way there: the update switches the folder's branch, and a landing would read the wrong current branch. A run starting there is refused by folderHolder. The acquire and the probes run under lockFolders. Take it before checking that no run holds the folder.
+func lockUpdate(bridge, folder string) (func(), error) {
+	fl, err := lockFolders(bridge)
+	if err != nil {
+		return nil, err
+	}
+	defer fl.Unlock()
+	if landing, err := landingUnderWay(bridge, folder); err != nil {
+		return nil, err
+	} else if landing {
+		return nil, fmt.Errorf("a landing is under way in the code folder %s; wait for it to finish", folder)
+	}
+	lock := updateLockFile(bridge, folder)
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		return nil, err
+	}
+	l := flock.New(lock)
+	if ok, err := l.TryLock(); err != nil {
+		return nil, fmt.Errorf("locking the update in %s: %w", folder, err)
+	} else if !ok {
+		return nil, fmt.Errorf("an update is already under way in the code folder %s; wait for it to finish", folder)
+	}
+	return func() { l.Unlock() }, nil
+}
+
 // landingUnderWay reports whether a landing holds a code folder. The caller holds lockFolders.
 func landingUnderWay(bridge, folder string) (bool, error) {
-	lock := landingLockFile(bridge, folder)
+	return lockHeld(landingLockFile(bridge, folder), "a landing", folder)
+}
+
+// updateUnderWay reports whether an update holds a code folder. The caller holds lockFolders.
+func updateUnderWay(bridge, folder string) (bool, error) {
+	return lockHeld(updateLockFile(bridge, folder), "an update", folder)
+}
+
+// lockHeld reports whether anyone holds the lock file, by taking it exclusively and letting go.
+func lockHeld(lock, what, folder string) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
 		return false, err
 	}
 	l := flock.New(lock)
 	ok, err := l.TryLock()
 	if err != nil {
-		return false, fmt.Errorf("checking for a landing in %s: %w", folder, err)
+		return false, fmt.Errorf("checking for %s in %s: %w", what, folder, err)
 	}
 	if ok {
 		l.Unlock()
@@ -769,7 +815,7 @@ func folderHolds(snap *Snapshot) (works, reads []string) {
 	return works, reads
 }
 
-// folderHolder finds the run, other than those in skip, that holds a code folder the snapshot's run needs: an approved run that has not finished. Failing that, a landing under way in one of the folders holds it. The caller holds lockFolders. A run that works in a folder excludes every other run that works in it or reads it; runs that only read a folder share it. It returns nil when the folders are free. session is the session of the run that wants them.
+// folderHolder finds the run, other than those in skip, that holds a code folder the snapshot's run needs: an approved run that has not finished. Failing that, a landing or an update under way in one of the folders holds it. The caller holds lockFolders. A run that works in a folder excludes every other run that works in it or reads it; runs that only read a folder share it. It returns nil when the folders are free. session is the session of the run that wants them.
 func folderHolder(bridge string, snap *Snapshot, session string, skip ...string) error {
 	myWorks, myReads := folderHolds(snap)
 	if len(myWorks) == 0 && len(myReads) == 0 {
@@ -813,6 +859,11 @@ func folderHolder(bridge string, snap *Snapshot, session string, skip ...string)
 			return err
 		} else if landing {
 			return &folderBusyError{folder: f, landing: true}
+		}
+		if updating, err := updateUnderWay(bridge, f); err != nil {
+			return err
+		} else if updating {
+			return &folderBusyError{folder: f, update: true}
 		}
 	}
 	return nil

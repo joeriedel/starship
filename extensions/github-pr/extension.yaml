@@ -20,11 +20,11 @@ summary: Each task works on its own branch; once it passes, you choose a pull re
 #
 # Landing the work is a separate step the user asks for after the run: a pull request,
 # or straight onto the default branch if that's a fast-forward. Either one refuses if
-# the task branch has changed since its tests passed, or if a run of the task in that location failed after its last pass.
+# the task branch has changed since its tests passed, or if a run of the task in that location failed after its last pass. A straight push is also refused while another task's approved run holds the folder without being on its own branch yet, or while an update is under way there.
 #
 # Bringing a task branch up to date is also a step the user asks for: a rebase onto the
 # default branch. If it conflicts it aborts and leaves the branch unchanged. An updated
-# branch has to be tested again before it lands.
+# branch has to be tested again before it lands. It switches the code folder's branch, so it is refused while any approved run holds the folder (an up-to-date branch is still reported), and while a landing or another update is under way there.
 #
 # A project whose tests are its CI on GitHub binds
 #   test: { command: "ensign github-pr ci", plain: true }

@@ -1007,3 +1007,146 @@ func TestAFailedLandingFreesTheLandingLock(t *testing.T) {
 		t.Error("a landing in the folder refuses a run")
 	}
 }
+
+// otherTaskRun is an approved, running run of supernova/other whose snapshot holds folder.
+func otherTaskRun(t *testing.T, w *world, snap *Snapshot) string {
+	t.Helper()
+	snap.Task = "supernova/other"
+	holdingRun(t, w, "20260101-000000-other", "s9", snap)
+	return "20260101-000000-other"
+}
+
+func TestMergeRefusedForAnotherTasksRunOffItsBranch(t *testing.T) {
+	w, ws, _, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	id := otherTaskRun(t, w, &Snapshot{Workspace: ws})
+	_, err := w.land("merge")
+	if err == nil || !strings.Contains(err.Error(), "run "+id) || !strings.Contains(err.Error(), "supernova/other") || !strings.Contains(err.Error(), ws) || !strings.Contains(err.Error(), "wait for it") {
+		t.Fatalf("merge with another task's run not yet on its branch: %v", err)
+	}
+	if on, _ := landingUnderWay(w.bridge, ws); on {
+		t.Error("the lock should be free after the refused landing")
+	}
+	if out, err := w.land("pull-request"); err != nil {
+		t.Errorf("pull-request switches nothing and is not refused: %q %v", out, err)
+	}
+}
+
+func TestMergeAllowedForAnotherTasksRunOnItsBranch(t *testing.T) {
+	w, ws, _, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	runGit(t, ws, "switch", "-q", "-c", "task/other")
+	otherTaskRun(t, w, &Snapshot{Workspace: ws})
+	if out, err := w.land("merge"); err != nil || !strings.Contains(out, "Pushed to main:") {
+		t.Fatalf("merge with a run on its own branch: %q %v", out, err)
+	}
+	if b := currentBranch(ws); b != "task/other" {
+		t.Errorf("the run's branch must stay checked out, got %q", b)
+	}
+}
+
+func TestMergeRefusedForARunOfAnotherProjectOnTheLandedBranch(t *testing.T) {
+	w, ws, _, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	runGit(t, ws, "switch", "-q", "task/auth-refactor")
+	snap := &Snapshot{Workspace: ws, Task: "supernova-api/auth-refactor"}
+	holdingRun(t, w, "20260101-000000-api", "s9", snap)
+	_, err := w.land("merge")
+	if err == nil || !strings.Contains(err.Error(), "supernova-api/auth-refactor") || !strings.Contains(err.Error(), "wait for it") {
+		t.Fatalf("merge with another project's run on the landed branch: %v", err)
+	}
+	if b := currentBranch(ws); b != "task/auth-refactor" {
+		t.Errorf("the folder must stay on the landed branch, got %q", b)
+	}
+	if _, err := gitOut(ws, "rev-parse", "-q", "--verify", "refs/heads/task/auth-refactor"); err != nil {
+		t.Error("the branch must be left alone")
+	}
+}
+
+func TestMergeIgnoresPendingAndQueuedRunsOfAnotherTask(t *testing.T) {
+	w, ws, _, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	for _, q := range []bool{false, true} {
+		id := otherTaskRun(t, w, &Snapshot{Workspace: ws})
+		st := &State{Run: id, Session: "s9", Status: "pending", Sequence: q, Dispatches: []*Dispatch{}, History: []HistoryEntry{}}
+		if err := writeJSON(filepath.Join(runsDir(w.bridge), id, "state.json"), st); err != nil {
+			t.Fatal(err)
+		}
+		if holders, err := runsHolding(w.bridge, ws); err != nil || len(holders) != 0 {
+			t.Fatalf("an unapproved run holds nothing (queued %v): %v %v", q, holders, err)
+		}
+		os.RemoveAll(filepath.Join(runsDir(w.bridge), id))
+	}
+	id := otherTaskRun(t, w, &Snapshot{Workspace: ws})
+	st := &State{Run: id, Session: "s9", Status: "pending", Sequence: true, Dispatches: []*Dispatch{}, History: []HistoryEntry{}}
+	writeJSON(filepath.Join(runsDir(w.bridge), id, "state.json"), st)
+	if out, err := w.land("merge"); err != nil || !strings.Contains(out, "Pushed to main:") {
+		t.Fatalf("merge with a queued run of another task: %q %v", out, err)
+	}
+}
+
+func TestMergeRefusedForARunThatOnlyReadsTheFolder(t *testing.T) {
+	w, ws, _, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	// Even on the run's own branch name, a run whose workspace is elsewhere is never exempt.
+	runGit(t, ws, "switch", "-q", "-c", "task/other")
+	elsewhere := t.TempDir()
+	otherTaskRun(t, w, &Snapshot{Workspace: elsewhere, Dependencies: []Dependency{{Location: "models", Branch: "models-fix", Path: ws}}})
+	if _, err := w.land("merge"); err == nil || !strings.Contains(err.Error(), "supernova/other") {
+		t.Fatalf("merge with a run holding the folder as a dependency: %v", err)
+	}
+}
+
+func TestUpdateRefusedForARunInTheFolder(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	staleBranch(t, ws, remote, "news.txt", "meanwhile\n")
+	runGit(t, ws, "switch", "-q", "-c", "task/other")
+	id := otherTaskRun(t, w, &Snapshot{Workspace: ws})
+	old := runGit(t, ws, "rev-parse", "task/auth-refactor")
+	if out, err := w.land("update"); err == nil || !strings.Contains(err.Error(), "run "+id) || !strings.Contains(err.Error(), "wait for it") {
+		t.Fatalf("update with a run in the folder, even on its own branch: %q %v", out, err)
+	}
+	if now := runGit(t, ws, "rev-parse", "task/auth-refactor"); now != old {
+		t.Error("a refused update must not move the branch")
+	}
+	if on, _ := updateUnderWay(w.bridge, ws); on {
+		t.Error("the update lock should be free after the refusal")
+	}
+	os.RemoveAll(filepath.Join(runsDir(w.bridge), id))
+	if out, err := w.land("update"); err != nil {
+		t.Fatalf("update once the run is gone: %q %v", out, err)
+	}
+}
+
+func TestUpToDateUpdateAnswersWithARunInTheFolder(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	runGit(t, ws, "branch", "task/auth-refactor")
+	otherTaskRun(t, w, &Snapshot{Workspace: ws})
+	if out, err := w.land("update"); err != nil || !strings.Contains(out, "up to date") {
+		t.Fatalf("an up-to-date branch switches nothing: %q %v", out, err)
+	}
+}
+
+func TestLandingAndUpdateRefuseEachOther(t *testing.T) {
+	w, ws, _, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	release := holdUpdate(t, w, ws)
+	if out, err := w.land("merge"); err == nil || !strings.Contains(err.Error(), "an update is under way") {
+		t.Fatalf("merge during an update: %q %v", out, err)
+	}
+	release()
+	holdLanding(t, w, ws)
+	if out, err := w.land("update"); err == nil || !strings.Contains(err.Error(), "a landing is under way") {
+		t.Fatalf("update during a landing: %q %v", out, err)
+	}
+}
+
+func TestAFailedUpdateFreesTheUpdateLock(t *testing.T) {
+	w, ws, _, _ := githubWorld(t, "success", localTest)
+	if _, err := w.land("update"); err == nil || !strings.Contains(err.Error(), "doesn't exist") {
+		t.Fatalf("update with no task branch: %v", err)
+	}
+	if on, err := updateUnderWay(w.bridge, ws); err != nil || on {
+		t.Errorf("the lock should be free after a failed update: %v %v", on, err)
+	}
+}

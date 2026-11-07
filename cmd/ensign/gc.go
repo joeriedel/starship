@@ -464,7 +464,7 @@ type recordSweep struct {
 	Failed  int // listings, reads, locks and removals that went wrong
 }
 
-// sweepClosedRecords removes the .publish, .tested and @<location>.tested records of closed tasks, which close-time cleanup missed or a run finishing after the close recreated, and the .publish, .tested and .base records (with @<location> forms) of tasks that no longer exist. A task name can't be recovered from an encoded file name, so each record is matched forward from the tasks on disk. An encoding is swept only when every task encoding to it is closed, none has a live run, and its publish lock is free; a busy lock is retried by the next gc. A closed task's .base stays, because nothing stops a squash after the close. A vanished task's records are swept only once the task has been missing for sessionFileAge, because a task can be absent briefly (a bridge checkout of another commit) and this also runs at session start; a stale .publish or .base would otherwise change a task re-created under that name. Absence is timed by an empty <enc>.vanished marker, created when the records are first seen without a task (nothing is swept on that pass) and removed with the records (kept while any record's removal failed, so the next gc retries it), or when the task is back or the records are gone; a record's own age says nothing about how long its task has been missing. Lock files (.publish.lock, .journal.lock, the landings') are never removed: unlinking a flock file can give two holders, other code re-creates them, and they are empty.
+// sweepClosedRecords removes the .publish, .tested and @<location>.tested records of closed tasks, which close-time cleanup missed or a run finishing after the close recreated, and the .publish, .tested and .base records (with @<location> forms) of tasks that no longer exist. A task name can't be recovered from an encoded file name, so each record is matched forward from the tasks on disk. An encoding is swept only when every task encoding to it is closed, none has a live run, and its publish lock is free; a busy lock is retried by the next gc. A closed task's .base stays, because nothing stops a squash after the close. A vanished task's records are swept only once the task has been missing for sessionFileAge, because a task can be absent briefly (a bridge checkout of another commit) and this also runs at session start; a stale .publish or .base would otherwise change a task re-created under that name. Absence is timed by an empty <enc>.vanished marker, created when the records are first seen without a task (nothing is swept on that pass) and removed with the records (kept while any record's removal failed, so the next gc retries it), or when the task is back or the records are gone; a record's own age says nothing about how long its task has been missing. Lock files (.publish.lock, .journal.lock, the landings' and the updates') are never removed: unlinking a flock file can give two holders, other code re-creates them, and they are empty.
 func sweepClosedRecords(bridge string) recordSweep {
 	var sw recordSweep
 	dir := filepath.Join(bridge, ".starship", "tasks")
@@ -487,7 +487,8 @@ func sweepClosedRecords(bridge string) recordSweep {
 		if base, ok := strings.CutSuffix(name, ".vanished"); ok {
 			markers[base] = true
 			continue
-		} else if base, ok := strings.CutSuffix(name, ".publish"); ok {
+		}
+		if base, ok := strings.CutSuffix(name, ".publish"); ok {
 			enc = base
 		} else {
 			base, ok := strings.CutSuffix(name, ".tested")
