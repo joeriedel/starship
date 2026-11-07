@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -536,11 +537,7 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 		detail += ": " + summary
 	}
 	reportFile := filepath.Join(r.Dir, "reports", d.ID+".md")
-	if os.WriteFile(reportFile, []byte(report), 0o644) == nil && s.Curates == "brag-feedback" && outcome == "noted" {
-		if rel, err := filepath.Rel(r.Snap.Bridge, reportFile); err == nil {
-			r.State.noteOnce("feedback for " + d.Dim + " is in " + filepath.ToSlash(rel))
-		}
-	}
+	_ = os.WriteFile(reportFile, []byte(report), 0o644)
 	r.State.log("report", s.ID, d.ID, detail)
 	if r.State.terminal() {
 		return
@@ -594,6 +591,13 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 		outcome, _ = joined()
 	}
 	m.apply(d.Scope, s, outcome)
+}
+
+// noteOnce adds a run note unless the run already has it.
+func (st *State) noteOnce(s string) {
+	if !slices.Contains(st.Notes, s) {
+		st.note(s)
+	}
 }
 
 // missingNote is the run note for a feedback dispatch that produced nothing.

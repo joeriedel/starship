@@ -24,10 +24,9 @@ import (
 
 // DeclaredDocument is one entry of bridge.yaml's documents: key. Path and Rubric are slash-form and relative to the bridge.
 type DeclaredDocument struct {
-	Name         string
-	Path         string
-	Rubric       string
-	Instructions string
+	Name   string
+	Path   string
+	Rubric string
 }
 
 // declaredDocumentsFile reads only the documents: key. It is separate from BridgeFile so that a malformed documents: cannot break any other reader of bridge.yaml.
@@ -41,10 +40,6 @@ func (d DeclaredDocument) file(bridge string) string {
 
 func (d DeclaredDocument) rubricFile(bridge string) string {
 	return filepath.Join(bridge, filepath.FromSlash(d.Rubric))
-}
-
-func (d DeclaredDocument) instructionsFile(bridge string) string {
-	return filepath.Join(bridge, filepath.FromSlash(d.Instructions))
 }
 
 func pendingDocumentDir(bridge, name string) string {
@@ -159,8 +154,8 @@ func loadDeclaredDocuments(bridge string) ([]DeclaredDocument, error) {
 				return nil, fmt.Errorf("bridge.yaml: documents: %s: %s is given twice", name, key.Value)
 			}
 			keys[key.Value] = true
-			if key.Value != "path" && key.Value != "rubric" && key.Value != "instructions" {
-				return nil, fmt.Errorf("bridge.yaml: documents: %s: unknown key %q (a document has only path, rubric and instructions)", name, key.Value)
+			if key.Value != "path" && key.Value != "rubric" {
+				return nil, fmt.Errorf("bridge.yaml: documents: %s: unknown key %q (a document has only path and rubric)", name, key.Value)
 			}
 			if val.Kind != yaml.ScalarNode {
 				return nil, fmt.Errorf("bridge.yaml: documents: %s: %s must be a string", name, key.Value)
@@ -168,10 +163,8 @@ func loadDeclaredDocuments(bridge string) ([]DeclaredDocument, error) {
 			switch key.Value {
 			case "path":
 				d.Path = val.Value
-			case "rubric":
-				d.Rubric = val.Value
 			default:
-				d.Instructions = val.Value
+				d.Rubric = val.Value
 			}
 		}
 		if !keys["path"] || d.Path == "" {
@@ -189,17 +182,6 @@ func loadDeclaredDocuments(bridge string) ([]DeclaredDocument, error) {
 			}
 			if strings.EqualFold(d.Rubric, d.Path) {
 				return nil, fmt.Errorf("bridge.yaml: documents: %s: rubric is the document itself", name)
-			}
-		}
-		if keys["instructions"] {
-			if why := documentPathProblem(d.Instructions); why != "" {
-				return nil, fmt.Errorf("bridge.yaml: documents: %s: instructions %q %s", name, d.Instructions, why)
-			}
-			if strings.EqualFold(d.Instructions, d.Path) {
-				return nil, fmt.Errorf("bridge.yaml: documents: %s: instructions is the document itself", name)
-			}
-			if keys["rubric"] && strings.EqualFold(d.Instructions, d.Rubric) {
-				return nil, fmt.Errorf("bridge.yaml: documents: %s: instructions is the rubric", name)
 			}
 		}
 		// Lower-cased so that two names cannot reach one file on a case-insensitive filesystem.
@@ -375,7 +357,6 @@ func writeFileAtomic(bridge, file string, data []byte) error {
 // documentProblems is why the selected documents cannot be curated, without any of their content: a file that does not load or a rubric that is missing.
 func documentProblems(bridge string, docs []DeclaredDocument) []string {
 	var out []string
-	styleChecked := false
 	for _, d := range docs {
 		if _, err := loadDocumentFile(d.file(bridge)); err != nil {
 			out = append(out, fmt.Sprintf("document %s (%s) %v", d.Name, d.Path, err))
@@ -386,32 +367,6 @@ func documentProblems(bridge string, docs []DeclaredDocument) []string {
 				continue
 			}
 		}
-		if d.Instructions != "" && !isFocalDocument(bridge, d) {
-			out = append(out, fmt.Sprintf("document %s: instructions apply only to a focal document, under %s in a bridge using %s", d.Name, focalPrefix, focalExtension))
-		}
-		if isFocalDocument(bridge, d) {
-			if d.Instructions != "" {
-				if _, err := readFileRetry(d.instructionsFile(bridge)); err != nil && !os.IsNotExist(err) {
-					out = append(out, fmt.Sprintf("document %s: its instructions file %s cannot be read", d.Name, d.Instructions))
-				}
-			}
-			if !styleChecked {
-				styleChecked = true
-				if _, err := readFileRetry(focalStyleFile(bridge)); err != nil && !os.IsNotExist(err) {
-					out = append(out, fmt.Sprintf("the style file %s cannot be read", focalStylePath))
-				}
-			}
-			themes, err := focalThemes(bridge, d)
-			if _, ferr := focalFile(bridge, "briefs/entry-format.md"); err != nil || len(themes) == 0 || ferr != nil {
-				out = append(out, fmt.Sprintf("document %s (%s): its themes or entry format cannot be read", d.Name, d.Path))
-			}
-			declared, err := loadDeclaredDocuments(bridge)
-			if err != nil {
-				out = append(out, fmt.Sprintf("document %s: %v", d.Name, err))
-			} else if rel, other := focalCollision(d, declared); other != "" {
-				out = append(out, fmt.Sprintf("document %s: its brag file %s is declared as the path, rubric or instructions of document %s; move that declaration in bridge.yaml", d.Name, rel, other))
-			}
-		}
 	}
 	return out
 }
@@ -419,44 +374,18 @@ func documentProblems(bridge string, docs []DeclaredDocument) []string {
 // errNothingToCurate is why pendingDocuments has no list: a stage with an empty outcome takes that instead of failing the run.
 var errNothingToCurate = errors.New("no declared document has pending proposals to curate")
 
-// focalDocuments resolves a focal-documents stage: every declared focal document, in name order. It is empty when there are none.
-func focalDocuments(bridge string) ([]string, error) {
-	declared, err := loadDeclaredDocuments(bridge)
-	if err != nil {
-		return nil, err
-	}
-	var picked []DeclaredDocument
-	var out []string
-	for _, d := range declared {
-		if isFocalDocument(bridge, d) {
-			picked = append(picked, d)
-			out = append(out, d.Name)
-		}
-	}
-	if problems := documentProblems(bridge, picked); len(problems) > 0 {
-		return nil, errors.New(strings.Join(problems, "; "))
-	}
-	return out, nil
-}
-
-// documentItems resolves a pending-documents or focal-documents stage for a run narrowed to one document: that document alone, or errNothingToCurate when it has nothing for the stage. Only the selected document is checked for problems.
+// documentItems resolves a pending-documents stage for a run narrowed to one document: that document alone, or errNothingToCurate when it has nothing for the stage. Only the selected document is checked for problems.
 func documentItems(bridge, name, over string) ([]string, error) {
 	d, err := findDeclaredDocument(bridge, name)
 	if err != nil {
 		return nil, err
 	}
-	if over == "focal-documents" {
-		if !isFocalDocument(bridge, d) {
-			return nil, errNothingToCurate
-		}
-	} else {
-		files, err := filesIn(pendingDocumentDir(bridge, name), ".yaml")
-		if err != nil {
-			return nil, fmt.Errorf("listing documents/pending/%s: %v", name, err)
-		}
-		if len(files) == 0 {
-			return nil, errNothingToCurate
-		}
+	files, err := filesIn(pendingDocumentDir(bridge, name), ".yaml")
+	if err != nil {
+		return nil, fmt.Errorf("listing documents/pending/%s: %v", name, err)
+	}
+	if len(files) == 0 {
+		return nil, errNothingToCurate
 	}
 	if problems := documentProblems(bridge, []DeclaredDocument{d}); len(problems) > 0 {
 		return nil, errors.New(strings.Join(problems, "; "))
@@ -538,17 +467,9 @@ func documentContext(bridge, name string, d *Dispatch) (string, error) {
 	d.Fields["inputs"] = append(d.Fields["inputs"], rels...)
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Document: %s\n\n", name)
-	focal := isFocalDocument(bridge, decl)
 	if decl.Rubric != "" {
 		rubric, _ := os.ReadFile(decl.rubricFile(bridge))
 		fmt.Fprintf(&b, "## Rubric: what belongs in this document\n\n%s\n\n", strings.TrimSpace(string(rubric)))
-	} else if focal {
-		themes, _ := focalFile(bridge, "briefs/default-themes.md")
-		fmt.Fprintf(&b, "## Rubric: what belongs in this document\n\n%s\n\n", strings.TrimSpace(themes))
-	}
-	if focal {
-		format, _ := focalFile(bridge, "briefs/entry-format.md")
-		fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(format))
 	}
 	fmt.Fprintf(&b, "## Its entries now (D ids)\n\n```yaml\n%s```\n\n## Pending proposals\n\n```yaml\n%s\n```\n", entries, strings.Join(texts, "\n---\n"))
 	return b.String(), nil
@@ -576,12 +497,8 @@ func cmdDocument(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	decl, err := findDeclaredDocument(bridge, name)
-	if err != nil {
+	if _, err := findDeclaredDocument(bridge, name); err != nil {
 		return err
-	}
-	if evidence == "" && isFocalDocument(bridge, decl) {
-		return fmt.Errorf("document %s is a focal sheet: every claim on it traces to a source, so a proposal needs --evidence", name)
 	}
 	var rnd [4]byte
 	if _, err := rand.Read(rnd[:]); err != nil {

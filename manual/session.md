@@ -63,6 +63,7 @@ Two files, committed and pushed with the bridge. Update after a run, decision or
 - **Status**: where it stands. A finished task: `ensign task close <project>/<task>`, not a hand edit
 - **Outstanding**: remaining work only (observations go in Notes)
 - **Decisions**: what was decided *and why*. Move a superseded one to `history.md`, dated, with its replacement.
+- **Impact**: only when `bridge.yaml` `use:` names `impact`; who benefited and the user's part. Read `ensign help impact`.
 - **Notes**: discoveries, dead ends
 
 `history.md` is append-only; read it when a plan touches earlier work or an old issue returns.

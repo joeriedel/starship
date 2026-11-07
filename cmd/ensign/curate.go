@@ -24,9 +24,6 @@ type Entry struct {
 	ID       string   `yaml:"id"`
 	Status   string   `yaml:"status"` // candidate or active
 	Text     string   `yaml:"text"`
-	Theme    string   `yaml:"theme,omitempty"`
-	Why      string   `yaml:"why,omitempty"`
-	Part     string   `yaml:"part,omitempty"`
 	Hits     int      `yaml:"hits"`
 	Evidence []string `yaml:"evidence"`
 }
@@ -387,7 +384,7 @@ func keptChanges(old, next Entry) []string {
 	for _, f := range []struct {
 		name     string
 		old, new string
-	}{{"text", old.Text, next.Text}, {"theme", old.Theme, next.Theme}, {"why", old.Why, next.Why}, {"part", old.Part, next.Part}, {"status", old.Status, next.Status}} {
+	}{{"text", old.Text, next.Text}, {"status", old.Status, next.Status}} {
 		if f.old != f.new {
 			out = append(out, f.name)
 		}
@@ -408,31 +405,9 @@ func keptChanges(old, next Entry) []string {
 	return out
 }
 
-// focalCollision returns a focal sheet's brag file path and the declared document that owns that path as its path, rubric or instructions, if any.
-func focalCollision(decl DeclaredDocument, declared []DeclaredDocument) (rel, other string) {
-	rel = bragPath(decl)
-	for _, o := range declared {
-		if strings.EqualFold(rel, o.Path) || strings.EqualFold(rel, o.Rubric) || strings.EqualFold(rel, o.Instructions) {
-			return rel, o.Name
-		}
-	}
-	return rel, ""
-}
-
 // applyCuration validates a curator's report and writes the document. It returns a
 // problem to send back to the curator, or "".
 func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
-	switch s.Curates {
-	case "brag":
-		return applyBrag(r, s, d, msg)
-	case "brag-feedback":
-		if d.Outcome == "noted" {
-			r.State.noteOnce(feedbackRelayNote)
-		} else if d.Outcome == s.Advisory {
-			r.State.noteOnce(missingNote(d.Dim))
-		}
-		return ""
-	}
 	var path, prefix string
 	var decl DeclaredDocument
 	authoritative := map[string]bool{}
@@ -496,21 +471,8 @@ func applyCuration(r *RunFiles, s *Stage, d *Dispatch, msg string) string {
 			old, _ = loadDoc(path)
 		}
 		errs := validateCurationAs(private, prefix, old, next, ledger, authoritative)
-		var themes []string
-		focal := private && isFocalDocument(r.Snap.Bridge, decl)
-		if focal {
-			var err error
-			if themes, err = focalThemes(r.Snap.Bridge, decl); err != nil {
-				return "The document's themes cannot be read: " + err.Error()
-			}
-			errs = append(errs, focalProblems(prefix, themes, next)...)
-			sort.Strings(errs)
-		}
 		if len(errs) > 0 {
 			return "The rewrite was refused:\n- " + strings.Join(errs, "\n- ")
-		}
-		if focal {
-			sortByTheme(&next, themes)
 		}
 		if private {
 			if err := writeDocumentFile(r.Snap.Bridge, path, d.Dim, next); err != nil {
@@ -713,4 +675,9 @@ func fetchURL(url string) ([]byte, error) {
 		return nil, fmt.Errorf("fetching %s: %s", url, resp.Status)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+}
+
+// privateStage reports whether a stage handles private document content, which stays out of its dispatches' summaries, fields and facts.
+func privateStage(s *Stage) bool {
+	return s.Curates == "document"
 }

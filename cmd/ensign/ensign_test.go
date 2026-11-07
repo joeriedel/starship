@@ -39,7 +39,7 @@ func newWorld(t *testing.T) *world {
 	if _, err := setWorkspace(bridge, "supernova", ws); err != nil {
 		t.Fatal(err)
 	}
-	for _, role := range []string{"curator", "brag-writer", "brag-reviewer", "style-generator"} {
+	for _, role := range []string{"curator", "style-generator"} {
 		write(t, filepath.Join(bridge, ".claude", "agents", role+".md"), "---\nname: "+role+"\n---\n")
 	}
 	t.Setenv("CLAUDE_PROJECT_DIR", bridge)

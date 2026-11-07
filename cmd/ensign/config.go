@@ -156,7 +156,7 @@ type Stage struct {
 	ReportFields []string  `yaml:"report-fields" json:"report_fields,omitempty"`
 	// Skip takes the named outcome without a dispatch when the binding declares nothing.
 	Skip *StageSkip `yaml:"skip" json:"skip,omitempty"`
-	// Curates names what this stage's agents write: style, skill, document, brag or brag-feedback.
+	// Curates names what this stage's agents write: style, skill or document.
 	Curates string `yaml:"curates" json:"curates,omitempty"`
 	// Advisory is the outcome a dispatch takes when it fails to report: nothing on this stage fails the run or retries.
 	Advisory string   `yaml:"advisory" json:"advisory,omitempty"`
@@ -1702,9 +1702,9 @@ func validate(c *Config) []string {
 				}
 			}
 			switch s.Curates {
-			case "", "style", "skill", "document", "brag", "brag-feedback":
+			case "", "style", "skill", "document":
 			default:
-				add("%s: curates %q is not supported (style, skill, document, brag or brag-feedback)", at, s.Curates)
+				add("%s: curates %q is not supported (style, skill or document)", at, s.Curates)
 			}
 			if s.Advisory != "" {
 				if o, ok := s.Outcomes.find(s.Advisory); !ok {
@@ -1740,7 +1740,7 @@ func validate(c *Config) []string {
 							add("%s: dimension %q has no brief (briefs/review/%s.md)", at, d, d)
 						}
 					}
-				case "pending-skills", "pending-documents", "focal-documents", "unprocessed-sources":
+				case "pending-skills", "pending-documents", "unprocessed-sources":
 				default:
 					add("%s: parallel over %q is not supported", at, s.Parallel.Over)
 				}

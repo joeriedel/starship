@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Joseph Riedel
+# Licensed under the MIT License. See LICENSE.
+
+name: impact
+summary: A per-task Impact section kept in task.md, for the bridges that turn it on, and a brag file the session writes from a period's tasks on request.
+quiet: true
+
+help:
+  - say: '"add this to the impact of <task>"'
+    does: record the user's own account of a task's impact, closed tasks included
+    run: ensign help impact   (put the user's words in the task's "### User" with the date; update the inferred lines in the same turn)
+  - say: '"write my brag file for <period>"'
+    does: write the brag file from the tasks closed in a period, organized by theme
+    run: ensign help impact   (writes notes/focal/<period>.brag.md in the session; no pipeline run and no agent)

@@ -948,7 +948,7 @@ func parseRunArgs(cmd string, args []string) (runOpts, error) {
 
 // isDocumentOver reports whether a parallel stage's list is the declared documents.
 func isDocumentOver(over string) bool {
-	return over == "pending-documents" || over == "focal-documents"
+	return over == "pending-documents"
 }
 
 // eachStage calls f on every stage in list, nested stages included.
@@ -971,7 +971,7 @@ func checkDocumentFlag(c *Config, name string) error {
 		}
 	})
 	if !over {
-		return fmt.Errorf("--document: pipeline %s has no stage over pending-documents or focal-documents", c.Pipeline.Name)
+		return fmt.Errorf("--document: pipeline %s has no stage over pending-documents", c.Pipeline.Name)
 	}
 	return nil
 }
@@ -1379,7 +1379,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	}
 	idle := errNothingToCurate
 	if o.document != "" {
-		idle = fmt.Errorf("document %s has nothing to curate: no pending proposals and no brag file to write", o.document)
+		idle = fmt.Errorf("document %s has nothing to curate: no pending proposals", o.document)
 	}
 	// A stage with an empty outcome treats "nothing to do" as no items; the run still needs one stage with something to do.
 	var resolve func(list []*Stage)

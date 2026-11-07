@@ -142,7 +142,7 @@ func TestSkillCurate(t *testing.T) {
 }
 
 func TestKeptMeansUnchanged(t *testing.T) {
-	base := Entry{ID: "D1", Status: "active", Text: "t", Theme: "th", Why: "w", Part: "p", Hits: 3, Evidence: []string{"a", "a", "b"}}
+	base := Entry{ID: "D1", Status: "active", Text: "t", Hits: 3, Evidence: []string{"a", "a", "b"}}
 	old := Doc{Entries: []Entry{base}}
 	with := func(f func(e *Entry)) Entry {
 		e := base
@@ -157,9 +157,6 @@ func TestKeptMeansUnchanged(t *testing.T) {
 		want   string
 	}{
 		{"text", with(func(e *Entry) { e.Text = "SECRET" }), "kept", "text"},
-		{"theme", with(func(e *Entry) { e.Theme = "SECRET" }), "kept", "theme"},
-		{"why", with(func(e *Entry) { e.Why = "SECRET" }), "kept", "why"},
-		{"part", with(func(e *Entry) { e.Part = "SECRET" }), "kept", "part"},
 		{"status", with(func(e *Entry) { e.Status = "candidate" }), "kept", "status"},
 		{"hits fall", with(func(e *Entry) { e.Hits = 2 }), "kept", "hits"},
 		{"evidence loses an element", with(func(e *Entry) { e.Evidence = []string{"a", "a"} }), "kept", "evidence"},

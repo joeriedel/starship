@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,7 @@ func TestDeclaredDocumentsInvalid(t *testing.T) {
 		"missing path":                doc("    rubric: notes/r.md\n"),
 		"empty body":                  "documents:\n  supernova-log: {}\n",
 		"unknown key":                 doc("    path: notes/a.md\n    cursor: 1\n"),
+		"instructions key":            doc("    path: notes/a.md\n    instructions: notes/how.md\n"),
 		"repeated key":                doc("    path: notes/a.md\n    path: notes/b.md\n"),
 		"duplicate name":              "documents:\n  supernova-log:\n    path: notes/a.md\n  supernova-log:\n    path: notes/b.md\n",
 		"same path":                   "documents:\n  supernova-log:\n    path: notes/a.md\n  supernova-plan:\n    path: notes/a.md\n",
@@ -563,4 +565,388 @@ func TestWindowsReserved(t *testing.T) {
 			t.Errorf("%q should not be reserved", s)
 		}
 	}
+}
+
+func TestValidateAdvisoryAndEmpty(t *testing.T) {
+	ok := Outcomes{{Name: "a", Then: Transition{Finish: "success"}}, {Name: "e", Then: Transition{Error: "x"}}}
+	for name, c := range map[string]struct {
+		s    Stage
+		want string
+	}{
+		"fine":             {Stage{Advisory: "a", Parallel: &Parallel{Over: "pending-documents", Join: "all", Empty: "a"}}, ""},
+		"advisory unknown": {Stage{Advisory: "z"}, "advisory outcome"},
+		"advisory error":   {Stage{Advisory: "e"}, "must not be an error"},
+		"empty unknown":    {Stage{Parallel: &Parallel{Over: "pending-documents", Join: "all", Empty: "z"}}, "empty outcome"},
+		"empty dimensions": {Stage{Dimensions: []string{"x"}, Parallel: &Parallel{Over: "dimensions", Join: "all", Empty: "a"}}, "empty cannot be used"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := c.s
+			s.ID, s.Role, s.Outcomes = "s", "coder", ok
+			got := strings.Join(validate(&Config{ControlPlane: repoRoot(t), Pipeline: &Pipeline{Stages: []*Stage{&s}}}), "\n")
+			if c.want == "" && (strings.Contains(got, "advisory") || strings.Contains(got, "empty")) || c.want != "" && !strings.Contains(got, c.want) {
+				t.Errorf("want %q in:\n%s", c.want, got)
+			}
+		})
+	}
+}
+
+func TestPrivateStageIsTheDocumentStageOnly(t *testing.T) {
+	for curates, want := range map[string]bool{"document": true, "": false, "style": false, "skill": false} {
+		if got := privateStage(&Stage{Curates: curates}); got != want {
+			t.Errorf("privateStage(%q) = %v", curates, got)
+		}
+	}
+}
+
+func TestNoteOnceAddsANoteOnce(t *testing.T) {
+	st := &State{}
+	st.noteOnce("one")
+	st.noteOnce("one")
+	st.noteOnce("two")
+	if strings.Join(st.Notes, ",") != "one,two" {
+		t.Errorf("notes = %v", st.Notes)
+	}
+}
+
+func TestStopAdvisoryNoteReadsTheSame(t *testing.T) {
+	if got := missingNote("supernova-log"); got != "feedback for supernova-log is missing" {
+		t.Errorf("note = %q", got)
+	}
+}
+
+func TestDocumentCurateIsOneStageThatFinishes(t *testing.T) {
+	w := docWorld(t, "notes/supernova-log.md")
+	seedDocument(t, w, "notes/supernova-log.md")
+	w.propose("supernova-log", "Nova owns the launch checklist")
+	w.run("--pipeline", "document-curate", "--dry-run")
+	w.run("--pipeline", "document-curate")
+	if got := w.next(); !strings.Contains(got, "curator") {
+		t.Fatalf("the run should start at the curator: %s", got)
+	}
+	cur, _ := w.spawn("", "", "curator")
+	if r := w.stop(cur, "curator", goodRewrite(), true); r != "" {
+		t.Fatal(r)
+	}
+	if st := w.state(); st.Status != "success" || len(st.Notes) != 0 {
+		t.Errorf("status %s notes %v", st.Status, st.Notes)
+	}
+}
+
+func TestFocalConfigurationIsRefused(t *testing.T) {
+	w := docWorld(t, "notes/supernova-log.md")
+	by := filepath.Join(w.bridge, "bridge.yaml")
+	data, _ := os.ReadFile(by)
+	write(t, by, string(data)+"    instructions: notes/how.md\n")
+	if _, err := loadDeclaredDocuments(w.bridge); err == nil || !strings.Contains(err.Error(), `unknown key "instructions"`) {
+		t.Errorf("instructions key: %v", err)
+	}
+	for _, over := range []string{"focal-documents"} {
+		c := &Config{ControlPlane: repoRoot(t), Pipeline: &Pipeline{Stages: []*Stage{{ID: "s", Role: "coder",
+			Parallel: &Parallel{Over: over, Join: "all"}, Outcomes: Outcomes{{Name: "a", Then: Transition{Finish: "success"}}}}}}}
+		if got := strings.Join(validate(c), "\n"); !strings.Contains(got, "parallel over "+strconv.Quote(over)+" is not supported") {
+			t.Errorf("over %s:\n%s", over, got)
+		}
+	}
+}
+
+// twoDocWorld is a bridge with two plain documents, each with one proposal.
+func twoDocWorld(t *testing.T) *world {
+	t.Helper()
+	w := connWorld(t, "documents:\n  supernova-log:\n    path: notes/supernova-log.md\n  supernova-plan:\n    path: notes/supernova-plan.md\n")
+	w.propose("supernova-log", "Nova shipped the launch checklist")
+	w.propose("supernova-plan", "Nova fixed the gate")
+	return w
+}
+
+// stageItems is the frozen item list of each stage of the session's run, by stage id.
+func stageItems(t *testing.T, w *world) map[string][]string {
+	t.Helper()
+	r, err := openSessionRun(w.bridge, w.sid)
+	if err != nil || r == nil {
+		t.Fatalf("no active run: %v", err)
+	}
+	defer r.close()
+	out := map[string][]string{}
+	for _, s := range r.Snap.Pipeline.Stages {
+		out[s.ID] = s.Dimensions
+	}
+	return out
+}
+
+func TestRunDocumentNarrowsTheStage(t *testing.T) {
+	w := twoDocWorld(t)
+	w.run("--pipeline", "document-curate", "--document", "supernova-log")
+	if got := strings.Join(stageItems(t, w)["curate"], ","); got != "supernova-log" {
+		t.Errorf("curate items = %q", got)
+	}
+	if st := w.state(); st.Document != "supernova-log" {
+		t.Errorf("State.Document = %q", st.Document)
+	}
+	if got := pendingDocFiles(w, "supernova-plan"); len(got) != 1 {
+		t.Errorf("the other document's proposals = %v", got)
+	}
+	if id, _ := w.spawn("", "", "curator"); id == "" {
+		t.Fatal("the curator was refused")
+	}
+	if id, _ := w.spawn("", "", "curator"); id != "" {
+		t.Error("a second curator was allowed")
+	}
+}
+
+func TestRunDocumentWithoutTheFlagKeepsEveryDocument(t *testing.T) {
+	w := twoDocWorld(t)
+	w.run("--pipeline", "document-curate")
+	if got := strings.Join(stageItems(t, w)["curate"], ","); got != "supernova-log,supernova-plan" {
+		t.Errorf("curate items = %q", got)
+	}
+}
+
+func TestRunDocumentRefusals(t *testing.T) {
+	w := twoDocWorld(t)
+	if err := w.runErr("--pipeline", "document-curate", "--document", "supernova-nowhere"); err == nil || !strings.Contains(err.Error(), "supernova-nowhere") {
+		t.Errorf("undeclared: %v", err)
+	}
+	if err := w.runErr("--pipeline", "skill-curate", "--document", "supernova-log"); err == nil || !strings.Contains(err.Error(), "no stage over pending-documents") {
+		t.Errorf("pipeline without document stages: %v", err)
+	}
+}
+
+func TestRunDocumentWithNothingToDoNamesIt(t *testing.T) {
+	w := docWorld(t, "notes/supernova-log.md")
+	if err := w.runErr("--pipeline", "document-curate", "--document", "supernova-log"); err == nil || !strings.Contains(err.Error(), "document supernova-log has nothing to curate") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestRunDocumentIgnoresAnotherDocumentsProblem(t *testing.T) {
+	w := twoDocWorld(t)
+	by := filepath.Join(w.bridge, "bridge.yaml")
+	data, _ := os.ReadFile(by)
+	write(t, by, string(data)+"  supernova-notes:\n    path: notes/supernova-notes.md\n    rubric: notes/missing-rubric.md\n")
+	w.propose("supernova-notes", "Nova logged the burn")
+	if err := w.runErr("--pipeline", "document-curate"); err == nil || !strings.Contains(err.Error(), "supernova-notes") {
+		t.Fatalf("the whole run should be refused for the broken document: %v", err)
+	}
+	w.run("--pipeline", "document-curate", "--document", "supernova-log")
+	if got := strings.Join(stageItems(t, w)["curate"], ","); got != "supernova-log" {
+		t.Errorf("curate items = %q", got)
+	}
+}
+
+func TestRunDocumentDryRunAndRetry(t *testing.T) {
+	w := twoDocWorld(t)
+	out := w.run("--pipeline", "document-curate", "--document", "supernova-log", "--dry-run")
+	if !strings.Contains(out, "[supernova-log]") || strings.Contains(out, "supernova-plan") {
+		t.Errorf("dry run:\n%s", out)
+	}
+	w.run("--pipeline", "document-curate", "--document", "supernova-log")
+	old, err := openRun(w.bridge, w.state().Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.close()
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(w.bridge)
+	var buf bytes.Buffer
+	snap, err := retryRun(w.bridge, old, "it stopped", "everything", &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := w.runState(snap.Run); st.Document != "supernova-log" {
+		t.Errorf("retry State.Document = %q", st.Document)
+	}
+	for _, s := range snap.Pipeline.Stages {
+		if s.Parallel != nil && strings.Join(s.Dimensions, ",") != "supernova-log" {
+			t.Errorf("retry stage %s items = %v", s.ID, s.Dimensions)
+		}
+	}
+}
+
+func TestCurationAgentFileUnderAnotherFileName(t *testing.T) {
+	w := twoDocWorld(t)
+	agents := filepath.Join(w.bridge, ".claude", "agents")
+	data, err := os.ReadFile(filepath.Join(agents, "curator.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(agents, "curator.md"))
+	write(t, filepath.Join(agents, "my-curator.md"), string(data))
+	out := w.run("--pipeline", "document-curate")
+	if strings.Contains(out, "linked") {
+		t.Errorf("link ran:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(agents, "curator.md")); err == nil {
+		t.Error("curator.md was created")
+	}
+}
+
+func TestCurationAgentFilePreflight(t *testing.T) {
+	agent := func(w *world) string { return filepath.Join(w.bridge, ".claude", "agents", "curator.md") }
+	t.Run("linked", func(t *testing.T) {
+		w := twoDocWorld(t)
+		os.RemoveAll(filepath.Join(w.bridge, ".claude"))
+		out := w.run("--pipeline", "document-curate")
+		if _, err := os.Stat(agent(w)); err != nil {
+			t.Errorf("the agent file was not linked: %v", err)
+		}
+		if !strings.Contains(out, "restart claude") {
+			t.Errorf("no restart line:\n%s", out)
+		}
+	})
+	t.Run("directory existed", func(t *testing.T) {
+		w := twoDocWorld(t)
+		os.Remove(agent(w))
+		out := w.run("--pipeline", "document-curate")
+		if _, err := os.Stat(agent(w)); err != nil || strings.Contains(out, "restart claude") {
+			t.Errorf("%v\n%s", err, out)
+		}
+	})
+	t.Run("dry run", func(t *testing.T) {
+		w := twoDocWorld(t)
+		os.RemoveAll(filepath.Join(w.bridge, ".claude"))
+		out := w.run("--pipeline", "document-curate", "--dry-run")
+		if _, err := os.Stat(filepath.Join(w.bridge, ".claude")); err == nil {
+			t.Error("a dry run created agent files")
+		}
+		if !strings.Contains(out, ".claude/agents/") || !strings.Contains(out, "would run ensign link") {
+			t.Errorf("dry run:\n%s", out)
+		}
+	})
+	t.Run("run live", func(t *testing.T) {
+		w := twoDocWorld(t)
+		w.run("--pipeline", "document-curate")
+		os.Remove(agent(w))
+		err := w.runErr("--pipeline", "document-curate")
+		if err == nil || !strings.Contains(err.Error(), "curator") || !strings.Contains(err.Error(), ".claude/agents/curator.md") || !strings.Contains(err.Error(), "ensign link") {
+			t.Errorf("err = %v", err)
+		}
+		if _, err := os.Stat(agent(w)); err == nil {
+			t.Error("link ran under a live run")
+		}
+	})
+}
+
+func TestCurationAgentFileIgnoresUnrelatedBrokenFile(t *testing.T) {
+	w := twoDocWorld(t)
+	agents := filepath.Join(w.bridge, ".claude", "agents")
+	write(t, filepath.Join(agents, "README.md"), "no frontmatter\n")
+	write(t, filepath.Join(agents, "supernova-notes.md"), "---\nname: [\n---\n")
+	out := w.run("--pipeline", "document-curate")
+	if strings.Contains(out, "linked") || strings.Contains(out, "is missing") {
+		t.Errorf("the unrelated files were read as a missing agent:\n%s", out)
+	}
+	write(t, filepath.Join(agents, "supernova-reader.md"), "---\nname: supernova-reader\ntools: Read\n---\n")
+	if readOnlyRole(w.bridge, "supernova-reader") {
+		t.Error("readOnlyRole must fail closed while an unrelated file is broken")
+	}
+}
+
+func TestCurationAgentFileBrokenOwnFileIsNotMissing(t *testing.T) {
+	w := twoDocWorld(t)
+	agents := filepath.Join(w.bridge, ".claude", "agents")
+	write(t, filepath.Join(agents, "curator.md"), "---\nname: [\n---\n")
+	for _, args := range [][]string{{"--pipeline", "document-curate"}, {"--pipeline", "document-curate", "--dry-run"}} {
+		err := w.runErr(args...)
+		if err == nil || !strings.Contains(err.Error(), "curator.md") || !strings.Contains(err.Error(), "broken") || strings.Contains(err.Error(), "missing") {
+			t.Errorf("%v: err = %v", args, err)
+		}
+	}
+	if data, _ := os.ReadFile(filepath.Join(agents, "curator.md")); string(data) != "---\nname: [\n---\n" {
+		t.Errorf("link rewrote the broken file:\n%s", data)
+	}
+}
+
+// advisoryWorld has a pipeline of its own with one advisory stage over the pending documents, since no shipped pipeline has one.
+func advisoryWorld(t *testing.T) *world {
+	t.Helper()
+	w := twoDocWorld(t)
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-advisory", "extension.yaml"), "name: supernova-advisory\nsummary: an advisory stage\n")
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-advisory", "pipelines", "supernova-advise.yaml"), `pipeline: supernova-advise
+version: 1
+scope: bridge
+summary: An advisory stage.
+stages:
+  - id: check
+    role: curator
+    dispatched-by: session
+    brief: briefs/curate-document.md
+    advisory: missing
+    parallel: { over: pending-documents, join: all, empty: noted }
+    outcomes:
+      noted:   { finish: success }
+      missing: { finish: success }
+`)
+	w.run("--pipeline", "supernova-advise", "--document", "supernova-log")
+	return w
+}
+
+func TestAdvisoryStageNeverFailsTheRun(t *testing.T) {
+	missing := "feedback for supernova-log is missing"
+	check := func(t *testing.T, w *world) {
+		t.Helper()
+		st := w.state()
+		if st.Status != "success" {
+			t.Fatalf("status %s %s", st.Status, st.Reason)
+		}
+		if !strings.Contains(strings.Join(st.Notes, "\n"), missing) {
+			t.Errorf("notes = %v", st.Notes)
+		}
+		for _, d := range st.Dispatches {
+			if *d.StopsLeft != stopBudget {
+				t.Errorf("stop budget spent: %d", *d.StopsLeft)
+			}
+		}
+	}
+	for name, msg := range map[string]string{"bad report": "no report here", "empty": ""} {
+		t.Run(name, func(t *testing.T) {
+			w := advisoryWorld(t)
+			id, why := w.spawn("", "", "curator")
+			if id == "" {
+				t.Fatal(why)
+			}
+			if r := w.stop(id, "curator", msg, false); r != "" {
+				t.Fatalf("the stop was blocked: %s", r)
+			}
+			check(t, w)
+		})
+	}
+	t.Run("handback", func(t *testing.T) {
+		w := advisoryWorld(t)
+		id, why := w.spawn("", "", "curator")
+		if id == "" {
+			t.Fatal(why)
+		}
+		if r := w.handback(id, "curator", "no report here"); r != "" {
+			t.Fatalf("the handback was refused: %s", r)
+		}
+		check(t, w)
+	})
+	t.Run("run stop", func(t *testing.T) {
+		w := advisoryWorld(t)
+		if id, why := w.spawn("", "", "curator"); id == "" {
+			t.Fatal(why)
+		}
+		run := w.state().Run
+		if _, err := w.stopRun(run); err != nil {
+			t.Fatal(err)
+		}
+		st := w.runState(run)
+		if st.Status != "success" || !strings.Contains(strings.Join(st.Notes, "\n"), missing) {
+			t.Errorf("status %s notes %v", st.Status, st.Notes)
+		}
+	})
+	t.Run("reported", func(t *testing.T) {
+		w := advisoryWorld(t)
+		id, why := w.spawn("", "", "curator")
+		if id == "" {
+			t.Fatal(why)
+		}
+		if r := w.stop(id, "curator", "Fine.\n\n```starship-report\noutcome: noted\nsummary: ok\n```\n", true); r != "" {
+			t.Fatal(r)
+		}
+		if st := w.state(); st.Status != "success" || strings.Contains(strings.Join(st.Notes, "\n"), missing) {
+			t.Errorf("status %s notes %v", st.Status, st.Notes)
+		}
+	})
 }

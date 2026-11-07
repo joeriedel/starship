@@ -1046,6 +1046,15 @@ New.
 ## Notes
 `
 
+// newTaskContent is a new task's task.md; a bridge using the impact extension gets the bare Impact heading between Decisions and Notes.
+func newTaskContent(bridge, pipeline, vcs, name string) string {
+	content := fmt.Sprintf(taskTemplate, pipeline, vcs, name)
+	if bridgeUses(bridge, "impact") {
+		content = strings.Replace(content, "## Decisions\n\n## Notes\n", "## Decisions\n\n## Impact\n\n## Notes\n", 1)
+	}
+	return content
+}
+
 func cmdTask(args []string, out io.Writer) error {
 	usage := fmt.Errorf("usage: ensign task new <project>/<task> [--workspace <path> | --locations <a,b>] [--branch <branch>] [--pipeline <none|coding>] | ensign task open <project>/<task> | ensign task close <project>/<task> | ensign task subtask <done|drop> <project>/<task> <name>")
 	if len(args) < 2 {
@@ -1114,7 +1123,7 @@ func cmdTask(args []string, out io.Writer) error {
 					return fmt.Errorf("task %s has no pipeline (a task without code), so %s has no meaning", args[1], f.name)
 				}
 			}
-			content := fmt.Sprintf(taskTemplate, pipeline, "", parts[1])
+			content := newTaskContent(bridge, pipeline, "", parts[1])
 			return createTaskFiles(bridge, args[1], taskDir, content, out)
 		}
 		locs, err := loadLocations(bridge, parts[0])
@@ -1162,7 +1171,7 @@ func cmdTask(args []string, out io.Writer) error {
 		if branch != "" {
 			vcs += fmt.Sprintf("vcs: { kind: git, branch: %s }\n", branch)
 		}
-		content := fmt.Sprintf(taskTemplate, pipeline, vcs, parts[1])
+		content := newTaskContent(bridge, pipeline, vcs, parts[1])
 		return createTaskFiles(bridge, args[1], taskDir, content, out)
 	case "open":
 		return openTask(bridge, args[1], taskDir, out)
@@ -1331,7 +1340,22 @@ func section(doc, name string) string {
 
 func indent(s string) string { return "  " + strings.ReplaceAll(s, "\n", "\n  ") }
 
-// workItem is what a run is asked to do: the task's Goal and Scope, or its whole body.
+// withoutSection is doc without its "## name" section, which ends at the next "## " line as section() does.
+func withoutSection(doc, name string) string {
+	var out []string
+	skip := false
+	for _, l := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(l, "## ") {
+			skip = strings.EqualFold(strings.TrimSpace(l[3:]), name)
+		}
+		if !skip {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// workItem is what a run is asked to do: the task's Goal and Scope, or its whole body without the Impact section, which never reaches a brief.
 func workItem(body string) string {
 	var parts []string
 	for _, sec := range []string{"Goal", "Scope"} {
@@ -1340,7 +1364,7 @@ func workItem(body string) string {
 		}
 	}
 	if len(parts) == 0 {
-		return strings.TrimSpace(body)
+		return strings.TrimSpace(withoutSection(body, "Impact"))
 	}
 	return strings.Join(parts, "\n\n")
 }

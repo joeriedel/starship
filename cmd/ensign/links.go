@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"unicode"
 
@@ -153,10 +152,5 @@ func printLinks(bridge, project, taskFile string, front []byte, out io.Writer) {
 		fmt.Fprintf(out, "links      STOP: the reader can't be checked: %v\n", err)
 	case declared:
 		fmt.Fprintln(out, "reader     before starting work, dispatch the reader agent with these links: for each, read its current state, compare it with its kept entry, update the entry; then tell the user what it reports changed")
-		if slices.ContainsFunc(links, func(l Link) bool { return l.Kind == "ticket" }) {
-			if note := focalNote(bridge, "briefs/ticket-resolved.md"); note != "" {
-				fmt.Fprintf(out, "focal      %s\n", note)
-			}
-		}
 	}
 }

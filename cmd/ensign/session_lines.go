@@ -31,7 +31,6 @@ const (
 	linePrioritySplitHistory
 	linePriorityBrokenExtension
 	linePriorityEnv
-	linePriorityFocal
 	linePriorityRequest
 	// The inbox is a task for this session; the index only saves a listing.
 	linePriorityNotesInbox
