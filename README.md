@@ -4,7 +4,7 @@
 
 A customizable control plane for Claude Code.
 
-Starship adds tasks and pipelines on top of Claude Code. You still talk to Claude in a normal session, but code changes happen inside a pipeline run: a sequence of stages where separate agents write, review, tidy and test the change. A small Go binary, `ensign`, runs from Claude Code's hooks and checks each step against the pipeline definition, so the order of work doesn't depend on an agent following a prompt.
+Starship adds tasks and pipelines on top of Claude Code. You still talk to Claude in a normal session, but code changes happen inside a pipeline run (or, for a small edit you choose to have made directly, a direct edit you approve with `go`): a sequence of stages where separate agents write, review, tidy and test the change. A small Go binary, `ensign`, runs from Claude Code's hooks and checks each step against the pipeline definition, so the order of work doesn't depend on an agent following a prompt.
 
 Each task keeps a journal in a git repo you own, so you can read back what happened on it or continue it from another machine.
 
@@ -63,7 +63,7 @@ The agents are role definitions in [`roles/`](roles): an orchestrator that leads
 
 ## How a run works
 
-The session agent plans the work with you and doesn't edit code itself. When you type `go`, a UserPromptSubmit hook checks that the message is exactly that word and marks the pending run as approved. "Yes" or "sounds good" won't start it. The session then dispatches the orchestrator, which leads the run.
+The session agent plans the work with you and doesn't edit code itself, with one exception: when work comes up outside a task it asks whether to make a task or just do the edits, and if you choose the edits it records a request (`ensign direct ask`) that only your `go` opens, for that piece of work only. When you type `go`, a UserPromptSubmit hook checks that the message is exactly that word and marks the pending run as approved. "Yes" or "sounds good" won't start it. The session then dispatches the orchestrator, which leads the run.
 
 A pipeline is a YAML file. The default one, [`pipelines/coding.yaml`](pipelines/coding.yaml), defines this loop:
 
@@ -84,7 +84,7 @@ A PreToolUse hook checks each agent dispatch against the pipeline, and refuses o
 
 When an agent finishes, a SubagentStop hook reads its report. If the outcome is missing or isn't one the stage declares, the hook sends the agent back to fix it. An orchestrator that tries to hand back early gets refused until the pipeline has finished.
 
-The same PreToolUse hook checks every Edit, Write and NotebookEdit against the folders the caller may edit. The session gets the bridge, coders and style reviewers get their run's code and scratch folders, and other agents get temp and their run's scratch folder. This check doesn't cover shell commands, so a Bash write isn't blocked.
+The same PreToolUse hook checks every Edit, Write and NotebookEdit against the folders the caller may edit. The session gets the bridge, coders and style reviewers get their run's code and scratch folders, and other agents get temp and their run's scratch folder. The session also gets one code folder for one piece of work after a direct edit is opened with `go`, never a folder a live run holds. This check doesn't cover shell commands, so a Bash write isn't blocked.
 
 The same hook refuses a Bash command from a read-only agent (an explorer or a reviewer) that changes a remote: a `git push`, a `gh` write, a registry publish, or an `ensign` command that pushes. A push to a local path is allowed, so git behaviour can be probed in a scratch repository. This catches accidents; it isn't a security boundary.
 
