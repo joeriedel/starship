@@ -559,7 +559,7 @@ func TestFocalWarningsExtensionElsewhere(t *testing.T) {
 	}
 }
 
-func TestFocalWarningsStayShort(t *testing.T) {
+func TestFocalWarningsCutNames(t *testing.T) {
 	long := strings.Repeat("a", 200)
 	t.Run("documents", func(t *testing.T) {
 		y := "use: [focal-sheet]\ndocuments:\n"
@@ -568,11 +568,13 @@ func TestFocalWarningsStayShort(t *testing.T) {
 		}
 		w := connWorld(t, y)
 		got := focalWarnings(w.bridge)
-		if len(got) != 1 || !strings.HasSuffix(got[0], " And 4 more like it.") || strings.Count(got[0], "sits outside") != 1 {
-			t.Fatalf("want one line ending in the count of 4 more:\n%q", got)
+		if len(got) != 5 {
+			t.Fatalf("want one line for each of the 5 documents:\n%q", got)
 		}
-		if strings.Contains(got[0], long) || len(got[0]) > 300 {
-			t.Errorf("the line holds a full name or path:\n%s", got[0])
+		for _, l := range got {
+			if strings.Contains(l, long) || len(l) > 300 || strings.Count(l, "sits outside") != 1 {
+				t.Errorf("the line holds a full name or path:\n%s", l)
+			}
 		}
 	})
 	t.Run("projects and tasks", func(t *testing.T) {
@@ -582,19 +584,21 @@ func TestFocalWarningsStayShort(t *testing.T) {
 			write(t, filepath.Join(w.bridge, "projects", name, "project.yaml"), "use: [focal-sheet]\n")
 		}
 		got := focalWarnings(w.bridge)
-		if len(got) != 1 || !strings.HasSuffix(got[0], " And 2 more like it.") || !strings.Contains(got[0], "project supernova-") {
-			t.Fatalf("want one line ending in the count of 2 more:\n%q", got)
+		if len(got) != 3 {
+			t.Fatalf("want one line for each of the 3 projects:\n%q", got)
 		}
-		if strings.Contains(got[0], long) || len(got[0]) > 300 {
-			t.Errorf("the line holds a full name:\n%s", got[0])
+		for _, l := range got {
+			if strings.Contains(l, long) || len(l) > 300 || !strings.Contains(l, "project supernova-") {
+				t.Errorf("the line holds a full name:\n%s", l)
+			}
 		}
 	})
 	t.Run("one warning", func(t *testing.T) {
 		w := newWorld(t)
 		w.project("use: [focal-sheet]\n")
 		got := focalWarnings(w.bridge)
-		if len(got) != 1 || strings.Contains(got[0], "more like it") {
-			t.Errorf("a single warning should have no suffix:\n%q", got)
+		if len(got) != 1 {
+			t.Errorf("want a single warning:\n%q", got)
 		}
 	})
 }

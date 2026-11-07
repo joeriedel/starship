@@ -171,15 +171,7 @@ func leftOutEntries(themes []string, d Doc) []Entry {
 // focalNameLimit caps each name or path a focal warning prints.
 const focalNameLimit = 40
 
-// capFocalWarnings keeps the first warning and counts the rest.
-func capFocalWarnings(out []string) []string {
-	if len(out) < 2 {
-		return out
-	}
-	return []string{fmt.Sprintf("%s And %d more like it.", out[0], len(out)-1)}
-}
-
-// focalWarnings are session-start notes about a focal-sheet setup that has no effect. They reach the session start text, which has a fixed budget, so names are cut and at most one line is returned.
+// focalWarnings are session-start notes about a focal-sheet setup that has no effect. Each is its own line in the session start text, which has a fixed budget, so names are cut.
 func focalWarnings(bridge string) []string {
 	var out []string
 	if bridgeUses(bridge, focalExtension) {
@@ -193,7 +185,7 @@ func focalWarnings(bridge string) []string {
 				out = append(out, fmt.Sprintf("the document %s (%s) sits outside %s, so it is curated as a plain document with no focal rules.", truncate(d.Name, focalNameLimit), truncate(d.Path, focalNameLimit), focalPrefix))
 			}
 		}
-		return capFocalWarnings(out)
+		return out
 	}
 	loaded := func(who string) {
 		out = append(out, fmt.Sprintf("%s names the %s extension in its use: list, but that has no focal effect there: the sheet reads use: in bridge.yaml only.", who, focalExtension))
@@ -222,5 +214,5 @@ func focalWarnings(bridge string) []string {
 			}
 		}
 	}
-	return capFocalWarnings(out)
+	return out
 }

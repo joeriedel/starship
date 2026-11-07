@@ -17,7 +17,7 @@ import (
 
 // The bridge's notes live as plain Markdown under notes/ and exist only once someone writes one.
 
-// notesIndexLimit caps the byte length of the index block printed at session start. With the inbox line and the longest note from commitNotes it keeps the session start text under manualLimit.
+// notesIndexLimit caps the byte length of the index block printed at session start. It is one line among those that share the session start budget; see fitSessionLines.
 const notesIndexLimit = 120
 
 const notesCommitMessage = "Commit hand edits to the bridge's notes"
@@ -120,11 +120,6 @@ func commitNotes(bridge string) (note string, synced bool) {
 		return note + notesPushFailed, true
 	}
 	return note, true
-}
-
-// notesContext is the notes block for the session context: an index of the notes by file name, and a line when the inbox holds something. It is empty for a bridge without notes.
-func notesContext(bridge string) string {
-	return notesIndex(bridge) + notesInboxLine(bridge)
 }
 
 func notesIndex(bridge string) string {

@@ -1177,6 +1177,7 @@ func carryOverSession(bridge string, in *HookInput, prev string) error {
 		return nil
 	}
 	copySessionTask(bridge, prev, in.SessionID)
+	copySessionLines(bridge, prev, in.SessionID)
 	var errs []error
 	if err := markMoved(bridge, prev, in.SessionID); err != nil {
 		errs = append(errs, err)

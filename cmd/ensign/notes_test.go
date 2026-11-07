@@ -80,7 +80,7 @@ func TestNoNotesChangesNothing(t *testing.T) {
 	w := linkedWorld(t)
 	journalFixture(t, w)
 	_, ctx := startRaw(t, w, "startup")
-	if notesContext(w.bridge) != "" || strings.Contains(ctx, "unsorted") || strings.Contains(ctx, "hand edits") {
+	if notesIndex(w.bridge)+notesInboxLine(w.bridge) != "" || strings.Contains(ctx, "unsorted") || strings.Contains(ctx, "hand edits") {
 		t.Errorf("unexpected notes output:\n%s", ctx)
 	}
 	if got := committedNotes(t, w.bridge); got != "" {
@@ -88,7 +88,7 @@ func TestNoNotesChangesNothing(t *testing.T) {
 	}
 	// A notes file is not a folder to index.
 	write(t, notesPath(w, "notes"), "x")
-	if notesContext(w.bridge) != "" {
+	if notesIndex(w.bridge)+notesInboxLine(w.bridge) != "" {
 		t.Errorf("a notes file should give no index")
 	}
 }
@@ -139,7 +139,7 @@ func TestHandEditWithRemoteInboxEdit(t *testing.T) {
 	if !strings.Contains(ctx, "notes/inbox.md has unsorted notes") || !strings.Contains(ctx, "people.md") {
 		t.Errorf("inbox line or index missing:\n%s", ctx)
 	}
-	if strings.Contains(strings.Split(ctx, "STARSHIP-READY")[0], "diverged") {
+	if strings.Contains(ctx, "diverged") {
 		t.Errorf("sync note unexpected:\n%s", ctx)
 	}
 }
@@ -270,8 +270,8 @@ func TestNotesIndex(t *testing.T) {
 
 	w = newWorld(t)
 	write(t, notesPath(w, "notes/inbox.md"), "\n  \n")
-	if notesContext(w.bridge) != "" {
-		t.Errorf("a blank inbox alone should give nothing: %q", notesContext(w.bridge))
+	if notesIndex(w.bridge)+notesInboxLine(w.bridge) != "" {
+		t.Errorf("a blank inbox alone should give nothing: %q", notesIndex(w.bridge)+notesInboxLine(w.bridge))
 	}
 }
 
@@ -372,7 +372,7 @@ func TestJunkInNotesIsNotCommitted(t *testing.T) {
 func TestNotesInboxCaseVariant(t *testing.T) {
 	w := newWorld(t)
 	write(t, notesPath(w, "notes/Inbox.md"), "call Ada\n")
-	ctx := notesContext(w.bridge)
+	ctx := notesIndex(w.bridge) + notesInboxLine(w.bridge)
 	if !strings.Contains(ctx, "notes/Inbox.md has unsorted notes") || strings.Contains(ctx, "notes/ (read") {
 		t.Errorf("want an inbox line naming Inbox.md and no index entry: %q", ctx)
 	}

@@ -359,7 +359,7 @@ func sessionOfFile(name string) (string, bool) {
 	if strings.HasSuffix(name, ".gc") {
 		return "", false
 	}
-	for _, suf := range []string{".task", ".pin", ".env", ".sequence", ".sequence.corrupt", ".writes", ".moved"} {
+	for _, suf := range []string{".task", ".pin", ".env", ".lines", ".sequence", ".sequence.corrupt", ".writes", ".moved"} {
 		if strings.HasSuffix(name, suf) {
 			return strings.TrimSuffix(name, suf), true
 		}

@@ -39,6 +39,8 @@ func main() {
 		err = cmdRun(os.Args[2:], os.Stdout)
 	case "help":
 		err = cmdHelp(os.Args[2:], os.Stdout)
+	case "status":
+		err = cmdStatus(os.Args[2:], os.Stdout)
 	case "sequence":
 		err = cmdSequence(os.Args[2:], os.Stdout)
 	case "writes":
@@ -111,6 +113,19 @@ func main() {
 	}
 }
 
+// cmdStatus implements `ensign status`: what the "status" prompt word shows, read-only, for the session named in STARSHIP_SESSION.
+func cmdStatus(args []string, out io.Writer) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: ensign status")
+	}
+	bridge, err := cwdBridge()
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(out, statusText(bridge, os.Getenv("STARSHIP_SESSION")))
+	return err
+}
+
 // cmdLink implements `ensign link`. --migrate also moves the workspaces to the current layout first; update and setup pass it to the ensign they just fetched.
 func cmdLink(args []string, out io.Writer) error {
 	force, migrate := false, false
@@ -147,6 +162,7 @@ func usage() {
   ensign link [--force] [--migrate]
   ensign selftest
   ensign help [topic]
+  ensign status
   ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>]
   ensign project reviewed <project>[/<task>]
   ensign task new <project>/<task> --workspace <path> [--branch <branch>]
@@ -446,6 +462,14 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	holds, unchecked := leftBehindHolds(bridge, in.SessionID)
 	holdLines := leftBehindHoldLines(holds, unchecked)
 	holdShow := leftBehindHoldShow(holds, unchecked)
+	// Every line for the model goes through lines, which keeps the total inside the session start budget; see fitSessionLines.
+	var lines sessionLines
+	if carryErr != nil {
+		lines.add(linePriorityCarryErr, fmt.Sprintf("starship: could not carry the earlier session's runs over: %v", carryErr))
+	}
+	for _, l := range holdLines {
+		lines.add(linePriorityLeftBehindHold, l)
+	}
 	// The reply is JSON: what Claude reads goes in additionalContext, and one line for
 	// the user goes in systemMessage, shown at startup without calling the model.
 	reply := func(show, context string) int {
@@ -454,6 +478,12 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			"hookSpecificOutput": map[string]any{"hookEventName": "SessionStart", "additionalContext": context},
 		})
 		return 0
+	}
+	// held is the session whose status can show the lines render holds: none once the session id could not be recorded.
+	held := in.SessionID
+	// finish replies with head, the text that goes first, and then the collected lines.
+	finish := func(show, head string, extra int) int {
+		return reply(show, head+lines.render(bridge, held, head, extra))
 	}
 	var envNote string
 	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
@@ -471,27 +501,17 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			_, err = io.WriteString(env, content)
 			env.Close()
 		}
+		lines.add(linePriorityEnv, envNote)
 		if err != nil {
+			held = ""
 			// On SessionStart exit 2 blocks nothing, and JSON at exit 0 is the documented way to reach both the model and the user.
-			context := fmt.Sprintf("starship: could not record the session id: %v", err)
-			if carryErr != nil {
-				context += fmt.Sprintf("\nstarship: could not carry the earlier session's runs over: %v", carryErr)
-			}
-			for _, l := range holdLines {
-				context += "\n" + l
-			}
-			return reply(fmt.Sprintf("Starship could not record this session's id, so it isn't working in this session: %v.", err)+leftBehindShow(carryErr)+holdShow, context)
+			lines.add(linePriorityNotReady, fmt.Sprintf("starship: could not record the session id: %v", err))
+			return finish(fmt.Sprintf("Starship could not record this session's id, so it isn't working in this session: %v.", err)+leftBehindShow(carryErr)+holdShow, "", 0)
 		}
 	}
 	notReady := func(err error) int {
-		context := fmt.Sprintf("starship: this bridge is not ready: %v", err)
-		if carryErr != nil {
-			context += fmt.Sprintf("\nstarship: could not carry the earlier session's runs over: %v", carryErr)
-		}
-		for _, l := range holdLines {
-			context += "\n" + l
-		}
-		return reply("Starship is not ready in this bridge. Ask Claude to set it up."+leftBehindShow(carryErr)+holdShow, context)
+		lines.add(linePriorityNotReady, fmt.Sprintf("starship: this bridge is not ready: %v", err))
+		return finish("Starship is not ready in this bridge. Ask Claude to set it up."+leftBehindShow(carryErr)+holdShow, "", 0)
 	}
 	bf, err := loadBridgeFile(bridge)
 	if err == nil {
@@ -500,7 +520,6 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if err != nil {
 		return notReady(err)
 	}
-	var ctx strings.Builder
 	if in.SessionID != "" {
 		writeFile(sessionFile(bridge, in.SessionID)+".pin", pinnedCommit(bridge)+"\n")
 		if in.Source == "compact" || in.Source == "clear" {
@@ -512,16 +531,16 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	if in.Source != "compact" {
 		var note string
 		if note, synced = commitNotes(bridge); note != "" {
-			fmt.Fprintln(&ctx, note)
+			lines.add(linePrioritySync, note)
 		}
 	}
 	if !synced {
 		if note := syncBridge(bridge); note != "" {
-			fmt.Fprintln(&ctx, note)
+			lines.add(linePrioritySync, note)
 		}
 	}
 	if note := migrateWorkspaces(bridge); note != "" {
-		fmt.Fprintln(&ctx, note)
+		lines.add(linePriorityMigrate, note)
 	}
 	if linkStale(bridge) {
 		live, err := liveRuns(bridge)
@@ -538,7 +557,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	dropSessionImport(bridge)
 	updateHeartbeat(bridge)
 	if note := splitHistory(bridge); note != "" {
-		fmt.Fprintln(&ctx, note)
+		lines.add(linePrioritySplitHistory, note)
 	}
 	// The sync may have pulled a changed bridge.yaml, which the settings must follow.
 	if bf, err = loadBridgeFile(bridge); err != nil {
@@ -554,56 +573,52 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		restart = true
 	}
 	removeOldExe(bridge)
-	fmt.Fprintf(&ctx, "STARSHIP-READY ensign %s bridge %s\n", version, bridge)
+	ready := fmt.Sprintf("STARSHIP-READY ensign %s bridge %s\n", version, bridge)
 	if restart {
-		fmt.Fprintln(&ctx, "starship: the connector settings in .claude/settings.json changed; claude must be restarted for them to apply")
+		lines.add(linePriorityConnectorRestart, "starship: the connector settings in .claude/settings.json changed; claude must be restarted for them to apply")
 		if writesDeclared {
-			fmt.Fprintln(&ctx, "starship: until claude is restarted, connector writes are not guarded")
+			lines.add(linePriorityConnectorRestart, "starship: until claude is restarted, connector writes are not guarded")
 		}
 	}
-	if carryErr != nil {
-		fmt.Fprintf(&ctx, "starship: could not carry the earlier session's runs over: %v\n", carryErr)
-	}
-	for _, l := range holdLines {
-		fmt.Fprintln(&ctx, l)
-	}
-	if note := retryStrandedRetires(bridge, in.SessionID); note != "" {
-		fmt.Fprintln(&ctx, note)
-	}
-	if envNote != "" {
-		fmt.Fprintln(&ctx, envNote)
-	}
+	lines.add(linePriorityStrandedRetire, retryStrandedRetires(bridge, in.SessionID))
 	// The manual goes to the session through this hook, not CLAUDE.md, because Claude
 	// Code gives CLAUDE.md to every subagent too. SessionStart also fires after a
 	// compaction, so the manual comes back when the context is summarised.
 	manual, err := os.ReadFile(filepath.Join(bridge, ".starship", "session.md"))
 	if err != nil {
-		fmt.Fprintln(&ctx, "starship: the session manual is missing; run ensign link")
-		return reply("Starship is not ready in this bridge. Ask Claude to set it up."+leftBehindShow(carryErr)+holdShow, ctx.String())
+		lines.add(linePriorityNotReady, "starship: the session manual is missing; run ensign link")
+		return finish("Starship is not ready in this bridge. Ask Claude to set it up."+leftBehindShow(carryErr)+holdShow, ready, 0)
 	}
-	fmt.Fprintf(&ctx, "\n%s", manual)
+	head := ready + "\n" + string(manual)
 	if cp, err := controlPlaneDir(bridge, bf); err == nil {
-		for _, l := range cappedBrokenRoleLines(brokenRoleNotes(bridge, cp)) {
-			fmt.Fprintln(&ctx, l)
+		for _, l := range brokenRoleLines(bridge, cp) {
+			lines.add(linePriorityBrokenExtension, l)
 		}
 	}
 	for _, l := range focalWarnings(bridge) {
-		fmt.Fprintln(&ctx, l)
+		lines.add(linePriorityFocal, l)
 	}
 	if requestCommands(bridge) != "" {
-		fmt.Fprint(&ctx, "\nTo carry out a request like squashing commits or curating skills: read `ensign help requests` for the requests this bridge answers and the command for each.\n")
+		lines.add(linePriorityRequest, "To carry out a request like squashing commits or curating skills: read `ensign help requests` for the requests this bridge answers and the command for each.")
 	}
-	ctx.WriteString(notesContext(bridge))
+	lines.add(linePriorityNotesInbox, notesInboxLine(bridge))
+	lines.add(linePriorityNotesIndex, notesIndex(bridge))
 	// A compaction or clear replaces the context, so the task's project notes, which
-	// task open printed into it, are printed again.
+	// task open printed into it, are printed again. The pointer that stands in for them is fixed text, so the lines leave room for it.
+	var reprint, pointer string
 	if task := sessionTask(bridge, in.SessionID); in.SessionID != "" && task != "" && (in.Source == "compact" || in.Source == "clear") {
 		project, _, _ := strings.Cut(task, "/")
 		if block, err := projectNotes(bridge, project); err == nil && block != "" {
-			if ctx.Len()+len(block) < sessionContextLimit {
-				ctx.WriteString(block)
-			} else {
-				fmt.Fprintf(&ctx, "\nnotes      projects/%s/project.md is too long to reprint here; run `ensign task open %s` to see it again\n", project, task)
-			}
+			reprint = block
+			pointer = fmt.Sprintf("\nnotes      projects/%s/project.md is too long to reprint here; run `ensign task open %s` to see it again\n", project, task)
+		}
+	}
+	ctx := head + lines.render(bridge, in.SessionID, head, contextChars(pointer))
+	if reprint != "" {
+		if len(ctx)+len(reprint) < sessionContextLimit {
+			ctx += reprint
+		} else {
+			ctx += pointer
 		}
 	}
 	show := "Starship ready · bridge " + filepath.Base(bridge)
@@ -651,7 +666,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			show += fmt.Sprintf(" · could not sweep %d publish records of closed tasks", res.RecordsFailed)
 		}
 	}
-	return reply(show+leftBehindShow(carryErr)+holdShow, ctx.String())
+	return reply(show+leftBehindShow(carryErr)+holdShow, ctx)
 }
 
 // sessionContextLimit is the length, in characters, of additionalContext past which Claude Code cuts it to a preview.

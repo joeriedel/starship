@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -1996,112 +1995,23 @@ func TestRoleLinesOfBrokenExtensions(t *testing.T) {
 		ctx := dig(res, "hookSpecificOutput", "additionalContext")
 		var line string
 		for _, l := range strings.Split(ctx, "\n") {
-			if strings.HasPrefix(l, "Note: extension ") {
+			if strings.HasPrefix(l, "Note: extension "+name+" ") {
 				line = l
 			}
 		}
 		if code != 0 || !strings.Contains(ctx, "STARSHIP-READY") || strings.Contains(ctx, "supernova-bare") {
 			t.Errorf("SessionStart context (code %d):\n%s", code, ctx)
 		}
-		if !strings.Contains(line, "extension "+name+" is broken, roles not linked: ") || !strings.Contains(line, reason) || strings.Contains(line, "extension.yaml") {
-			t.Errorf("session start line for %s = %q, want its reason %q and no path", name, line, reason)
+		if !strings.Contains(line, "extension "+name+" is broken, so its roles are not linked: ") || !strings.Contains(line, reason) {
+			t.Errorf("session start line for %s = %q, want its reason %q", name, line, reason)
 		}
 	}
-	// The one-line cap may cut the end of the yaml error.
-	reason := strings.TrimLeft(strings.TrimPrefix(yamlErr.Error(), brokenFile), ": ")
-	start("supernova-broken", reason[:30])
+	start("supernova-broken", flatLine(yamlErr.Error()))
 	if err := os.RemoveAll(filepath.Join(w.bridge, "extensions", "supernova-broken")); err != nil {
 		t.Fatal(err)
 	}
 	w.sid = "s2"
 	start("supernova-nameless", "declares no name")
-}
-
-func TestSessionStartCapsTheBrokenRoleLines(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		n    int
-		more int
-	}{{"at the cap", brokenRoleLineCount, 0}, {"over the cap", brokenRoleLineCount + 2, 2}} {
-		t.Run(c.name, func(t *testing.T) {
-			w := linkedWorld(t)
-			brokenRoleFixture(t, w.bridge, c.n, strings.Repeat("k", 2*brokenRoleLineLimit))
-			root, _ := filepath.Abs("../..")
-			all := brokenRoleLines(w.bridge, root)
-			if len(all) != c.n {
-				t.Fatalf("brokenRoleLines returned %d lines, want all %d", len(all), c.n)
-			}
-			for _, l := range all {
-				if !strings.Contains(l, "extension.yaml") {
-					t.Errorf("the full line lost its path: %q", l)
-				}
-			}
-			res, _ := w.hook("SessionStart", map[string]any{"source": "startup"})
-			ctx := dig(res, "hookSpecificOutput", "additionalContext")
-			var got []string
-			for _, l := range strings.Split(ctx, "\n") {
-				if strings.HasPrefix(l, "Note: extension supernova-broken-") || strings.HasPrefix(l, "And ") {
-					got = append(got, l)
-				}
-			}
-			kept := min(c.n, brokenRoleLineCount)
-			if len(got) != kept+min(c.more, 1) {
-				t.Fatalf("session start printed %d broken lines, want %d:\n%s", len(got), kept+min(c.more, 1), ctx)
-			}
-			for i, l := range got[:kept] {
-				if !strings.HasPrefix(l, fmt.Sprintf("Note: extension supernova-broken-%d is broken, roles not linked: ", i)) || len([]rune(l)) > brokenRoleLineLimit || strings.Contains(l, "extension.yaml") {
-					t.Errorf("line %d = %q", i, l)
-				}
-			}
-			if c.more > 0 {
-				if want := fmt.Sprintf("And %d more broken.", c.more); got[kept] != want {
-					t.Errorf("closing line = %q, want %q", got[kept], want)
-				}
-			} else if strings.Contains(ctx, "\nAnd ") {
-				t.Errorf("no closing line expected:\n%s", ctx)
-			}
-			if strings.Contains(strings.Join(got, "\n"), "ensign link") {
-				t.Errorf("session start still names ensign link: %q", got)
-			}
-		})
-	}
-}
-
-func TestCappedBrokenRoleLinesKeepsShortLinesWhole(t *testing.T) {
-	var notes []brokenRoleNote
-	var lines []string
-	for i := 0; i < brokenRoleLineCount; i++ {
-		short := fmt.Sprintf("Note: extension supernova-broken-%d is broken, roles not linked: unknown key", i)
-		notes = append(notes, brokenRoleNote{"full " + short, short})
-		lines = append(lines, short)
-	}
-	if got := cappedBrokenRoleLines(notes); !slices.Equal(got, lines) {
-		t.Errorf("lines at the cap should come back whole: %q", got)
-	}
-	got := cappedBrokenRoleLines(append(notes, brokenRoleNote{"full one more", "Note: one more"}))
-	if len(got) != brokenRoleLineCount+1 || !slices.Equal(got[:brokenRoleLineCount], lines) || got[brokenRoleLineCount] != "And 1 more broken." {
-		t.Errorf("one over the cap: %q", got)
-	}
-	for _, l := range got {
-		if strings.Contains(l, "ensign link") {
-			t.Errorf("session start names ensign link: %q", l)
-		}
-	}
-}
-
-func TestSessionStartKeepsTheReasonOfALongNamedExtension(t *testing.T) {
-	w := newWorld(t)
-	name := "supernova-" + strings.Repeat("n", 200)
-	write(t, filepath.Join(w.bridge, "extensions", name, "extension.yaml"), "name: "+name+"\nsupernova-key: 1\n")
-	write(t, filepath.Join(w.bridge, "extensions", name, "roles", "supernova-role.md"), "---\nname: supernova-role\n---\nx\n")
-	notes := brokenRoleNotes(w.bridge, mustAbs(t, "../.."))
-	if len(notes) != 1 {
-		t.Fatalf("got %d notes, want 1", len(notes))
-	}
-	got := cappedBrokenRoleLines(notes)
-	if len(got) != 1 || !strings.Contains(got[0], "supernova-key") || !strings.Contains(got[0], "…") || len([]rune(got[0])) > brokenRoleLineLimit {
-		t.Errorf("the reason should survive a long name: %q", got)
-	}
 }
 
 func mustAbs(t *testing.T, p string) string {
@@ -2168,47 +2078,5 @@ func TestBrokenRoleLinesCountShadowedExtensions(t *testing.T) {
 	write(t, filepath.Join(w.bridge, "extensions", "supernova-feed", "extension.yaml"), good)
 	if lines = brokenRoleLines(w.bridge, cp); len(lines) != 0 {
 		t.Errorf("a broken extension replaced by a good one of its name: %q", lines)
-	}
-}
-
-func TestSessionStartReasonOfADanglingExtensionYamlHasNoPath(t *testing.T) {
-	w := newWorld(t)
-	folder := filepath.Join(w.bridge, "extensions", "supernova-feed")
-	link := filepath.Join(folder, "extension.yaml")
-	write(t, filepath.Join(folder, "roles", "supernova-role.md"), "---\nname: supernova-role\n---\nx\n")
-	if err := os.Symlink(filepath.Join(folder, "nowhere.yaml"), link); err != nil {
-		t.Skipf("cannot create a symlink: %v", err)
-	}
-	_, rerr := os.ReadFile(link)
-	var pe *fs.PathError
-	if !errors.As(rerr, &pe) {
-		t.Fatalf("reading the link gave %v, want a path error", rerr)
-	}
-	notes := brokenRoleNotes(w.bridge, filepath.Join(w.bridge, "no-control-plane"))
-	if len(notes) != 1 {
-		t.Fatalf("got %d notes, want 1: %v", len(notes), notes)
-	}
-	got := cappedBrokenRoleLines(notes)[0]
-	want := truncate("Note: extension supernova-feed is broken, roles not linked: "+pe.Err.Error(), brokenRoleLineLimit)
-	if got != want || !strings.Contains(got, "supernova-feed") || strings.Contains(got, "extension.yaml") {
-		t.Errorf("want the name and the system's reason with no path, capped as %q: %q", want, got)
-	}
-}
-
-func TestSessionStartReasonOfAPlainFileForRolesHasNoPath(t *testing.T) {
-	w := newWorld(t)
-	folder := filepath.Join(w.bridge, "extensions", "supernova-feed")
-	write(t, filepath.Join(folder, "extension.yaml"), "name: supernova-feed\nsupernova-key: 1\n")
-	write(t, filepath.Join(folder, "roles"), "x\n")
-	notes := brokenRoleNotes(w.bridge, filepath.Join(w.bridge, "no-control-plane"))
-	if len(notes) != 1 {
-		t.Fatalf("got %d notes, want 1: %v", len(notes), notes)
-	}
-	got := cappedBrokenRoleLines(notes)[0]
-	if !strings.Contains(got, "supernova-feed") || strings.Contains(got, w.bridge) || strings.Contains(got, "roles"+string(filepath.Separator)) {
-		t.Errorf("want the name and a reason with no path: %q", got)
-	}
-	if want := shortReason(fmt.Errorf("%s is not a folder", filepath.Join(folder, "roles")), ""); want != "is not a folder" {
-		t.Errorf("shortReason = %q", want)
 	}
 }

@@ -94,7 +94,7 @@ var fixedHelp = []struct {
 		{`"open <project> / <task>"`, "pick up a task where it left off", ""},
 		{`"new task <name> in <project>"`, "start a task in the project's code (or name a different location)", ""},
 		{`"new project <name>, its code is in <folder>"`, "add a project to this bridge", ""},
-		{"status", "where the current task and run stand", ""},
+		{"status", "where the current task and run stand", "ensign status"},
 		{"help <project or task>", "more on one project or task", ""},
 	}},
 	{"Doing the work", []HelpEntry{
@@ -456,6 +456,26 @@ func statusText(bridge, session string) string {
 		b.WriteString("\n" + taskSummary(bridge, p, task))
 	} else {
 		b.WriteString("\nNo task open. Say \"open <project> / <task>\".\n")
+	}
+	if held := heldSessionLines(bridge, session); len(held) > 0 {
+		b.WriteString("\nSession-start lines that did not fit in the session's context:\n")
+		for _, l := range held {
+			b.WriteString("  " + l + "\n")
+		}
+	}
+	// The broken extensions are read again here, not held, so this is the whole list as it stands.
+	bf, berr := loadBridgeFile(bridge)
+	cp := ""
+	if berr == nil {
+		cp, berr = controlPlaneDir(bridge, bf)
+	}
+	if berr != nil {
+		fmt.Fprintf(&b, "\nstarship: could not read the bridge file or its control plane (%s), so broken extensions are not listed.\n", oneLine(berr))
+	} else if broken := brokenRoleLines(bridge, cp); len(broken) > 0 {
+		b.WriteString("\nBroken extensions:\n")
+		for _, l := range broken {
+			b.WriteString("  " + l + "\n")
+		}
 	}
 	held, herr := proposedSkills(bridge)
 	if herr != nil {

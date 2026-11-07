@@ -256,7 +256,7 @@ func sessFiles(t *testing.T, w *world, id string, age time.Duration, link string
 	t.Helper()
 	dir := filepath.Join(w.bridge, ".starship", "sessions")
 	var paths []string
-	for _, suf := range []string{".task", ".pin", ".env", ".topic-a", ".topic-b"} {
+	for _, suf := range []string{".task", ".pin", ".env", ".lines", ".topic-a", ".topic-b"} {
 		paths = append(paths, filepath.Join(dir, id+suf))
 	}
 	if link != "" {
