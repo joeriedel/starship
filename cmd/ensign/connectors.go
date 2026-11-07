@@ -217,7 +217,7 @@ func agentsSignature(bridge string) string {
 	return sig.String()
 }
 
-// missingConnectorSettings lists what a hand-edited settings.json lacks for the declaration to be enforced: the mcp__.*, ListMcpResourcesTool, ReadMcpResourceTool, and, when the reader is declared, Read and Grep matcher entries on the ensign PreToolUse hook and each declared tool, connector_writes included, in allow.
+// missingConnectorSettings lists what a hand-edited settings.json lacks for the declaration to be enforced: the mcp__.*, ListMcpResourcesTool, ReadMcpResourceTool, and, when the reader is declared, Read and Grep tools in a matcher of the ensign PreToolUse hook (any matcher that selects them counts, `.*` included) and each declared tool, connector_writes included, in allow.
 func missingConnectorSettings(data []byte, tools []string, reader bool) ([]string, error) {
 	var s struct {
 		Permissions struct {
@@ -241,14 +241,23 @@ func missingConnectorSettings(data []byte, tools []string, reader bool) ([]strin
 		entries = append(entries, "Read", "Grep")
 	}
 	for _, entry := range entries {
-		matched := false
-		for _, e := range s.Hooks.PreToolUse {
-			if !slices.Contains(strings.Split(e.Matcher, "|"), entry) {
-				continue
+		// mcp__.* stands for every connector tool, so two from unrelated servers are tried: a matcher scoped to one server leaves the others' tools unguarded.
+		probes := []string{entry}
+		if entry == "mcp__.*" {
+			probes = []string{"mcp__x0__y0", "mcp__q9__z9"}
+		}
+		matched := true
+		for _, tool := range probes {
+			hooked := false
+			for _, e := range s.Hooks.PreToolUse {
+				if !matcherMatches(e.Matcher, tool) {
+					continue
+				}
+				for _, h := range e.Hooks {
+					hooked = hooked || strings.Contains(h.Command, " hook PreToolUse")
+				}
 			}
-			for _, h := range e.Hooks {
-				matched = matched || strings.Contains(h.Command, " hook PreToolUse")
-			}
+			matched = matched && hooked
 		}
 		if !matched {
 			missing = append(missing, fmt.Sprintf("the %q matcher on the ensign PreToolUse hook", entry))
@@ -314,7 +323,12 @@ func matcherMatches(matcher, tool string) bool {
 
 var matcherList = regexp.MustCompile(`^[a-zA-Z0-9_|, -]+$`)
 
-// upgradeHookSettings brings a bridge's settings.json up to date (a timeout on the PreToolUse and SubagentStop hooks, the PostToolUse hook, SubagentHandback, and the connector parts bridge.yaml calls for) when it is a form ensign wrote, with or without connector parts, and commits that. Any other file is left alone, but when connectors are declared and it can't enforce them an error says what is missing. An invalid declaration is an error too.
+// settingsNote is what upgradeHookSettings returns for a problem that is a session note and not a not-ready: no connector is declared, so nothing is unenforced, but the file was left as it was.
+type settingsNote struct{ msg string }
+
+func (n *settingsNote) Error() string { return n.msg }
+
+// upgradeHookSettings brings a bridge's settings.json up to date (a timeout on the PreToolUse and SubagentStop hooks, the PostToolUse hook, SubagentHandback, and the connector parts bridge.yaml calls for) when it is a form ensign wrote, with or without connector parts, and commits that. Any other file is left alone, but when connectors are declared and it can't enforce them an error says what is missing. An invalid declaration is an error too. A file ensign wrote that can't be rewritten while nothing is declared gives a *settingsNote.
 func upgradeHookSettings(bridge string, bf *BridgeFile) error {
 	rules, err := bf.connectorRules()
 	if err != nil {
@@ -365,7 +379,7 @@ func upgradeHookSettings(bridge string, bf *BridgeFile) error {
 		if declared {
 			return fmt.Errorf("connector rules are declared but %s can't be written: %v", f, werr)
 		}
-		return nil
+		return &settingsNote{fmt.Sprintf("starship: %s can't be written (%v), so its hook settings are left old", f, werr)}
 	}
 	if isGit(bridge) {
 		git(bridge, "commit", "-q", "-m", "Update the starship hook settings", "--", ".claude/settings.json")

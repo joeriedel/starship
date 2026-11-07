@@ -24,7 +24,7 @@ const defaultKeepRuns = 500
 // sessionStartGCCap is how many deletes one session start attempts, failed ones included, so neither a first cleanup of a long-neglected bridge nor a set of undeletable folders can hold the start up. The failed delete attempts share one retry budget of about 2s on Windows, so they cost about that in all, well inside the 600s default hook timeout. The cap limits attempts only, not reads: a persistently unreadable state.json or pipeline.json can cost up to 2s per read on Windows with no attempt counted. Only folders that keep pipeline.json between starts can use the cap repeatedly, and `ensign gc` has no cap, so it reaches what they hold back.
 const sessionStartGCCap = 50
 
-// pipelineOnlyAge is how old a run folder's pipeline.json must be, with no state.json beside it, before gc takes the folder for a leftover. Age, because createRun writes pipeline.json and then state.json with no lock held between them, and five minutes outlasts that gap.
+// pipelineOnlyAge is how old a run folder's pipeline.json must be, with no state.json beside it, before gc takes the folder for a leftover. createRun holds the run's lock while it writes the two files and gc skips a folder whose lock is held, so age is the backstop for a creation that crashed between them.
 const pipelineOnlyAge = 5 * time.Minute
 
 // keepRuns is the bridge's limit on finished runs.

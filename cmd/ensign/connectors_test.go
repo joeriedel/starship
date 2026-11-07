@@ -4,9 +4,11 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -910,12 +912,104 @@ func TestBashGuardNoteAfterFailedWrite(t *testing.T) {
 		if err := os.WriteFile(f, []byte(c.settings), 0o644); err == nil {
 			t.Skip("the file can be written despite being read-only, as for a privileged user")
 		}
-		if err := upgradeHookSettings(b, &BridgeFile{}); err != nil {
-			t.Fatalf("%s: %v", c.name, err)
+		var note *settingsNote
+		if err := upgradeHookSettings(b, &BridgeFile{}); !errors.As(err, &note) || !strings.Contains(note.msg, f) || !strings.Contains(note.msg, "hook settings are left old") {
+			t.Fatalf("%s: a failed write with nothing declared is a note naming the file: %v", c.name, err)
 		}
 		if got := bashGuardNote(b); (got != "") != c.note {
 			t.Errorf("%s: note %q, want note %v", c.name, got, c.note)
 		}
 		os.Chmod(f, 0o644)
+	}
+}
+
+func TestFailedSettingsWriteIsASessionNote(t *testing.T) {
+	w := connWorld(t, "")
+	if err := link(w.bridge, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(w.bridge, ".claude", "settings.json")
+	write(t, f, hookSettingsWith(0, 0))
+	if err := os.Chmod(f, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(f, 0o644)
+	if err := os.WriteFile(f, []byte("x"), 0o644); err == nil {
+		t.Skip("the file can be written despite being read-only, as for a privileged user")
+	}
+	res, code := w.hook("SessionStart", map[string]any{"source": "startup"})
+	if code != 0 {
+		t.Fatalf("SessionStart exited %d", code)
+	}
+	ctx := dig(res, "hookSpecificOutput", "additionalContext")
+	if strings.Contains(dig(res, "systemMessage"), "not ready") || !strings.Contains(ctx, "STARSHIP-READY") || !strings.Contains(ctx, "hook settings are left old") {
+		t.Fatalf("a failed write with nothing declared is a note, not a not-ready: %q", ctx)
+	}
+}
+
+func TestRestartNoteWhenTheLastDeclarationIsRemoved(t *testing.T) {
+	w := connWorld(t, readerRules)
+	if err := link(w.bridge, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(w.bridge, ".claude", "settings.json")
+	write(t, f, hookSettingsFor(true, []string{"mcp__supernova_mail__read_message"}))
+	if w.restartNote("111", "startup") {
+		t.Fatal("nothing changed, so no note")
+	}
+	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+repoRoot(t)+"\n")
+	if !w.restartNote("111", "clear") {
+		t.Fatal("removing the declaration changes the role tool lines, so the session needs the restart note")
+	}
+	if data, _ := os.ReadFile(f); string(data) != hookSettings() {
+		t.Fatalf("the settings should follow the removal:\n%s", data)
+	}
+}
+
+func TestMissingConnectorSettingsReadsMatchers(t *testing.T) {
+	settings := func(matcher string) []byte {
+		return []byte(`{"permissions": {"allow": ["mcp__supernova__query"]}, "hooks": {"PreToolUse": [{"matcher": ` + strconv.Quote(matcher) + `, "hooks": [{"type": "command", "command": "ensign hook PreToolUse"}]}]}}`)
+	}
+	tools := []string{"mcp__supernova__query"}
+	for _, c := range []struct {
+		matcher string
+		reader  bool
+		missing string
+	}{
+		{".*", true, ""},
+		{"*", true, ""},
+		{"", true, ""},
+		{"mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep", true, ""},
+		{"(mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool)", false, ""},
+		{"Task|mcp__.*|ListMcpResourcesTool", false, `"ReadMcpResourceTool"`},
+		{"Task|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool", true, `"Grep"`},
+		{"Task|Edit", false, `"mcp__.*"`},
+		{"mcp__supernova__.*|ListMcpResourcesTool|ReadMcpResourceTool", false, `"mcp__.*"`},
+	} {
+		missing, err := missingConnectorSettings(settings(c.matcher), tools, c.reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(missing, ", "); (c.missing == "") != (got == "") || !strings.Contains(got, c.missing) {
+			t.Errorf("matcher %q: missing %q, want %q", c.matcher, got, c.missing)
+		}
+	}
+}
+
+func TestBridgeUsesReportsAnUnloadableBridgeYaml(t *testing.T) {
+	b := t.TempDir()
+	if uses, err := bridgeUses(b, "impact"); uses || err != nil {
+		t.Fatalf("a bridge with no bridge.yaml names nothing: %v %v", uses, err)
+	}
+	write(t, filepath.Join(b, "bridge.yaml"), "use:\n  - impact\n")
+	if uses, err := bridgeUses(b, "impact"); !uses || err != nil {
+		t.Fatalf("a named extension is in use: %v %v", uses, err)
+	}
+	write(t, filepath.Join(b, "bridge.yaml"), "use: [impact\n")
+	if _, err := bridgeUses(b, "impact"); err == nil {
+		t.Fatal("a bridge.yaml that can't be loaded is an error")
+	}
+	if _, err := newTaskContent(b, "none", "", "a"); err == nil {
+		t.Fatal("task new must report the unloadable bridge.yaml")
 	}
 }

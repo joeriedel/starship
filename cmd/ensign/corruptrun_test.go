@@ -830,3 +830,58 @@ func TestClearedAskUserRunKeepsItsPlaceAgainstAPass(t *testing.T) {
 	writeJSON(filepath.Join(runsDir(w.bridge), pass.Run, "state.json"), pass)
 	w.wantLands(remote)
 }
+
+func TestRunRetireAndStopOfAReadableAskUserRun(t *testing.T) {
+	w := newWorld(t)
+	plantRun(t, w.bridge, clearID, "ask-user")
+	var out bytes.Buffer
+	for verb, f := range map[string]func() error{
+		"retire": func() error { return w.inBridge(func() error { return cmdRunRetire([]string{clearID}, &out) }) },
+		"stop":   func() error { return w.inBridge(func() error { return cmdRunStop([]string{clearID}, &out, &out) }) },
+	} {
+		err := f()
+		if err == nil || !strings.Contains(err.Error(), "waiting on a question") || !strings.Contains(err.Error(), "ensign resume --answer <text> --run "+clearID) || strings.Contains(err.Error(), "finished") {
+			t.Errorf("%s: %v", verb, err)
+		}
+	}
+	plantRun(t, w.bridge, "20240101-000009-supernova", "success")
+	if err := w.inBridge(func() error { return cmdRunStop([]string{"20240101-000009-supernova"}, &out, &out) }); err == nil || !strings.Contains(err.Error(), "has finished (success)") {
+		t.Errorf("a finished run keeps the finished text: %v", err)
+	}
+}
+
+func TestResumeOfADamagedAskUserRunPointsAtClear(t *testing.T) {
+	w := newWorld(t)
+	w.plantUnreadablePipelineRun(clearID, "ask-user", true, 1, true)
+	if err := writeSessionRuns(w.bridge, "s1", []string{clearID}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	resume := func(args ...string) error {
+		return w.inBridge(func() error { return cmdResume(append([]string{"--answer", "yes"}, args...), &out) })
+	}
+	for name, args := range map[string][]string{"with --run": {"--run", clearID}, "from the session": nil} {
+		if err := resume(args...); err == nil || !strings.Contains(err.Error(), "ensign run clear "+clearID) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := resume("--run", "20240101-000009-supernova"); err == nil || !strings.Contains(err.Error(), "no run 20240101-000009-supernova") {
+		t.Errorf("a missing run: %v", err)
+	}
+}
+
+func TestRetireForHaltWithAnUnreadablePipeline(t *testing.T) {
+	w := newWorld(t)
+	const pendingID, finishedID, goneID = "20240101-000001-supernova", "20240101-000002-supernova", "20240101-000003-supernova"
+	os.Remove(filepath.Join(plantRun(t, w.bridge, pendingID, "pending"), "pipeline.json"))
+	write(t, filepath.Join(plantRun(t, w.bridge, finishedID, "error"), "pipeline.json"), "{not json")
+	if err := retireForHalt(w.bridge, pendingID, "halted", false); err == nil || !strings.Contains(err.Error(), "ensign run clear "+pendingID) {
+		t.Errorf("a pending run that can't be opened is an error that names run clear: %v", err)
+	}
+	if err := retireForHalt(w.bridge, finishedID, "halted", false); err != nil {
+		t.Errorf("a finished run needs no retiring: %v", err)
+	}
+	if err := retireForHalt(w.bridge, goneID, "halted", false); err != nil {
+		t.Errorf("a run whose folder is gone is left alone: %v", err)
+	}
+}

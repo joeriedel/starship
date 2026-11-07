@@ -1124,12 +1124,20 @@ func cmdResume(args []string, out io.Writer) error {
 	}
 	var r *RunFiles
 	if run != "" {
-		r, err = openRun(bridge, run)
-		if errors.Is(err, fs.ErrNotExist) {
-			err = nil
+		if r, err = openRun(bridge, run); err != nil {
+			return openRunError(bridge, run, err)
 		}
 	} else {
-		r, err = openSessionRun(bridge, os.Getenv("STARSHIP_SESSION"))
+		session := os.Getenv("STARSHIP_SESSION")
+		r, err = openSessionRun(bridge, session)
+		if err == nil && r == nil {
+			// openSessionRun passes over a finished run whose files can't be opened, and for an ask-user run that is the damage the message has to name.
+			if id, _, ierr := sessionRunID(bridge, session); ierr == nil && id != "" && finishedWithBadPipeline(filepath.Join(runsDir(bridge), id)) {
+				if _, oerr := openRun(bridge, id); oerr != nil {
+					return openRunError(bridge, id, oerr)
+				}
+			}
+		}
 	}
 	if err != nil {
 		return err

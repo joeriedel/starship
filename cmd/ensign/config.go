@@ -433,10 +433,16 @@ func loadBridgeFile(bridge string) (*BridgeFile, error) {
 	return &bf, nil
 }
 
-// bridgeUses reports whether the bridge's own bridge.yaml names the extension in use:. A bridge.yaml that cannot be loaded names nothing.
-func bridgeUses(bridge, name string) bool {
+// bridgeUses reports whether the bridge's own bridge.yaml names the extension in use. A bridge with no bridge.yaml names nothing; one that cannot be loaded is the error.
+func bridgeUses(bridge, name string) (bool, error) {
 	bf, err := loadBridgeFile(bridge)
-	return err == nil && slices.Contains(bf.Use, name)
+	if reallyMissing(filepath.Join(bridge, "bridge.yaml"), err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(bf.Use, name), nil
 }
 
 // controlPlaneDir is where this bridge reads the control plane from.
@@ -1202,7 +1208,7 @@ func (c *Config) loadSides(bridge string, layers []layerEntry, extensions map[st
 	return nil
 }
 
-// sideBindings merges the bindings of the layers, extensions' defaults included, as loadTarget does, using location's layer where the edited location's sits. The task's layer is left out: its overrides are for the edited location, so another side goes bridge, project, then its location.
+// sideBindings merges the bindings of the layers, extensions' defaults included, as loadTarget does, using location's layer where the edited location's sits. The task's layer is left out: its overrides are for the edited location, so another side goes bridge, project, then its location. A use: naming no extension is an error: a guard, as loadTarget's mergeLayers normally finds it first.
 func (c *Config) sideBindings(bridge string, layers []layerEntry, extensions map[string]*Extension, location string) (map[string]Binding, error) {
 	side := &Config{Bindings: map[string]Binding{}}
 	used := map[string]bool{}
@@ -1218,10 +1224,12 @@ func (c *Config) sideBindings(bridge string, layers []layerEntry, extensions map
 				continue
 			}
 			used[use] = true
-			if b, ok := extensions[use]; ok {
-				if err := side.addBindings(&b.Bindings, "extension:"+use, filepath.Join(b.dir, "extension.yaml")); err != nil {
-					return nil, err
-				}
+			b, ok := extensions[use]
+			if !ok {
+				return nil, fmt.Errorf("%s: no extension %q", l.label, use)
+			}
+			if err := side.addBindings(&b.Bindings, "extension:"+use, filepath.Join(b.dir, "extension.yaml")); err != nil {
+				return nil, err
 			}
 		}
 		if err := side.addBindings(&l.layer.Bindings, l.label, l.file); err != nil {

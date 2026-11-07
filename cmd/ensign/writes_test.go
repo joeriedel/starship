@@ -232,7 +232,7 @@ func TestWriteDecisionTable(t *testing.T) {
 		}
 	}
 	if _, reason := w.callTool("", "", "mcp__supernova_other__thing", postA); !strings.Contains(reason, "next session start") {
-		t.Errorf("an undeclared tool's reason says to add it and restart: %q", reason)
+		t.Errorf("an undeclared tool's reason says its allow entry arrives at the next session start: %q", reason)
 	}
 	if _, reason := w.callTool("", "", wikiPost, postA); !strings.Contains(reason, "ensign help writes") || !strings.Contains(reason, "repeat this call unchanged") {
 		t.Errorf("the reason says what to do next: %q", reason)

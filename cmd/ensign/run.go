@@ -1367,6 +1367,14 @@ func cmdRunClear(args []string, out io.Writer) error {
 	return nil
 }
 
+// terminalRunError is the refusal of a verb on a terminal run. An ask-user run has not finished: it waits on a question.
+func terminalRunError(id, status, verb string) error {
+	if status == "ask-user" {
+		return fmt.Errorf("run %s is waiting on a question, so there is nothing to %s; the way on is `ensign resume --answer <text> --run %s`", id, verb, id)
+	}
+	return fmt.Errorf("run %s has finished (%s); there is nothing to %s", id, status, verb)
+}
+
 // cmdRunRetire is `ensign run retire <run>`: it ends a live run of another session at the user's request, so the code folders it holds are free. The run's folder and the code folder are left as they are.
 func cmdRunRetire(args []string, out io.Writer) error {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
@@ -1387,7 +1395,7 @@ func cmdRunRetire(args []string, out io.Writer) error {
 	switch {
 	case r.State.terminal():
 		r.close()
-		return fmt.Errorf("run %s has finished (%s); there is nothing to retire", args[0], r.State.Status)
+		return terminalRunError(args[0], r.State.Status, "retire")
 	case r.State.Session == session && !(r.State.queued() && seqNoLongerHolds(bridge, session, r.State.Run)):
 		r.close()
 		return fmt.Errorf("run %s belongs to this session; only a run of another session can be retired. To end this session's own run, use `ensign run stop %s`", args[0], args[0])
@@ -1450,7 +1458,7 @@ func cmdRunStop(args []string, out, stderr io.Writer) error {
 	defer r.close()
 	switch {
 	case r.State.terminal():
-		return fmt.Errorf("run %s has finished (%s); there is nothing to stop", args[0], r.State.Status)
+		return terminalRunError(args[0], r.State.Status, "stop")
 	case r.State.Session != session:
 		return fmt.Errorf("run %s belongs to another session; only this session's own run can be stopped", args[0])
 	case r.State.queued():
@@ -1762,10 +1770,17 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	if err := writeOnDemandSkills(dir, snap.Skills); err != nil {
 		return nil, err
 	}
-	if err := writeJSON(filepath.Join(dir, "pipeline.json"), snap); err != nil {
-		return nil, err
+	// The run's lock is held while its two files are written, so gc never takes a folder with only pipeline.json for a leftover while this creation is under way. It is released before anything below opens the run.
+	created := flock.New(filepath.Join(dir, "lock"))
+	if err := created.Lock(); err != nil {
+		return nil, fmt.Errorf("locking run %s: %w", snap.Run, err)
 	}
-	if err := writeJSON(filepath.Join(dir, "state.json"), st); err != nil {
+	err = writeJSON(filepath.Join(dir, "pipeline.json"), snap)
+	if err == nil {
+		err = writeJSON(filepath.Join(dir, "state.json"), st)
+	}
+	created.Unlock()
+	if err != nil {
 		return nil, err
 	}
 	var replaced []string

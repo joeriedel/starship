@@ -329,7 +329,7 @@ func extraHelp(bridge string) (map[string][]HelpEntry, []string) {
 	}
 	for _, dir := range allDirs {
 		var x Extension
-		if readExtensionYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && x.Quiet && !bridgeUses(bridge, x.Name) {
+		if readExtensionYAML(filepath.Join(dir, "extension.yaml"), &x) == nil && x.Quiet && !slices.Contains(bf.Use, x.Name) {
 			continue
 		}
 		dirs = append(dirs, dir)

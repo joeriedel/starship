@@ -79,6 +79,7 @@ into one command. Whatever you read is re-sent on every later turn.
 - **No unrequested extras:** no new dependencies, config, or speculative helpers.
 - **Never commit, push, shelve or submit.** If the pipeline keeps a per-pass history, the
   harness commits for you from the `files` in your report.
+- **Never signal a process.** No `kill`, `pkill` or `killall`, directly or through a script. A process that must stop is reported to your caller.
 
 ## When you're blocked
 

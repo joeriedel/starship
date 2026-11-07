@@ -34,7 +34,9 @@ func newWorld(t *testing.T) *world {
 	bridge := filepath.Join(tmp, "bridge")
 	copyDir(t, filepath.Join(root, "testdata", "bridge"), bridge)
 	ws := filepath.Join(tmp, "workspace")
-	os.MkdirAll(ws, 0o755)
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	write(t, filepath.Join(bridge, "bridge.yaml"), "control-plane:\n  path: "+root+"\n")
 	if _, err := setWorkspace(bridge, "supernova", ws); err != nil {
 		t.Fatal(err)
@@ -65,7 +67,9 @@ func copyDir(t *testing.T, from, to string) {
 
 func write(t *testing.T, path, s string) {
 	t.Helper()
-	os.MkdirAll(filepath.Dir(path), 0o755)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
 		t.Fatal(err)
 	}

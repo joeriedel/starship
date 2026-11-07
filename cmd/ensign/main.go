@@ -582,18 +582,19 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		return notReady(err)
 	}
 	if err := upgradeHookSettings(bridge, bf); err != nil {
-		return notReady(err)
+		var note *settingsNote
+		if !errors.As(err, &note) {
+			return notReady(err)
+		}
+		lines.add(linePriorityBashGuard, note.msg)
 	}
-	_, writesDeclared, _ := bf.connectorWrites()
 	var guardMissing bool
 	if note := bashGuardNote(bridge); note != "" {
 		lines.add(linePriorityBashGuard, note)
 		guardMissing = true
 	}
-	var restart bool
-	if rules, err := bf.connectorRules(); err == nil && (rules != nil || writesDeclared) && agentsFrom != agentsSignature(bridge) {
-		restart = true
-	}
+	// Removing the last declaration changes the role tool lines too, so the gate is the signature alone.
+	restart := agentsFrom != agentsSignature(bridge)
 	removeOldExe(bridge)
 	ready := readyHeading(version, bridge)
 	if restart {

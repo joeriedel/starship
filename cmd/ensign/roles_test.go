@@ -45,8 +45,8 @@ func TestRoleAndBriefDocumentationRules(t *testing.T) {
 		}
 	}
 	checks := map[string][]string{
-		"roles/coder.md":               {`(?i)write code, not documentation`, `(?i)don't change paths declared in .@docs.`, `(?i)made wrong or stale, wherever it lives, is part of the change, not scope creep`, `(?i)must leave no output in the working tree`, `(?i)bare .go build \./\.\.\.. writes a binary`, `(?i)go build -o <temp>`, `(?i)problem that keeps the goal in your brief false is part of the change too`, `(?i)it is not a concern to leave behind`},
-		"roles/reviewer.md":            {`(?i)review code only, not documentation`, `(?i)even when it is in the diff`, `(?i)staleness the change caused isn't pre-existing`, `(?i)pre-existing means outside the goal`, `(?i)keeps that goal false is a finding, however old`},
+		"roles/coder.md":               {`(?i)write code, not documentation`, `(?i)don't change paths declared in .@docs.`, `(?i)made wrong or stale, wherever it lives, is part of the change, not scope creep`, `(?i)must leave no output in the working tree`, `(?i)bare .go build \./\.\.\.. writes a binary`, `(?i)go build -o <temp>`, `(?i)problem that keeps the goal in your brief false is part of the change too`, `(?i)it is not a concern to leave behind`, `(?i)never signal a process`},
+		"roles/reviewer.md":            {`(?i)review code only, not documentation`, `(?i)even when it is in the diff`, `(?i)staleness the change caused isn't pre-existing`, `(?i)pre-existing means outside the goal`, `(?i)keeps that goal false is a finding, however old`, `(?i)never signal a process`},
 		"briefs/review/correctness.md": {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`, `(?i)does its goal hold`},
 		"briefs/review/public.md":      {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},
 		"manual/topics/sequence.md":    {`(?i)reports .goal not met. hasn.t passed, whatever ensign recorded: a publish of that task directly behind it has already landed, so tell the user what landed`, `(?i)stops only the steps still to come, all of them; with none left there is no sequence to halt`},

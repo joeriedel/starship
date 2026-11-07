@@ -115,7 +115,7 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 		pointer = " A code folder needs the user's choice between a task and a direct edit: `ensign help direct`."
 	}
 	return "this edit was refused because " + target + " is outside the folders " + who + " may edit: " + strings.Join(folders, ", ") +
-		". The same limit applies to shell commands (redirection, sed -i, cp, git apply, scripts) that write files. Working around the guard is a failure, not a fix." + pointer, warning, nil
+		". Only the Edit, Write and NotebookEdit tools are checked, but shell commands (redirection, sed -i, cp, git apply, scripts) that write files are bound by the same limit. Working around the guard is a failure, not a fix." + pointer, warning, nil
 }
 
 // docsFolders are the run's @docs paths, joined to its workspace.

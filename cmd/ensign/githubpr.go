@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -562,8 +561,8 @@ func lockLandingOf(bridge, task, location string) (func(), error) {
 
 // testedFilesOf lists every .tested record of a task: the one with no location, and one per location. A missing records folder is no records.
 func testedFilesOf(bridge, task string) ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(bridge, ".starship", "tasks"))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	entries, err := readDirIfAny(filepath.Join(bridge, ".starship", "tasks"))
+	if err != nil {
 		return nil, err
 	}
 	e := strings.ReplaceAll(task, "/", "--")
@@ -1040,9 +1039,12 @@ func githubMerge(bridge, task, location string) (string, string, string, error) 
 	}
 	note := deleteLandedRemote(ws, branch)
 	leaveLandedBranch(ws, branch, base, sha)
-	removeRecord(testedFile(bridge, task, c.Location))
-	removeSameFolderMarkers(bridge, task, c.Location)
-	dropLandedFromRecord(bridge, task, c.Location)
+	// Another task that encodes to the same record names shares these records; like close, leave them. This has no output path to say so on; gc removes them once every task sharing them is closed.
+	if peerKeepsRecords(bridge, task) == "" {
+		removeRecord(testedFile(bridge, task, c.Location))
+		removeSameFolderMarkers(bridge, task, c.Location)
+		dropLandedFromRecord(bridge, task, c.Location)
+	}
 	return base, sha, note, nil
 }
 

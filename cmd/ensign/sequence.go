@@ -1281,14 +1281,20 @@ func unstarted(st *State) bool {
 	return st.Status == "pending" || (st.Status == "running" && st.Approved && !st.Started && len(st.Dispatches) == 0)
 }
 
-// retireForHalt retires a run halt collected: an unstarted one, or one that asks the user when paused is set. A run in any other state, or whose folder is gone, is left alone with no error; the error is for a run that should have been retired and could not be.
+// retireForHalt retires a run halt collected: an unstarted one, or one that asks the user when paused is set. A run in any other state, or whose folder is gone, is left alone with no error; the error is for a run that should have been retired and could not be. A run whose files can't be opened is judged by its state.json alone: one in a state that is not retired is left alone, and one that would be retired gets openRunError's message.
 func retireForHalt(bridge, id, reason string, paused bool) error {
 	r, err := openRun(bridge, id)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
 	if err != nil {
-		return err
+		dir := filepath.Join(runsDir(bridge), id)
+		fi, serr := os.Stat(dir)
+		if (serr != nil && reallyMissing(dir, serr)) || (serr == nil && !fi.IsDir()) {
+			return nil
+		}
+		var st State
+		if serr == nil && readRunState(dir, &st) == nil && !unstarted(&st) && !(paused && st.Status == "ask-user") {
+			return nil
+		}
+		return openRunError(bridge, id, err)
 	}
 	if !unstarted(r.State) && !(paused && r.State.Status == "ask-user") {
 		r.close()

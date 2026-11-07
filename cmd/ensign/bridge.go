@@ -1047,12 +1047,16 @@ New.
 `
 
 // newTaskContent is a new task's task.md; a bridge using the impact extension gets the bare Impact heading between Decisions and Notes.
-func newTaskContent(bridge, pipeline, vcs, name string) string {
+func newTaskContent(bridge, pipeline, vcs, name string) (string, error) {
 	content := fmt.Sprintf(taskTemplate, pipeline, vcs, name)
-	if bridgeUses(bridge, "impact") {
+	uses, err := bridgeUses(bridge, "impact")
+	if err != nil {
+		return "", err
+	}
+	if uses {
 		content = strings.Replace(content, "## Decisions\n\n## Notes\n", "## Decisions\n\n## Impact\n\n## Notes\n", 1)
 	}
-	return content
+	return content, nil
 }
 
 func cmdTask(args []string, out io.Writer) error {
@@ -1123,7 +1127,10 @@ func cmdTask(args []string, out io.Writer) error {
 					return fmt.Errorf("task %s has no pipeline (a task without code), so %s has no meaning", args[1], f.name)
 				}
 			}
-			content := newTaskContent(bridge, pipeline, "", parts[1])
+			content, err := newTaskContent(bridge, pipeline, "", parts[1])
+			if err != nil {
+				return err
+			}
 			return createTaskFiles(bridge, args[1], taskDir, content, out)
 		}
 		locs, err := loadLocations(bridge, parts[0])
@@ -1171,7 +1178,10 @@ func cmdTask(args []string, out io.Writer) error {
 		if branch != "" {
 			vcs += fmt.Sprintf("vcs: { kind: git, branch: %s }\n", branch)
 		}
-		content := newTaskContent(bridge, pipeline, vcs, parts[1])
+		content, err := newTaskContent(bridge, pipeline, vcs, parts[1])
+		if err != nil {
+			return err
+		}
 		return createTaskFiles(bridge, args[1], taskDir, content, out)
 	case "open":
 		return openTask(bridge, args[1], taskDir, out)
