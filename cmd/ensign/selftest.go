@@ -331,6 +331,7 @@ func runSelftest(out io.Writer) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return fmt.Errorf("claude is not on PATH")
 	}
+	fmt.Fprint(out, claudeVersionLine(checkClaudeVersion()))
 	self, err := os.Executable()
 	if err != nil {
 		return err

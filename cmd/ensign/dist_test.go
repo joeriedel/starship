@@ -6,7 +6,9 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -312,4 +314,66 @@ func TestInitNeverOverwrites(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "bridge.yaml")); err == nil {
 		t.Errorf("init should write nothing when it refuses")
 	}
+}
+
+func TestSetupWarnsOnOldClaude(t *testing.T) {
+	repo := fakeRelease(t)
+	for _, c := range []struct {
+		script string
+		warns  int
+	}{
+		{`echo "2.1.316 (Claude Code)"`, 1},
+		{`echo "2.1.317 (Claude Code)"`, 0},
+		{`exit 1`, 0},
+	} {
+		fakeClaude(t, c.script+"\n")
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+		t.Setenv("HOME", t.TempDir())
+		bridge := filepath.Join(t.TempDir(), "supernova")
+		var out bytes.Buffer
+		if err := cmdInit([]string{bridge, "--remote", repo, "--tag", "v0.1.0"}, &out); err != nil {
+			t.Fatalf("init: %v\n%s", err, out.String())
+		}
+		if n := strings.Count(out.String(), "update Claude Code"); n != c.warns {
+			t.Errorf("init %q: %d warnings in %q", c.script, n, out.String())
+		}
+		t.Setenv("CLAUDE_PROJECT_DIR", bridge)
+		out.Reset()
+		if err := cmdSetup(nil, &out); err != nil {
+			t.Fatalf("setup: %v\n%s", err, out.String())
+		}
+		if n := strings.Count(out.String(), "update Claude Code"); n != c.warns {
+			t.Errorf("setup %q: %d warnings in %q", c.script, n, out.String())
+		}
+	}
+}
+
+func TestSetupWithoutClaude(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("exec.LookPath on Windows does not find an extensionless git symlink")
+	}
+	repo := fakeRelease(t)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	t.Setenv("HOME", t.TempDir())
+	bin := t.TempDir()
+	if err := os.Symlink(mustLookPath(t, "git"), filepath.Join(bin, "git")); err != nil {
+		t.Skip(err)
+	}
+	t.Setenv("PATH", bin)
+	var out bytes.Buffer
+	if err := cmdInit([]string{filepath.Join(t.TempDir(), "supernova"), "--remote", repo, "--tag", "v0.1.0"}, &out); err != nil {
+		t.Fatalf("init: %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "Claude Code") {
+		t.Errorf("output mentions Claude Code: %q", out.String())
+	}
+}
+
+func mustLookPath(t *testing.T, name string) string {
+	t.Helper()
+	p, err := exec.LookPath(name)
+	if err != nil {
+		t.Skip(name + " not on PATH")
+	}
+	return p
 }

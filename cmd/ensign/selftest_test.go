@@ -826,7 +826,7 @@ func TestSelftestInterruptedStopsAtOnce(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 	runs := filepath.Join(t.TempDir(), "runs")
-	fakeClaude(t, "echo run >> "+runs+"\nsleep 30\n")
+	fakeClaude(t, `[ "$1" = --version ] && { echo "2.1.319 (Claude Code)"; exit 0; }`+"\necho run >> "+runs+"\nsleep 30\n")
 	release := holdSignals()
 	t.Cleanup(clearHeldSignal)
 	defer release()
@@ -852,7 +852,7 @@ func TestSelftestInterruptedStopsAtOnce(t *testing.T) {
 	if b, _ := os.ReadFile(runs); strings.Count(string(b), "run") != 1 {
 		t.Errorf("a later probe started: %q", b)
 	}
-	if strings.Contains(out.String(), "harness checks") || strings.Contains(out.String(), "ok  ") || strings.Contains(out.String(), "FAIL") {
+	if strings.Contains(out.String(), "harness checks") || strings.Contains(strings.Replace(out.String(), "  ok   Claude Code", "", 1), "ok  ") || strings.Contains(out.String(), "FAIL") {
 		t.Errorf("no verdict should print: %q", out.String())
 	}
 	if left, _ := filepath.Glob(filepath.Join(tmp, "ensign-selftest-*")); len(left) > 0 {
@@ -862,7 +862,7 @@ func TestSelftestInterruptedStopsAtOnce(t *testing.T) {
 
 func TestSelftestSignalBetweenSessions(t *testing.T) {
 	runs := filepath.Join(t.TempDir(), "runs")
-	fakeClaude(t, "echo run >> "+runs+"\n")
+	fakeClaude(t, `[ "$1" = --version ] && { echo "2.1.319 (Claude Code)"; exit 0; }`+"\necho run >> "+runs+"\n")
 	release := holdSignals()
 	t.Cleanup(clearHeldSignal)
 	defer release()

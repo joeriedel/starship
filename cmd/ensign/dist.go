@@ -183,6 +183,7 @@ func setupBridge(bridge string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	warnOldClaude(out)
 	if bf.ControlPlane.Path == "" {
 		if err := fetchControlPlane(bridge, bf); err != nil {
 			return err
