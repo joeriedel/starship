@@ -1468,7 +1468,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 					if docErr != nil {
 						continue
 					}
-					items, err = documentItems(bridge, o.document, s.Parallel.Over)
+					items, err = documentItems(bridge, o.document)
 					if errors.Is(err, errNothingToCurate) && s.Parallel.Empty == "" {
 						err = idle
 					}

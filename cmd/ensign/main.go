@@ -594,6 +594,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			lines.add(linePriorityBrokenExtension, l)
 		}
 	}
+	for _, l := range impactWarnings(bridge) {
+		lines.add(linePriorityImpactUse, "starship: "+l)
+	}
 	if requestCommands(bridge) != "" {
 		lines.add(linePriorityRequest, "To carry out a request like squashing commits or curating skills: read `ensign help requests` for the requests this bridge answers and the command for each.")
 	}

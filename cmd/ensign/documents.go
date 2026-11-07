@@ -375,7 +375,7 @@ func documentProblems(bridge string, docs []DeclaredDocument) []string {
 var errNothingToCurate = errors.New("no declared document has pending proposals to curate")
 
 // documentItems resolves a pending-documents stage for a run narrowed to one document: that document alone, or errNothingToCurate when it has nothing for the stage. Only the selected document is checked for problems.
-func documentItems(bridge, name, over string) ([]string, error) {
+func documentItems(bridge, name string) ([]string, error) {
 	d, err := findDeclaredDocument(bridge, name)
 	if err != nil {
 		return nil, err

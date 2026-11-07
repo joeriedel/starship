@@ -116,3 +116,73 @@ func TestHelpImpactPrintsTheTopic(t *testing.T) {
 		t.Errorf("help impact: %v\n%s", err, out.String())
 	}
 }
+
+func sessionStartText(t *testing.T, w *world) string {
+	t.Helper()
+	res, code := w.hook("SessionStart", map[string]any{"source": "startup"})
+	if code != 0 {
+		t.Fatalf("SessionStart exited %d", code)
+	}
+	return dig(res, "hookSpecificOutput", "additionalContext")
+}
+
+const impactNoEffect = "has no effect there: impact reads use: in bridge.yaml only."
+
+func TestImpactWarnings(t *testing.T) {
+	t.Run("project", func(t *testing.T) {
+		w := newWorld(t)
+		w.project("use: [impact]\n")
+		got := sessionStartText(t, w)
+		if !strings.Contains(got, "project supernova names the impact extension in its use: list, but that "+impactNoEffect) {
+			t.Errorf("project not warned:\n%s", got)
+		}
+	})
+	t.Run("task", func(t *testing.T) {
+		w := newWorld(t)
+		task := filepath.Join(w.bridge, "projects/supernova/tasks/auth-refactor/task.md")
+		data, _ := os.ReadFile(task)
+		body := strings.Replace(string(data), "---\n", "---\nuse: [impact]\n", 1)
+		write(t, task, body)
+		if got := sessionStartText(t, w); !strings.Contains(got, "task supernova/auth-refactor names the impact extension") || !strings.Contains(got, impactNoEffect) {
+			t.Errorf("task not warned:\n%s", got)
+		}
+		write(t, task, strings.Replace(body, "---\n", "---\nstatus: closed\n", 1))
+		if got := sessionStartText(t, w); strings.Contains(got, impactNoEffect) {
+			t.Errorf("a closed task warned:\n%s", got)
+		}
+	})
+	t.Run("bridge uses impact", func(t *testing.T) {
+		w := connWorld(t, "use: [impact]\n")
+		w.project("use: [impact]\n")
+		if got := impactWarnings(w.bridge); len(got) != 0 {
+			t.Errorf("warned although bridge.yaml uses impact: %q", got)
+		}
+	})
+	t.Run("unreadable bridge.yaml", func(t *testing.T) {
+		w := newWorld(t)
+		w.project("use: [impact]\n")
+		write(t, filepath.Join(w.bridge, "bridge.yaml"), "use: [impact\n  : :\n")
+		if got := impactWarnings(w.bridge); len(got) != 0 {
+			t.Errorf("warned although bridge.yaml cannot be loaded: %q", got)
+		}
+	})
+	t.Run("long names", func(t *testing.T) {
+		w := newWorld(t)
+		long := strings.Repeat("a", 200)
+		write(t, filepath.Join(w.bridge, "projects", "supernova-"+long, "project.yaml"), "use: [impact]\n")
+		got := impactWarnings(w.bridge)
+		if len(got) != 1 || strings.Contains(got[0], long) || len(got[0]) > 300 || !strings.Contains(got[0], "project supernova-") {
+			t.Errorf("names not cut:\n%q", got)
+		}
+	})
+	t.Run("several hits", func(t *testing.T) {
+		w := newWorld(t)
+		for _, n := range []string{"nova-a", "nova-b", "nova-c"} {
+			write(t, filepath.Join(w.bridge, "projects", n, "project.yaml"), "use: [impact]\n")
+		}
+		got := impactWarnings(w.bridge)
+		if len(got) != 1 || !strings.HasSuffix(got[0], " And 2 more like it.") || strings.Count(got[0], "names the impact") != 1 {
+			t.Errorf("want one line with a tail:\n%q", got)
+		}
+	})
+}
