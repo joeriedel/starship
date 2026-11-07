@@ -191,7 +191,7 @@ func runMCPProbe(self string) mcpRun {
 		fmt.Fprintf(os.Stderr, "connector probe: %v\n", err)
 		return mcpRun{}
 	}
-	defer os.RemoveAll(dir)
+	defer removeProbeDir(os.Stderr, dir)
 	prompt := `This is a self-test of this project's hooks, which the user asked for. Do these steps in order, each exactly once. Make one tool call per message and wait for its result before the next step: a later step depends on how an earlier one turned out. A hook refuses some calls on purpose; that is expected, not an error.
 1. Call the stub MCP server's write_note tool with the text "` + mcpDenyMark + ` session".
 2. Only after you have seen the result of step 1, call write_note with the text "` + mcpAfterMark + `".

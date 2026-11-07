@@ -43,7 +43,7 @@ func TestRoleAndBriefDocumentationRules(t *testing.T) {
 		}
 	}
 	checks := map[string][]string{
-		"roles/coder.md":               {`(?i)write code, not documentation`, `(?i)don't change paths declared in .@docs.`, `(?i)made wrong or stale, wherever it lives, is part of the change, not scope creep`},
+		"roles/coder.md":               {`(?i)write code, not documentation`, `(?i)don't change paths declared in .@docs.`, `(?i)made wrong or stale, wherever it lives, is part of the change, not scope creep`, `(?i)must leave no output in the working tree`, `(?i)bare .go build \./\.\.\.. writes a binary`, `(?i)go build -o <temp>`},
 		"roles/reviewer.md":            {`(?i)review code only, not documentation`, `(?i)even when it is in the diff`, `(?i)staleness the change caused isn't pre-existing`},
 		"briefs/review/correctness.md": {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},
 		"briefs/review/public.md":      {`(?i)documentation .*isn't reviewed`, `(?i)even when it is in the diff`},

@@ -21,6 +21,7 @@ or `@build` where there is no `@compile`).
 - If the compile binding is declared not applicable, there is nothing to run: re-read
   your change for errors instead, say in your report that it was not compiled, and
   report `compiled`. The test stage is then the first build.
+- Any build you run outside the binding must leave no output in the working tree: a bare `go build ./...` writes a binary when the pattern matches a single main package, so build into a temp folder (`go build -o <temp>`) or use `go vet`.
 
 ## You do not run tests
 

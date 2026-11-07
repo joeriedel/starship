@@ -102,6 +102,7 @@ func TestClaudeVersionLine(t *testing.T) {
 }
 
 func TestSelftestVersionLineDoesNotChangeExit(t *testing.T) {
+	isolateClaudeHome(t)
 	fakeClaude(t, "case \"$1\" in --version) echo \"2.1.1 (Claude Code)\"; exit 0;; esac\nexit 1\n")
 	var out bytes.Buffer
 	err := runSelftest(&out)

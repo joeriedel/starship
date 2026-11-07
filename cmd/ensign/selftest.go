@@ -313,7 +313,7 @@ func reportLines(out io.Writer, checks []selftestCheck, advisory selftestCheck, 
 // Agent call proves the dispatch ran in the foreground.
 const leafToken = "SELFTEST-LEAF-RESULT"
 
-// cmdSelftest holds signals while the probes run, so that an interrupt kills the running session and still lets runSelftest remove its folders; the signal is then raised again so that ensign ends by it. SIGKILL can't be cleaned up after.
+// cmdSelftest holds signals while the probes run, so that an interrupt kills the running session and still lets runSelftest remove its folders and their session records; the signal is then raised again so that ensign ends by it. SIGKILL can't be cleaned up after.
 func cmdSelftest(out io.Writer) error {
 	release := holdSignals()
 	err := runSelftest(out)
@@ -350,7 +350,7 @@ func runSelftest(out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(dir)
+	defer removeProbeDir(out, dir)
 	events, _, _, err := runProbeSession(dir, `This is a self-test of this project's hooks, which the user asked for. `+
 		`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". One of its steps is refused by a hook on purpose; `+
 		`that is expected, not an error.`,
@@ -371,7 +371,7 @@ func runSelftest(out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(stopDir)
+	defer removeProbeDir(out, stopDir)
 	if caughtSignal() != nil {
 		return errSelftestInterrupted()
 	}
@@ -543,6 +543,50 @@ func newProbeDir(self, token string, agents map[string]string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// removeProbeDir removes a probe folder and the folder where Claude Code recorded its sessions. The record lives under the config dir, outside the probe folder, so it would stay behind for every run. Only folders that carry this probe folder's own random name are touched. A removal that fails is noted on out and changes nothing else. The probe log is read first, since it is in the folder being removed.
+func removeProbeDir(out io.Writer, dir string) {
+	candidates := map[string]bool{}
+	for _, e := range readProbeLog(dir) {
+		if path, _ := e["transcript_path"].(string); path != "" {
+			candidates[filepath.Dir(path)] = true
+		}
+	}
+	config := os.Getenv("CLAUDE_CONFIG_DIR")
+	if config == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			config = filepath.Join(home, ".claude")
+		}
+	}
+	if config != "" {
+		candidates[filepath.Join(config, "projects", claudeProjectName(dir))] = true
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			candidates[filepath.Join(config, "projects", claudeProjectName(real))] = true
+		}
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		fmt.Fprintf(out, "could not remove the probe folder %s: %v\n", dir, err)
+	}
+	own := claudeProjectName(filepath.Base(dir))
+	for c := range candidates {
+		if filepath.Base(filepath.Dir(c)) != "projects" || !strings.HasSuffix(filepath.Base(c), own) {
+			continue
+		}
+		if err := os.RemoveAll(c); err != nil {
+			fmt.Fprintf(out, "could not remove the session records in %s: %v\n", c, err)
+		}
+	}
+}
+
+// claudeProjectName is the name of the folder where Claude Code records the sessions of a project at path: every character that isn't a letter or digit becomes '-'.
+func claudeProjectName(path string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, path)
 }
 
 // readProbeLog reads the hook log of a probe folder.
@@ -932,15 +976,17 @@ const (
 type restartProbe struct {
 	first, resumed restartRun
 	stage          restartStage
+	// callsBefore holds the ids of the SendMessage calls the first session's transcript had before the resume started. Those calls were not the resumed turn's, however the resume files its transcript. Nil skips nothing.
+	callsBefore map[string]bool
 }
 
-// runRestartProbe runs a session that starts a background agent, then resumes that session in the same folder and asks it to message the agent by id. Why it stopped early is written to out. When a step fails it returns what was observed so far and how far it got: restartChecks leaves a check inconclusive when the resume never started, and fails the session and source checks when the resumed session was attempted and failed, since `claude --resume` failing is itself evidence.
+// runRestartProbe runs a session that starts a background agent, then resumes that session in the same folder and asks it to message the agent by id. It records the ids of the SendMessage calls in the first transcript before the resume, because --resume appends to that file on the builds seen, or may copy its history into a new one, so a call seen afterwards is the resumed turn's only if its id is not on that list. Why it stopped early is written to out. When a step fails it returns what was observed so far and how far it got: restartChecks leaves a check inconclusive when the resume never started, and fails the session and source checks when the resumed session was attempted and failed, since `claude --resume` failing is itself evidence. SIGKILL leaves the folder and its session records behind.
 func runRestartProbe(out io.Writer, self, token string) (*restartProbe, error) {
 	dir, err := newProbeDir(self, token, map[string]string{".claude/agents/probe-restart.md": selftestRestart})
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer removeProbeDir(out, dir)
 	var p restartProbe
 	var result string
 	p.first.events, result, p.first.session, err = runProbeSession(dir,
@@ -965,6 +1011,7 @@ func runRestartProbe(out io.Writer, self, token string) (*restartProbe, error) {
 		fmt.Fprintln(out, "restart probe: the first session reported no session_id")
 		return &p, nil
 	}
+	p.callsBefore = sendMessageIDs(transcriptLines(p.first.events))
 	p.resumed.events, _, p.resumed.session, err = runProbeSession(dir,
 		`This is a self-test of this project's hooks, which the user asked for. `+
 			`Use the SendMessage tool to send the agent with id `+agent+` the message "Use Bash to run: echo restart-two". `+
@@ -991,7 +1038,7 @@ func runStopBackgroundProbe(self, token string) []map[string]any {
 		fmt.Fprintf(os.Stderr, "stop background probe: %v\n", err)
 		return nil
 	}
-	defer os.RemoveAll(dir)
+	defer removeProbeDir(os.Stderr, dir)
 	events, _, _, err := runProbeSession(dir,
 		`This is a self-test of this project's hooks, which the user asked for. `+
 			`Use the Bash tool once, with command "sleep 30" and run_in_background set to true. Then reply with the word started at once. Do not wait for the command.`,
@@ -1017,10 +1064,10 @@ func transcriptLines(events []map[string]any) []string {
 	return nil
 }
 
-// sentMessage says whether the resumed turn called SendMessage: "true", "false" or "unknown". On the builds seen, --resume appends to the first session's file, so the first transcript can show the call when the resumed session logged no events. It can prove true but never false: false comes only from the resumed session's own lines in a session that completed.
-func sentMessage(stage restartStage, firstLines, resumedLines []string) string {
+// sentMessage says whether the resumed turn sent a message to the agent with the given id: "true", "false" or "unknown". A call counts when a SendMessage tool_use carries that id in its input and its own id is not in callsBefore, the calls made before the resume. On the builds seen, --resume appends to the first session's file, so firstLines can show the call when the resumed session logged no events. It can prove true but never false: false comes only from the resumed session's own lines in a session that completed. "true" with no agent run in the resumed session is a failure; the other answers leave that inconclusive.
+func sentMessage(stage restartStage, agent string, callsBefore map[string]bool, firstLines, resumedLines []string) string {
 	switch {
-	case calledSendMessage(resumedLines) || calledSendMessage(firstLines):
+	case calledSendMessage(resumedLines, agent, callsBefore) || calledSendMessage(firstLines, agent, callsBefore):
 		return "true"
 	case stage == resumeCompleted && len(resumedLines) > 0:
 		return "false"
@@ -1166,8 +1213,8 @@ func restartNeverStarted(first []map[string]any) string {
 	return "the first session reported no session_id, so the resumed session never started"
 }
 
-// restartAgentVerdicts judges whether the agent kept its agent_id and its transcript path across the restart, and says why when a check is inconclusive. When the resume never started, or the resumed session failed, or no agent ran in it, the probe says nothing either way; an agent that ran under another id, or stopped without keeping its path, is a real break.
-func restartAgentVerdicts(first, resumed []map[string]any, stage restartStage) (idKept, pathKept verdict, why string) {
+// restartAgentVerdicts judges whether the agent kept its agent_id and its transcript path across the restart, and says why when a check is inconclusive. When the resume never started, or the resumed session failed, the probe says nothing either way. When no agent ran in the resumed session, that is inconclusive unless sent says SendMessage was called: Claude Code was asked to wake the agent and did not, which is a real break, as is an agent that ran under another id or stopped without keeping its path.
+func restartAgentVerdicts(first, resumed []map[string]any, stage restartStage, sent string) (idKept, pathKept verdict, why string) {
 	id := restartAgentID(first)
 	switch stage {
 	case resumeNotStarted:
@@ -1178,6 +1225,9 @@ func restartAgentVerdicts(first, resumed []map[string]any, stage restartStage) (
 		return verdictInconclusive, verdictInconclusive, "the resumed session failed, so nothing is known about the agent"
 	}
 	if !agentRanResumed(resumed) {
+		if sent == "true" {
+			return verdictFail, verdictFail, ""
+		}
 		return verdictInconclusive, verdictInconclusive, "the session model did not get the agent to run in the resumed session"
 	}
 	kept, stopped := agentKeptID(first, resumed), agentStoppedAgain(resumed, id)
@@ -1197,8 +1247,17 @@ func restartAgentVerdicts(first, resumed []map[string]any, stage restartStage) (
 	return idKept, pathKept, ""
 }
 
-// calledSendMessage reports whether a transcript holds a SendMessage tool call by the assistant.
-func calledSendMessage(transcript []string) bool {
+// toolUseBlock is a content block of an assistant record.
+type toolUseBlock struct {
+	ID    string          `json:"id"`
+	Type  string          `json:"type"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+// sendMessageCalls returns the SendMessage tool_use blocks of the assistant records in a transcript.
+func sendMessageCalls(transcript []string) []toolUseBlock {
+	var calls []toolUseBlock
 	for _, line := range transcript {
 		var rec struct {
 			Type    string `json:"type"`
@@ -1209,17 +1268,38 @@ func calledSendMessage(transcript []string) bool {
 		if json.Unmarshal([]byte(line), &rec) != nil || rec.Type != "assistant" {
 			continue
 		}
-		var blocks []struct {
-			Type string `json:"type"`
-			Name string `json:"name"`
-		}
+		var blocks []toolUseBlock
 		if json.Unmarshal(rec.Message.Content, &blocks) != nil {
 			continue
 		}
 		for _, b := range blocks {
 			if b.Type == "tool_use" && b.Name == "SendMessage" {
-				return true
+				calls = append(calls, b)
 			}
+		}
+	}
+	return calls
+}
+
+// sendMessageIDs is the set of tool_use ids of the SendMessage calls in a transcript. A call with no id is left out.
+func sendMessageIDs(transcript []string) map[string]bool {
+	ids := map[string]bool{}
+	for _, c := range sendMessageCalls(transcript) {
+		if c.ID != "" {
+			ids[c.ID] = true
+		}
+	}
+	return ids
+}
+
+// calledSendMessage reports whether a transcript holds a SendMessage tool call by the assistant whose input names agent anywhere, other than a call whose tool_use id is in skip. It deliberately ignores the call's tool_result: if Claude Code lost the agent over the restart, the likely symptom is a call to the right id that comes back as an error, and that must stay a failure. An empty agent matches nothing.
+func calledSendMessage(transcript []string, agent string, skip map[string]bool) bool {
+	if agent == "" {
+		return false
+	}
+	for _, c := range sendMessageCalls(transcript) {
+		if (c.ID == "" || !skip[c.ID]) && strings.Contains(string(c.Input), agent) {
+			return true
 		}
 	}
 	return false
@@ -1230,11 +1310,14 @@ func restartChecks(p *restartProbe, out io.Writer) []selftestCheck {
 	id := restartAgentID(p.first.events)
 	fmt.Fprintf(out, "  restart probe: SessionStart source %q then %q\n", startSource(p.first.events), startSource(p.resumed.events))
 	fmt.Fprintf(out, "  restart probe: session ids %q then %q\n", p.first.session, p.resumed.session)
-	sent := sentMessage(p.stage, p.first.transcript, p.resumed.transcript)
-	fmt.Fprintf(out, "  restart probe: agent id %q, then %q seen again; transcript path %q then %q; the resumed turn called SendMessage: %s\n",
+	sent := sentMessage(p.stage, id, p.callsBefore, p.first.transcript, p.resumed.transcript)
+	fmt.Fprintf(out, "  restart probe: agent id %q, then %q seen again; transcript path %q then %q; the resumed turn messaged the agent: %s\n",
 		id, map[bool]string{true: id, false: "none"}[agentKeptID(p.first.events, p.resumed.events)],
 		stopPath(p.first.events, id), stopPath(p.resumed.events, id), sent)
-	idKept, pathKept, why := restartAgentVerdicts(p.first.events, p.resumed.events, p.stage)
+	idKept, pathKept, why := restartAgentVerdicts(p.first.events, p.resumed.events, p.stage, sent)
+	if p.stage == resumeCompleted && sent == "true" && !agentRanResumed(p.resumed.events) {
+		fmt.Fprintln(out, "  restart probe: SendMessage was called but the agent never ran in the resumed session; the model did its part, so this points at Claude Code")
+	}
 	sources := selftestCheck{"SessionStart carries source: startup, then resume", sourcesReported(p.first.events, p.resumed.events), ""}
 	tied := selftestCheck{"a resumed session keeps its id, or its transcript keeps records stamped with the first id", restartTied(p.first.session, p.resumed.session, p.resumed.transcript), ""}
 	if p.stage == resumeNotStarted || p.stage == firstFailed {

@@ -706,8 +706,26 @@ func TestRestartAgentVerdicts(t *testing.T) {
 		{"failed", first, []map[string]any{bashEv("a1")}, resumeFailed, verdictInconclusive, verdictInconclusive, "resumed session failed"},
 	}
 	for _, tt := range tests {
-		if id, p, why := restartAgentVerdicts(tt.first, tt.resumed, tt.stage); id != tt.id || p != tt.p || !strings.Contains(why, tt.why) || (tt.why == "") != (why == "") {
+		if id, p, why := restartAgentVerdicts(tt.first, tt.resumed, tt.stage, "unknown"); id != tt.id || p != tt.p || !strings.Contains(why, tt.why) || (tt.why == "") != (why == "") {
 			t.Errorf("%s: got %v, %v, %q; want %v, %v, %q", tt.name, id, p, why, tt.id, tt.p, tt.why)
+		}
+	}
+	sentTests := []struct {
+		name  string
+		stage restartStage
+		sent  string
+		want  verdict
+	}{
+		{"sent, never ran", resumeCompleted, "true", verdictFail},
+		{"not sent, never ran", resumeCompleted, "false", verdictInconclusive},
+		{"unknown, never ran", resumeCompleted, "unknown", verdictInconclusive},
+		{"sent, resume failed", resumeFailed, "true", verdictInconclusive},
+		{"sent, first failed", firstFailed, "true", verdictInconclusive},
+		{"sent, never started", resumeNotStarted, "true", verdictInconclusive},
+	}
+	for _, tt := range sentTests {
+		if id, p, _ := restartAgentVerdicts(first, nil, tt.stage, tt.sent); id != tt.want || p != tt.want {
+			t.Errorf("%s: got %v, %v; want %v", tt.name, id, p, tt.want)
 		}
 	}
 }
@@ -717,21 +735,42 @@ func TestCalledSendMessage(t *testing.T) {
 		b, _ := json.Marshal(map[string]any{"type": typ, "message": map[string]any{"content": blocks}})
 		return string(b)
 	}
-	use := func(name string) any { return map[string]any{"type": "tool_use", "name": name} }
+	use := func(name string) any {
+		return map[string]any{"type": "tool_use", "name": name, "input": map[string]any{"to": "a1", "message": "go"}}
+	}
+	withID := func(b any, id string) any {
+		m := map[string]any{"id": id}
+		for k, v := range b.(map[string]any) {
+			m[k] = v
+		}
+		return m
+	}
 	text, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"content": "SendMessage"}})
 	tests := []struct {
 		name  string
 		lines []string
 		want  bool
+		skip  map[string]bool
 	}{
-		{"none", nil, false},
-		{"called", []string{"not json", line("assistant", map[string]any{"type": "text"}, use("ToolSearch")), line("assistant", use("SendMessage"))}, true},
-		{"other tools", []string{line("assistant", use("Agent"), use("Bash"))}, false},
-		{"a user record", []string{line("user", use("SendMessage"))}, false},
-		{"string content", []string{string(text)}, false},
+		{"none", nil, false, nil},
+		{"called", []string{"not json", line("assistant", map[string]any{"type": "text"}, use("ToolSearch")), line("assistant", use("SendMessage"))}, true, nil},
+		{"other tools", []string{line("assistant", use("Agent"), use("Bash"))}, false, nil},
+		{"a user record", []string{line("user", use("SendMessage"))}, false, nil},
+		{"string content", []string{string(text)}, false, nil},
+		{"other recipient", []string{line("assistant", map[string]any{"type": "tool_use", "name": "SendMessage", "input": map[string]any{"to": "a2"}})}, false, nil},
+		{"no input", []string{line("assistant", map[string]any{"type": "tool_use", "name": "SendMessage"})}, false, nil},
+		{"id in a nested field", []string{line("assistant", map[string]any{"type": "tool_use", "name": "SendMessage", "input": map[string]any{"target": map[string]any{"id": "a1"}}})}, true, nil},
+		{"empty id", []string{line("assistant", use("SendMessage"))}, false, nil},
+		{"skipped id", []string{line("assistant", withID(use("SendMessage"), "t1"))}, false, map[string]bool{"t1": true}},
+		{"skipped id, another call", []string{line("assistant", withID(use("SendMessage"), "t1"), withID(use("SendMessage"), "t2"))}, true, map[string]bool{"t1": true}},
+		{"call with no id is not skipped", []string{line("assistant", use("SendMessage"))}, true, map[string]bool{"": true}},
 	}
 	for _, tt := range tests {
-		if got := calledSendMessage(tt.lines); got != tt.want {
+		agent := "a1"
+		if tt.name == "empty id" {
+			agent = ""
+		}
+		if got := calledSendMessage(tt.lines, agent, tt.skip); got != tt.want {
 			t.Errorf("%s: got %v", tt.name, got)
 		}
 	}
@@ -739,7 +778,14 @@ func TestCalledSendMessage(t *testing.T) {
 
 func TestRestartChecks(t *testing.T) {
 	stopped := stopEv("probe-restart", "a1", map[string]any{"agent_transcript_path": "/t/a1"})
-	sent, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "name": "SendMessage"}}}})
+	call := func(id, to string) string {
+		b, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "id": id, "name": "SendMessage", "input": map[string]any{"to": to, "message": "go"}}}}})
+		return string(b)
+	}
+	sent := call("t1", "a1")
+	sentAgain := call("t2", "a1")
+	before := map[string]bool{"t1": true}
+	failedResult := `{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"no agent a1"}]}}`
 	probe := func(resumed []map[string]any, transcript ...string) *restartProbe {
 		return &restartProbe{
 			stage:   resumeCompleted,
@@ -762,19 +808,26 @@ func TestRestartChecks(t *testing.T) {
 		said string
 		why  string
 	}{
-		{"never ran, never sent", probe(nil, string(other)), "ok ok no? no?", "called SendMessage: false", "did not get the agent to run in the resumed session"},
-		{"sent, never ran", probe(nil, string(sent)), "ok ok no? no?", "called SendMessage: true", "did not get the agent to run in the resumed session"},
-		{"no transcript", probe(nil), "ok ok no? no?", "called SendMessage: unknown", "did not get the agent to run in the resumed session"},
+		{"never ran, never sent", probe(nil, string(other)), "ok ok no? no?", "messaged the agent: false", "did not get the agent to run in the resumed session"},
+		{"wrong recipient", probe(nil, call("t3", "a2")), "ok ok no? no?", "messaged the agent: false", "did not get the agent to run in the resumed session"},
+		{"call before the resume, same file", &restartProbe{stage: resumeCompleted, callsBefore: before, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{sent}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s1", transcript: []string{sent}}}, "ok ok no? no?", "messaged the agent: false", "did not get the agent to run in the resumed session"},
+		{"old and new call, same file", &restartProbe{stage: resumeCompleted, callsBefore: before, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{sent, `{"type":"user"}`, sentAgain}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s1", transcript: []string{sent, `{"type":"user"}`, sentAgain}}}, "ok ok no no", "SendMessage was called but the agent never ran", ""},
+		{"call after the resume in the first file", &restartProbe{stage: resumeCompleted, callsBefore: before, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{sent, `{"type":"user"}`, sentAgain}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s1"}}, "ok ok no no", "SendMessage was called but the agent never ran", ""},
+		{"call to the right id that errored", probe(nil, sent, failedResult), "ok ok no no", "SendMessage was called but the agent never ran", ""},
+		{"sent, never ran", probe(nil, sent), "ok ok no no", "SendMessage was called but the agent never ran", ""},
+		{"no transcript", probe(nil), "ok ok no? no?", "messaged the agent: unknown", "did not get the agent to run in the resumed session"},
 		{"ran under another id", probe([]map[string]any{bashEv("a2")}), "ok ok no no", "\"none\" seen again", ""},
 		{"ran, no stop", probe([]map[string]any{bashEv("a1")}), "ok ok ok no?", "", "the agent ran in the resumed session but its stop was not seen"},
 		{"stopped, no bash", probe([]map[string]any{stopped}), "ok ok ok ok", "\"a1\" seen again", ""},
 		{"kept everything", probe([]map[string]any{bashEv("a1"), stopped}), "ok ok ok ok", "", ""},
 		{"no first agent", &restartProbe{first: restartRun{events: []map[string]any{startEv("startup")}}}, "no? no? no? no?", "", "the resumed session never started"},
-		{"first session id empty", &restartProbe{first: restartRun{events: []map[string]any{startEv("startup"), stopped}}}, "no? no? no? no?", "called SendMessage: unknown", "no session_id, so the resumed session never started"},
-		{"first session failed", &restartProbe{stage: firstFailed}, "no? no? no? no?", "called SendMessage: unknown", "the first session failed, so the resumed session never started"},
-		{"resumed failed", &restartProbe{stage: resumeFailed, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1"}}, "no no no? no?", "called SendMessage: unknown", "the resumed session failed, so nothing is known about the agent"},
-		{"resumed failed, first shows the call", &restartProbe{stage: resumeFailed, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{string(sent)}}}, "no no no? no?", "called SendMessage: true", "resumed session failed"},
-		{"new id, resumed transcript unreadable", &restartProbe{stage: resumeCompleted, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{`{"sessionId":"s1"}`}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s2"}}, "ok no no? no?", "called SendMessage: unknown", "did not get the agent to run in the resumed session"},
+		{"first session id empty", &restartProbe{first: restartRun{events: []map[string]any{startEv("startup"), stopped}}}, "no? no? no? no?", "messaged the agent: unknown", "no session_id, so the resumed session never started"},
+		{"first session failed, first shows the call", &restartProbe{stage: firstFailed, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{sent}}}, "no? no? no? no?", "messaged the agent: true", "the first session failed, so the resumed session never started"},
+		{"never started, first shows the call", &restartProbe{first: restartRun{events: []map[string]any{startEv("startup"), stopped}, transcript: []string{sent}}}, "no? no? no? no?", "messaged the agent: true", "no session_id, so the resumed session never started"},
+		{"first session failed", &restartProbe{stage: firstFailed}, "no? no? no? no?", "messaged the agent: unknown", "the first session failed, so the resumed session never started"},
+		{"resumed failed", &restartProbe{stage: resumeFailed, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1"}}, "no no no? no?", "messaged the agent: unknown", "the resumed session failed, so nothing is known about the agent"},
+		{"resumed failed, first shows the call", &restartProbe{stage: resumeFailed, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{sent}}}, "no no no? no?", "messaged the agent: true", "resumed session failed"},
+		{"new id, resumed transcript unreadable", &restartProbe{stage: resumeCompleted, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{`{"sessionId":"s1"}`}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s2"}}, "ok no no? no?", "messaged the agent: unknown", "did not get the agent to run in the resumed session"},
 	}
 	for _, tt := range tests {
 		var b strings.Builder
@@ -785,13 +838,23 @@ func TestRestartChecks(t *testing.T) {
 		if got := cs[2].inconclusive + cs[3].inconclusive; tt.why == "" && got != "" || !strings.Contains(got, tt.why) {
 			t.Errorf("%s: inconclusive reasons %q, want %q", tt.name, got, tt.why)
 		}
+		if strings.Contains(b.String(), "SendMessage was called but") != strings.Contains(tt.said, "SendMessage was called but") {
+			t.Errorf("%s: the SendMessage line was printed wrongly: %q", tt.name, b.String())
+		}
+	}
+	var b strings.Builder
+	cs := restartChecks(probe(nil, sent), &b)
+	if err := reportLines(&b, cs, selftestCheck{ok: true}, true, ""); err == nil {
+		t.Errorf("a sent message with no agent run did not fail the selftest: %q", b.String())
 	}
 }
 
 func TestSentMessage(t *testing.T) {
-	call, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "name": "SendMessage"}}}})
+	call, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "name": "SendMessage", "input": map[string]any{"to": "a1"}}}}})
+	wrong, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "name": "SendMessage", "input": map[string]any{"to": "a2"}}}}})
 	none := []string{`{"type":"user"}`}
 	yes := []string{string(call)}
+	old, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "id": "t0", "name": "SendMessage", "input": map[string]any{"to": "a1"}}}}})
 	tests := []struct {
 		name           string
 		stage          restartStage
@@ -807,9 +870,12 @@ func TestSentMessage(t *testing.T) {
 		{"failed, no lines", resumeFailed, none, nil, "unknown"},
 		{"failed, resumed lines without the call", resumeFailed, none, none, "unknown"},
 		{"never started", resumeNotStarted, nil, nil, "unknown"},
+		{"wrong recipient, resumed lines", resumeCompleted, none, []string{string(wrong)}, "false"},
+		{"call made before the resume, in both files", resumeCompleted, []string{string(old)}, []string{string(old)}, "false"},
+		{"wrong recipient, first lines", resumeCompleted, []string{string(wrong)}, nil, "unknown"},
 	}
 	for _, tt := range tests {
-		if got := sentMessage(tt.stage, tt.first, tt.resumed); got != tt.want {
+		if got := sentMessage(tt.stage, "a1", map[string]bool{"t0": true}, tt.first, tt.resumed); got != tt.want {
 			t.Errorf("%s: got %q, want %q", tt.name, got, tt.want)
 		}
 	}
@@ -822,7 +888,18 @@ func clearHeldSignal() {
 	heldSignals.Unlock()
 }
 
+// isolateClaudeHome points the home and the Claude config dir at a temp folder, so no test can reach the real ~/.claude, and returns the config dir.
+func isolateClaudeHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	return filepath.Join(home, ".claude")
+}
+
 func TestSelftestInterruptedStopsAtOnce(t *testing.T) {
+	isolateClaudeHome(t)
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 	runs := filepath.Join(t.TempDir(), "runs")
@@ -861,6 +938,7 @@ func TestSelftestInterruptedStopsAtOnce(t *testing.T) {
 }
 
 func TestSelftestSignalBetweenSessions(t *testing.T) {
+	isolateClaudeHome(t)
 	runs := filepath.Join(t.TempDir(), "runs")
 	fakeClaude(t, `[ "$1" = --version ] && { echo "2.1.319 (Claude Code)"; exit 0; }`+"\necho run >> "+runs+"\n")
 	release := holdSignals()
@@ -873,5 +951,134 @@ func TestSelftestSignalBetweenSessions(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(runs); len(b) > 0 {
 		t.Errorf("a session started after the signal: %q", b)
+	}
+}
+
+func TestRemoveProbeDir(t *testing.T) {
+	mk := func(t *testing.T, path string) {
+		t.Helper()
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "session.jsonl"), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exists := func(path string) bool {
+		_, err := os.Stat(path)
+		return err == nil
+	}
+	newDir := func(t *testing.T) (dir, own string) {
+		dir, err := os.MkdirTemp(t.TempDir(), "ensign-selftest-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dir, claudeProjectName(filepath.Base(dir))
+	}
+	logTranscript := func(t *testing.T, dir, transcript string) {
+		t.Helper()
+		line, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "transcript_path": transcript, "agent_transcript_path": filepath.Join(t.TempDir(), "projects", "other", "a.jsonl")})
+		if err := os.WriteFile(filepath.Join(dir, "selftest-log.jsonl"), append(line, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("found through transcript_path", func(t *testing.T) {
+		config := isolateClaudeHome(t)
+		dir, own := newDir(t)
+		record := filepath.Join(config, "projects", "-private-"+own)
+		neighbour := filepath.Join(config, "projects", "-tmp-ensign-selftest-other")
+		mk(t, record)
+		mk(t, neighbour)
+		logTranscript(t, dir, filepath.Join(record, "s1.jsonl"))
+		var out bytes.Buffer
+		removeProbeDir(&out, dir)
+		if exists(dir) || exists(record) || !exists(neighbour) || out.Len() > 0 {
+			t.Errorf("dir %v, record %v, neighbour %v, out %q", exists(dir), exists(record), exists(neighbour), out.String())
+		}
+	})
+	t.Run("derived with no log", func(t *testing.T) {
+		config := isolateClaudeHome(t)
+		dir, own := newDir(t)
+		record := filepath.Join(config, "projects", claudeProjectName(dir))
+		neighbour := filepath.Join(config, "projects", "-tmp-ensign-selftest-other")
+		mk(t, record)
+		mk(t, neighbour)
+		removeProbeDir(&bytes.Buffer{}, dir)
+		if exists(dir) || exists(record) || !exists(neighbour) || !strings.HasSuffix(record, own) {
+			t.Errorf("dir %v, record %v, neighbour %v", exists(dir), exists(record), exists(neighbour))
+		}
+	})
+	t.Run("derived through a symlink", func(t *testing.T) {
+		config := isolateClaudeHome(t)
+		dir, _ := newDir(t)
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(filepath.Dir(dir), link); err != nil {
+			t.Skip("symlinks are not available")
+		}
+		linked := filepath.Join(link, filepath.Base(dir))
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := filepath.Join(config, "projects", claudeProjectName(real))
+		mk(t, record)
+		removeProbeDir(&bytes.Buffer{}, linked)
+		if exists(dir) || exists(record) {
+			t.Errorf("dir %v, record %v", exists(dir), exists(record))
+		}
+	})
+	t.Run("CLAUDE_CONFIG_DIR is honoured", func(t *testing.T) {
+		defaultConfig := isolateClaudeHome(t)
+		config := filepath.Join(t.TempDir(), "custom")
+		t.Setenv("CLAUDE_CONFIG_DIR", config)
+		dir, _ := newDir(t)
+		record := filepath.Join(config, "projects", claudeProjectName(dir))
+		decoy := filepath.Join(defaultConfig, "projects", claudeProjectName(dir))
+		mk(t, record)
+		mk(t, decoy)
+		removeProbeDir(&bytes.Buffer{}, dir)
+		if exists(record) || !exists(decoy) {
+			t.Errorf("record %v, decoy %v", exists(record), exists(decoy))
+		}
+	})
+	t.Run("the guard leaves other folders alone", func(t *testing.T) {
+		config := isolateClaudeHome(t)
+		tests := []struct {
+			name   string
+			folder func(own string) string
+		}{
+			{"wrong name", func(own string) string { return filepath.Join(config, "projects", "-tmp-other-project") }},
+			{"wrong parent", func(own string) string { return filepath.Join(config, "elsewhere", "-tmp-"+own) }},
+			{"outside", func(own string) string { return filepath.Join(t.TempDir(), "-tmp-"+own) }},
+		}
+		for _, tt := range tests {
+			dir, own := newDir(t)
+			folder := tt.folder(own)
+			mk(t, folder)
+			logTranscript(t, dir, filepath.Join(folder, "s1.jsonl"))
+			removeProbeDir(&bytes.Buffer{}, dir)
+			if exists(dir) || !exists(folder) {
+				t.Errorf("%s: dir %v, folder %v", tt.name, exists(dir), exists(folder))
+			}
+		}
+	})
+}
+
+func TestSelftestRemovesSessionRecords(t *testing.T) {
+	config := isolateClaudeHome(t)
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	fakeClaude(t, `[ "$1" = --version ] && { echo "2.1.319 (Claude Code)"; exit 0; }`+"\nmkdir -p \"$CLAUDE_CONFIG_DIR/projects/$(echo \"$PWD\" | tr -c 'A-Za-z0-9\\n' -)\"\nexit 1\n")
+	t.Setenv("CLAUDE_CONFIG_DIR", config)
+	var out bytes.Buffer
+	if err := runSelftest(&out); err == nil {
+		t.Fatal("want the fake session's failure")
+	}
+	if left, _ := filepath.Glob(filepath.Join(config, "projects", "*")); len(left) > 0 {
+		t.Errorf("session records left behind: %v", left)
+	}
+	if left, _ := filepath.Glob(filepath.Join(tmp, "ensign-selftest-*")); len(left) > 0 {
+		t.Errorf("temp folders left behind: %v", left)
 	}
 }
