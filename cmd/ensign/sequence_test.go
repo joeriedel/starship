@@ -5238,7 +5238,9 @@ func (w *world) addReleaseProject() {
 	}
 	write(w.t, filepath.Join(w.bridge, "projects/nebula/project.yaml"), string(data))
 	ws := filepath.Join(filepath.Dir(w.bridge), "workspace-nebula")
-	os.MkdirAll(ws, 0o755)
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		w.t.Fatal(err)
+	}
 	if _, err := setWorkspace(w.bridge, "nebula", ws); err != nil {
 		w.t.Fatal(err)
 	}
@@ -5374,7 +5376,7 @@ func TestSequenceSkipCancelsLaterReleasesAndSaysSo(t *testing.T) {
 			t.Errorf("%s should still list the later sequence's release as affected:\n%s", where, text)
 		}
 	}
-	if !strings.Contains(reason, "will cancel") || !strings.Contains(out, "cancelled these") {
+	if !strings.Contains(reason, "These later release steps of this sequence will be cancelled if this step is skipped, because") || !strings.Contains(out, "These later release steps of this sequence were cancelled, because") {
 		t.Errorf("the tense should follow the choice:\n%s\n%s", reason, out)
 	}
 	w.wantStatus("failed", "cancelled", "active", "pending")

@@ -1707,7 +1707,7 @@ func decideText(bridge string, sf *seqFile, seq *sequence, st *seqStep) string {
 	text += fmt.Sprintf("- skip: `ensign sequence skip %s` ends the step as failed, cancels the task's publish step and the sequence's later release steps, and the rest of the sequence carries on. %s\n", ref, skipWorkspaceText(bridge, st))
 	text += fmt.Sprintf("- halt: `ensign sequence accept %s` ends the step as failed, halts the sequence and cancels every later step.\n", ref)
 	text += "Say retry, skip and halt to the user, not the command names."
-	if cancels := skipCancelsText(seq, st, "will cancel"); cancels != "" {
+	if cancels := skipCancelsText(seq, st, "will be cancelled if this step is skipped"); cancels != "" {
 		text += "\n" + cancels
 	}
 	if affected := skipAffectedText(skipAffected(sf, seq, st)); affected != "" {
@@ -1770,7 +1770,7 @@ func skipAffected(sf *seqFile, seq *sequence, failed *seqStep) []*seqStep {
 	return out
 }
 
-// skipCancelsText names the later release steps of the sequence that skipping a step cancels, one per line, after verb ("will cancel" before the choice, "cancelled" after it). It is empty when there are none.
+// skipCancelsText names the later release steps of the sequence that skipping a step cancels, one per line, after verb ("will be cancelled if this step is skipped" before the choice, "were cancelled" after it). It is empty when there are none.
 func skipCancelsText(seq *sequence, skipped *seqStep, verb string) string {
 	list := laterReleases(seq, skipped)
 	if len(list) == 0 {
@@ -1780,7 +1780,7 @@ func skipCancelsText(seq *sequence, skipped *seqStep, verb string) string {
 	for _, st := range list {
 		lines = append(lines, fmt.Sprintf("  step %s, release: %s %s", st.ref(), st.Task, st.Version))
 	}
-	return fmt.Sprintf("Skipping %s these later release steps of this sequence, which never releases after a skipped step; the rest of the sequence still runs:\n%s", verb, strings.Join(lines, "\n"))
+	return fmt.Sprintf("These later release steps of this sequence %s, because a sequence never releases after a skipped step; the rest of the sequence still runs:\n%s", verb, strings.Join(lines, "\n"))
 }
 
 // skipAffectedText names the steps skipAffected found, one per line. It is empty when there are none.
@@ -2865,7 +2865,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				return fmt.Errorf("step %s is not waiting for a decision (it is %s)", st.ref(), st.Status)
 			}
 			affected := skipAffectedText(skipAffected(sf, seq, st))
-			cancels := skipCancelsText(seq, st, "cancelled")
+			cancels := skipCancelsText(seq, st, "were cancelled")
 			workspace := skipWorkspaceText(bridge, st)
 			st.Status, st.Reason, st.SkippedAt = "failed", skipPrefix+st.Reason, time.Now().UnixNano()
 			for _, other := range seq.Steps {
