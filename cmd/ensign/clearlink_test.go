@@ -587,20 +587,37 @@ func TestStartNamesALeftBehindHoldOnANotReadyReply(t *testing.T) {
 	}
 }
 
-func TestStartNamesALeftBehindHoldOnStderrWhenTheEnvFileFails(t *testing.T) {
+// envFileFailureReply starts the world's session as a clear from s1 and requires the reply a failed CLAUDE_ENV_FILE write gives: exit 0, nothing on stderr, JSON with no heartbeat.
+func envFileFailureReply(t *testing.T, w *world) (show, ctx string) {
+	t.Helper()
+	stdout, stderr, code := w.clearRaw("s1")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("the reply is not JSON: %v\n%s", err, stdout)
+	}
+	if strings.Contains(stdout, "STARSHIP-READY") {
+		t.Errorf("the reply should carry no heartbeat:\n%s", stdout)
+	}
+	return dig(res, "systemMessage"), dig(res, "hookSpecificOutput", "additionalContext")
+}
+
+func TestStartNamesALeftBehindHoldInTheReplyWhenTheEnvFileFails(t *testing.T) {
 	w := newWorld(t)
 	folder := t.TempDir()
 	leftBehindRun(t, w, "pa", heldRunID, &Snapshot{Workspace: folder}, true, true, "running", "active")
 	t.Setenv("CLAUDE_ENV_FILE", t.TempDir())
 	w.sid = "s2"
-	stdout, stderr, code := w.clearRaw("s1")
-	if code != 2 || stdout != "" {
-		t.Fatalf("exit %d, stdout %q", code, stdout)
-	}
+	show, ctx := envFileFailureReply(t, w)
 	for _, text := range []string{"session pa", folder, heldRunID} {
-		if !strings.Contains(stderr, text) {
-			t.Errorf("stderr should name %q:\n%s", text, stderr)
+		if !strings.Contains(ctx, text) {
+			t.Errorf("additionalContext should name %q:\n%s", text, ctx)
 		}
+	}
+	if !strings.Contains(show, "could not record this session's id") || !strings.Contains(show, folder) {
+		t.Errorf("systemMessage should tell the user and name the folder:\n%s", show)
 	}
 }
 

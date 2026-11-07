@@ -4,7 +4,7 @@ When the user asks for several steps, build a sequence: `ensign sequence run sup
 
 A retry's work item is the task's current Goal and Scope, and its subtask's, read from the bridge's working tree when `retry` is called (no commit needed); then the first run's project rules; then `--diagnosis` and `--state` as `## Current state`. To carry a changed brief to a retry, edit the task file before running `retry`. A task file left with neither Goal nor Scope refuses the retry. Steps that haven't started keep the work item from when they were added.
 
-A session start that names a left-behind sequence holding a code folder means that session moved to a new id and its sequence stays where it is: it holds the folder through a live run, nothing expires it, and runs of other sessions in that folder are refused until it ends. Tell the user which session and folder, and that resuming that session lets them drive or halt the sequence; never try to free the folder from this session.
+A session start that names a left-behind sequence holding a code folder means that session moved to a new id and its sequence stays on the earlier session. A live run holds the folder, nothing expires it, and other sessions' runs in that folder are refused until it ends. Tell the user which session and folder, and that resuming that session lets them drive or halt the sequence; never try to free the folder from this session.
 
 When a session has moved, `ensign sequence run|publish|do|release`, a plain `ensign run` and `ensign writes add` are refused and name the new session; do the work from that session. A sequence left behind on an earlier session is not carried over: tell the user to resume that session, which drives it or lets it be halted.
 

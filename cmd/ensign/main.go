@@ -446,6 +446,15 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	holds, unchecked := leftBehindHolds(bridge, in.SessionID)
 	holdLines := leftBehindHoldLines(holds, unchecked)
 	holdShow := leftBehindHoldShow(holds, unchecked)
+	// The reply is JSON: what Claude reads goes in additionalContext, and one line for
+	// the user goes in systemMessage, shown at startup without calling the model.
+	reply := func(show, context string) int {
+		json.NewEncoder(stdout).Encode(map[string]any{
+			"systemMessage":      show,
+			"hookSpecificOutput": map[string]any{"hookEventName": "SessionStart", "additionalContext": context},
+		})
+		return 0
+	}
 	var envNote string
 	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
 		env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -463,25 +472,16 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			env.Close()
 		}
 		if err != nil {
-			// Claude Code shows this stderr to the user as a hook error; the model never gets it.
-			fmt.Fprintln(stderr, "starship: could not record the session id:", err)
+			// On SessionStart exit 2 blocks nothing, and JSON at exit 0 is the documented way to reach both the model and the user.
+			context := fmt.Sprintf("starship: could not record the session id: %v", err)
 			if carryErr != nil {
-				fmt.Fprintf(stderr, "starship: could not carry the earlier session's runs over: %v\n", carryErr)
+				context += fmt.Sprintf("\nstarship: could not carry the earlier session's runs over: %v", carryErr)
 			}
 			for _, l := range holdLines {
-				fmt.Fprintln(stderr, l)
+				context += "\n" + l
 			}
-			return 2
+			return reply(fmt.Sprintf("Starship could not record this session's id, so it isn't working in this session: %v.", err)+leftBehindShow(carryErr)+holdShow, context)
 		}
-	}
-	// The reply is JSON: what Claude reads goes in additionalContext, and one line for
-	// the user goes in systemMessage, shown at startup without calling the model.
-	reply := func(show, context string) int {
-		json.NewEncoder(stdout).Encode(map[string]any{
-			"systemMessage":      show,
-			"hookSpecificOutput": map[string]any{"hookEventName": "SessionStart", "additionalContext": context},
-		})
-		return 0
 	}
 	notReady := func(err error) int {
 		context := fmt.Sprintf("starship: this bridge is not ready: %v", err)

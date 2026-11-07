@@ -1749,15 +1749,27 @@ func TestSessionStartEnvFileFailureStillShowsACarryFailure(t *testing.T) {
 	carryBind = func(string, string, string) error { return errors.New("session file busy") }
 	t.Setenv("CLAUDE_ENV_FILE", t.TempDir())
 	w.sid = "s2"
-	stdout, stderr, code := w.clearRaw("s1")
-	if code != 2 {
-		t.Fatalf("SessionStart exited %d, want 2", code)
+	show, ctx := envFileFailureReply(t, w)
+	for _, text := range []string{"could not record the session id", "could not carry the earlier session's runs over", run} {
+		if !strings.Contains(ctx, text) {
+			t.Errorf("additionalContext should carry %q:\n%s", text, ctx)
+		}
 	}
-	if stdout != "" {
-		t.Errorf("the failure writes nothing to stdout: %q", stdout)
+	if !strings.Contains(show, "could not record this session's id") || !strings.Contains(show, "is a directory") {
+		t.Errorf("systemMessage should tell the user:\n%s", show)
 	}
-	if !strings.Contains(stderr, "could not record the session id") || !strings.Contains(stderr, "could not carry the earlier session's runs over") || !strings.Contains(stderr, run) {
-		t.Errorf("stderr should carry the failure:\n%s", stderr)
+}
+
+func TestSessionStartEnvFileFailureTellsTheModelTheSessionIdWasNotRecorded(t *testing.T) {
+	w := newWorld(t)
+	t.Setenv("CLAUDE_ENV_FILE", t.TempDir())
+	w.sid = "s2"
+	show, ctx := envFileFailureReply(t, w)
+	if !strings.HasPrefix(ctx, "starship: could not record the session id: ") || strings.Contains(ctx, "could not carry") {
+		t.Errorf("additionalContext should only say the id was not recorded:\n%s", ctx)
+	}
+	if !strings.Contains(show, "could not record this session's id") {
+		t.Errorf("systemMessage should tell the user:\n%s", show)
 	}
 }
 
