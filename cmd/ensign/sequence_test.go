@@ -4368,6 +4368,38 @@ func TestFinishIfTerminalWarnsWhenTheAdvanceFailureCannotBeQueued(t *testing.T) 
 	}
 }
 
+func TestFinishIfTerminalDoesNotAdvanceAFinishedRunAgain(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.approve()
+	r, err := openRun(w.bridge, w.step(1).Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.close()
+	(&machine{snap: r.Snap, st: r.State}).fail("handler", "boom")
+	if err := os.Mkdir(seqPath(w.bridge, w.sid)+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if err := finishIfTerminal(r, false, &stderr); err != nil || !strings.Contains(stderr.String(), "could not advance the sequence") {
+		t.Fatalf("the first call should advance: %q %v", stderr.String(), err)
+	}
+	stderr.Reset()
+	r.warn = nil
+	if err := finishIfTerminal(r, false, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() > 0 || r.warn != nil {
+		t.Errorf("the second call should not advance: %q %v", stderr.String(), r.warn)
+	}
+	// Resume clears Finished, so a resumed run that finishes again advances.
+	r.State.Finished = false
+	if err := finishIfTerminal(r, false, &stderr); err != nil || !strings.Contains(stderr.String(), "could not advance the sequence") {
+		t.Errorf("a run finishing again after a resume should advance: %q %v", stderr.String(), err)
+	}
+}
+
 // carryWorld has three queued runs; the second and third are not in the old session's list, as when an earlier carry left them to carrySequence. It returns their ids.
 func carryWorld(t *testing.T) (*world, []string) {
 	t.Helper()

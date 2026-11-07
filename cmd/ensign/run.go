@@ -1293,7 +1293,7 @@ func cmdRunStop(args []string, out, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "ensign: could not unbind the session from the stopped run:", err)
 	}
 	// Before the dispatches are marked done: only a running dispatch has an owner to check.
-	stopOrphanedServices(r, m, time.Now().Add(recoveryDownLimit))
+	notices := stopOrphanedServices(r, m, time.Now().Add(recoveryDownLimit))
 	for _, d := range r.State.Dispatches {
 		d.Done = true
 	}
@@ -1308,6 +1308,7 @@ func cmdRunStop(args []string, out, stderr io.Writer) error {
 	} else {
 		fmt.Fprintf(out, "Stopped run %s. Its work in the code folders was left as it is.\n", id)
 	}
+	fmt.Fprint(out, notices)
 	for _, f := range works {
 		fmt.Fprintf(out, "Free now: %s\n", f)
 	}

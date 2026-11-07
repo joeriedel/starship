@@ -1067,6 +1067,16 @@ func TestNoticesDoNotChangeAFailure(t *testing.T) {
 	}
 }
 
+func TestNextMentionsNoticesOfAPassingStage(t *testing.T) {
+	w := plainWorld(t, "echo ok; echo n-pass >> $STARSHIP_NOTICES")
+	if out, _ := noticeStage(t, w); !strings.Contains(out, "Outcome: pass") {
+		t.Fatalf("outcome %q", out)
+	}
+	if got := w.next(); !strings.Contains(got, "finished: pass") || !strings.Contains(got, "it has notices") {
+		t.Fatalf("next should mention the notices: %s", got)
+	}
+}
+
 func TestNoticesDoNotChangeAnError(t *testing.T) {
 	for _, cmd := range []string{"echo n-err >> $STARSHIP_NOTICES; exit 127", "echo n-err >> $STARSHIP_NOTICES; sleep 5"} {
 		w := plainWorld(t, cmd)
@@ -1182,4 +1192,61 @@ func TestLeadStopKeepsNoticesOfADeadStageWhenTheRunGoesOn(t *testing.T) {
 			t.Fatalf("the block should not spend a stop: %+v", d)
 		}
 	}
+}
+
+func TestRunStopPrintsNoticesOfADeadStage(t *testing.T) {
+	w, _ := diedRunIn(t, servicesWorld(t, "echo n-before >> $STARSHIP_NOTICES; kill -9 $PPID", "true", "echo n-down >> $STARSHIP_NOTICES"))
+	out, err := w.stopRun(w.state().Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i, j, k := strings.Index(out, "Stopped run"), strings.Index(out, noticesHeading), strings.Index(out, "- n-before\n- n-down\n")
+	if i < 0 || j < i || k < j {
+		t.Fatalf("the notices, with the down's line, should follow the stopped line: %q", out)
+	}
+}
+
+func TestRunStopPrintsNoNoticesSectionWithoutNotices(t *testing.T) {
+	w, _ := diedRun(t)
+	out, err := w.stopRun(w.state().Run)
+	if err != nil || !strings.Contains(out, "Stopped run") || strings.Contains(out, noticesHeading) {
+		t.Fatalf("%q %v", out, err)
+	}
+}
+
+func TestLastLeadHandbackIsDeniedWithNoticesOfADeadStage(t *testing.T) {
+	w, lead := diedRunIn(t, plainWorld(t, "echo n-before >> $STARSHIP_NOTICES; kill -9 $PPID"))
+	for i := 0; i < 2; i++ {
+		if r := w.handback(lead, "orchestrator", "All done."); !strings.Contains(r, "not finished") || strings.Contains(r, noticesHeading) {
+			t.Fatalf("an early handback is refused without notices: %q", r)
+		}
+	}
+	r := w.handback(lead, "orchestrator", "All done.")
+	if !strings.Contains(r, "The run is finished: error") || !strings.Contains(r, "- n-before\n") {
+		t.Fatalf("the last handback should be denied with the notices: %q", r)
+	}
+	w.wantFailed("lead-stopped")
+	if r := w.handback(lead, "orchestrator", "All done."); r != "" {
+		t.Fatalf("the next handback should be let through: %s", r)
+	}
+	if d := w.state().byAgent(lead); d.Handback != "All done." {
+		t.Fatalf("the handback should be recorded: %+v", d)
+	}
+	if r := w.stop(lead, "orchestrator", "done", false); r != "" {
+		t.Fatalf("the stop should pass: %s", r)
+	}
+	if d := w.state().byAgent(lead); !d.Done {
+		t.Fatalf("the lead should be done: %+v", d)
+	}
+}
+
+func TestLastLeadHandbackIsLetThroughWithoutNotices(t *testing.T) {
+	w, lead := diedRun(t)
+	for i := 0; i < 2; i++ {
+		w.handback(lead, "orchestrator", "All done.")
+	}
+	if r := w.handback(lead, "orchestrator", "All done."); r != "" {
+		t.Fatalf("without notices the last handback is let through: %s", r)
+	}
+	w.wantFailed("lead-stopped")
 }

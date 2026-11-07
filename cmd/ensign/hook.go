@@ -342,11 +342,16 @@ func hookHandback(in *HookInput, r *RunFiles) any {
 	// refuse counts a refused handback; the one that uses up the budget fails the run and is let through.
 	refuse := func(reason, code, why string) any {
 		if d.spendStop() {
-			d.Done = true
+			notices := ""
 			if code == "lead-stopped" {
-				stopOrphanedServices(r, m, time.Now().Add(recoveryDownLimit))
+				notices = stopOrphanedServices(r, m, time.Now().Add(recoveryDownLimit))
 			}
 			m.fail(code, why)
+			if notices != "" {
+				// A let-through handback ends the lead and nothing else would show it the notices. The run is terminal now, so the lead's next handback is let through and recorded.
+				return denial(m.expect(s.ID) + "\n" + notices)
+			}
+			d.Done = true
 			return nil
 		}
 		r.State.log("denied", s.ID, d.ID, reason)
@@ -456,9 +461,13 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 			return nil, nil // waiting on its own background task
 		}
 		if d.spendStop() {
-			d.Done = true
-			stopOrphanedServices(r, m, deadline)
+			notices := stopOrphanedServices(r, m, deadline)
 			m.fail("lead-stopped", "the lead stopped before the pipeline finished")
+			if notices != "" {
+				// The run is terminal, so the lead's next stop sets d.Done and ends.
+				return block(m.expect(s.ID) + "\n" + notices), nil
+			}
+			d.Done = true
 			return nil, nil
 		}
 		r.State.log("blocked", s.ID, d.ID, "lead tried to stop early")
@@ -1019,11 +1028,11 @@ func cmdNext(args []string, out io.Writer) error {
 			continue
 		}
 		if s := m.stage(d.Stage); s != nil && plainStage(r.Snap, s) {
-			hasNotices := ""
+			noticesNote := ""
 			if len(readNotices(r, d)) > 0 {
-				hasNotices = "; it has notices from the stage's commands, to carry into your report as written"
+				noticesNote = "; it has notices from the stage's commands, to carry into your report as written"
 			}
-			fmt.Fprintf(out, "Stage %q (run by ensign) finished: %s. Its report: %s%s\n", d.Stage, d.Outcome, filepath.Join(r.Dir, "reports", d.ID+".md"), hasNotices)
+			fmt.Fprintf(out, "Stage %q (run by ensign) finished: %s. Its report: %s%s\n", d.Stage, d.Outcome, filepath.Join(r.Dir, "reports", d.ID+".md"), noticesNote)
 		}
 		break
 	}

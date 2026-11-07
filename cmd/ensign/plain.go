@@ -111,8 +111,9 @@ func plainOwnerDead(r *RunFiles, m *machine, d *Dispatch) bool {
 	return false
 }
 
-// stopOrphanedServices runs @services-down for every running plain dispatch whose owner died, for a run about to be failed without recording them. Nothing else about those dispatches changes. It runs inside a hook, so the downs share the caller's deadline.
-func stopOrphanedServices(r *RunFiles, m *machine, deadline time.Time) {
+// stopOrphanedServices runs @services-down for every running plain dispatch whose owner died, for a run about to be failed without recording them. Nothing else about those dispatches changes: no report is written and nothing is recorded, but the notices of those dispatches are returned as a noticesSection, "" when there are none. It runs inside a hook, so the downs share the caller's deadline.
+func stopOrphanedServices(r *RunFiles, m *machine, deadline time.Time) string {
+	var notices []string
 	for _, d := range r.State.Dispatches {
 		if !plainOwnerDead(r, m, d) {
 			continue
@@ -123,7 +124,10 @@ func stopOrphanedServices(r *RunFiles, m *machine, deadline time.Time) {
 			os.WriteFile(filepath.Join(r.Dir, "reports", d.ID+".log"), []byte(strings.Join(log, "\n")), 0o644)
 			r.State.log("services", d.Stage, d.ID, "owner died: "+strings.Join(steps, "; "))
 		}
+		// After the downs: they can append to the same files.
+		notices = append(notices, readNotices(r, d)...)
 	}
+	return noticesSection(notices)
 }
 
 // stopServices runs @services-down of the given sides, last side first, each in its own workspace. It returns a step and the output per command, and whether any failed. Signals do not cancel the downs, only wait for them. A command's limit is its own timeout or the time left until deadline (when set), whichever is less; a down that cannot run in that time has failed.

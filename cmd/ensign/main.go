@@ -901,7 +901,8 @@ func dropSessionImport(bridge string) {
 
 // finishIfTerminal closes out a run that this call made terminal: it finishes the run, and for a sequence saves and advances to the next step. A failed advance is only reported.
 func finishIfTerminal(r *RunFiles, wasTerminal bool, stderr io.Writer) error {
-	if wasTerminal || !r.State.terminal() {
+	// Finished is set only by finishRun, and the advance follows it in the same call: a run already finished was advanced by whoever finished it, and a second advance would queue its failures again.
+	if wasTerminal || r.State.Finished || !r.State.terminal() {
 		return nil
 	}
 	finishRun(r)
