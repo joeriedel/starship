@@ -5136,3 +5136,207 @@ func TestSequencePublishCommandSeesWhichTaskPublishLockItHolds(t *testing.T) {
 		t.Errorf("the publish command should see the task: %s %q", st.Status, st.Reason)
 	}
 }
+
+// addReleaseProject adds a second project, nebula, with supernova's bindings and a workspace of its own.
+func (w *world) addReleaseProject() {
+	w.t.Helper()
+	data, err := os.ReadFile(filepath.Join(w.bridge, "projects/supernova/project.yaml"))
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	write(w.t, filepath.Join(w.bridge, "projects/nebula/project.yaml"), string(data))
+	ws := filepath.Join(filepath.Dir(w.bridge), "workspace-nebula")
+	os.MkdirAll(ws, 0o755)
+	if _, err := setWorkspace(w.bridge, "nebula", ws); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func TestSequenceKeepGoingFailedRunCancelsLaterRelease(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("do", "report")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("failed", "cancelled", "active", "pending")
+	if r := w.step(2).Reason; r != "step 1.1 failed" {
+		t.Errorf("the cancel should name the failed step: %q", r)
+	}
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.passRun(lead)
+	w.mustSeq("done", "4")
+	if got := w.released(); got != "" {
+		t.Errorf("nothing should have been released: %q", got)
+	}
+	reason := dig(w.stopHook(), "reason")
+	if !strings.Contains(reason, "step 1.1 (run supernova/auth-refactor) failed") || strings.Count(reason, "step 1.2 (release supernova 1.0.0) cancelled: step 1.1 failed") != 1 {
+		t.Errorf("the report should name the cancelled release once:\n%s", reason)
+	}
+	if strings.Contains(reason, "\n- step 1.2") || !strings.Contains(reason, "\n  step 1.2 (release") {
+		t.Errorf("the cancelled release belongs under the failed step:\n%s", reason)
+	}
+}
+
+func TestSequenceKeepGoingFailedPublishCancelsLaterRelease(t *testing.T) {
+	w, ws, remote, _ := githubWorld(t, "success", localTest)
+	path := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+	base, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, strings.Replace(string(base), "bindings:\n", "bindings:\n  release: { command: \"echo $VERSION >> released.txt\" }\n", 1))
+	task := "supernova/auth-refactor"
+	w.mustSeq("run", task)
+	w.mustSeq("publish", task)
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.mustSeq("mode", "keep-going")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.codeChange(lead, ws)
+	divergeRemote(t, remote)
+	w.runStage()
+	w.wantStatus("done", "failed", "cancelled")
+	if r := w.step(3).Reason; r != "step 1.2 failed" {
+		t.Errorf("the cancel should name the failed publish: %q", r)
+	}
+}
+
+func TestSequenceKeepGoingFailedDoCancelsLaterReleaseOfAnotherProject(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.addReleaseProject()
+	w.mustSeq("do", "report")
+	w.mustSeq("release", "nebula", "2.0.0")
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.mustSeq("mode", "keep-going")
+	w.goContext()
+	w.mustSeq("fail", "1", "--reason", "the report could not be written")
+	w.wantStatus("failed", "cancelled", "cancelled")
+	for n := 2; n <= 3; n++ {
+		if r := w.step(n).Reason; r != "step 1.1 failed" {
+			t.Errorf("step %d should name the failed do step: %q", n, r)
+		}
+	}
+	if got := w.released(); got != "" {
+		t.Errorf("nothing should have been released: %q", got)
+	}
+}
+
+func TestSequenceKeepGoingFailedReleaseCancelsLaterReleases(t *testing.T) {
+	w := releaseWorld(t, 1)
+	w.addReleaseProject()
+	w.addTask("other")
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.mustSeq("release", "nebula", "2.0.0")
+	w.mustSeq("release", "supernova", "1.1.0")
+	w.mustSeq("run", "supernova/other")
+	w.mustSeq("mode", "keep-going")
+	w.goContext()
+	w.mustSeq("release-run", "1")
+	w.wantStatus("failed", "cancelled", "cancelled", "skipped")
+	if r := w.step(3).Reason; r != "step 1.1 failed" {
+		t.Errorf("a later release of the same project is cancelled, not skipped: %q", r)
+	}
+}
+
+func TestSequenceKeepGoingLeavesEarlierAndLaterSequenceReleasesAlone(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.mustSeq("do", "report")
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("mode", "keep-going")
+	w.goContext()
+	w.mustSeq("done", "1")
+	w.mustSeq("release-run", "2")
+	w.mustSeq("release", "supernova", "2.0.0", "--name", "later")
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.wantStatus("done", "done", "failed", "pending")
+	if got := w.released(); got != "1.0.0" {
+		t.Errorf("the earlier release stands: %q", got)
+	}
+}
+
+func TestSequenceSkipCancelsLaterReleasesAndSaysSo(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.addTask("other")
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.mustSeq("run", "supernova/other")
+	w.approve()
+	w.mustSeq("release", "supernova", "2.0.0", "--name", "later")
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	reason := dig(w.stopHook(), "reason")
+	out := w.mustSeq("skip", "1.1")
+	for where, text := range map[string]string{"the decision text": reason, "skip's output": out} {
+		cancels, affected, _ := strings.Cut(text, "These later steps may be affected")
+		if !strings.Contains(cancels, "step 1.2, release: supernova 1.0.0") || strings.Contains(affected, "step 1.2") {
+			t.Errorf("%s should list the same-sequence release as cancelled, not as affected:\n%s", where, text)
+		}
+		if !strings.Contains(affected, "step 2.1, release: supernova 2.0.0") {
+			t.Errorf("%s should still list the later sequence's release as affected:\n%s", where, text)
+		}
+	}
+	if !strings.Contains(reason, "will cancel") || !strings.Contains(out, "cancelled these") {
+		t.Errorf("the tense should follow the choice:\n%s\n%s", reason, out)
+	}
+	w.wantStatus("failed", "cancelled", "active", "pending")
+	if r := w.step(2).Reason; r != "step 1.1 was skipped" {
+		t.Errorf("reason %q", r)
+	}
+	lead, _ = w.spawn("", "", "orchestrator")
+	w.passRun(lead)
+	if got := w.released(); got != "" {
+		t.Errorf("nothing should have been released: %q", got)
+	}
+	text := w.stopHook()
+	if got := fmt.Sprint(text); strings.Count(got, "the skip cancelled the release steps: 1.2.") != 1 {
+		t.Errorf("the closing sentence should arrive once: %v", text)
+	}
+}
+
+func TestSequenceSkipCancelledReleasesSaidOnceWhenDoStepCloses(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.mustSeq("do", "tidy the nebula")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	w.failRun(lead)
+	w.stopHook()
+	out := w.mustSeq("skip", "1.1")
+	out += w.mustSeq("done", "1.3")
+	out += fmt.Sprint(w.stopHook())
+	if n := strings.Count(out, "the skip cancelled the release steps: 1.2."); n != 1 {
+		t.Errorf("the closing sentence should arrive exactly once, got %d:\n%s", n, out)
+	}
+}
+
+func TestSequenceDroppedReleaseWithSkipLikeReasonIsNotSaidToBeSkipCancelled(t *testing.T) {
+	w := releaseWorld(t, 0)
+	w.mustSeq("run", "supernova/auth-refactor")
+	w.mustSeq("release", "supernova", "1.0.0")
+	w.mustSeq("do", "tidy the nebula")
+	w.approve()
+	lead, _ := w.spawn("", "", "orchestrator")
+	out := w.mustSeq("drop", "1.2", "--reason", "step 1.3 was skipped")
+	w.failRun(lead)
+	w.stopHook()
+	out += w.mustSeq("skip", "1.1")
+	out += w.mustSeq("done", "1.3")
+	out += fmt.Sprint(w.stopHook())
+	if strings.Contains(out, "the skip cancelled the release steps") {
+		t.Errorf("the release was dropped, not cancelled by the skip:\n%s", out)
+	}
+	if w.step(2).Status != "cancelled" {
+		t.Errorf("the dropped release should be cancelled, got %s", w.step(2).Status)
+	}
+	if got := w.released(); got != "" {
+		t.Errorf("nothing should have been released: %q", got)
+	}
+}

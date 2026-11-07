@@ -72,7 +72,7 @@ func (s *seqStep) attempt() int {
 // skipPrefix starts the reason of a step the user skipped. A run step that failed in a keep-going sequence has SkippedAt but keeps the run's reason, since the user skipped nothing.
 const skipPrefix = "skipped by the user: "
 
-// skipped reports whether a failed run step counts as skipped: the user skipped it, or its run step failed in a keep-going sequence, which cancels later publishes of its task. A step that failed in stop mode and was not skipped is not marked, even when its run was lost or failed to start.
+// skipped reports whether a failed run step counts as skipped: the user skipped it, or its run step failed in a keep-going sequence, which skips later steps of its task and cancels later releases. A step that failed in stop mode and was not skipped is not marked, even when its run was lost or failed to start.
 func (s *seqStep) skipped() bool {
 	return s.Status == "failed" && (s.SkippedAt != 0 || strings.HasPrefix(s.Reason, skipPrefix))
 }
@@ -163,7 +163,7 @@ type sequence struct {
 	// QueueStart marks a sequence approved when no earlier approved sequence was still open, so it starts a new queue for the Step X/Y count
 	QueueStart bool       `json:"queue_start,omitempty"`
 	Steps      []*seqStep `json:"steps"`
-	Report     string     `json:"report,omitempty"` // one-shot text for the session: publish outcomes as they happen and a keep-going sequence's failure report when it closes; cleared once a Stop hook or prompt has delivered it
+	Report     string     `json:"report,omitempty"` // one-shot text for the session: publish outcomes as they happen, a keep-going sequence's failure report when it closes, and a stop-mode sequence's sentence naming the release steps a skip cancelled; cleared once a Stop hook or prompt has delivered it
 }
 
 type seqFile struct {
@@ -888,7 +888,7 @@ func (sf *seqFile) endStaleDecision(bridge string, seq *sequence, st *seqStep) b
 	return true
 }
 
-// endKeepGoingFailure ends a run step that failed in a keep-going sequence at once: no decision, the task's later steps skipped. The reason stays the run's own.
+// endKeepGoingFailure ends a run step that failed in a keep-going sequence at once: no decision, the task's later steps skipped and the sequence's later release steps cancelled. The reason stays the run's own.
 func (sf *seqFile) endKeepGoingFailure(bridge string, seq *sequence, st *seqStep) {
 	st.Status = "failed"
 	sf.failed(bridge, seq, st)
@@ -1058,6 +1058,7 @@ func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
 		if failed.Kind == "run" {
 			failed.SkippedAt = time.Now().UnixNano()
 		}
+		cancelLaterReleases(bridge, seq, failed, why)
 		for _, st := range seq.Steps {
 			if st.Status == "pending" && failed.Task != "" && (st.Task == failed.Task ||
 				(failed.Kind == "release" && strings.HasPrefix(st.Task, failed.Task+"/"))) {
@@ -1079,6 +1080,24 @@ func (sf *seqFile) failed(bridge string, seq *sequence, failed *seqStep) {
 				seq.queue("ensign: " + oneLine(err))
 			}
 		}
+	}
+}
+
+// laterReleases lists the pending release steps of seq after a step that failed or was skipped. Steps run one at a time, so every earlier step is over.
+func laterReleases(seq *sequence, after *seqStep) []*seqStep {
+	var out []*seqStep
+	for _, st := range seq.Steps {
+		if st.Kind == "release" && st.Status == "pending" && st.N > after.N {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// cancelLaterReleases cancels the pending release steps of seq after a step that failed or was skipped, whatever project they name: a sequence never releases after one of its steps has failed. A release step has no runs to retire, so cancelStep cannot fail.
+func cancelLaterReleases(bridge string, seq *sequence, after *seqStep, reason string) {
+	for _, st := range laterReleases(seq, after) {
+		cancelStep(bridge, st, "cancelled", reason)
 	}
 }
 
@@ -1320,6 +1339,15 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 					}
 					if keepGoing {
 						seq.Report = joinReport(seq.Report, sf.failureReport(bridge, seq))
+					}
+					var cut []string
+					for _, s := range seq.Steps {
+						if !keepGoing && s.Kind == "release" && s.Status == "cancelled" && slices.ContainsFunc(skips, func(ref string) bool { return s.Reason == fmt.Sprintf("step %s was skipped", ref) }) {
+							cut = append(cut, s.ref())
+						}
+					}
+					if len(cut) > 0 {
+						seq.Report = joinReport(seq.Report, fmt.Sprintf("%s: the skip cancelled the release steps: %s.", seq.label(), strings.Join(cut, ", ")))
 					}
 					switch {
 					case len(skips) == 0:
@@ -1613,7 +1641,7 @@ func failedFolderLines(bridge string, st *seqStep) (lines []string, unknown bool
 	return lines, unknown
 }
 
-// failureReport is the report of a closing keep-going sequence: every failed step with why, the steps skipped or cancelled, and the state of the failed runs' folders as they are now. It is "" when nothing failed, was skipped or was cancelled. A halted sequence's report gives a publish's whole reason, since nothing else delivers it.
+// failureReport is the report of a closing keep-going sequence: every failed step with why, the steps skipped or cancelled (a failed step's own listed under it), and the state of the failed runs' folders as they are now. It is "" when nothing failed, was skipped or was cancelled. A halted sequence's report gives a publish's whole reason, since nothing else delivers it.
 func (sf *seqFile) failureReport(bridge string, seq *sequence) string {
 	var lines []string
 	listed := map[*seqStep]bool{}
@@ -1650,10 +1678,14 @@ func (sf *seqFile) failureReport(bridge string, seq *sequence) string {
 				lines = append(lines, "  "+o.outcomeLine("skipped", firstLine(o.Reason)))
 				listed[o] = true
 			}
+			if o.Status == "cancelled" && o.Kind == "release" && strings.HasPrefix(o.Reason, why) {
+				lines = append(lines, "  "+o.outcomeLine("cancelled", firstLine(o.Reason)))
+				listed[o] = true
+			}
 		}
 	}
 	for _, st := range seq.Steps {
-		if (st.Status == "skipped" && !listed[st]) || st.Status == "cancelled" {
+		if !listed[st] && (st.Status == "skipped" || st.Status == "cancelled") {
 			lines = append(lines, "- "+st.outcomeLine(st.Status, reasonOf(st)))
 		}
 	}
@@ -1672,9 +1704,12 @@ func decideText(bridge string, sf *seqFile, seq *sequence, st *seqStep) string {
 	text := fmt.Sprintf("Its run failed: %s\nTake this to the user now. Offer exactly three choices, in this order: retry, skip, halt. Do not act until the user chooses, and end your turn to wait for the answer.\n", firstLine(st.Reason))
 	text += decideBriefText
 	text += fmt.Sprintf("- retry: `ensign sequence retry %s --diagnosis \"<why it failed>\" --state \"<what is left>\"`; fill in the diagnosis and state after the user chooses retry.\n", ref)
-	text += fmt.Sprintf("- skip: `ensign sequence skip %s` ends the step as failed, cancels the task's publish step, and the rest of the sequence carries on. %s\n", ref, skipWorkspaceText(bridge, st))
+	text += fmt.Sprintf("- skip: `ensign sequence skip %s` ends the step as failed, cancels the task's publish step and the sequence's later release steps, and the rest of the sequence carries on. %s\n", ref, skipWorkspaceText(bridge, st))
 	text += fmt.Sprintf("- halt: `ensign sequence accept %s` ends the step as failed, halts the sequence and cancels every later step.\n", ref)
 	text += "Say retry, skip and halt to the user, not the command names."
+	if cancels := skipCancelsText(seq, st, "will cancel"); cancels != "" {
+		text += "\n" + cancels
+	}
 	if affected := skipAffectedText(skipAffected(sf, seq, st)); affected != "" {
 		text += "\n" + affected
 	}
@@ -1713,7 +1748,7 @@ func namesTask(text, task string) bool {
 	return false
 }
 
-// skipAffected lists the pending later steps that skipping a failed run step may leave without what they assume: release steps, do steps that name its task, and run steps of the same task, in its sequence after it and in every later open sequence (approved or not). Its own sequence's publish steps are cancelled, so they are not listed; a later sequence's are, and advance cancels each when reached unless the task ran again and passed first in that location.
+// skipAffected lists the pending later steps that skipping a failed run step may leave without what they assume: release steps of later sequences, do steps that name its task, and run steps of the same task, in its sequence after it and in every later open sequence (approved or not). Its own sequence's publish and release steps are cancelled, so they are not listed; a later sequence's are, and advance cancels each when reached unless the task ran again and passed first in that location.
 func skipAffected(sf *seqFile, seq *sequence, failed *seqStep) []*seqStep {
 	var out []*seqStep
 	later := false
@@ -1727,12 +1762,25 @@ func skipAffected(sf *seqFile, seq *sequence, failed *seqStep) []*seqStep {
 			if st.Status != "pending" || (s == seq && st.N <= failed.N) {
 				continue
 			}
-			if st.Kind == "release" || (st.Kind == "do" && namesTask(st.Instruction, failed.Task)) || (st.Kind == "run" && st.Task == failed.Task) || (st.Kind == "publish" && s != seq && st.Task == failed.Task) {
+			if (st.Kind == "release" && s != seq) || (st.Kind == "do" && namesTask(st.Instruction, failed.Task)) || (st.Kind == "run" && st.Task == failed.Task) || (st.Kind == "publish" && s != seq && st.Task == failed.Task) {
 				out = append(out, st)
 			}
 		}
 	}
 	return out
+}
+
+// skipCancelsText names the later release steps of the sequence that skipping a step cancels, one per line, after verb ("will cancel" before the choice, "cancelled" after it). It is empty when there are none.
+func skipCancelsText(seq *sequence, skipped *seqStep, verb string) string {
+	list := laterReleases(seq, skipped)
+	if len(list) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(list))
+	for _, st := range list {
+		lines = append(lines, fmt.Sprintf("  step %s, release: %s %s", st.ref(), st.Task, st.Version))
+	}
+	return fmt.Sprintf("Skipping %s these later release steps of this sequence, which never releases after a skipped step; the rest of the sequence still runs:\n%s", verb, strings.Join(lines, "\n"))
 }
 
 // skipAffectedText names the steps skipAffected found, one per line. It is empty when there are none.
@@ -2812,6 +2860,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				return fmt.Errorf("step %s is not waiting for a decision (it is %s)", st.ref(), st.Status)
 			}
 			affected := skipAffectedText(skipAffected(sf, seq, st))
+			cancels := skipCancelsText(seq, st, "cancelled")
 			workspace := skipWorkspaceText(bridge, st)
 			st.Status, st.Reason, st.SkippedAt = "failed", skipPrefix+st.Reason, time.Now().UnixNano()
 			for _, other := range seq.Steps {
@@ -2819,12 +2868,16 @@ func cmdSequence(args []string, out io.Writer) error {
 					cancelStep(bridge, other, "cancelled", fmt.Sprintf("step %s was skipped", st.ref()))
 				}
 			}
+			cancelLaterReleases(bridge, seq, st, fmt.Sprintf("step %s was skipped", st.ref()))
 			text, err := sf.advance(bridge, session)
 			if text == "" {
 				text = sf.listing(bridge)
 			}
 			if affected != "" {
 				text = affected + "\n" + text
+			}
+			if cancels != "" {
+				text = cancels + "\n" + text
 			}
 			text = workspace + "\n" + text
 			fmt.Fprint(out, text)
