@@ -853,6 +853,9 @@ func TestRunRetireAndStopOfAReadableAskUserRun(t *testing.T) {
 func TestResumeOfADamagedAskUserRunPointsAtClear(t *testing.T) {
 	w := newWorld(t)
 	w.plantUnreadablePipelineRun(clearID, "ask-user", true, 1, true)
+	if err := os.MkdirAll(filepath.Join(w.bridge, ".starship", "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeSessionRuns(w.bridge, "s1", []string{clearID}); err != nil {
 		t.Fatal(err)
 	}
