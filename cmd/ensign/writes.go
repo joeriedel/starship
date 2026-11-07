@@ -357,7 +357,7 @@ func promptReply(voided, text string) any {
 	return out
 }
 
-// promptWrites runs first at every UserPromptSubmit while connector writes are on. Approvals never outlive the turn they were given for, so any unused one is voided and reported in voided. On go with writes pending it approves them all, if the user was shown exactly the pending listing and no run or sequence also waits for go; handled is then true and text says what happened, and the run and sequence paths must not see this go.
+// promptWrites runs first at every UserPromptSubmit while connector writes are on, before promptDirect, so a go that opens a direct edit still voids them. Approvals never outlive the turn they were given for, so any unused one is voided and reported in voided. On go with writes pending it approves them all, if the user was shown exactly the pending listing and no run or sequence also waits for go; handled is then true and text says what happened, and the run and sequence paths must not see this go.
 func promptWrites(bridge string, in *HookInput) (voided, text string, handled bool, err error) {
 	if in.SessionID == "" {
 		return
@@ -503,6 +503,9 @@ func writesAdd(bridge, session, tool string, stdin io.Reader, show func(*writesF
 	}
 	if waiting {
 		return errors.New("a run or sequence is waiting for go, and connector writes can't wait with it; have the user approve or discard it first")
+	}
+	if df, err := readDirect(bridge, session); err != nil || (df != nil && df.Phase != directOpen) {
+		return errors.New("a direct edit request is waiting for go, and connector writes can't wait with it; have the user answer it, or run `ensign direct close`, first")
 	}
 	return withWrites(bridge, session, func(wf *writesFile) (bool, error) {
 		wf.Entries = append(wf.Entries, &writeEntry{Tool: tool, Input: compact.Bytes()})

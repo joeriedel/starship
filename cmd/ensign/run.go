@@ -1115,7 +1115,10 @@ func cmdRun(args []string, out io.Writer) error {
 			return err
 		}
 	}
-	_, err = createRun(bridge, o, false, out)
+	snap, err := createRun(bridge, o, false, out)
+	if err == nil && snap != nil {
+		fmt.Fprint(out, dirtyNotice(snap))
+	}
 	return err
 }
 

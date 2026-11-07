@@ -45,6 +45,8 @@ func main() {
 		err = cmdSequence(os.Args[2:], os.Stdout)
 	case "writes":
 		err = cmdWrites(os.Args[2:], os.Stdin, os.Stdout)
+	case "direct":
+		err = cmdDirect(os.Args[2:], os.Stdout)
 	case "next":
 		err = cmdNext(os.Args[2:], os.Stdout)
 	case "dependency":
@@ -176,6 +178,7 @@ func usage() {
   ensign run clear <run>
   ensign sequence [run <project>/<task> [run flags, e.g. --location <name> --sides <a,b>] | publish <project>/<task> | release <project> <version> [--location <name>] | do <instruction> | mode stop|keep-going | halt [--reason <text>] | clear [<session>] | discard [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | skip <n> | done <n> [--note <text>] | fail <n> --reason <text>]
   ensign writes [add --tool <name> (tool input as one JSON object on stdin) | drop <n>... | drop --all]
+  ensign direct ask <folder> "<what the user asked for>" | ensign direct close
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] [--location <name>]
   ensign style report <project>
   ensign skill new <name> --description <text> | ensign skill discard <name>
@@ -238,10 +241,27 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return failHook(&in, nil, err, stderr)
 		}
 		if handled {
+			directNote, derr := closeOpenDirect(bridge, in.SessionID)
+			if derr != nil {
+				return failHook(&in, nil, derr, stderr)
+			}
+			voided = strings.TrimSpace(directNote + "\n\n" + voided)
 			if reports := takeSequenceReports(bridge, in.SessionID); reports != "" {
 				writesText += "\n\n" + reports
 			}
 			json.NewEncoder(stdout).Encode(promptReply(voided, writesText))
+			return 0
+		}
+		directNote, directText, directHandled, derr := promptDirect(bridge, &in)
+		if derr != nil {
+			return failHook(&in, nil, derr, stderr)
+		}
+		voided = strings.TrimSpace(directNote + "\n\n" + voided)
+		if directHandled {
+			if reports := takeSequenceReports(bridge, in.SessionID); reports != "" {
+				directText += "\n\n" + reports
+			}
+			json.NewEncoder(stdout).Encode(promptReply(voided, directText))
 			return 0
 		}
 		if strings.TrimSpace(in.Prompt) == "go" {

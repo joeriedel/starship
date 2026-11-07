@@ -2,6 +2,10 @@
 
 `bridge.yaml` `keep-runs` (default 500) is how many finished runs the bridge keeps in all. SessionStart deletes older finished runs beyond it, 50 delete attempts at most per start, shared with folders that have `pipeline.json` and no `state.json`, which are deleted first once 5 minutes old and don't count toward `keep-runs`; `ensign gc [<keep>]` does it now. Finished runs lose their `scratch/` contents. Finished runs with a bad pipeline.json are deleted the same way beyond `keep-runs`, and a run ended by `ensign run clear` is held while a `.tested` marker needs it. Pending, running and ask-user runs are never deleted.
 
+## Uncommitted edits before a run
+
+`ensign run` (and a sequence step added with `ensign sequence run`) prints a notice when the workspace has uncommitted changes; a direct edit leaves such changes. Tell the user and ask how to proceed before you ask for `go`. A run does not set them aside: with github-pr on the task branch the run's commit sweeps them in with the coder's work, on another branch the run is refused at its first dispatch, and git-catalog refuses to record a dirty tree. Commit them first (with the user's approval) or put them away, as the user decides.
+
 ## Folders held by another session's run
 
 - A run that works in a code folder (its workspace and every side's) holds it until it finishes.

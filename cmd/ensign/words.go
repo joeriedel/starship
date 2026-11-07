@@ -109,6 +109,12 @@ var fixedHelp = []struct {
 	}},
 }
 
+// isSessionWord reports whether sessionWord answers the prompt; keep it in step with sessionWord.
+func isSessionWord(prompt string) bool {
+	p := strings.TrimSpace(prompt)
+	return p == "help" || strings.HasPrefix(p, "help ") || p == "status"
+}
+
 // sessionWord answers help and status without the model. It returns "" for anything else.
 func sessionWord(bridge, session, prompt string) string {
 	p := strings.TrimSpace(prompt)
@@ -568,6 +574,11 @@ func writesStateEdit(bridge string, in *HookInput, goos string) string {
 	for _, suffix := range []string{".writes", ".writes.lock", ".writes.tmp"} {
 		if strings.HasSuffix(name, suffix) {
 			return "this is the session's connector writes state, which is changed only through `ensign writes` and the user's go."
+		}
+	}
+	for _, suffix := range []string{".direct", ".direct.lock", ".direct.tmp"} {
+		if strings.HasSuffix(name, suffix) {
+			return "this is the session's direct edit state, which is changed only through `ensign direct` and the user's go."
 		}
 	}
 	return ""

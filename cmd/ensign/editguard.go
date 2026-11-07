@@ -100,8 +100,22 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 			return "", warning, nil
 		}
 	}
+	var pointer string
+	if in.AgentID == "" {
+		allowed, held, err := directEdit(bridge, in.SessionID, resolved, goos)
+		if err != nil {
+			return "", warning, err
+		}
+		if allowed {
+			return "", warning, nil
+		}
+		if held != "" {
+			return "this edit was refused because a direct edit is refused in a folder a live run holds: " + held + ". Working around the guard is a failure, not a fix.", warning, nil
+		}
+		pointer = " A code folder needs the user's choice between a task and a direct edit: `ensign help direct`."
+	}
 	return "this edit was refused because " + target + " is outside the folders " + who + " may edit: " + strings.Join(folders, ", ") +
-		". The same limit applies to shell commands (redirection, sed -i, cp, git apply, scripts) that write files. Working around the guard is a failure, not a fix.", warning, nil
+		". The same limit applies to shell commands (redirection, sed -i, cp, git apply, scripts) that write files. Working around the guard is a failure, not a fix." + pointer, warning, nil
 }
 
 // docsFolders are the run's @docs paths, joined to its workspace.

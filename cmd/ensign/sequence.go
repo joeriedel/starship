@@ -2595,12 +2595,14 @@ func cmdSequence(args []string, out io.Writer) error {
 			if err != nil || snap == nil {
 				return err
 			}
+			fmt.Fprint(out, dirtyNotice(snap))
 			return seqAdd(bridge, session, out, name, newRunStep(snap.Task, 0, []*Snapshot{snap}))
 		}
 		snaps, err := createGroupRuns(bridge, o.task, group, nil, o.staleOK, &o, out)
 		if err != nil {
 			return err
 		}
+		fmt.Fprint(out, dirtyNotice(snaps...))
 		return seqAdd(bridge, session, out, name, newRunStep(o.task, 1, snaps))
 	case "publish":
 		if len(rest) != 1 {

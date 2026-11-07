@@ -27,7 +27,7 @@ An approval lasts only for the turn it was given in; the next prompt voids what 
 
 ## Runs and sequences
 
-Writes and a run or sequence step waiting for go never wait together. While writes are pending, `ensign run` and `ensign sequence` steps are refused: approve or drop the writes first. A `go` with both present approves neither. Approved writes, and an approved run in progress, don't block.
+Writes, a direct edit request and a run or sequence step waiting for go never wait together. While writes are pending, `ensign run`, `ensign sequence` steps and `ensign direct ask` are refused: approve or drop the writes first. While a direct request waits, `ensign writes add` is refused. A `go` with both present approves neither. Approved writes, and an approved run in progress, don't block.
 
 ## After a denial
 
