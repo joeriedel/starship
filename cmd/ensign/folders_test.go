@@ -739,3 +739,29 @@ func TestAPublishThatFailsForAnotherReasonStillFails(t *testing.T) {
 		t.Fatalf("a failing command fails the step: %s %q", st.Status, st.Reason)
 	}
 }
+
+func TestARefusalNamesAFolderInTheRunsOwnSpelling(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "supernova")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("no symlinks here:", err)
+	}
+	if err := os.MkdirAll(filepath.Join(real, "api", "v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(p string) string { return resolveEditFolder(p, runtime.GOOS) }
+	f := filepath.Join(link, "api")
+	for _, c := range []struct{ around, want string }{
+		{resolve(f), f},
+		{resolve(filepath.Join(f, "v1")), filepath.Join(f, "v1")},
+		{resolve(link), link},
+	} {
+		if got := inRunsSpelling(f, c.around); got != c.want {
+			t.Errorf("inRunsSpelling(%s, %s) = %s, want %s", f, c.around, got, c.want)
+		}
+	}
+	elsewhere := resolve(t.TempDir())
+	if got := inRunsSpelling(f, elsewhere); got != elsewhere {
+		t.Errorf("an unrelated folder should keep its own name, got %s", got)
+	}
+}

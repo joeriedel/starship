@@ -173,6 +173,7 @@ func TestPIDRecordsSweptByAge(t *testing.T) {
 func movedWorld(t *testing.T) *world {
 	t.Helper()
 	w := newWorld(t)
+	w.setUp()
 	t.Setenv("CLAUDE_PID", "4242")
 	w.hook("SessionStart", map[string]any{"source": "startup"})
 	w.mustSeq("run", "supernova/auth-refactor")
@@ -673,6 +674,7 @@ func TestStartNamesALeftBehindDependencyReadHold(t *testing.T) {
 
 func TestStartSaysWhenALeftBehindSequenceCouldNotBeChecked(t *testing.T) {
 	w := newWorld(t)
+	w.setUp()
 	write(t, seqPath(w.bridge, "pa"), "{not json")
 	if err := markMoved(w.bridge, "pa", "s9"); err != nil {
 		t.Fatal(err)

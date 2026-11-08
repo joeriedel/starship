@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -48,6 +49,15 @@ func newWorld(t *testing.T) *world {
 	t.Setenv("STARSHIP_SESSION", "s1")
 	t.Setenv("CLAUDE_PID", "")
 	return &world{t: t, bridge: bridge, session: filepath.Join(tmp, "session.jsonl"), sid: "s1"}
+}
+
+// setUp makes the bridge one that has been set up, as it is when a session starts: the settings init writes, and the roles linked, so that a session start changes neither.
+func (w *world) setUp() {
+	w.t.Helper()
+	write(w.t, filepath.Join(w.bridge, ".claude", "settings.json"), hookSettings())
+	if err := link(w.bridge, true, io.Discard); err != nil {
+		w.t.Fatal(err)
+	}
 }
 
 func copyDir(t *testing.T, from, to string) {

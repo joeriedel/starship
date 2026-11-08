@@ -842,6 +842,27 @@ func lockHeld(lock, what, folder string) (bool, error) {
 	return !ok, nil
 }
 
+// inRunsSpelling names the resolved folder around, which is f, inside f or around f, the way the run spelled f: f joined with the tail, or f trimmed by the components around lacks. It returns around when that spelling is not the same folder.
+func inRunsSpelling(f, around string) string {
+	resolved := resolveEditFolder(f, runtime.GOOS)
+	if around == resolved {
+		return f
+	}
+	candidate := around
+	if rel, err := filepath.Rel(resolved, around); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		candidate = filepath.Join(f, rel)
+	} else if rel, err := filepath.Rel(around, resolved); err == nil {
+		candidate = filepath.Clean(f)
+		for range strings.Split(rel, string(filepath.Separator)) {
+			candidate = filepath.Dir(candidate)
+		}
+	}
+	if sameFolder(candidate, around, runtime.GOOS) {
+		return candidate
+	}
+	return around
+}
+
 // sameFolder reports whether two code folders are one, as the edit guard compares paths.
 func sameFolder(a, b, goos string) bool {
 	return foldPath(resolveEditFolder(a, goos), goos) == foldPath(resolveEditFolder(b, goos), goos)
@@ -919,9 +940,7 @@ func folderHolder(bridge string, snap *Snapshot, session string, skip ...string)
 			}
 		}
 		if around != "" {
-			if around == resolveEditFolder(f, runtime.GOOS) {
-				around = f
-			}
+			around = inRunsSpelling(f, around)
 			return &folderBusyError{folder: around, landing: what == "a landing", update: what == "an update"}
 		}
 	}
