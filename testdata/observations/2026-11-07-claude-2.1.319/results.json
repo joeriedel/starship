@@ -1,0 +1,206 @@
+{
+  "claude_version": "2.1.319 (Claude Code)",
+  "date": "2026-11-07",
+  "routes": {
+    "p-auto": {
+      "continue": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-0-source-startup-session-94e7f453-769c-423b-9633-8f85347256dc\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": false,
+        "firings": [
+          {
+            "env_file_matches_session_id": false,
+            "env_file_set": true,
+            "log_line": "2",
+            "session_id": "94e7f453-769c-423b-9633-8f85347256dc",
+            "source": "resume"
+          }
+        ]
+      },
+      "resume": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-4-source-resume-session-94e7f453-769c-423b-9633-8f85347256dc\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": true,
+        "firings": [
+          {
+            "env_file_matches_session_id": true,
+            "env_file_set": true,
+            "log_line": "4",
+            "session_id": "94e7f453-769c-423b-9633-8f85347256dc",
+            "source": "resume"
+          }
+        ]
+      },
+      "startup": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-0-source-startup-session-94e7f453-769c-423b-9633-8f85347256dc\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": true,
+        "firings": [
+          {
+            "env_file_matches_session_id": true,
+            "env_file_set": true,
+            "log_line": "0",
+            "session_id": "94e7f453-769c-423b-9633-8f85347256dc",
+            "source": "startup"
+          }
+        ]
+      }
+    },
+    "p-plain": {
+      "continue": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-0-source-startup-session-162e4c24-254e-4681-b3fe-5c7ceffb42da\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": false,
+        "firings": [
+          {
+            "env_file_matches_session_id": false,
+            "env_file_set": true,
+            "log_line": "2",
+            "session_id": "162e4c24-254e-4681-b3fe-5c7ceffb42da",
+            "source": "resume"
+          }
+        ]
+      },
+      "resume": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-4-source-resume-session-162e4c24-254e-4681-b3fe-5c7ceffb42da\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": true,
+        "firings": [
+          {
+            "env_file_matches_session_id": true,
+            "env_file_set": true,
+            "log_line": "4",
+            "session_id": "162e4c24-254e-4681-b3fe-5c7ceffb42da",
+            "source": "resume"
+          }
+        ]
+      },
+      "startup": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-0-source-startup-session-162e4c24-254e-4681-b3fe-5c7ceffb42da\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": true,
+        "firings": [
+          {
+            "env_file_matches_session_id": true,
+            "env_file_set": true,
+            "log_line": "0",
+            "session_id": "162e4c24-254e-4681-b3fe-5c7ceffb42da",
+            "source": "startup"
+          }
+        ]
+      }
+    },
+    "tui-auto": {
+      "continue": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-2-source-resume-session-966a1968-7992-49d1-b5f2-327e2c267c9e\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": true,
+        "firings": [
+          {
+            "env_file_matches_session_id": true,
+            "env_file_set": true,
+            "log_line": "2",
+            "session_id": "966a1968-7992-49d1-b5f2-327e2c267c9e",
+            "source": "resume"
+          }
+        ]
+      },
+      "resume": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-4-source-resume-session-966a1968-7992-49d1-b5f2-327e2c267c9e\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": true,
+        "firings": [
+          {
+            "env_file_matches_session_id": true,
+            "env_file_set": true,
+            "log_line": "4",
+            "session_id": "966a1968-7992-49d1-b5f2-327e2c267c9e",
+            "source": "resume"
+          }
+        ]
+      },
+      "startup": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-0-source-startup-session-966a1968-7992-49d1-b5f2-327e2c267c9e\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": true,
+        "firings": [
+          {
+            "env_file_matches_session_id": true,
+            "env_file_set": true,
+            "log_line": "0",
+            "session_id": "966a1968-7992-49d1-b5f2-327e2c267c9e",
+            "source": "startup"
+          }
+        ]
+      }
+    },
+    "tui-plain": {
+      "continue": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-2-source-resume-session-a21f2a52-1c04-4656-b7fc-15244f545606\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": true,
+        "firings": [
+          {
+            "env_file_matches_session_id": true,
+            "env_file_set": true,
+            "log_line": "2",
+            "session_id": "a21f2a52-1c04-4656-b7fc-15244f545606",
+            "source": "resume"
+          }
+        ]
+      },
+      "resume": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-4-source-resume-session-a21f2a52-1c04-4656-b7fc-15244f545606\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": true,
+        "firings": [
+          {
+            "env_file_matches_session_id": true,
+            "env_file_set": true,
+            "log_line": "4",
+            "session_id": "a21f2a52-1c04-4656-b7fc-15244f545606",
+            "source": "resume"
+          }
+        ]
+      },
+      "startup": {
+        "bash_output": "{\"stdout\": \"supernova-env=firing-0-source-startup-session-a21f2a52-1c04-4656-b7fc-15244f545606\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "bash_runs": 1,
+        "delivered": true,
+        "delivered_line_stamped_with_own_session_id": true,
+        "delivered_line_written_by_this_step_firing": true,
+        "firings": [
+          {
+            "env_file_matches_session_id": true,
+            "env_file_set": true,
+            "log_line": "0",
+            "session_id": "a21f2a52-1c04-4656-b7fc-15244f545606",
+            "source": "startup"
+          }
+        ]
+      }
+    }
+  }
+}

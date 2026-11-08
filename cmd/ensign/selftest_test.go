@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -427,7 +428,7 @@ func TestParseProbeSession(t *testing.T) {
 
 func TestNewProbeDirQuotesTheHookCommands(t *testing.T) {
 	self := `/opt/super nova/ensign`
-	dir, err := newProbeDir(self, "tok", nil)
+	dir, err := (&probeHost{root: t.TempDir()}).newProbeDir(self, "tok", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +510,7 @@ func TestRunProbeSessionTimeoutKillsChildren(t *testing.T) {
 	probeTimeout = time.Second
 	defer func() { probeTimeout = old }()
 	start := time.Now()
-	_, _, _, err := runProbeSession(t.TempDir(), "supernova")
+	_, _, _, err := runProbeSession(nil, t.TempDir(), "supernova")
 	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "started") {
 		t.Fatalf("err = %v, want timed out with the output", err)
 	}
@@ -536,7 +537,7 @@ func TestRunProbeSessionLeftoverPipeHolderIsSuccess(t *testing.T) {
 			}
 		}
 	})
-	_, result, sessionID, err := runProbeSession(t.TempDir(), "supernova")
+	_, result, sessionID, err := runProbeSession(nil, t.TempDir(), "supernova")
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -682,7 +683,7 @@ func TestReportLines(t *testing.T) {
 func TestRestartAgentVerdicts(t *testing.T) {
 	first := []map[string]any{stopEv("probe-restart", "a1", map[string]any{"agent_transcript_path": "/t/a1"})}
 	bashOther := bashEv("a2")
-	noAgent, notRun := "never started", "did not get the agent to run"
+	noAgent, notRun := "never started", "did not reach the resumed session"
 	tests := []struct {
 		name    string
 		first   []map[string]any
@@ -691,8 +692,8 @@ func TestRestartAgentVerdicts(t *testing.T) {
 		id, p   verdict
 		why     string
 	}{
-		{"no events", first, nil, resumeCompleted, verdictInconclusive, verdictInconclusive, notRun},
-		{"only a session bash", first, []map[string]any{bashEv("")}, resumeCompleted, verdictInconclusive, verdictInconclusive, notRun},
+		{"no events", first, nil, resumeCompleted, verdictFail, verdictFail, notRun},
+		{"only a session bash", first, []map[string]any{bashEv("")}, resumeCompleted, verdictFail, verdictFail, notRun},
 		{"first agent id empty", []map[string]any{stopEv("probe-restart", "", nil)}, []map[string]any{bashEv("a1")}, resumeNotStarted, verdictInconclusive, verdictInconclusive, noAgent},
 		{"no first stop", nil, []map[string]any{bashEv("a1")}, resumeNotStarted, verdictInconclusive, verdictInconclusive, noAgent},
 		{"other id by bash", first, []map[string]any{bashOther}, resumeCompleted, verdictFail, verdictFail, ""},
@@ -717,8 +718,8 @@ func TestRestartAgentVerdicts(t *testing.T) {
 		want  verdict
 	}{
 		{"sent, never ran", resumeCompleted, "true", verdictFail},
-		{"not sent, never ran", resumeCompleted, "false", verdictInconclusive},
-		{"unknown, never ran", resumeCompleted, "unknown", verdictInconclusive},
+		{"not sent, never ran", resumeCompleted, "false", verdictFail},
+		{"unknown, never ran", resumeCompleted, "unknown", verdictFail},
 		{"sent, resume failed", resumeFailed, "true", verdictInconclusive},
 		{"sent, first failed", firstFailed, "true", verdictInconclusive},
 		{"sent, never started", resumeNotStarted, "true", verdictInconclusive},
@@ -808,14 +809,14 @@ func TestRestartChecks(t *testing.T) {
 		said string
 		why  string
 	}{
-		{"never ran, never sent", probe(nil, string(other)), "ok ok no? no?", "messaged the agent: false", "did not get the agent to run in the resumed session"},
-		{"wrong recipient", probe(nil, call("t3", "a2")), "ok ok no? no?", "messaged the agent: false", "did not get the agent to run in the resumed session"},
-		{"call before the resume, same file", &restartProbe{stage: resumeCompleted, callsBefore: before, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{sent}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s1", transcript: []string{sent}}}, "ok ok no? no?", "messaged the agent: false", "did not get the agent to run in the resumed session"},
+		{"never ran, never sent", probe(nil, string(other)), "ok ok no no", "did not reach the resumed session", ""},
+		{"wrong recipient", probe(nil, call("t3", "a2")), "ok ok no no", "did not reach the resumed session", ""},
+		{"call before the resume, same file", &restartProbe{stage: resumeCompleted, callsBefore: before, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{sent}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s1", transcript: []string{sent}}}, "ok ok no no", "did not reach the resumed session", ""},
 		{"old and new call, same file", &restartProbe{stage: resumeCompleted, callsBefore: before, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{sent, `{"type":"user"}`, sentAgain}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s1", transcript: []string{sent, `{"type":"user"}`, sentAgain}}}, "ok ok no no", "SendMessage was called but the agent never ran", ""},
 		{"call after the resume in the first file", &restartProbe{stage: resumeCompleted, callsBefore: before, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{sent, `{"type":"user"}`, sentAgain}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s1"}}, "ok ok no no", "SendMessage was called but the agent never ran", ""},
 		{"call to the right id that errored", probe(nil, sent, failedResult), "ok ok no no", "SendMessage was called but the agent never ran", ""},
 		{"sent, never ran", probe(nil, sent), "ok ok no no", "SendMessage was called but the agent never ran", ""},
-		{"no transcript", probe(nil), "ok ok no? no?", "messaged the agent: unknown", "did not get the agent to run in the resumed session"},
+		{"no transcript", probe(nil), "ok ok no no", "did not reach the resumed session", ""},
 		{"ran under another id", probe([]map[string]any{bashEv("a2")}), "ok ok no no", "\"none\" seen again", ""},
 		{"ran, no stop", probe([]map[string]any{bashEv("a1")}), "ok ok ok no?", "", "the agent ran in the resumed session but its stop was not seen"},
 		{"stopped, no bash", probe([]map[string]any{stopped}), "ok ok ok ok", "\"a1\" seen again", ""},
@@ -827,7 +828,7 @@ func TestRestartChecks(t *testing.T) {
 		{"first session failed", &restartProbe{stage: firstFailed}, "no? no? no? no?", "messaged the agent: unknown", "the first session failed, so the resumed session never started"},
 		{"resumed failed", &restartProbe{stage: resumeFailed, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1"}}, "no no no? no?", "messaged the agent: unknown", "the resumed session failed, so nothing is known about the agent"},
 		{"resumed failed, first shows the call", &restartProbe{stage: resumeFailed, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{sent}}}, "no no no? no?", "messaged the agent: true", "resumed session failed"},
-		{"new id, resumed transcript unreadable", &restartProbe{stage: resumeCompleted, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{`{"sessionId":"s1"}`}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s2"}}, "ok no no? no?", "messaged the agent: unknown", "did not get the agent to run in the resumed session"},
+		{"new id, resumed transcript unreadable", &restartProbe{stage: resumeCompleted, first: restartRun{events: []map[string]any{startEv("startup"), stopped}, session: "s1", transcript: []string{`{"sessionId":"s1"}`}}, resumed: restartRun{events: []map[string]any{startEv("resume")}, session: "s2"}}, "ok no no no", "did not reach the resumed session", ""},
 	}
 	for _, tt := range tests {
 		var b strings.Builder
@@ -954,131 +955,109 @@ func TestSelftestSignalBetweenSessions(t *testing.T) {
 	}
 }
 
-func TestRemoveProbeDir(t *testing.T) {
-	mk := func(t *testing.T, path string) {
-		t.Helper()
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(path, "session.jsonl"), []byte("{}"), 0o644); err != nil {
-			t.Fatal(err)
+func TestProbeHostCloseRemovesEverything(t *testing.T) {
+	realConfig := isolateClaudeHome(t)
+	realRecord := filepath.Join(realConfig, "projects", "-tmp-supernova")
+	if err := os.MkdirAll(realRecord, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h, err := newProbeHost()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := h.newProbeDir("/opt/supernova/ensign", "tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A record folder of any name, such as the hashed name Claude Code gives a project path over 200 characters.
+	hashed := filepath.Join(h.root, "home", ".claude", "projects", strings.Repeat("-supernova", 8)+"-1a2b3c")
+	if err := os.MkdirAll(hashed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hashed, "s1.jsonl"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	h.close(&out)
+	for _, path := range []string{h.root, dir, hashed} {
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("%s was left behind", path)
 		}
 	}
-	exists := func(path string) bool {
-		_, err := os.Stat(path)
-		return err == nil
+	if _, err := os.Stat(realRecord); err != nil {
+		t.Errorf("the real config was touched: %v", err)
 	}
-	newDir := func(t *testing.T) (dir, own string) {
-		dir, err := os.MkdirTemp(t.TempDir(), "ensign-selftest-")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return dir, claudeProjectName(filepath.Base(dir))
+	if out.Len() > 0 {
+		t.Errorf("unexpected output %q", out.String())
 	}
-	logTranscript := func(t *testing.T, dir, transcript string) {
-		t.Helper()
-		line, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "transcript_path": transcript, "agent_transcript_path": filepath.Join(t.TempDir(), "projects", "other", "a.jsonl")})
-		if err := os.WriteFile(filepath.Join(dir, "selftest-log.jsonl"), append(line, '\n'), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	t.Run("found through transcript_path", func(t *testing.T) {
-		config := isolateClaudeHome(t)
-		dir, own := newDir(t)
-		record := filepath.Join(config, "projects", "-private-"+own)
-		neighbour := filepath.Join(config, "projects", "-tmp-ensign-selftest-other")
-		mk(t, record)
-		mk(t, neighbour)
-		logTranscript(t, dir, filepath.Join(record, "s1.jsonl"))
-		var out bytes.Buffer
-		removeProbeDir(&out, dir)
-		if exists(dir) || exists(record) || !exists(neighbour) || out.Len() > 0 {
-			t.Errorf("dir %v, record %v, neighbour %v, out %q", exists(dir), exists(record), exists(neighbour), out.String())
-		}
-	})
-	t.Run("derived with no log", func(t *testing.T) {
-		config := isolateClaudeHome(t)
-		dir, own := newDir(t)
-		record := filepath.Join(config, "projects", claudeProjectName(dir))
-		neighbour := filepath.Join(config, "projects", "-tmp-ensign-selftest-other")
-		mk(t, record)
-		mk(t, neighbour)
-		removeProbeDir(&bytes.Buffer{}, dir)
-		if exists(dir) || exists(record) || !exists(neighbour) || !strings.HasSuffix(record, own) {
-			t.Errorf("dir %v, record %v, neighbour %v", exists(dir), exists(record), exists(neighbour))
-		}
-	})
-	t.Run("derived through a symlink", func(t *testing.T) {
-		config := isolateClaudeHome(t)
-		dir, _ := newDir(t)
-		link := filepath.Join(t.TempDir(), "link")
-		if err := os.Symlink(filepath.Dir(dir), link); err != nil {
-			t.Skip("symlinks are not available")
-		}
-		linked := filepath.Join(link, filepath.Base(dir))
-		real, err := filepath.EvalSymlinks(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		record := filepath.Join(config, "projects", claudeProjectName(real))
-		mk(t, record)
-		removeProbeDir(&bytes.Buffer{}, linked)
-		if exists(dir) || exists(record) {
-			t.Errorf("dir %v, record %v", exists(dir), exists(record))
-		}
-	})
-	t.Run("CLAUDE_CONFIG_DIR is honoured", func(t *testing.T) {
-		defaultConfig := isolateClaudeHome(t)
-		config := filepath.Join(t.TempDir(), "custom")
-		t.Setenv("CLAUDE_CONFIG_DIR", config)
-		dir, _ := newDir(t)
-		record := filepath.Join(config, "projects", claudeProjectName(dir))
-		decoy := filepath.Join(defaultConfig, "projects", claudeProjectName(dir))
-		mk(t, record)
-		mk(t, decoy)
-		removeProbeDir(&bytes.Buffer{}, dir)
-		if exists(record) || !exists(decoy) {
-			t.Errorf("record %v, decoy %v", exists(record), exists(decoy))
-		}
-	})
-	t.Run("the guard leaves other folders alone", func(t *testing.T) {
-		config := isolateClaudeHome(t)
-		tests := []struct {
-			name   string
-			folder func(own string) string
-		}{
-			{"wrong name", func(own string) string { return filepath.Join(config, "projects", "-tmp-other-project") }},
-			{"wrong parent", func(own string) string { return filepath.Join(config, "elsewhere", "-tmp-"+own) }},
-			{"outside", func(own string) string { return filepath.Join(t.TempDir(), "-tmp-"+own) }},
-		}
-		for _, tt := range tests {
-			dir, own := newDir(t)
-			folder := tt.folder(own)
-			mk(t, folder)
-			logTranscript(t, dir, filepath.Join(folder, "s1.jsonl"))
-			removeProbeDir(&bytes.Buffer{}, dir)
-			if exists(dir) || !exists(folder) {
-				t.Errorf("%s: dir %v, folder %v", tt.name, exists(dir), exists(folder))
-			}
-		}
-	})
 }
 
-func TestSelftestRemovesSessionRecords(t *testing.T) {
-	config := isolateClaudeHome(t)
+func TestSelftestIsolatesTheSessionsFromTheRealConfig(t *testing.T) {
+	realConfig := isolateClaudeHome(t)
+	realHome := filepath.Dir(realConfig)
+	if err := os.MkdirAll(realConfig, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realConfig, ".credentials.json"), []byte("supernova-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
-	fakeClaude(t, `[ "$1" = --version ] && { echo "2.1.319 (Claude Code)"; exit 0; }`+"\nmkdir -p \"$CLAUDE_CONFIG_DIR/projects/$(echo \"$PWD\" | tr -c 'A-Za-z0-9\\n' -)\"\nexit 1\n")
-	t.Setenv("CLAUDE_CONFIG_DIR", config)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-supernova-real")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "supernova-token")
+	envLog := filepath.Join(t.TempDir(), "env")
+	fakeClaude(t, `[ "$1" = --version ] && { echo "2.1.319 (Claude Code)"; exit 0; }`+
+		"\nenv > "+envLog+"\nmkdir -p \"$CLAUDE_CONFIG_DIR/projects/$(echo \"$PWD\" | tr -c 'A-Za-z0-9\\n' -)\"\nexit 1\n")
+	before := dirListing(t, realHome)
 	var out bytes.Buffer
 	if err := runSelftest(&out); err == nil {
 		t.Fatal("want the fake session's failure")
 	}
-	if left, _ := filepath.Glob(filepath.Join(config, "projects", "*")); len(left) > 0 {
-		t.Errorf("session records left behind: %v", left)
+	if after := dirListing(t, realHome); after != before {
+		t.Errorf("the real home changed:\n%s\nbecame\n%s", before, after)
+	}
+	if b, err := os.ReadFile(filepath.Join(realConfig, ".credentials.json")); err != nil || string(b) != "supernova-secret" {
+		t.Errorf("the real credentials changed: %q %v", b, err)
+	}
+	data, err := os.ReadFile(envLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := string(data)
+	for _, bad := range []string{"sk-supernova-real", "supernova-token", realHome} {
+		if strings.Contains(env, bad) {
+			t.Errorf("the session saw %q:\n%s", bad, env)
+		}
 	}
 	if left, _ := filepath.Glob(filepath.Join(tmp, "ensign-selftest-*")); len(left) > 0 {
 		t.Errorf("temp folders left behind: %v", left)
+	}
+}
+
+// dirListing is the paths and sizes under dir, one per line.
+func dirListing(t *testing.T, dir string) string {
+	t.Helper()
+	var sb strings.Builder
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err == nil {
+			fmt.Fprintf(&sb, "%s %d\n", path, info.Size())
+		}
+		return nil
+	})
+	return sb.String()
+}
+
+func TestRunProbeSessionEndsLeftoverProcesses(t *testing.T) {
+	heartbeat := filepath.Join(t.TempDir(), "beat")
+	fakeClaude(t, `echo '{"result":"supernova","session_id":"s1"}'`+"\n(while :; do echo x >> "+heartbeat+"; sleep 0.1; done) >/dev/null 2>&1 &\nexit 0\n")
+	if _, _, _, err := runProbeSession(nil, t.TempDir(), "supernova"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	before, _ := os.Stat(heartbeat)
+	time.Sleep(600 * time.Millisecond)
+	after, _ := os.Stat(heartbeat)
+	if before != nil && after != nil && before.Size() != after.Size() {
+		t.Errorf("the background process is still writing: %d then %d", before.Size(), after.Size())
 	}
 }

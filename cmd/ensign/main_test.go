@@ -5,6 +5,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -25,5 +26,13 @@ func TestMain(m *testing.M) {
 		main()
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	// A SessionStart without CLAUDE_ENV_FILE reports that starship cannot work in the session, so the tests that start sessions get a file of their own, which also keeps them from writing to the env file of the session running them.
+	dir, err := os.MkdirTemp("", "ensign-test-env-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("CLAUDE_ENV_FILE", filepath.Join(dir, "env"))
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }

@@ -258,6 +258,15 @@ func TestNotReadyRepliesGoThroughTheBudget(t *testing.T) {
 	}
 }
 
+func TestUnsetEnvFileIsReportedLikeAnUnwritableOne(t *testing.T) {
+	w := linkedWorld(t)
+	t.Setenv("CLAUDE_ENV_FILE", "")
+	ctx := sessionContext(w, "startup")
+	if !strings.HasPrefix(ctx, "starship: could not record the session id: CLAUDE_ENV_FILE is not set") || strings.Contains(ctx, "STARSHIP-READY") {
+		t.Errorf("the could-not-record line should lead:\n%s", ctx)
+	}
+}
+
 func TestCouldNotRecordWithOverflowIsNotHeld(t *testing.T) {
 	w := linkedWorld(t)
 	t.Setenv("CLAUDE_ENV_FILE", filepath.Join(w.bridge, "no-such-folder", "env"))

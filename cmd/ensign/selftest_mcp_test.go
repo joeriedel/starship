@@ -207,7 +207,7 @@ func TestMCPChecksEmptyRun(t *testing.T) {
 
 func TestNewMCPProbeDir(t *testing.T) {
 	self := `C:\Program Files\ensign\ensign.exe`
-	dir, config, err := newMCPProbeDir(self)
+	dir, config, err := newMCPProbeDir(&probeHost{root: t.TempDir()}, self)
 	if err != nil {
 		t.Fatal(err)
 	}

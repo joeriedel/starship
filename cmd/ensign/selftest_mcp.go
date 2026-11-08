@@ -106,6 +106,7 @@ name: %s
 description: Selftest probe that writes a note through the stub MCP server.
 model: haiku
 ---
+selftest-script: probe-mcp-write
 Call the write_note tool of the stub MCP server once, with the text your prompt names. Then reply with the word done.
 `
 
@@ -115,6 +116,7 @@ description: Selftest probe that tries both tools of the stub MCP server.
 tools: %s
 model: haiku
 ---
+selftest-script: probe-mcp-try
 Try the read_note tool of the stub MCP server, then the write_note tool with the text ` + mcpRoleMark + `. Try both before you reply, even if one is unavailable; a tool you do not have is simply unavailable. Use no other means. Reply with what happened in one line.
 `
 
@@ -124,12 +126,13 @@ description: Selftest probe that spawns an agent which calls the stub MCP server
 tools: Agent
 model: haiku
 ---
+selftest-script: probe-mcp-orch
 Use the Agent tool once with subagent_type "probe-mcp-nested", run_in_background false and prompt "write the note SELFTEST-MCP-NESTED". Then reply with the word done.
 `
 
 // newMCPProbeDir makes a throwaway project whose settings hook every MCP call and spawn, and returns it with the path of the MCP config to hand to claude.
-func newMCPProbeDir(self string) (dir, config string, err error) {
-	dir, err = os.MkdirTemp("", "ensign-selftest-mcp-")
+func newMCPProbeDir(host *probeHost, self string) (dir, config string, err error) {
+	dir, err = os.MkdirTemp(host.root, "mcp-")
 	if err != nil {
 		return "", "", err
 	}
@@ -185,13 +188,12 @@ type mcpRun struct {
 }
 
 // runMCPProbe runs the connector probe session. A failure is noted on stderr and returns an empty run, so the checks fail without aborting the others.
-func runMCPProbe(self string) mcpRun {
-	dir, config, err := newMCPProbeDir(self)
+func runMCPProbe(host *probeHost, self string) mcpRun {
+	dir, config, err := newMCPProbeDir(host, self)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "connector probe: %v\n", err)
 		return mcpRun{}
 	}
-	defer removeProbeDir(os.Stderr, dir)
 	prompt := `This is a self-test of this project's hooks, which the user asked for. Do these steps in order, each exactly once. Make one tool call per message and wait for its result before the next step: a later step depends on how an earlier one turned out. A hook refuses some calls on purpose; that is expected, not an error.
 1. Call the stub MCP server's write_note tool with the text "` + mcpDenyMark + ` session".
 2. Only after you have seen the result of step 1, call write_note with the text "` + mcpAfterMark + `".
@@ -200,8 +202,9 @@ func runMCPProbe(self string) mcpRun {
 5. Use the Agent tool with subagent_type "probe-mcp-none", run_in_background false and prompt "go".
 6. Use the Agent tool with subagent_type "probe-mcp-orch", run_in_background false and prompt "go".
 When all steps are done, reply with the word done.
+selftest-script: main-mcp
 `
-	events, _, _, err := runProbeSession(dir, prompt, "--mcp-config", config, "--strict-mcp-config", "--allowedTools", "mcp__stub,Agent")
+	events, _, _, err := host.run(dir, prompt, "--mcp-config", config, "--strict-mcp-config", "--allowedTools", "mcp__stub,Agent")
 	if err != nil {
 		if caughtSignal() == nil {
 			fmt.Fprintf(os.Stderr, "connector probe: %v\n", err)

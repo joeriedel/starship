@@ -81,6 +81,14 @@ func main() {
 		if len(os.Args) == 3 {
 			os.Exit(cmdSelftestHook(os.Args[2], os.Stdin, os.Stdout))
 		}
+	case "selftest-mock":
+		if len(os.Args) <= 3 {
+			logPath := ""
+			if len(os.Args) == 3 {
+				logPath = os.Args[2]
+			}
+			os.Exit(cmdSelftestMock(logPath, os.Stdout))
+		}
 	case "selftest-mcp":
 		if len(os.Args) == 3 {
 			os.Exit(cmdSelftestMCP(os.Args[2], os.Stdin, os.Stdout))
@@ -504,8 +512,14 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		return reply(show, head+lines.render(bridge, held, head, extra))
 	}
 	var envNote string
-	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" && in.SessionID != "" {
-		env, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if f := os.Getenv("CLAUDE_ENV_FILE"); in.SessionID != "" {
+		var env *os.File
+		var err error
+		if f == "" {
+			err = errors.New("CLAUDE_ENV_FILE is not set")
+		} else {
+			env, err = os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		}
 		if err == nil {
 			// The session's own commands run the bridge's ensign, found on PATH. Bash sources the setup file a run writes later; PowerShell, which takes only assignments, gets the environment now.
 			var content string

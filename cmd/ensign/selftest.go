@@ -18,9 +18,7 @@ import (
 	"time"
 )
 
-// `ensign selftest` re-checks the Claude Code behaviour starship depends on, with a
-// throwaway project and a cheap model. Harness behaviour changes between builds; run it
-// after every Claude Code upgrade. It costs a few cents.
+// `ensign selftest` re-checks the Claude Code behaviour starship depends on, with throwaway projects, a scripted stand-in for the model (selftest_mock.go) and an isolated Claude Code config (selftest_host.go): it needs no account, costs nothing, and never reads or changes the user's own config or credentials. Harness behaviour changes between builds; run it after every Claude Code upgrade.
 
 const selftestOrch = `---
 name: probe-orch
@@ -28,6 +26,7 @@ description: Selftest probe that spawns six agents.
 tools: Agent
 model: haiku
 ---
+selftest-script: probe-orch
 You are a harness selftest. Do exactly these steps, then stop:
 1. Use the Agent tool with subagent_type "probe-leaf", run_in_background set to true, and
    prompt "Reply with the word ` + leafToken + `."
@@ -45,6 +44,7 @@ description: Selftest probe that hands back a report.
 tools: Read
 model: haiku
 ---
+selftest-script: probe-handback
 Your only step is to call the SubagentHandback tool with the message ` + handbackToken + `.
 `
 
@@ -54,6 +54,7 @@ description: Selftest probe whose first handback is refused by a hook.
 tools: Read
 model: haiku
 ---
+selftest-script: probe-redo
 Your only step is to call the SubagentHandback tool with the message ` + redoFirst + `.
 If the call is refused, do what the refusal says and call SubagentHandback again.
 `
@@ -73,6 +74,7 @@ description: Selftest probe whose shell should load a setup file written after t
 tools: Bash
 model: haiku
 ---
+selftest-script: probe-env
 You are a harness selftest. Use the Bash tool once, with command "echo env:$STARSHIP_PROBE_ENV".
 When the tool returns, end your turn at once with the word done.
 `
@@ -83,6 +85,7 @@ description: Selftest probe that leaves a command running in the background.
 tools: Bash
 model: haiku
 ---
+selftest-script: probe-bg
 You are a harness selftest. Use the Bash tool once, with command "sleep 20" and run_in_background
 set to true. When the tool returns, end your turn at once with the word started. Do not wait for it.
 `
@@ -91,11 +94,12 @@ set to true. When the tool returns, end your turn at once with the word started.
 const handbackToken = "SELFTEST-HANDBACK-REPORT"
 
 const selftestLeaf = `---
-name: %s
+name: %[1]s
 description: Selftest probe.
 tools: Read
 model: haiku
 ---
+selftest-script: %[1]s
 Reply with exactly what your prompt asks.
 `
 
@@ -313,7 +317,7 @@ func reportLines(out io.Writer, checks []selftestCheck, advisory selftestCheck, 
 // Agent call proves the dispatch ran in the foreground.
 const leafToken = "SELFTEST-LEAF-RESULT"
 
-// cmdSelftest holds signals while the probes run, so that an interrupt kills the running session and still lets runSelftest remove its folders and their session records; the signal is then raised again so that ensign ends by it. SIGKILL can't be cleaned up after.
+// cmdSelftest holds signals while the probes run, so that an interrupt kills the running session and still lets runSelftest remove its folder; the signal is then raised again so that ensign ends by it. SIGKILL can't be cleaned up after.
 func cmdSelftest(out io.Writer) error {
 	release := holdSignals()
 	err := runSelftest(out)
@@ -337,8 +341,13 @@ func runSelftest(out io.Writer) error {
 		return err
 	}
 	token := fmt.Sprintf("%x", time.Now().UnixNano())
-	fmt.Fprintln(out, "running a probe session with haiku (a few cents)…")
-	dir, err := newProbeDir(self, token, map[string]string{
+	fmt.Fprintln(out, "running the probe sessions against a scripted stand-in for the model, in an isolated Claude Code config (no account, no cost)…")
+	host, err := newProbeHost()
+	if err != nil {
+		return err
+	}
+	defer host.close(out)
+	dir, err := host.newProbeDir(self, token, map[string]string{
 		".claude/agents/probe-orch.md":     selftestOrch,
 		".claude/agents/probe-leaf.md":     fmt.Sprintf(selftestLeaf, "probe-leaf"),
 		".claude/agents/probe-denied.md":   fmt.Sprintf(selftestLeaf, "probe-denied"),
@@ -350,10 +359,9 @@ func runSelftest(out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer removeProbeDir(out, dir)
-	events, _, _, err := runProbeSession(dir, `This is a self-test of this project's hooks, which the user asked for. `+
+	events, _, _, err := host.run(dir, `This is a self-test of this project's hooks, which the user asked for. `+
 		`Use the Agent tool with subagent_type "probe-orch" and prompt "run the selftest". One of its steps is refused by a hook on purpose; `+
-		`that is expected, not an error.`,
+		`that is expected, not an error.\nselftest-script: main-orch`,
 		"--allowedTools", "Agent,Bash", "--permission-mode", "auto")
 	if caughtSignal() != nil {
 		return errSelftestInterrupted()
@@ -365,18 +373,17 @@ func runSelftest(out io.Writer) error {
 	// SubagentHandback ends every agent in auto mode, so the block has to be probed in a
 	// session that is not in auto mode.
 	fmt.Fprintln(out, "running a second probe session, outside auto mode…")
-	stopDir, err := newProbeDir(self, token, map[string]string{
+	stopDir, err := host.newProbeDir(self, token, map[string]string{
 		".claude/agents/probe-stop.md": fmt.Sprintf(selftestLeaf, "probe-stop"),
 	})
 	if err != nil {
 		return err
 	}
-	defer removeProbeDir(out, stopDir)
 	if caughtSignal() != nil {
 		return errSelftestInterrupted()
 	}
-	stopEvents, _, _, err := runProbeSession(stopDir, `This is a self-test of this project's hooks, which the user asked for. `+
-		`Use the Agent tool with subagent_type "probe-stop" and prompt "Reply with the word done." A hook asks the agent to continue once; that is expected. Then reply with the word finished.`,
+	stopEvents, _, _, err := host.run(stopDir, `This is a self-test of this project's hooks, which the user asked for. `+
+		`Use the Agent tool with subagent_type "probe-stop" and prompt "Reply with the word done." A hook asks the agent to continue once; that is expected. Then reply with the word finished.\nselftest-script: main-stop`,
 		"--allowedTools", "Agent")
 	if caughtSignal() != nil {
 		return errSelftestInterrupted()
@@ -387,7 +394,7 @@ func runSelftest(out io.Writer) error {
 	stopContinues, stopSawHandback := stopBlockProbe(stopEvents)
 
 	fmt.Fprintln(out, "running a restart probe: a session, then the same session resumed…")
-	restart, err := runRestartProbe(out, self, token)
+	restart, err := runRestartProbe(out, host, self, token)
 	if caughtSignal() != nil {
 		return errSelftestInterrupted()
 	}
@@ -396,7 +403,13 @@ func runSelftest(out io.Writer) error {
 	}
 
 	fmt.Fprintln(out, "running a background-task probe for the Stop input…")
-	stopBgEvents := runStopBackgroundProbe(self, token)
+	stopBgEvents := runStopBackgroundProbe(host, self, token)
+	if caughtSignal() != nil {
+		return errSelftestInterrupted()
+	}
+
+	fmt.Fprintln(out, "running a live-settings probe: a hook added to a settings file during a session…")
+	liveEvents := runLiveSettingsProbe(host, self, token)
 	if caughtSignal() != nil {
 		return errSelftestInterrupted()
 	}
@@ -471,8 +484,10 @@ func runSelftest(out io.Writer) error {
 	}
 	checks = append(checks, restartChecks(restart, out)...)
 	checks = append(checks, selftestCheck{"Stop background_tasks lists a background command, with the id PostToolUse saw", stopListsBackground(stopBgEvents), ""})
+	liveOK, liveWhy := liveSettingsVerdict(liveEvents)
+	checks = append(checks, selftestCheck{"a PreToolUse hook added to settings.local.json during a session fires on the session's later Bash calls", liveOK, liveWhy})
 	fmt.Fprintln(out, "running a connector probe against a stub MCP server…")
-	mcp := runMCPProbe(self)
+	mcp := runMCPProbe(host, self)
 	if caughtSignal() != nil {
 		return errSelftestInterrupted()
 	}
@@ -512,9 +527,9 @@ func probeStopSettings(self string) string {
 	return string(data)
 }
 
-// newProbeDir makes a throwaway project holding the probe hooks and the given agent files, and returns its folder. The caller removes it once every session in it has finished.
-func newProbeDir(self, token string, agents map[string]string) (string, error) {
-	dir, err := os.MkdirTemp("", "ensign-selftest-")
+// newProbeDir makes a throwaway project inside the host's root holding the probe hooks and the given agent files, and returns its folder. It goes away with the root.
+func (h *probeHost) newProbeDir(self, token string, agents map[string]string) (string, error) {
+	dir, err := os.MkdirTemp(h.root, "probe-")
 	if err != nil {
 		return "", err
 	}
@@ -545,50 +560,6 @@ func newProbeDir(self, token string, agents map[string]string) (string, error) {
 	return dir, nil
 }
 
-// removeProbeDir removes a probe folder and the folder where Claude Code recorded its sessions. The record lives under the config dir, outside the probe folder, so it would stay behind for every run. Only folders that carry this probe folder's own random name are touched. A removal that fails is noted on out and changes nothing else. The probe log is read first, since it is in the folder being removed.
-func removeProbeDir(out io.Writer, dir string) {
-	candidates := map[string]bool{}
-	for _, e := range readProbeLog(dir) {
-		if path, _ := e["transcript_path"].(string); path != "" {
-			candidates[filepath.Dir(path)] = true
-		}
-	}
-	config := os.Getenv("CLAUDE_CONFIG_DIR")
-	if config == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			config = filepath.Join(home, ".claude")
-		}
-	}
-	if config != "" {
-		candidates[filepath.Join(config, "projects", claudeProjectName(dir))] = true
-		if real, err := filepath.EvalSymlinks(dir); err == nil {
-			candidates[filepath.Join(config, "projects", claudeProjectName(real))] = true
-		}
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		fmt.Fprintf(out, "could not remove the probe folder %s: %v\n", dir, err)
-	}
-	own := claudeProjectName(filepath.Base(dir))
-	for c := range candidates {
-		if filepath.Base(filepath.Dir(c)) != "projects" || !strings.HasSuffix(filepath.Base(c), own) {
-			continue
-		}
-		if err := os.RemoveAll(c); err != nil {
-			fmt.Fprintf(out, "could not remove the session records in %s: %v\n", c, err)
-		}
-	}
-}
-
-// claudeProjectName is the name of the folder where Claude Code records the sessions of a project at path: every character that isn't a letter or digit becomes '-'.
-func claudeProjectName(path string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
-			return r
-		}
-		return '-'
-	}, path)
-}
-
 // readProbeLog reads the hook log of a probe folder.
 func readProbeLog(dir string) []map[string]any {
 	var events []map[string]any
@@ -605,8 +576,8 @@ func readProbeLog(dir string) []map[string]any {
 // probeTimeout bounds one probe session; a variable so a test can shorten it.
 var probeTimeout = 10 * time.Minute
 
-// runProbeSession runs one claude -p in a probe folder and returns the hook events it logged, the session's reply and its session id. Pass --resume in claudeArgs to continue an earlier session in the same folder.
-func runProbeSession(dir, prompt string, claudeArgs ...string) ([]map[string]any, string, string, error) {
+// runProbeSession runs one claude -p in a probe folder with the given environment (nil: this process's) and returns the hook events it logged, the session's reply and its session id. Pass --resume in claudeArgs to continue an earlier session in the same folder.
+func runProbeSession(env []string, dir, prompt string, claudeArgs ...string) ([]map[string]any, string, string, error) {
 	if sig := caughtSignal(); sig != nil {
 		return nil, "", "", fmt.Errorf("interrupted by %s", sig)
 	}
@@ -614,7 +585,7 @@ func runProbeSession(dir, prompt string, claudeArgs ...string) ([]map[string]any
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "claude", append([]string{"-p", "--model", "haiku", "--output-format", "json"}, claudeArgs...)...)
-	cmd.Dir, cmd.Env = dir, cleanClaudeEnv()
+	cmd.Dir, cmd.Env = dir, env
 	cmd.Stdin = strings.NewReader(prompt)
 	started, finish := killTreeOnCancel(cmd, cancel)
 	cmd.WaitDelay = killWaitDelay
@@ -624,6 +595,10 @@ func runProbeSession(dir, prompt string, claudeArgs ...string) ([]map[string]any
 	if err == nil {
 		started()
 		err = cmd.Wait()
+	}
+	// The session's background commands can outlive it, and on Windows one holds the probe folder as its working directory. Cancel ends the process group (Unix) or the job object (Windows) with everything in it, so the root can be removed.
+	if cmd.Process != nil {
+		cmd.Cancel()
 	}
 	sigErr := finish()
 	raw := stdout.Bytes()
@@ -865,6 +840,9 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 	if dir == "" {
 		dir, _ = in["cwd"].(string)
 	}
+	if event == "LivePreToolUse" {
+		in["live_settings"] = true
+	}
 	if event == "SessionStart" {
 		in["env_file"] = os.Getenv("CLAUDE_ENV_FILE") != ""
 		in["claude_pid"] = claudePID() != ""
@@ -927,7 +905,7 @@ func cmdSelftestHook(event string, stdin io.Reader, stdout io.Writer) int {
 // session: it is told that session's project directory, and its prompt arrives with a
 // "Claude" line in front, so `help` no longer matches.
 // Only the variables a running session sets about itself are removed; configuration a
-// user sets (a provider, a token, limits) is kept.
+// user sets (a provider, a token, limits) is kept. The selftest's probe sessions use isolatedClaudeEnv, which keeps none of that.
 func cleanClaudeEnv() []string {
 	var env []string
 	for _, kv := range os.Environ() {
@@ -953,6 +931,7 @@ description: Selftest probe that makes a Bash call and can be messaged again lat
 tools: Bash
 model: haiku
 ---
+selftest-script: probe-restart
 You are a harness selftest. Use the Bash tool once, with the command the message asks for, then reply with the word done.
 `
 
@@ -980,19 +959,18 @@ type restartProbe struct {
 	callsBefore map[string]bool
 }
 
-// runRestartProbe runs a session that starts a background agent, then resumes that session in the same folder and asks it to message the agent by id. It records the ids of the SendMessage calls in the first transcript before the resume, because --resume appends to that file on the builds seen, or may copy its history into a new one, so a call seen afterwards is the resumed turn's only if its id is not on that list. Why it stopped early is written to out. When a step fails it returns what was observed so far and how far it got: restartChecks leaves a check inconclusive when the resume never started, and fails the session and source checks when the resumed session was attempted and failed, since `claude --resume` failing is itself evidence. SIGKILL leaves the folder and its session records behind.
-func runRestartProbe(out io.Writer, self, token string) (*restartProbe, error) {
-	dir, err := newProbeDir(self, token, map[string]string{".claude/agents/probe-restart.md": selftestRestart})
+// runRestartProbe runs a session that starts a background agent, then resumes that session in the same folder and asks it to message the agent by id. It records the ids of the SendMessage calls in the first transcript before the resume, because --resume appends to that file on the builds seen, or may copy its history into a new one, so a call seen afterwards is the resumed turn's only if its id is not on that list. Why it stopped early is written to out. When a step fails it returns what was observed so far and how far it got: restartChecks leaves a check inconclusive when the resume never started, and fails the session and source checks when the resumed session was attempted and failed, since `claude --resume` failing is itself evidence. SIGKILL leaves the selftest folder behind.
+func runRestartProbe(out io.Writer, host *probeHost, self, token string) (*restartProbe, error) {
+	dir, err := host.newProbeDir(self, token, map[string]string{".claude/agents/probe-restart.md": selftestRestart})
 	if err != nil {
 		return nil, err
 	}
-	defer removeProbeDir(out, dir)
 	var p restartProbe
 	var result string
-	p.first.events, result, p.first.session, err = runProbeSession(dir,
+	p.first.events, result, p.first.session, err = host.run(dir,
 		`This is a self-test of this project's hooks, which the user asked for. `+
 			`Use the Agent tool with subagent_type "probe-restart", run_in_background set to true, and prompt "Use Bash to run: echo restart-one". `+
-			`When the agent has finished, reply with the word finished.`,
+			`When the agent has finished, reply with the word finished.\nselftest-script: main-restart`,
 		"--allowedTools", "Agent,Bash", "--permission-mode", "auto")
 	if caughtSignal() != nil {
 		return &p, nil
@@ -1012,10 +990,10 @@ func runRestartProbe(out io.Writer, self, token string) (*restartProbe, error) {
 		return &p, nil
 	}
 	p.callsBefore = sendMessageIDs(transcriptLines(p.first.events))
-	p.resumed.events, _, p.resumed.session, err = runProbeSession(dir,
+	p.resumed.events, _, p.resumed.session, err = host.run(dir,
 		`This is a self-test of this project's hooks, which the user asked for. `+
 			`Use the SendMessage tool to send the agent with id `+agent+` the message "Use Bash to run: echo restart-two". `+
-			`When the agent has finished, reply with the word finished.`,
+			`When the agent has finished, reply with the word finished.\nselftest-script: main-resume`,
 		"--resume", p.first.session, "--allowedTools", "Agent,Bash,SendMessage", "--permission-mode", "auto")
 	if caughtSignal() != nil {
 		return &p, nil
@@ -1032,22 +1010,77 @@ func runRestartProbe(out io.Writer, self, token string) (*restartProbe, error) {
 }
 
 // runStopBackgroundProbe runs a session whose main agent starts a background command and ends its turn, and returns the hook events. The Stop hook lives in settings.local.json so the other probe folders keep their settings. A failure is noted on stderr and returns no events, so the check always fails without aborting the others.
-func runStopBackgroundProbe(self, token string) []map[string]any {
-	dir, err := newProbeDir(self, token, map[string]string{".claude/settings.local.json": probeStopSettings(self)})
+func runStopBackgroundProbe(host *probeHost, self, token string) []map[string]any {
+	dir, err := host.newProbeDir(self, token, map[string]string{".claude/settings.local.json": probeStopSettings(self)})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stop background probe: %v\n", err)
 		return nil
 	}
-	defer removeProbeDir(os.Stderr, dir)
-	events, _, _, err := runProbeSession(dir,
+	events, _, _, err := host.run(dir,
 		`This is a self-test of this project's hooks, which the user asked for. `+
-			`Use the Bash tool once, with command "sleep 30" and run_in_background set to true. Then reply with the word started at once. Do not wait for the command.`,
+			`Use the Bash tool once, with command "sleep 30" and run_in_background set to true. Then reply with the word started at once. Do not wait for the command.\nselftest-script: main-stopbg`,
 		"--allowedTools", "Bash", "--permission-mode", "auto")
 	if err != nil && caughtSignal() == nil {
 		fmt.Fprintf(os.Stderr, "stop background probe: the session failed: %v\n", err)
 		return nil
 	}
 	return events
+}
+
+// liveSettingsFile is what the live-settings probe copies over .claude/settings.local.json in the middle of its session: a PreToolUse hook for Bash, run as the LivePreToolUse event so its log lines can be told from the other hooks'.
+func liveSettingsFile(self string) string {
+	return `{"hooks":{"PreToolUse":` + probeHookGroups("Bash", probeHookCommand(self, "LivePreToolUse")) + `}}`
+}
+
+// runLiveSettingsProbe runs a session that makes a Bash call, copies a settings file with a new Bash hook into place, waits, and makes another Bash call. A failure is noted on stderr and returns no events, so the check is inconclusive without aborting the others.
+func runLiveSettingsProbe(host *probeHost, self, token string) []map[string]any {
+	dir, err := host.newProbeDir(self, token, map[string]string{"live-settings.json": liveSettingsFile(self)})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "live settings probe: %v\n", err)
+		return nil
+	}
+	events, _, _, err := host.run(dir,
+		`This is a self-test of this project's hooks, which the user asked for. `+
+			`Use the Bash tool to run: echo live-before. Then run: cp live-settings.json .claude/settings.local.json. Then run: sleep 5. Then run: echo live-after. Then reply with the word done.\nselftest-script: main-live`,
+		"--allowedTools", "Bash", "--permission-mode", "auto")
+	if err != nil && caughtSignal() == nil {
+		fmt.Fprintf(os.Stderr, "live settings probe: the session failed: %v\n", err)
+		return nil
+	}
+	return events
+}
+
+// liveSettingsVerdict reads the live-settings probe's log. The check passes when the hook that was copied in mid-session fired for the Bash call made after the wait. It is inconclusive, with the reason, when the session did not make all its calls, or when the hook fired before the copy, which would mean it never was new.
+func liveSettingsVerdict(events []map[string]any) (ok bool, inconclusive string) {
+	ran := func(mark string) bool {
+		for _, e := range events {
+			if eventStr(e, "hook_event_name") == "PostToolUse" && eventStr(e, "tool_name") == "Bash" {
+				ti, _ := e["tool_input"].(map[string]any)
+				if strings.Contains(eventStr(ti, "command"), mark) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	fired := func(mark string) bool {
+		for _, e := range events {
+			if e["live_settings"] == true && eventStr(e, "hook_event_name") == "PreToolUse" {
+				ti, _ := e["tool_input"].(map[string]any)
+				if strings.Contains(eventStr(ti, "command"), mark) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	switch {
+	case !ran("echo live-before") || !ran("cp live-settings.json") || !ran("echo live-after"):
+		return false, "the probe session did not make all of its Bash calls"
+	case fired("echo live-before"):
+		return false, "the hook fired before it was added"
+	}
+	return fired("echo live-after"), ""
 }
 
 // transcriptLines reads the session transcript named by the first event that carries one. It returns nil when no event names one or the file can't be read.
@@ -1064,7 +1097,7 @@ func transcriptLines(events []map[string]any) []string {
 	return nil
 }
 
-// sentMessage says whether the resumed turn sent a message to the agent with the given id: "true", "false" or "unknown". A call counts when a SendMessage tool_use carries that id in its input and its own id is not in callsBefore, the calls made before the resume. On the builds seen, --resume appends to the first session's file, so firstLines can show the call when the resumed session logged no events. It can prove true but never false: false comes only from the resumed session's own lines in a session that completed. "true" with no agent run in the resumed session is a failure; the other answers leave that inconclusive.
+// sentMessage says whether the resumed turn sent a message to the agent with the given id: "true", "false" or "unknown". A call counts when a SendMessage tool_use carries that id in its input and its own id is not in callsBefore, the calls made before the resume. On the builds seen, --resume appends to the first session's file, so firstLines can show the call when the resumed session logged no events. It can prove true but never false: false comes only from the resumed session's own lines in a session that completed. When the resume completed and no agent ran in the resumed session, any answer counts as a failure, and the answer only picks the reason given.
 func sentMessage(stage restartStage, agent string, callsBefore map[string]bool, firstLines, resumedLines []string) string {
 	switch {
 	case calledSendMessage(resumedLines, agent, callsBefore) || calledSendMessage(firstLines, agent, callsBefore):
@@ -1213,7 +1246,7 @@ func restartNeverStarted(first []map[string]any) string {
 	return "the first session reported no session_id, so the resumed session never started"
 }
 
-// restartAgentVerdicts judges whether the agent kept its agent_id and its transcript path across the restart, and says why when a check is inconclusive. When the resume never started, or the resumed session failed, the probe says nothing either way. When no agent ran in the resumed session, that is inconclusive unless sent says SendMessage was called: Claude Code was asked to wake the agent and did not, which is a real break, as is an agent that ran under another id or stopped without keeping its path.
+// restartAgentVerdicts judges whether the agent kept its agent_id and its transcript path across the restart, and says why when a check is inconclusive. When the resume never started, or the resumed session failed, the probe says nothing either way. When no agent ran in the resumed session that is a failure whatever sent says, because the scripted resumed turn always calls SendMessage: either the call went out and Claude Code did not wake the agent, or it never reached the session or the transcript. Both are real breaks, as is an agent that ran under another id or stopped without keeping its path. The reason is returned for these failures too, for restartChecks to print.
 func restartAgentVerdicts(first, resumed []map[string]any, stage restartStage, sent string) (idKept, pathKept verdict, why string) {
 	id := restartAgentID(first)
 	switch stage {
@@ -1226,9 +1259,9 @@ func restartAgentVerdicts(first, resumed []map[string]any, stage restartStage, s
 	}
 	if !agentRanResumed(resumed) {
 		if sent == "true" {
-			return verdictFail, verdictFail, ""
+			return verdictFail, verdictFail, "SendMessage was called but the agent never ran in the resumed session, so this points at Claude Code"
 		}
-		return verdictInconclusive, verdictInconclusive, "the session model did not get the agent to run in the resumed session"
+		return verdictFail, verdictFail, "the scripted SendMessage did not reach the resumed session, or was not recorded, so the agent never ran there"
 	}
 	kept, stopped := agentKeptID(first, resumed), agentStoppedAgain(resumed, id)
 	switch {
@@ -1315,8 +1348,8 @@ func restartChecks(p *restartProbe, out io.Writer) []selftestCheck {
 		id, map[bool]string{true: id, false: "none"}[agentKeptID(p.first.events, p.resumed.events)],
 		stopPath(p.first.events, id), stopPath(p.resumed.events, id), sent)
 	idKept, pathKept, why := restartAgentVerdicts(p.first.events, p.resumed.events, p.stage, sent)
-	if p.stage == resumeCompleted && sent == "true" && !agentRanResumed(p.resumed.events) {
-		fmt.Fprintln(out, "  restart probe: SendMessage was called but the agent never ran in the resumed session; the model did its part, so this points at Claude Code")
+	if idKept == verdictFail && why != "" {
+		fmt.Fprintln(out, "  restart probe: "+why)
 	}
 	sources := selftestCheck{"SessionStart carries source: startup, then resume", sourcesReported(p.first.events, p.resumed.events), ""}
 	tied := selftestCheck{"a resumed session keeps its id, or its transcript keeps records stamped with the first id", restartTied(p.first.session, p.resumed.session, p.resumed.transcript), ""}
