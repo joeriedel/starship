@@ -26,6 +26,16 @@ type directFile struct {
 	Folder string `json:"folder"`
 	Work   string `json:"work"`
 	Phase  string `json:"phase"`
+	// Spelling is the folder as the editor spelled it; Folder is its resolved form, used for matching.
+	Spelling string `json:"spelling,omitempty"`
+}
+
+// shown is the folder as the editor spelled it, or the resolved folder for a record without a spelling.
+func (df *directFile) shown() string {
+	if df.Spelling != "" {
+		return df.Spelling
+	}
+	return df.Folder
 }
 
 func directPath(bridge, session string) string { return sessionFile(bridge, session) + ".direct" }
@@ -94,8 +104,8 @@ func landingAround(bridge, folder string) (string, string, error) {
 	}
 }
 
-// directFolderBusy is why a direct edit can't be asked for or opened in folder: a live or queued run holds it or a folder around it, or a landing or an update is under way in it or a folder around it. The caller holds lockFolders. It returns "" when the folder is free.
-func directFolderBusy(bridge, folder string) (string, error) {
+// directFolderBusy is why a direct edit can't be asked for or opened in folder, with the folder a landing or an update holds named in spelling, the editor's form of folder: a live or queued run holds it or a folder around it, or a landing or an update is under way in it or a folder around it. The caller holds lockFolders. It returns "" when the folder is free.
+func directFolderBusy(bridge, folder, spelling string) (string, error) {
 	if why, err := runHolding(bridge, folder, runtime.GOOS, true); why != "" || err != nil {
 		return why, err
 	}
@@ -103,7 +113,7 @@ func directFolderBusy(bridge, folder string) (string, error) {
 	if err != nil || around == "" {
 		return "", err
 	}
-	return fmt.Sprintf("%s is under way in the code folder %s", what, around), nil
+	return fmt.Sprintf("%s is under way in the code folder %s", what, inRunsSpelling(spelling, around)), nil
 }
 
 // directEdit decides a session's edit of resolved, a target outside the folders it may always edit: allowed inside the folder of its open direct edit unless a live run holds the target or a landing or an update is under way around it. It returns the refusal text in held when the edit is within the open folder and a run, a landing or an update holds the target.
@@ -158,16 +168,16 @@ func promptDirect(bridge string, in *HookInput) (note, text string, handled bool
 	}
 	isGo := strings.TrimSpace(in.Prompt) == "go"
 	if df.Phase == directOpen {
-		note = fmt.Sprintf("starship: the direct edit in %s (%s) is closed: a new prompt is new work. Ask again (ensign direct ask) if it is needed.", df.Folder, df.Work)
+		note = fmt.Sprintf("starship: the direct edit in %s (%s) is closed: a new prompt is new work. Ask again (ensign direct ask) if it is needed.", df.shown(), df.Work)
 		return
 	}
 	if !isGo {
-		note = fmt.Sprintf("starship: the request for a direct edit in %s (%s) was not approved with go and is dropped.", df.Folder, df.Work)
+		note = fmt.Sprintf("starship: the request for a direct edit in %s (%s) was not approved with go and is dropped.", df.shown(), df.Work)
 		return
 	}
 	handled = true
 	if df.Phase != directShown {
-		text = fmt.Sprintf("this go opened nothing: the direct edit request for %s was not shown to the user at the end of a turn, so it is dropped. Tell the user the folder and the work and ask for go again with ensign direct ask.", df.Folder)
+		text = fmt.Sprintf("this go opened nothing: the direct edit request for %s was not shown to the user at the end of a turn, so it is dropped. Tell the user the folder and the work and ask for go again with ensign direct ask.", df.shown())
 		return
 	}
 	waiting, err := goWaiting(bridge, in.SessionID)
@@ -175,7 +185,7 @@ func promptDirect(bridge string, in *HookInput) (note, text string, handled bool
 		return
 	}
 	if waiting {
-		text = fmt.Sprintf("a direct edit in %s and a run or sequence both wait for go, so this go approved neither and the direct edit request is dropped. Tell the user; discard the run or sequence if the direct edit is wanted, then ask again.", df.Folder)
+		text = fmt.Sprintf("a direct edit in %s and a run or sequence both wait for go, so this go approved neither and the direct edit request is dropped. Tell the user; discard the run or sequence if the direct edit is wanted, then ask again.", df.shown())
 		return
 	}
 	l, err := lockFolders(bridge)
@@ -183,19 +193,19 @@ func promptDirect(bridge string, in *HookInput) (note, text string, handled bool
 		return
 	}
 	defer l.Unlock()
-	why, err := directFolderBusy(bridge, df.Folder)
+	why, err := directFolderBusy(bridge, df.Folder, df.shown())
 	if err != nil {
 		return
 	}
 	if why != "" {
-		text = fmt.Sprintf("the direct edit in %s was not opened: %s. The request is dropped; tell the user.", df.Folder, why)
+		text = fmt.Sprintf("the direct edit in %s was not opened: %s. The request is dropped; tell the user.", df.shown(), why)
 		return
 	}
 	df.Phase = directOpen
 	if err = writeJSON(directPath(bridge, in.SessionID), df); err != nil {
 		return
 	}
-	text = fmt.Sprintf("the guard is open for %s for this turn only, for: %s. Do only what the user asked, and run no builds or tests unless they asked. Commits and pushes still need the user's explicit approval. Run `ensign direct close` when done.", df.Folder, df.Work)
+	text = fmt.Sprintf("the guard is open for %s for this turn only, for: %s. Do only what the user asked, and run no builds or tests unless they asked. Commits and pushes still need the user's explicit approval. Run `ensign direct close` when done.", df.shown(), df.Work)
 	return
 }
 
@@ -211,7 +221,7 @@ func closeOpenDirect(bridge, session string) (string, error) {
 	if err := closeDirect(bridge, session); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("starship: the direct edit in %s (%s) is closed: a new prompt is new work. Ask again (ensign direct ask) if it is needed.", df.Folder, df.Work), nil
+	return fmt.Sprintf("starship: the direct edit in %s (%s) is closed: a new prompt is new work. Ask again (ensign direct ask) if it is needed.", df.shown(), df.Work), nil
 }
 
 // directStop ends a turn's direct edit: an open one closes, and a pending request counts as shown to the user, which go needs.
@@ -260,9 +270,9 @@ func cmdDirect(args []string, out io.Writer) error {
 		case df == nil:
 			fmt.Fprintln(out, "no direct edit to close")
 		case df.Phase == directOpen:
-			fmt.Fprintf(out, "closed the direct edit in %s\n", df.Folder)
+			fmt.Fprintf(out, "closed the direct edit in %s\n", df.shown())
 		default:
-			fmt.Fprintf(out, "dropped the pending request for a direct edit in %s\n", df.Folder)
+			fmt.Fprintf(out, "dropped the pending request for a direct edit in %s\n", df.shown())
 		}
 		return nil
 	case len(args) >= 3 && args[0] == "ask":
@@ -302,7 +312,7 @@ func directAsk(bridge, session, folder, work string, out io.Writer) error {
 		return err
 	}
 	defer l.Unlock()
-	if why, err := directFolderBusy(bridge, resolved); err != nil {
+	if why, err := directFolderBusy(bridge, resolved, expanded); err != nil {
 		return err
 	} else if why != "" {
 		return fmt.Errorf("a direct edit is refused in a folder a live run holds: %s", why)
@@ -310,10 +320,10 @@ func directAsk(bridge, session, folder, work string, out io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(directPath(bridge, session)), 0o755); err != nil {
 		return err
 	}
-	if err := writeJSON(directPath(bridge, session), &directFile{Folder: resolved, Work: work, Phase: directPending}); err != nil {
+	if err := writeJSON(directPath(bridge, session), &directFile{Folder: resolved, Spelling: expanded, Work: work, Phase: directPending}); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "direct edit requested in %s for: %s\nIt waits for the user's go; nothing here approves it. Tell the user the folder and the work in your reply and ask them to type go, then end your turn. A go opens the guard for that folder for the next turn only; any other reply drops the request, except status and help, which leave it waiting.\n", resolved, work)
+	fmt.Fprintf(out, "direct edit requested in %s for: %s\nIt waits for the user's go; nothing here approves it. Tell the user the folder and the work in your reply and ask them to type go, then end your turn. A go opens the guard for that folder for the next turn only; any other reply drops the request, except status and help, which leave it waiting.\n", expanded, work)
 	return nil
 }
 

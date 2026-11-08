@@ -590,6 +590,32 @@ func TestValidateAdvisoryAndEmpty(t *testing.T) {
 	}
 }
 
+func TestValidateTopLevelLeadIsFirst(t *testing.T) {
+	ok := Outcomes{{Name: "a", Then: Transition{Finish: "success"}}, {Name: "e", Then: Transition{Error: "x"}}}
+	stage := func(id string) *Stage { return &Stage{ID: id, Role: "coder", Outcomes: ok} }
+	lead := func(id string) *Stage {
+		l := stage(id)
+		l.DispatchedBy = "session"
+		l.Stages = []*Stage{stage(id + "-inner")}
+		return l
+	}
+	for name, c := range map[string]struct {
+		stages []*Stage
+		want   string
+	}{
+		"first":  {[]*Stage{lead("lead"), stage("work")}, ""},
+		"second": {[]*Stage{stage("work"), lead("lead")}, `stage "lead": a top-level lead must be the pipeline's first stage`},
+		"two":    {[]*Stage{lead("lead"), lead("lead2")}, `stage "lead2": a top-level lead must be the pipeline's first stage`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := strings.Join(validate(&Config{ControlPlane: repoRoot(t), Pipeline: &Pipeline{Stages: c.stages}}), "\n")
+			if has := strings.Contains(got, "must be the pipeline's first stage"); has != (c.want != "") || c.want != "" && !strings.Contains(got, c.want) {
+				t.Errorf("want %q in:\n%s", c.want, got)
+			}
+		})
+	}
+}
+
 func TestPrivateStageIsTheDocumentStageOnly(t *testing.T) {
 	for curates, want := range map[string]bool{"document": true, "": false, "style": false, "skill": false} {
 		if got := privateStage(&Stage{Curates: curates}); got != want {

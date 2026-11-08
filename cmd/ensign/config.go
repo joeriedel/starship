@@ -1795,9 +1795,12 @@ func validate(c *Config) []string {
 		}
 	}
 	check(p.Stages, 0)
-	for _, s := range p.Stages {
+	for i, s := range p.Stages {
 		if s.isLead() && s.DispatchedBy != "session" {
 			add("stage %q: a top-level lead must be dispatched-by: session", s.ID)
+		}
+		if s.isLead() && i != 0 {
+			add("stage %q: a top-level lead must be the pipeline's first stage", s.ID)
 		}
 	}
 	errs = append(errs, c.problems...)

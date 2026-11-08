@@ -485,6 +485,34 @@ func TestDirectRefusedWhereALandingIs(t *testing.T) {
 	}
 }
 
+func TestDirectRefusalNamesTheFolderAsEditorSpelledIt(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	real := w.codeFolder("code")
+	link := filepath.Join(t.TempDir(), "supernova")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("no symlinks here:", err)
+	}
+	sub := filepath.Join(link, "api")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	release := holdLanding(t, w, real)
+	_, err := w.direct("ask", sub, "x")
+	if err == nil || !strings.Contains(err.Error(), "the code folder "+link) {
+		t.Errorf("ask below a landing should name the symlink spelling %s: %v", link, err)
+	}
+	release()
+	if out, err := w.direct("ask", sub, "x"); err != nil || !strings.Contains(out, sub) {
+		t.Fatalf("ask names the folder as given: %q %v", out, err)
+	}
+	w.replyStop("shown", false)
+	holdLanding(t, w, real)
+	ctx := w.say("go")
+	if !strings.Contains(ctx, "not opened") || !strings.Contains(ctx, "the code folder "+link) || !strings.Contains(ctx, "direct edit in "+sub) {
+		t.Errorf("go should name the symlink spelling: %q", ctx)
+	}
+}
+
 func TestDirectWaitsThroughStatusAndHelp(t *testing.T) {
 	w, _ := newGuardWorld(t)
 	code := w.codeFolder("code")

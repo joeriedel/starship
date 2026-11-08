@@ -2463,9 +2463,9 @@ func (w *world) laterPublish(task string) *seqStep {
 			seq.Closed = true
 		}
 		sf.Sequences = append(sf.Sequences, &sequence{N: len(sf.Sequences) + 1, Mode: modeKeepGoing, Approved: true, Steps: []*seqStep{pub}})
-		_, err := sf.advanceParts(w.bridge, w.sid)
+		sf.advanceParts(w.bridge, w.sid)
 		pub.Status = sf.Sequences[len(sf.Sequences)-1].Steps[0].Status
-		return err
+		return nil
 	})
 	if err != nil {
 		w.t.Fatal(err)

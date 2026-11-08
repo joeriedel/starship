@@ -1333,25 +1333,24 @@ func retireIf(bridge, id, reason string, states ...string) error {
 }
 
 // advance starts the next step if none is under way. It returns what the session should be told, followed by the listing, or "" when nothing changed.
-func (sf *seqFile) advance(bridge, session string) (string, error) {
-	text, err := sf.advanceText(bridge, session)
+func (sf *seqFile) advance(bridge, session string) string {
+	text := sf.advanceText(bridge, session)
 	if text != "" {
 		if _, heldStep := sf.held(); heldStep != nil {
 			text += "\n\n" + sf.nowAt(heldStep)
 		}
 		text += "\n\n" + sf.listing(bridge)
 	}
-	return text, err
+	return text
 }
 
 // advanceText is advance without the listing.
-func (sf *seqFile) advanceText(bridge, session string) (string, error) {
-	parts, err := sf.advanceParts(bridge, session)
-	return strings.Join(parts, "\n"), err
+func (sf *seqFile) advanceText(bridge, session string) string {
+	return strings.Join(sf.advanceParts(bridge, session), "\n")
 }
 
 // advanceParts does the advancing and returns what the session should be told, one entry per piece; a piece can span lines.
-func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
+func (sf *seqFile) advanceParts(bridge, session string) []string {
 	sf.reconcile(bridge)
 	for _, o := range sf.retryRetires(bridge) {
 		if !o.failed || !sf.stopPass {
@@ -1380,7 +1379,7 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 				}
 			}
 			if seq.holding() {
-				return parts, nil
+				return parts
 			}
 			st := seq.nextPending()
 			if st == nil {
@@ -1460,7 +1459,7 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 				default:
 					st.Status, st.Reason = "active", ""
 				}
-				return parts, nil
+				return parts
 			case "publish":
 				sk, err := sf.skippedBefore(bridge, seq, st)
 				if err != nil {
@@ -1480,7 +1479,7 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 				if b := (*busyError)(nil); errors.As(err, &b) {
 					st.Reason = "waiting: " + err.Error()
 					parts = append(parts, fmt.Sprintf("step %s can't start yet: %v", st.ref(), err))
-					return parts, nil
+					return parts
 				}
 				if err != nil {
 					st.Status, st.Reason = "failed", err.Error()
@@ -1493,15 +1492,15 @@ func (sf *seqFile) advanceParts(bridge, session string) ([]string, error) {
 			case "do":
 				st.Status = "active"
 				parts = append(parts, fmt.Sprintf("step %s: %s", st.ref(), doText(st)))
-				return parts, nil
+				return parts
 			case "release":
 				st.Status = "active"
 				parts = append(parts, fmt.Sprintf("step %s: %s", st.ref(), releaseText(st)))
-				return parts, nil
+				return parts
 			}
 		}
 	}
-	return parts, nil
+	return parts
 }
 
 // publishLine is a publish's outcome line led by the position it had when it ran, when it has one.
@@ -2129,9 +2128,9 @@ func landLocation(bridge, session string, st *seqStep, loc string) (string, erro
 
 func advanceSequence(bridge, session string) (string, error) {
 	var text string
-	err := withSeq(bridge, session, func(sf *seqFile) (err error) {
-		text, err = sf.advance(bridge, session)
-		return
+	err := withSeq(bridge, session, func(sf *seqFile) error {
+		text = sf.advance(bridge, session)
+		return nil
 	})
 	return text, err
 }
@@ -2159,7 +2158,7 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 		if len(others) > 0 {
 			text += fmt.Sprintf(" Still waiting for go: %s; each needs its own go.", strings.Join(others, ", "))
 		}
-		parts, err := sf.advanceParts(bridge, session)
+		parts := sf.advanceParts(bridge, session)
 		reports := sf.takeReports()
 		heldSeq, heldStep := sf.held()
 		if len(parts) > 0 {
@@ -2177,7 +2176,7 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 			text += "\n\n" + strings.Join(reports, "\n\n")
 		}
 		text += "\n\nSequence rules: `ensign help sequence`."
-		return err
+		return nil
 	})
 	return
 }
@@ -2207,11 +2206,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 	var out any
 	withSeq(bridge, in.SessionID, func(sf *seqFile) error {
 		sf.stopPass = true
-		adv, advErr := sf.advanceParts(bridge, in.SessionID)
-		var advNote string
-		if advErr != nil {
-			advNote = "The sequence could not advance: " + advErr.Error()
-		}
+		adv := sf.advanceParts(bridge, in.SessionID)
 		reports := sf.takeReports()
 		for _, seq := range sf.Sequences {
 			for _, st := range seq.Steps {
@@ -2262,7 +2257,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 				kept := slices.DeleteFunc(slices.Clone(adv), func(p string) bool {
 					return slices.ContainsFunc(own, func(o string) bool { return strings.HasPrefix(p, o) })
 				})
-				msg := []string{fmt.Sprintf("sequence step %s is waiting for you (%s).", st.ref(), sf.position(st)), todo, strings.Join(kept, "\n"), strings.Join(seq.unreportedNotes(kept), "\n"), strings.Join(reports, "\n\n"), advNote, "Sequence rules: `ensign help sequence`."}
+				msg := []string{fmt.Sprintf("sequence step %s is waiting for you (%s).", st.ref(), sf.position(st)), todo, strings.Join(kept, "\n"), strings.Join(seq.unreportedNotes(kept), "\n"), strings.Join(reports, "\n\n"), "Sequence rules: `ensign help sequence`."}
 				msg = slices.DeleteFunc(msg, func(b string) bool { return strings.TrimSpace(b) == "" })
 				out = block(strings.Join(msg, "\n\n"))
 				return nil
@@ -2558,12 +2553,12 @@ func releaseRun(bridge, session, arg string, out io.Writer) error {
 				st.Status, st.Reason = "done", ""
 				note = fmt.Sprintf("step %s (release %s %s) done.", st.ref(), project, version)
 			}
-			text, aerr := sf.advance(bridge, owner)
+			text := sf.advance(bridge, owner)
 			if text == "" {
 				text = sf.listing(bridge)
 			}
 			fmt.Fprintf(out, "%s\n%s", note, text)
-			return aerr
+			return nil
 		})
 		return found, werr
 	}
@@ -2805,7 +2800,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 		}
 		err = withSeq(bridge, session, func(sf *seqFile) error {
-			text, err := sf.advance(bridge, session)
+			text := sf.advance(bridge, session)
 			if text != "" {
 				fmt.Fprintln(out, text)
 			} else {
@@ -2814,7 +2809,7 @@ func cmdSequence(args []string, out io.Writer) error {
 					fmt.Fprint(out, "\n"+l)
 				}
 			}
-			return err
+			return nil
 		})
 		if len(retireErrs) > 0 {
 			err = errors.Join(append(retireErrs, err)...)
@@ -2900,9 +2895,8 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			sf.normalize()
 			var text string
-			var err error
 			if cancelled {
-				text, err = sf.advance(bridge, session)
+				text = sf.advance(bridge, session)
 			}
 			if text == "" {
 				text = sf.listing(bridge)
@@ -2916,7 +2910,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				text = "no steps are left waiting for go\n"
 			}
 			fmt.Fprint(out, text)
-			return err
+			return nil
 		})
 		if err != nil {
 			return err
@@ -2976,12 +2970,12 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			st.Status = "failed"
 			sf.failed(bridge, seq, st)
-			text, err := sf.advance(bridge, session)
+			text := sf.advance(bridge, session)
 			if text == "" {
 				text = sf.listing(bridge)
 			}
 			fmt.Fprint(out, text)
-			return err
+			return nil
 		})
 		if err != nil {
 			return err
@@ -3019,7 +3013,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				}
 			}
 			cancelLaterReleases(bridge, seq, st, fmt.Sprintf("step %s was skipped", st.ref()))
-			text, err := sf.advance(bridge, session)
+			text := sf.advance(bridge, session)
 			if text == "" {
 				text = sf.listing(bridge)
 			}
@@ -3031,7 +3025,7 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			text = workspace + "\n" + text
 			fmt.Fprint(out, text)
-			return err
+			return nil
 		})
 		if err != nil {
 			return err
@@ -3106,15 +3100,12 @@ func cmdSequence(args []string, out io.Writer) error {
 			}
 			st.Headline = headlineWithSubtasks(headline(fresh[0].WorkItem), subtasks)
 			st.Status, st.Reason, st.Blocks, st.WaitBlocks = "pending", "", 0, 0
-			text, err := sf.advance(bridge, session)
+			text := sf.advance(bridge, session)
 			if text == "" {
 				text = sf.listing(bridge)
 			}
 			fmt.Fprint(out, text)
-			if err != nil {
-				err = withdrawFresh(bridge, fresh, err)
-			}
-			return err
+			return nil
 		})
 		if err != nil {
 			return err
@@ -3150,12 +3141,12 @@ func cmdSequence(args []string, out io.Writer) error {
 				st.Status = "failed"
 				sf.failed(bridge, seq, st)
 			}
-			text, err := sf.advance(bridge, session)
+			text := sf.advance(bridge, session)
 			if text == "" {
 				text = sf.listing(bridge)
 			}
 			fmt.Fprint(out, text)
-			return err
+			return nil
 		})
 	}
 	return fmt.Errorf("usage: ensign sequence [run <project>/<task> | publish <project>/<task> | release <project> <version> | release-run <seq>.<step> | do <instruction> | mode stop|keep-going | halt | discard | drop <step>... [--reason <text>] | retry <step> --diagnosis <why> --state <what is left> | accept <step> | skip <step> | done <step> | fail <step> --reason <text>]; add steps with --name <text> to name a new sequence]")

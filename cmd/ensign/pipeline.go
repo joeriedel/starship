@@ -163,7 +163,7 @@ func (st *State) resetPosition() {
 	st.Resume = nil
 }
 
-// hasLead reports a pipeline run by a lead, whose judgment closes the run at the gate.
+// hasLead reports a pipeline run by a lead, whose judgment closes the run at the gate. A lead is always the first stage: validate refuses one anywhere else.
 func (m *machine) hasLead() bool { return m.snap.Pipeline.Stages[0].isLead() }
 
 // toGate parks a passed run at the closing gate for its lead to judge.
