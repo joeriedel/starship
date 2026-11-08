@@ -135,27 +135,31 @@ func TestSequenceGroupStartsEveryRunAndListsGroups(t *testing.T) {
 	}
 }
 
-func TestNextSubtaskGroupReportsAnUncommittedWorkspace(t *testing.T) {
+func TestNextSubtaskGroupWaitsForAnUncommittedWorkspace(t *testing.T) {
 	w := groupWorld(t, "01-models", "02-client")
 	server := w.sideFolder("client")
 	runGit(t, server, "init", "-q", "-b", "main")
 	write(t, filepath.Join(server, "a.go"), "package a\n")
 	runGit(t, server, "add", "-A")
 	runGit(t, server, "commit", "-q", "-m", "base")
-	write(t, filepath.Join(server, "b.go"), "package b\n")
 	w.mustSeq("run", "supernova/t")
 	w.approve()
+	write(t, filepath.Join(server, "b.go"), "package b\n")
 	w.passLoc(w.leadOf(w.stepRuns(1)[0]))
-	if st := w.step(1); st.Group != 2 || st.Status != "active" {
-		t.Fatalf("the second group should be under way: %+v", st)
+	st := w.step(1)
+	if st.Group != 2 || st.Status == "active" || len(st.Runs) == 0 || !strings.HasPrefix(st.Runs[0].Reason, "waiting:") || !strings.Contains(st.Runs[0].Reason, "b.go") {
+		t.Fatalf("the second group should wait for the dirty folder: %+v", st)
 	}
-	got := takeSequenceReports(w.bridge, w.sid)
-	if !strings.Contains(got, "The workspace "+server+" has 1 uncommitted path(s): b.go") || strings.Contains(got, "before you ask for go") {
-		t.Errorf("the sequence's report should carry the notice for the run it started:\n%s", got)
+	os.Remove(filepath.Join(server, "b.go"))
+	if _, err := advanceSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.step(1); st.Status != "active" {
+		t.Fatalf("the group should start once the folder is clean: %+v", st)
 	}
 }
 
-func TestSequenceRetryReportsAnUncommittedWorkspace(t *testing.T) {
+func TestSequenceRetryIsExemptFromTheDirtyFolderRefusal(t *testing.T) {
 	w := groupWorld(t, "01-client")
 	client := w.sideFolder("client")
 	runGit(t, client, "init", "-q", "-b", "main")
@@ -167,9 +171,9 @@ func TestSequenceRetryReportsAnUncommittedWorkspace(t *testing.T) {
 	w.failRun(w.leadOf(w.stepRuns(1)[0]))
 	w.wantStatus("decide")
 	write(t, filepath.Join(client, "b.go"), "package b\n")
-	out := w.retryStep("1")
-	if !strings.Contains(out, "The workspace "+client+" has 1 uncommitted path(s): b.go") || strings.Contains(out, "before you ask for go") {
-		t.Errorf("the retry should carry the notice for the run it started:\n%s", out)
+	w.retryStep("1")
+	if st := w.step(1); st.Status != "active" {
+		t.Fatalf("the retry starts on the failed attempt's leftover work: %+v", st)
 	}
 }
 
@@ -451,6 +455,7 @@ func (w *world) finishRun(run string) *State {
 	if err := cmdRunStage([]string{"--bridge", w.bridge, "--run", run}, &out); err != nil || !strings.Contains(out.String(), "Outcome: pass") {
 		w.t.Fatalf("run %s should pass: %v\n%s", run, err, out.String())
 	}
+	w.gateMet(run)
 	return w.runState(run)
 }
 

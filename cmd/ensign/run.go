@@ -75,6 +75,8 @@ type Dispatch struct {
 	Usage     *Usage `json:"usage,omitempty"`    // from the agent's transcript
 	// DocsBase is a documentation dispatch's dirty paths with content hashes, taken when it was spawned; state saved before it existed reads empty.
 	DocsBase map[string]string `json:"docs_base,omitempty"`
+	// FinishedSeq is State.Clock when the dispatch's report was recorded; 0 while it runs.
+	FinishedSeq int `json:"finished_seq,omitempty"`
 }
 
 type ScopeState struct {
@@ -131,6 +133,41 @@ type State struct {
 	Tasks map[string]string `json:"tasks,omitempty"` // background task id -> id of the agent that launched it
 
 	Sequence bool `json:"sequence,omitempty"` // the run is a step of its session's sequence
+
+	// Gate is the reason a passing pipeline gave, while the run waits at the closing gate for its lead to record whether the goal is met with `ensign run finish`; "" when the run is not there.
+	Gate string `json:"gate,omitempty"`
+	// Clock orders events within the run: it counts up as stage reports are recorded and as the lead calls ensign.
+	Clock int `json:"clock,omitempty"`
+	// LeadSeq is Clock at each lead scope's latest `ensign next` or `ensign run finish`.
+	LeadSeq map[string]int `json:"lead_seq,omitempty"`
+}
+
+// tick advances the run's clock and returns it.
+func (st *State) tick() int {
+	st.Clock++
+	return st.Clock
+}
+
+// atGate reports a run that waits at the closing gate.
+func (st *State) atGate() bool { return st.Gate != "" && !st.terminal() }
+
+// recordLeadCall notes that the lead of scope has just called ensign.
+func (st *State) recordLeadCall(scope string) {
+	if st.LeadSeq == nil {
+		st.LeadSeq = map[string]int{}
+	}
+	st.LeadSeq[scope] = st.tick()
+}
+
+// reportedSinceLeadCall reports that a stage of scope finished after the scope's lead last called ensign, so the lead has not been told of it.
+func (st *State) reportedSinceLeadCall(scope string) bool {
+	last := 0
+	for _, d := range st.Dispatches {
+		if d.Scope == scope {
+			last = max(last, d.FinishedSeq)
+		}
+	}
+	return last > st.LeadSeq[scope]
 }
 
 // queued reports a sequence run that has not started: it is no session's waiting run.
@@ -1266,6 +1303,9 @@ func cmdRun(args []string, out io.Writer) error {
 	if len(args) > 0 && args[0] == "clear" {
 		return cmdRunClear(args[1:], out)
 	}
+	if len(args) > 0 && args[0] == "finish" {
+		return cmdRunFinish(args[1:], out, os.Stderr)
+	}
 	o, err := parseRunArgs("ensign run", args)
 	if err != nil {
 		return err
@@ -1282,11 +1322,73 @@ func cmdRun(args []string, out io.Writer) error {
 			return err
 		}
 	}
-	snap, err := createRun(bridge, o, false, out)
-	if err == nil && snap != nil {
-		fmt.Fprint(out, dirtyNotice(false, snap))
-	}
+	_, err = createRun(bridge, o, false, out)
 	return err
+}
+
+// cmdRunFinish is `ensign run finish --goal met|not-met [<why>]`: the lead's judgment at the closing gate. met finishes the run as a success, not-met as the error goal-not-met with the why as its reason.
+func cmdRunFinish(args []string, out, stderr io.Writer) error {
+	const usage = "ensign run finish [--bridge <dir>] [--run <id>] --goal met|not-met [<why>]"
+	var flags, why []string
+	goal := ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--goal" && i+1 < len(args):
+			goal = args[i+1]
+			i++
+		case (args[i] == "--bridge" || args[i] == "--run") && i+1 < len(args):
+			flags = append(flags, args[i], args[i+1])
+			i++
+		case strings.HasPrefix(args[i], "--"):
+			return fmt.Errorf("usage: %s", usage)
+		default:
+			why = append(why, args[i])
+		}
+	}
+	reason := strings.TrimSpace(strings.Join(why, " "))
+	if goal != "met" && goal != "not-met" {
+		return fmt.Errorf("usage: %s", usage)
+	}
+	if goal == "not-met" && reason == "" {
+		return errors.New("--goal not-met needs the reason the goal is not met: ensign run finish --goal not-met \"<why>\"")
+	}
+	r, err := openRunByFlags(flags, usage)
+	if err != nil {
+		return err
+	}
+	if r == nil {
+		return errors.New("there is no active run")
+	}
+	defer r.close()
+	m := &machine{snap: r.Snap, st: r.State}
+	if r.State.terminal() {
+		return terminalRunError(r.State.Run, r.State.Status, "finish")
+	}
+	if !r.State.atGate() {
+		return fmt.Errorf("run %s is not at its closing gate, so it can't be finished: %s", r.State.Run, m.expect(leadScope(r)))
+	}
+	r.State.recordLeadCall(leadScope(r))
+	if goal == "met" {
+		m.finish(Transition{Finish: "success"}, r.State.Gate)
+	} else {
+		m.finish(Transition{Error: "goal-not-met"}, reason)
+	}
+	// Saved first: finishing may read the run's state from disk, and a failure below must not lose the judgment.
+	if err := r.save(); err != nil {
+		return err
+	}
+	if err := finishIfTerminal(r, false, stderr); err != nil {
+		fmt.Fprintln(stderr, "ensign: could not finish the run:", err)
+	}
+	if err := r.save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Run %s finished: %s (%s).", r.State.Run, r.State.Status, r.State.Reason)
+	if len(r.State.Notes) > 0 {
+		fmt.Fprint(out, " "+strings.Join(r.State.Notes, " ")+".")
+	}
+	fmt.Fprintln(out, " Stop and report this.")
+	return nil
 }
 
 // openRunError is the error a command gives when openRun fails. Its advice depends on how readRunClass classes the folder: a run is pointed at `ensign run clear` only when clearAccepts says it takes it: a state.json that can't be read, a live run whose pipeline.json can't be read or fails budget canonicalization, or an ask-user run in that case. A folder that is not there is no run, and a path that is not a folder is not a run either.
@@ -1770,6 +1872,11 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		if err != nil {
 			return nil, err
 		}
+		if o.retryOf == "" {
+			if err := dirtyFolder(want); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	known, err := knownSkills(bridge, c.ControlPlane, c.Project)
@@ -1845,7 +1952,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	m.enter("", first)
 
 	os.Mkdir(filepath.Join(dir, "scratch"), 0o755)
-	if err := os.Mkdir(filepath.Join(dir, "reports"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "reports", "evidence"), 0o755); err != nil {
 		return nil, err
 	}
 	if err := writeOnDemandSkills(dir, snap.Skills); err != nil {
@@ -2113,6 +2220,12 @@ func stopAdvisory(r *RunFiles, m *machine) bool {
 			b.Done, b.Outcome = true, s.Advisory
 		}
 		r.State.noteOnce(missingNote(dim))
+	}
+	if t, _ := s.Outcomes.find(s.Advisory); t.Finish != "" {
+		// A stop finishes the run: it does not park at the gate.
+		r.State.log("outcome", s.ID, "", s.Advisory+" → "+t.String())
+		m.finish(t, fmt.Sprintf("%s reported %s", s.ID, s.Advisory))
+		return true
 	}
 	m.apply(leadScope(r), s, s.Advisory)
 	return true

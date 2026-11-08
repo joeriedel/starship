@@ -161,6 +161,33 @@ func newDispatch(r *RunFiles, scope string, s *Stage, role string) *Dispatch {
 		Fields: map[string][]string{}, StopsLeft: &stops}
 }
 
+// finishedRunRefusal is the reason to refuse a tool call of an agent that belongs to a finished run, or "". The agent's run is the one it is bound to, among its session's runs, or else the one its transcript's tag names; the session's current run does not matter, since it may be a retry. State is read without the run lock, as runIsLive does.
+func finishedRunRefusal(bridge string, in *HookInput) string {
+	ids, _ := sessionRuns(bridge, in.SessionID)
+	for _, id := range ids {
+		var st State
+		if readRunState(filepath.Join(runsDir(bridge), id), &st) == nil && st.byAgent(in.AgentID) != nil {
+			return runOverReason(&st)
+		}
+	}
+	run, _ := agentTag(in)
+	if run == "" {
+		return ""
+	}
+	var st State
+	if readRunState(filepath.Join(runsDir(bridge), run), &st) == nil && st.terminal() {
+		return runOverReason(&st)
+	}
+	return ""
+}
+
+func runOverReason(st *State) string {
+	if !st.terminal() {
+		return ""
+	}
+	return fmt.Sprintf("run %s is over (%s), and this agent belonged to it. Stop now: make no more tool calls and end your turn with a short final message.", st.Run, st.Status)
+}
+
 func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 	if in.ToolName == "SubagentHandback" {
 		return hookHandback(in, r), nil
@@ -359,7 +386,16 @@ func hookHandback(in *HookInput, r *RunFiles) any {
 		return denial(reason)
 	}
 	if s != nil && s.isLead() && !r.State.terminal() {
-		return refuse("the pipeline is not finished. "+m.expect(s.ID), "lead-stopped", "the lead stopped before the pipeline finished")
+		var next strings.Builder
+		writeNext(r, &next)
+		reason := "the pipeline is not finished. " + strings.TrimSpace(next.String())
+		if r.State.reportedSinceLeadCall(s.ID) {
+			// The lead has not seen the stage's result yet: this handback is the lead's turn to read it, not a refusal.
+			r.State.recordLeadCall(s.ID)
+			r.State.log("denied", s.ID, d.ID, "lead handed back before reading a stage's result")
+			return denial(reason)
+		}
+		return refuse(reason, "lead-stopped", "the lead stopped before the pipeline finished")
 	} else if s != nil && !s.isLead() && !d.Done {
 		outcome, _, _, problem := parseReport(msg, s)
 		if problem != "" && s.Advisory != "" {
@@ -461,13 +497,21 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		if d.Handback == "" && ownsInFlight(r, in) {
 			return nil, nil // waiting on its own background task
 		}
+		var next strings.Builder
+		writeNext(r, &next)
+		if r.State.reportedSinceLeadCall(s.ID) {
+			// The lead has not seen the stage's result yet: this stop is the lead's turn to read it, not a refusal.
+			r.State.recordLeadCall(s.ID)
+			r.State.log("blocked", s.ID, d.ID, "lead stopped before reading a stage's result")
+			return block("the pipeline is not finished. " + strings.TrimSpace(next.String())), nil
+		}
 		if d.spendStop() {
 			m.fail("lead-stopped", "the lead stopped before the pipeline finished")
 			d.Done = true
 			return nil, nil
 		}
 		r.State.log("blocked", s.ID, d.ID, "lead tried to stop early")
-		return block("the pipeline is not finished. " + m.expect(s.ID)), nil
+		return block("the pipeline is not finished. " + strings.TrimSpace(next.String())), nil
 	}
 	if d.Done {
 		return nil, nil
@@ -525,6 +569,7 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 		}
 	}
 	d.Done, d.Outcome = true, outcome
+	d.FinishedSeq = r.State.tick()
 	detail := outcome
 	if !privateStage(s) {
 		d.Summary = summary
@@ -661,6 +706,11 @@ func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 	defer l.Unlock()
 	if err := folderHolder(r.Snap.Bridge, r.Snap, r.State.Session, r.State.Run); err != nil {
 		return ctx(fmt.Sprintf("run %s was not started: %v.", r.State.Run, err)), nil
+	}
+	if r.State.RetryOf == "" {
+		if err := dirtyFolder(r.Snap); err != nil {
+			return ctx(fmt.Sprintf("run %s was not started: %v. Tell the user, then type go again once the folder is clean.", r.State.Run, err)), nil
+		}
 	}
 	r.State.Approved, r.State.Status = true, "running"
 	r.State.log("approved", "", "", "")
@@ -816,8 +866,8 @@ func workspaceSection(r *RunFiles) string {
 	if r.Snap.Location != "" {
 		ws += " (the project's " + r.Snap.Location + " location)"
 	}
-	fmt.Fprintf(&b, "## Workspace\n\n%s\n\nScratch folder for logs and notes (never the workspace): %s\n\nThe project's bindings, as the exact commands to run:\n\n",
-		ws, filepath.Join(r.Dir, "scratch"))
+	fmt.Fprintf(&b, "## Workspace\n\n%s\n\nScratch folder for logs and notes (never the workspace): %s\n\nEvidence folder, kept after the run ends (the scratch folder is emptied): %s\n\nThe project's bindings, as the exact commands to run:\n\n",
+		ws, filepath.Join(r.Dir, "scratch"), filepath.Join(r.Dir, "reports", "evidence"))
 	for _, k := range sortedKeys(r.Snap.Bindings) {
 		bd := r.Snap.Bindings[k]
 		b.WriteString(bindingLine(k, bd, r.Snap.Workspace))
@@ -1052,6 +1102,16 @@ func cmdNext(args []string, out io.Writer) error {
 		return nil
 	}
 	defer r.close()
+	writeNext(r, out)
+	if r.State.terminal() {
+		return nil
+	}
+	r.State.recordLeadCall(leadScope(r))
+	return r.save()
+}
+
+// writeNext writes what `ensign next` prints for an open run.
+func writeNext(r *RunFiles, out io.Writer) {
 	m := &machine{snap: r.Snap, st: r.State}
 	scope := leadScope(r)
 	for i := len(r.State.Dispatches) - 1; i >= 0; i-- {
@@ -1090,7 +1150,6 @@ func cmdNext(args []string, out io.Writer) error {
 	if !r.State.terminal() {
 		fmt.Fprintln(out, "Budgets used: "+m.budgetLine())
 	}
-	return nil
 }
 
 // cmdResume implements `ensign resume --answer <text> [--budget <name>=<n>]… [--run <id>]`.

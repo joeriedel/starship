@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -48,7 +49,9 @@ func (w *world) toTest(lead string) {
 func (w *world) runStage() (string, error) {
 	w.t.Helper()
 	var out bytes.Buffer
-	err := cmdRunStage([]string{"--bridge", w.bridge, "--run", w.state().Run}, &out)
+	run := w.state().Run
+	err := cmdRunStage([]string{"--bridge", w.bridge, "--run", run}, &out)
+	out.WriteString(w.gateMet(run))
 	return out.String(), err
 }
 
@@ -70,7 +73,7 @@ func TestPlainTestRunsWithoutAnAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(why, "Outcome: pass") || !strings.Contains(why, "run is finished") {
+	if !strings.Contains(why, "Outcome: pass") || !strings.Contains(why, "pipeline has passed") {
 		t.Fatalf("the refusal should carry the result and the next step: %s", why)
 	}
 	st := w.state()
@@ -180,7 +183,7 @@ func TestHookSettingsUpgrade(t *testing.T) {
 
 func TestHookSettingsMatchBashAndUpgradeFromBefore(t *testing.T) {
 	for _, s := range []string{hookSettings(), hookSettingsFor(true, []string{"mcp__supernova_mail__read_message"}), hookSettingsFor(true, nil)} {
-		if !strings.Contains(s, `NotebookEdit|SubagentHandback|Bash`) {
+		if !strings.Contains(s, `"PreToolUse":       [{"matcher": ".*`) {
 			t.Fatalf("PreToolUse does not match Bash:\n%s", s)
 		}
 	}
@@ -518,12 +521,19 @@ func dieAtTest(t *testing.T, w *world, lead string) string {
 func TestDeadRunStageIsReportedAndRecordedAsError(t *testing.T) {
 	w, _ := diedRun(t)
 	stateFile := filepath.Join(w.bridge, ".starship", "runs", w.state().Run, "state.json")
-	before, _ := os.ReadFile(stateFile)
+	var before State
+	if err := readJSON(stateFile, &before); err != nil {
+		t.Fatal(err)
+	}
 	if got := w.next(); !strings.Contains(got, "died before it finished") || !strings.Contains(got, "ensign run-stage") || strings.Contains(got, "still running") {
 		t.Fatalf("next should report the dead stage: %q", got)
 	}
-	if after, _ := os.ReadFile(stateFile); string(after) != string(before) {
-		t.Fatal("next changed the state")
+	var after State
+	if err := readJSON(stateFile, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != before.Status || !reflect.DeepEqual(after.Dispatches, before.Dispatches) || !reflect.DeepEqual(after.Scopes, before.Scopes) {
+		t.Fatal("next changed the run beyond recording the lead's call")
 	}
 	out, err := w.runStage()
 	if err != nil || !strings.Contains(out, "Outcome: error") || !strings.Contains(out, "ran nothing") {
@@ -1255,7 +1265,7 @@ func TestRunStopPrintsNoNoticesSectionWithoutNotices(t *testing.T) {
 
 func TestLastLeadHandbackIsDeniedWithNoticesOfADeadStage(t *testing.T) {
 	w, lead := diedRunIn(t, plainWorld(t, "echo n-before >> $STARSHIP_NOTICES; kill -9 $PPID"))
-	for i := 0; i < 2; i++ {
+	for i := 0; i < stopBudget; i++ { // the first is free: a stage finished since the lead's last call
 		if r := w.handback(lead, "orchestrator", "All done."); !strings.Contains(r, "not finished") || strings.Contains(r, noticesHeading) {
 			t.Fatalf("an early handback is refused without notices: %q", r)
 		}
@@ -1281,7 +1291,7 @@ func TestLastLeadHandbackIsDeniedWithNoticesOfADeadStage(t *testing.T) {
 
 func TestLastLeadHandbackIsLetThroughWithoutNotices(t *testing.T) {
 	w, lead := diedRun(t)
-	for i := 0; i < 2; i++ {
+	for i := 0; i < stopBudget; i++ { // the first is free: a stage finished since the lead's last call
 		w.handback(lead, "orchestrator", "All done.")
 	}
 	if r := w.handback(lead, "orchestrator", "All done."); r != "" {

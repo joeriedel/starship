@@ -1092,11 +1092,6 @@ func (sf *seqFile) nextSubtaskGroup(bridge string, seq *sequence, st *seqStep, d
 		fail(err)
 		return
 	}
-	for _, line := range strings.Split(strings.TrimSpace(dirtyNotice(true, snaps...)), "\n") {
-		if line != "" {
-			seq.queue(line)
-		}
-	}
 	fresh := newRunStep(task, max(st.Group, 1)+1, snaps)
 	st.Earlier = append(st.Earlier, st.runLocations(bridge)...)
 	st.setRuns(fresh.Runs)
@@ -1309,6 +1304,16 @@ func retireForHalt(bridge, id, reason string, paused bool) error {
 		return nil
 	}
 	return markRetired(r, reason)
+}
+
+// withdrawFresh retires the still-pending runs a retry created when the retry fails, and returns err with any failure to withdraw one joined in.
+func withdrawFresh(bridge string, fresh []*Snapshot, err error) error {
+	for _, f := range fresh {
+		if rerr := retireIf(bridge, f.Run, "withdrawn: "+err.Error(), "pending"); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("run %s could not be withdrawn: %w", f.Run, rerr))
+		}
+	}
+	return err
 }
 
 // retireIf makes a run terminal, but only if it is still in one of the given states when its lock is held. A run that is not, or whose folder is gone, is left alone with no error.
@@ -1887,8 +1892,9 @@ func startRuns(bridge, session string, st *seqStep) (texts []string, busy, failu
 		}
 		text, err := startRun(bridge, session, st.Task, ru.Run)
 		var b *folderBusyError
+		var dirty *dirtyFolderError
 		switch {
-		case errors.As(err, &b):
+		case errors.As(err, &b) || errors.As(err, &dirty):
 			ru.Reason = "waiting: " + err.Error()
 			if busy == nil {
 				busy = err
@@ -1932,6 +1938,11 @@ func startRun(bridge, session, task, run string) (string, error) {
 	defer l.Unlock()
 	if err := folderHolder(bridge, r.Snap, session, run); err != nil {
 		return "", err
+	}
+	if r.State.RetryOf == "" {
+		if err := dirtyFolder(r.Snap); err != nil {
+			return "", err
+		}
 	}
 	r.State.Session, r.State.Approved, r.State.Status = session, true, "running"
 	r.State.log("approved", "", "", "sequence")
@@ -2185,7 +2196,7 @@ func waitingText(st *seqStep) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	return strings.Join(lines, "\n") + "\nIt starts by itself once the folder is free; this turn is held only a few times for it."
+	return strings.Join(lines, "\n") + "\nIt starts by itself once the folder is free (for a dirty folder: once the named paths are committed, stashed or discarded); this turn is held only a few times for it."
 }
 
 // sequenceStop holds a turn open while a step waits for the session to act on it. Each step gets seqStopBudget holds, as the sequence file's lock allows, then the turn may end. A deciding step is held once per failed attempt, because the session has then been told.
@@ -2652,14 +2663,12 @@ func cmdSequence(args []string, out io.Writer) error {
 			if err != nil || snap == nil {
 				return err
 			}
-			fmt.Fprint(out, dirtyNotice(false, snap))
 			return seqAdd(bridge, session, out, name, newRunStep(snap.Task, 0, []*Snapshot{snap}))
 		}
 		snaps, err := createGroupRuns(bridge, o.task, group, nil, o.staleOK, &o, out)
 		if err != nil {
 			return err
 		}
-		fmt.Fprint(out, dirtyNotice(false, snaps...))
 		return seqAdd(bridge, session, out, name, newRunStep(o.task, 1, snaps))
 	case "publish":
 		if len(rest) != 1 {
@@ -3079,12 +3088,7 @@ func cmdSequence(args []string, out io.Writer) error {
 				}
 				snap, err := retryRun(bridge, old, diagnosis, left, out)
 				if err != nil {
-					for _, f := range fresh {
-						if rerr := retireIf(bridge, f.Run, "withdrawn: "+err.Error(), "pending"); rerr != nil {
-							err = errors.Join(err, fmt.Errorf("run %s could not be withdrawn: %w", f.Run, rerr))
-						}
-					}
-					return err
+					return withdrawFresh(bridge, fresh, err)
 				}
 				failed, fresh = append(failed, ru), append(fresh, snap)
 			}
@@ -3107,8 +3111,8 @@ func cmdSequence(args []string, out io.Writer) error {
 				text = sf.listing(bridge)
 			}
 			fmt.Fprint(out, text)
-			if err == nil {
-				fmt.Fprint(out, dirtyNotice(true, fresh...))
+			if err != nil {
+				err = withdrawFresh(bridge, fresh, err)
 			}
 			return err
 		})

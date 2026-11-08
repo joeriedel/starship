@@ -19,4 +19,4 @@ An `ask` while one is pending or open replaces it. `ensign direct close` also dr
 - A run or sequence waiting for go in this session, or pending connector writes: finish or discard them first.
 - The state file is not editable by file tools.
 
-Direct edits leave the workspace dirty. Before a later run starts there, tell the user (`ensign help runs`).
+Direct edits leave the workspace dirty. A later run is refused while they stay uncommitted: tell the user to commit, stash or discard them first (`ensign help runs`).

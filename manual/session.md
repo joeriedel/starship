@@ -18,7 +18,7 @@ Nothing starts without agreement. **Reading needs no approval**; read only what 
 
 A plan names task, pipeline (usually `coding`), work item, what done looks like, what is out of scope. Then:
 
-1. Run `ensign run <project>/<task>` (add `--start <stage>` or `--sync` when asked). Show the user the summary. Uncommitted changes there: ask the user how to proceed first (`ensign help runs`).
+1. Run `ensign run <project>/<task>` (add `--start <stage>` or `--sync` when asked). Show the user the summary. Uncommitted changes refuse it: ask the user to commit, stash or discard them (`ensign help runs`).
 2. Ask the user to type `go`. **Only the literal `go` approves a run**; not "yes", agreement, or an answered question.
 3. On `go`, the hook tells you to dispatch the lead; do that, then wait.
 
@@ -87,4 +87,4 @@ Workspace commits, pushes and submits need the user's explicit approval **every 
 - Several steps asked: `ensign help sequence` first. A task with a `subtasks/` folder: `ensign help subtasks`.
 - To improve starship itself: `ensign help starship`; declared documents: `ensign help document`.
 - A note from the user, a catch-up request, or notes inbox items: `ensign help notes`.
-- Old runs (cleanup, questions), another session's run blocking you, uncommitted workspace changes, or user says stop: `ensign help runs`.
+- Old runs (cleanup, questions), another session's run blocking you, or user says stop: `ensign help runs`.

@@ -105,8 +105,13 @@ func TestCatalogRefusesADirtyWorkspace(t *testing.T) {
 	ws := w.gitWorkspace()
 	w.project("use: [git-catalog]\n")
 	write(t, filepath.Join(ws, "lib.txt"), "someone's edit\n")
+	if err := w.runErr("supernova/auth-refactor"); err == nil || !strings.Contains(err.Error(), "lib.txt") {
+		t.Fatalf("a run is refused up front on a dirty workspace: %v", err)
+	}
+	runGit(t, ws, "checkout", "-q", "--", "lib.txt")
 	w.run("supernova/auth-refactor")
 	w.approve()
+	write(t, filepath.Join(ws, "lib.txt"), "someone's edit\n")
 	if id, why := w.spawn("", "", "orchestrator"); id != "" || !strings.Contains(why, "uncommitted changes") {
 		t.Fatalf("lead on a dirty workspace: %q %q", id, why)
 	}

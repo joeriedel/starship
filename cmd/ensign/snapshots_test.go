@@ -265,7 +265,7 @@ func TestSettingsCarryReadAndGrepOnlyWhenDeclared(t *testing.T) {
 	}
 
 	// A hand-edited file lacking Read is reported.
-	edited := strings.Replace(hookSettings(), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "`+supernovaRead+`"`, 1)
+	edited := strings.Replace(narrowMatcher(hookSettings()), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "`+supernovaRead+`"`, 1)
 	edited = strings.Replace(edited, "SubagentHandback", "SubagentHandback|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Grep", 1)
 	write(t, f, edited)
 	err := upgradeHookSettings(b, bf)

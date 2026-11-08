@@ -26,6 +26,8 @@ type world struct {
 	session string // session transcript path; subagent transcripts are derived from it
 	sid     string // Claude Code session id
 	agents  int
+	// holdGate keeps a passing run at its closing gate, for a test that rules on the gate itself.
+	holdGate bool
 }
 
 func newWorld(t *testing.T) *world {
@@ -197,6 +199,14 @@ func (w *world) stopWith(agent, agentType, last string, active bool, tasks []map
 	if res != nil && res["decision"] == "block" {
 		return res["reason"].(string)
 	}
+	// A stop that passed the pipeline leaves its run at the closing gate: the lead (or the session) rules the goal met.
+	if runs, err := listRuns(w.bridge); err == nil {
+		for _, ri := range runs {
+			if ri.state.byAgent(agent) != nil {
+				w.gateMet(ri.id)
+			}
+		}
+	}
 	return ""
 }
 
@@ -215,7 +225,7 @@ func report(outcome string) string {
 	return "Did it.\n\n```starship-report\noutcome: " + outcome + "\nsummary: build: ok; tests: 2 passed\n```\n"
 }
 
-// leaf spawns a stage agent from the lead and stops it with an outcome.
+// leaf spawns a stage agent from the lead and stops it with an outcome. A run it passes is finished at its closing gate with the goal met, unless the world holds the gate open.
 func (w *world) leaf(lead, role, outcome string) {
 	w.t.Helper()
 	id, why := w.spawn(lead, "orchestrator", role)
@@ -225,6 +235,36 @@ func (w *world) leaf(lead, role, outcome string) {
 	if r := w.stop(id, role, report(outcome), false); r != "" {
 		w.t.Fatalf("%s stop was blocked: %s", role, r)
 	}
+	w.gateMet(w.runOfAgent(lead))
+}
+
+// runOfAgent is the run an agent belongs to.
+func (w *world) runOfAgent(agent string) string {
+	w.t.Helper()
+	runs, err := listRuns(w.bridge)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	for _, ri := range runs {
+		if ri.state.byAgent(agent) != nil {
+			return ri.id
+		}
+	}
+	w.t.Fatalf("no run has agent %s", agent)
+	return ""
+}
+
+// gateMet records the lead's judgment, goal met, when the run waits at its closing gate; a world with holdGate set leaves it there.
+func (w *world) gateMet(run string) string {
+	w.t.Helper()
+	if w.holdGate || !w.runState(run).atGate() {
+		return ""
+	}
+	var out bytes.Buffer
+	if err := cmdRunFinish([]string{"--bridge", w.bridge, "--run", run, "--goal", "met"}, &out, io.Discard); err != nil {
+		w.t.Fatalf("ensign run finish: %v", err)
+	}
+	return out.String()
 }
 
 // liveStepRun starts a sequence step's run in the folder, the way startRun does, with a coder dispatch for agent when given.
@@ -532,7 +572,7 @@ func TestLoopBudgetExhausted(t *testing.T) {
 	if st.Status != "error" || !strings.HasPrefix(st.Reason, "budget:coder-loop") || !strings.Contains(st.Reason, "coder loop budget exhausted (3)") {
 		t.Fatalf("status %s reason %s", st.Status, st.Reason)
 	}
-	if _, why := w.spawn(lead, "orchestrator", "coder"); !strings.Contains(why, "run is finished") {
+	if _, why := w.spawn(lead, "orchestrator", "coder"); !strings.Contains(why, "is over (error)") {
 		t.Fatalf("spawn after the run ended: %s", why)
 	}
 }

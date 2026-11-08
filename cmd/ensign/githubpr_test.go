@@ -214,10 +214,7 @@ func TestGithubPRWontLandUntestedChanges(t *testing.T) {
 
 func TestGithubPRWontStartOnSomeoneElsesWork(t *testing.T) {
 	w, ws, _, _ := githubWorld(t, "success", localTest)
-	write(t, filepath.Join(ws, "lib.txt"), "half done\n")
-	w.run("supernova/auth-refactor")
-	w.approve()
-	if lead, why := w.spawn("", "", "orchestrator"); lead != "" || !strings.Contains(why, "uncommitted changes on main") {
+	if lead, why := startEmptyAfter(w, func() { write(t, filepath.Join(ws, "lib.txt"), "half done\n") }); lead != "" || !strings.Contains(why, "uncommitted changes on main") {
 		t.Fatalf("a run should not start over uncommitted work on another branch: %s", why)
 	}
 }
@@ -436,8 +433,16 @@ func emptyBranch(t *testing.T, ws, remote, file, content string, onTask bool) st
 
 // startEmpty starts a run and returns the lead (empty if refused) and the reason.
 func startEmpty(w *world, args ...string) (string, string) {
+	return startEmptyAfter(w, nil, args...)
+}
+
+// startEmptyAfter is startEmpty with the work folder changed by dirty after the run is approved, since a run is refused at its start while the folder is dirty.
+func startEmptyAfter(w *world, dirty func(), args ...string) (string, string) {
 	w.run(append([]string{"supernova/auth-refactor"}, args...)...)
 	w.approve()
+	if dirty != nil {
+		dirty()
+	}
 	return w.spawn("", "", "orchestrator")
 }
 
@@ -471,8 +476,7 @@ func TestGithubPRStaleBranchOverrideKeepsEmptyBranch(t *testing.T) {
 func TestGithubPREmptyBranchNotMovedOverDirtyOtherBranch(t *testing.T) {
 	w, ws, remote, _ := githubWorld(t, "success", localTest)
 	old := emptyBranch(t, ws, remote, "news.txt", "meanwhile\n", false)
-	write(t, filepath.Join(ws, "lib.txt"), "half done\n")
-	if lead, why := startEmpty(w); lead != "" || !strings.Contains(why, "uncommitted changes on main") {
+	if lead, why := startEmptyAfter(w, func() { write(t, filepath.Join(ws, "lib.txt"), "half done\n") }); lead != "" || !strings.Contains(why, "uncommitted changes on main") {
 		t.Fatalf("a run should not start over uncommitted work on another branch: %q %s", lead, why)
 	}
 	if tip := runGit(t, ws, "rev-parse", "task/auth-refactor"); tip != old {
@@ -483,8 +487,7 @@ func TestGithubPREmptyBranchNotMovedOverDirtyOtherBranch(t *testing.T) {
 func TestGithubPRFastForwardKeepsUncommittedWork(t *testing.T) {
 	w, ws, remote, _ := githubWorld(t, "success", localTest)
 	emptyBranch(t, ws, remote, "news.txt", "meanwhile\n", true)
-	write(t, filepath.Join(ws, "lib.txt"), "half done\n")
-	if lead, why := startEmpty(w); lead == "" {
+	if lead, why := startEmptyAfter(w, func() { write(t, filepath.Join(ws, "lib.txt"), "half done\n") }); lead == "" {
 		t.Fatalf("uncommitted work that doesn't overlap should not stop the fast-forward: %s", why)
 	}
 	if tip, main := runGit(t, ws, "rev-parse", "task/auth-refactor"), runGit(t, ws, "rev-parse", "origin/main"); tip != main {
@@ -503,8 +506,7 @@ func TestGithubPRFastForwardRefusesOverlappingWork(t *testing.T) {
 				runGit(t, ws, "config", "merge.autoStash", autoStash)
 			}
 			old := emptyBranch(t, ws, remote, "lib.txt", "upstream\n", true)
-			write(t, filepath.Join(ws, "lib.txt"), "half done\n")
-			if lead, why := startEmpty(w); lead != "" || !strings.Contains(why, "task/auth-refactor couldn't be fast-forwarded to origin/main") {
+			if lead, why := startEmptyAfter(w, func() { write(t, filepath.Join(ws, "lib.txt"), "half done\n") }); lead != "" || !strings.Contains(why, "task/auth-refactor couldn't be fast-forwarded to origin/main") {
 				t.Fatalf("overlapping uncommitted work should refuse the run: %q %s", lead, why)
 			}
 			if tip := runGit(t, ws, "rev-parse", "task/auth-refactor"); tip != old {

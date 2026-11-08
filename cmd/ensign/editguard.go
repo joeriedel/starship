@@ -80,16 +80,16 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 				}
 			}
 			if d := callerDispatch(r, in); d != nil {
-				scratch := filepath.Join(r.Dir, "scratch")
+				scratch, evidence := filepath.Join(r.Dir, "scratch"), filepath.Join(r.Dir, "reports", "evidence")
 				who = "this " + d.Role
 				if !d.Done && (d.Stage == "code" || d.Stage == "style") {
-					folders = append(append(runCodeFolders(r), scratch), folders...)
+					folders = append(append(runCodeFolders(r), scratch, evidence), folders...)
 				} else if !d.Done && d.Role == "documentation" {
 					docs := docsFolders(r)
 					who = "this documentation stage (only the @docs paths: " + strings.Join(docs, ", ") + ")"
-					folders = append(append(docs, scratch), folders...)
+					folders = append(append(docs, scratch, evidence), folders...)
 				} else {
-					folders = append([]string{scratch}, folders...)
+					folders = append([]string{scratch, evidence}, folders...)
 				}
 			}
 		}

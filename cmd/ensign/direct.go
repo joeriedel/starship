@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 )
 
@@ -318,32 +317,28 @@ func directAsk(bridge, session, folder, work string, out io.Writer) error {
 	return nil
 }
 
-// dirtyNotice tells the session, after it creates a run, which of the runs' workspaces have uncommitted changes, so it can tell the user before asking for go. With started, the runs are already being started by an approved sequence, so there is no go to wait for. A workspace that is not a git repository, or whose status can't be read, is left out.
-func dirtyNotice(started bool, snaps ...*Snapshot) string {
-	advice := "Tell the user and ask how to proceed before you ask for go."
-	if started {
-		advice = "The run is already being started by the sequence: tell the user now, and halt the sequence if they don't want it to go on."
+// dirtyFolderError is a run that can't start because a code folder it works in has uncommitted changes: the run's commit would sweep them in. A retry is exempt, since its dirty tree is the previous attempt's carried work.
+type dirtyFolderError struct {
+	folder string
+	paths  []string
+}
+
+func (e *dirtyFolderError) Error() string {
+	shown := e.paths[:min(len(e.paths), 5)]
+	more := ""
+	if len(e.paths) > len(shown) {
+		more = ", ..."
 	}
-	var seen []string
-	var b strings.Builder
-	for _, snap := range snaps {
-		works, _ := folderHolds(snap)
-		for _, ws := range works {
-			if slices.ContainsFunc(seen, func(s string) bool { return sameFolder(s, ws, runtime.GOOS) }) {
-				continue
-			}
-			seen = append(seen, ws)
-			paths, err := gitDirtyPaths(ws)
-			if err != nil || len(paths) == 0 {
-				continue
-			}
-			shown := paths[:min(len(paths), 5)]
-			more := ""
-			if len(paths) > len(shown) {
-				more = ", ..."
-			}
-			fmt.Fprintf(&b, "The workspace %s has %d uncommitted path(s): %s%s. %s A run does not set them aside: with github-pr on the task branch they are committed with the run's work, on another branch the run is refused, and git-catalog refuses a dirty tree.\n", ws, len(paths), strings.Join(shown, ", "), more, advice)
+	return fmt.Sprintf("the code folder %s has %d uncommitted path(s): %s%s. A run's commit would sweep them in: ask the user to commit, stash or discard them", e.folder, len(e.paths), strings.Join(shown, ", "), more)
+}
+
+// dirtyFolder returns a *dirtyFolderError for the first folder the snapshot's run works in that has uncommitted changes. A folder that is not a git repository, or whose status can't be read, is left out.
+func dirtyFolder(snap *Snapshot) error {
+	works, _ := folderHolds(snap)
+	for _, ws := range works {
+		if paths, err := gitDirtyPaths(ws); err == nil && len(paths) > 0 {
+			return &dirtyFolderError{folder: ws, paths: paths}
 		}
 	}
-	return b.String()
+	return nil
 }

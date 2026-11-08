@@ -78,7 +78,12 @@ func (m *machine) spend(budget, scope, into string, edge bool) bool {
 		m.st.Spent[budget]--
 		m.st.Resume = &ResumePoint{Scope: scope, Stage: into, Budget: budget, EdgeSpend: edge}
 	}
-	m.finish(t, fmt.Sprintf("%s budget exhausted (%d)", strings.ReplaceAll(budget, "-", " "), m.limit(budget)))
+	why := fmt.Sprintf("%s budget exhausted (%d)", strings.ReplaceAll(budget, "-", " "), m.limit(budget))
+	if t.Finish != "" && m.hasLead() {
+		m.toGate("", why)
+		return false
+	}
+	m.finish(t, why)
 	return false
 }
 
@@ -158,6 +163,16 @@ func (st *State) resetPosition() {
 	st.Resume = nil
 }
 
+// hasLead reports a pipeline run by a lead, whose judgment closes the run at the gate.
+func (m *machine) hasLead() bool { return m.snap.Pipeline.Stages[0].isLead() }
+
+// toGate parks a passed run at the closing gate for its lead to judge.
+func (m *machine) toGate(stage, why string) {
+	m.st.Gate = why
+	m.st.resetPosition()
+	m.st.log("gate", stage, "", why)
+}
+
 // finish ends the run with a terminal transition.
 func (m *machine) finish(t Transition, why string) {
 	switch {
@@ -168,6 +183,7 @@ func (m *machine) finish(t Transition, why string) {
 	case t.AskUser != "":
 		m.st.Status, m.st.Reason = "ask-user", t.AskUser
 	}
+	m.st.Gate = ""
 	m.st.FinishedAt = time.Now().UnixNano()
 	if m.st.Status != "ask-user" {
 		m.st.resetPosition()
@@ -199,6 +215,9 @@ func (m *machine) apply(scope string, s *Stage, outcome string) {
 	case t.AskUser != "":
 		m.st.Resume = &ResumePoint{Scope: scope, Stage: s.ID}
 		m.finish(t, "")
+	case t.Finish != "" && m.hasLead():
+		// A pass does not end the run: its lead records whether the goal is met at the closing gate.
+		m.toGate(s.ID, fmt.Sprintf("%s reported %s", s.ID, outcome))
 	case t.terminal():
 		m.finish(t, fmt.Sprintf("%s reported %s", s.ID, outcome))
 	case t.Goto != "":
@@ -274,6 +293,11 @@ func (m *machine) expect(scope string) string {
 			msg += " " + strings.Join(m.st.Notes, " ") + "."
 		}
 		return msg + " Stop and report this."
+	}
+	if m.st.Gate != "" {
+		bridge, run := shellQuote(m.snap.Bridge), m.st.Run
+		return fmt.Sprintf("The pipeline has passed (%s). The run is not finished until you record whether the work item's goal is met: run `ensign run finish --bridge %s --run %s --goal met` if it is, or `ensign run finish --bridge %s --run %s --goal not-met \"<why>\"` if it is not.",
+			m.st.Gate, bridge, run, bridge, run)
 	}
 	sc := m.st.Scopes[scope]
 	if sc == nil || sc.Stage == "" {

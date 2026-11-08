@@ -153,7 +153,7 @@ func TestConnectorSettingsGeneration(t *testing.T) {
 		t.Fatal("undeclared settings must be exactly hookSettings()")
 	}
 	s := hookSettingsFor(true, []string{"mcp__b__z", "mcp__a__y", "mcp__b__z"})
-	if !strings.Contains(s, `"matcher": "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|Bash|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep"`) {
+	if !strings.Contains(s, `"matcher": ".*|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep"`) {
 		t.Fatalf("matcher missing:\n%s", s)
 	}
 	if !strings.Contains(s, `"allow": ["Bash(ensign:*)", "mcp__a__y", "mcp__b__z"]`) {
@@ -194,7 +194,7 @@ func TestConnectorSettingsUpgrade(t *testing.T) {
 	write(t, f, hookSettingsWith(0, 0))
 	step("older form, declared", rules("mcp__a__x"), hookSettingsFor(true, []string{"mcp__a__x"}))
 
-	edited := strings.Replace(hookSettings(), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
+	edited := strings.Replace(narrowMatcher(hookSettings()), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
 	write(t, f, edited)
 	step("hand-edited, undeclared", &BridgeFile{}, edited)
 	if err := upgradeHookSettings(b, rules("mcp__a__x")); err == nil || !strings.Contains(err.Error(), "mcp__.*") || !strings.Contains(err.Error(), "mcp__a__x") {
@@ -220,7 +220,7 @@ func TestConnectorSettingsShapeAndLineEndings(t *testing.T) {
 	rules := &BridgeFile{Connectors: map[string][]string{"reader": {"mcp__a__x"}}}
 	declared := hookSettingsFor(true, []string{"mcp__a__x"})
 
-	handAdded := strings.Replace(hookSettings(), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "mcp__supernova_drive__search"`, 1)
+	handAdded := strings.Replace(narrowMatcher(hookSettings()), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "mcp__supernova_drive__search"`, 1)
 	write(t, f, handAdded)
 	if err := upgradeHookSettings(b, &BridgeFile{}); err != nil || read() != handAdded {
 		t.Fatalf("a hand-added mcp__ allow entry on an undeclared bridge must be left alone: %v\n%s", err, read())
@@ -325,7 +325,7 @@ func TestConnectorSessionStartNotReady(t *testing.T) {
 		}
 		return dig(res, "systemMessage"), dig(res, "hookSpecificOutput", "additionalContext")
 	}
-	edited := strings.Replace(hookSettings(), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
+	edited := strings.Replace(narrowMatcher(hookSettings()), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
 	write(t, f, edited)
 	if show, ctx := start(); !strings.Contains(show, "not ready") || strings.Contains(ctx, "STARSHIP-READY") || !strings.Contains(ctx, "mcp__supernova_mail__read_message") {
 		t.Fatalf("a hand-edited file that can't enforce the rules must be not ready: %q %q", show, ctx)
@@ -624,7 +624,7 @@ func TestResourceToolsUpgradeFromOlderMatcher(t *testing.T) {
 		t.Fatal("moving a tool between roles must not change the settings")
 	}
 
-	edited := strings.Replace(hookSettings(), "SubagentHandback", "SubagentHandback|mcp__.*|ReadMcpResourceTool|Read|Grep", 1)
+	edited := strings.Replace(narrowMatcher(hookSettings()), "SubagentHandback", "SubagentHandback|mcp__.*|ReadMcpResourceTool|Read|Grep", 1)
 	edited = strings.Replace(edited, `"Bash(ensign:*)"`, `"Bash(ensign:*)", "`+supernovaRead+`"`, 1)
 	write(t, f, edited)
 	err := upgradeHookSettings(b, bf)
@@ -796,7 +796,7 @@ func TestRoleDefinitionChangesNeedRestartNotice(t *testing.T) {
 
 func TestReadGrepRequiredOnlyForReader(t *testing.T) {
 	// The Bash(make:*) entry makes this a form ensign never wrote, so upgradeHookSettings checks it rather than rewriting it.
-	edited := strings.Replace(hookSettings(), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)", "mcp__a__x"`, 1)
+	edited := strings.Replace(narrowMatcher(hookSettings()), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)", "mcp__a__x"`, 1)
 	edited = strings.Replace(edited, "SubagentHandback", "SubagentHandback|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool", 1)
 
 	b := t.TempDir()
@@ -823,7 +823,7 @@ func TestReadGrepRequiredOnlyForReader(t *testing.T) {
 func TestBashGuardNote(t *testing.T) {
 	handEdited := strings.Replace(withoutBash(hookSettings()), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
 	withMatcher := func(m string) string {
-		return strings.Replace(hookSettings(), "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|Bash", m, 1)
+		return strings.Replace(narrowMatcher(hookSettings()), "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|Bash", m, 1)
 	}
 	nonEnsign := `{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "supernova-lint"}]}]}}`
 	for _, c := range []struct {
@@ -867,7 +867,7 @@ func TestSessionStartNotesMissingBashGuard(t *testing.T) {
 		extra, handEdited := "", strings.Replace(withoutBash(hookSettings()), `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
 		if declared {
 			extra = readerRules
-			handEdited = strings.Replace(hookSettingsFor(true, []string{"mcp__supernova_mail__read_message"}), "SubagentHandback|Bash", "SubagentHandback", 1)
+			handEdited = strings.Replace(narrowMatcher(hookSettingsFor(true, []string{"mcp__supernova_mail__read_message"})), "SubagentHandback|Bash", "SubagentHandback", 1)
 			handEdited = strings.Replace(handEdited, `"Bash(ensign:*)"`, `"Bash(ensign:*)", "Bash(make:*)"`, 1)
 		}
 		w := connWorld(t, extra)

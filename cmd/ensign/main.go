@@ -184,6 +184,7 @@ func usage() {
   ensign run retire <run>
   ensign run stop <run>
   ensign run clear <run>
+  ensign run finish [--bridge <dir>] [--run <id>] --goal met|not-met [<why>]
   ensign sequence [run <project>/<task> [run flags, e.g. --location <name> --sides <a,b>] | publish <project>/<task> | release <project> <version> [--location <name>] | do <instruction> | mode stop|keep-going | halt [--reason <text>] | clear [<session>] | discard [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | skip <n> | done <n> [--note <text>] | fail <n> --reason <text>]
   ensign writes [add --tool <name> (tool input as one JSON object on stdin) | drop <n>... | drop --all]
   ensign direct ask <folder> "<what the user asked for>" | ensign direct close
@@ -214,6 +215,17 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "starship: ensign could not read the hook input:", err)
 		return 2
 	}
+	dir := os.Getenv("CLAUDE_PROJECT_DIR")
+	if dir == "" {
+		dir = in.Cwd
+	}
+	bridge, bridgeErr := findBridge(dir)
+	if event == "PreToolUse" && in.AgentID != "" && in.ToolName != "SubagentHandback" && bridgeErr == nil {
+		if why := finishedRunRefusal(bridge, &in); why != "" {
+			json.NewEncoder(stdout).Encode(denial(why))
+			return 0
+		}
+	}
 	if event == "PreToolUse" && in.ToolName == "Bash" {
 		if in.AgentID != "" && (in.AgentType == "explorer" || in.AgentType == "reviewer") {
 			cmd, _ := in.ToolInput["command"].(string)
@@ -230,12 +242,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		json.NewDecoder(bytes.NewReader(data)).Decode(&raw)
 		in.rawToolInput = raw.ToolInput
 	}
-	dir := os.Getenv("CLAUDE_PROJECT_DIR")
-	if dir == "" {
-		dir = in.Cwd
-	}
-	bridge, err := findBridge(dir)
-	if err != nil {
+	if bridgeErr != nil {
 		return 0 // outside a bridge, hook events are no-ops
 	}
 	var voided string
@@ -714,15 +721,21 @@ const sessionContextLimit = 10000
 // beforeHandback is settings as ensign wrote them before it registered PostToolUse and
 // matched SubagentHandback.
 func beforeHandback(settings string) string {
+	settings = narrowMatcher(settings)
 	i := strings.Index(settings, `    "PostToolUse"`)
 	j := strings.Index(settings[i:], "\n")
 	settings = settings[:i] + settings[i+j+1:]
 	return strings.Replace(settings, "|SubagentHandback", "", 1)
 }
 
+// narrowMatcher is settings as ensign wrote them before PreToolUse matched every tool.
+func narrowMatcher(settings string) string {
+	return strings.Replace(settings, `"matcher": "`+preMatcher, `"matcher": "Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|Bash`, 1)
+}
+
 // withoutBash is settings as ensign wrote them before it matched Bash on PreToolUse.
 func withoutBash(settings string) string {
-	return strings.Replace(settings, `|Bash", "hooks"`, `", "hooks"`, 1)
+	return strings.Replace(narrowMatcher(settings), `|Bash", "hooks"`, `", "hooks"`, 1)
 }
 
 // addGitattributes gives an existing bridge the .gitattributes that init writes, so its text files are LF on every machine, and commits just that file; committed blobs are not rewritten. Tracked files with uncommitted changes defer it to the next session. A non-blocking lock on .starship/gitattributes.lock keeps concurrent sessions from racing; a session that cannot take it skips. A .gitattributes that an interrupted attempt left untracked or staged, not in HEAD and holding exactly the expected content, is committed in place; any other .gitattributes is left alone. On a failure it removes and unstages the file unless HEAD has it, so the next session retries.

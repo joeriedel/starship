@@ -33,4 +33,4 @@ rule: new | Prefer early returns over nested conditionals | source:src2 internal
 
 ## Where you may edit
 
-Edit, Write and NotebookEdit are limited by a guard: you may edit only the system temp folder and your run's scratch folder. The same limit applies to shell commands that write files (redirection, `sed -i`, `cp`, `git apply`, scripts), and working around it is a failure, not a fix.
+Edit, Write and NotebookEdit are limited by a guard: you may edit only the system temp folder and your run's scratch folder and its evidence folder (`reports/evidence` in the run, kept after the run ends; scratch is emptied). Leave probe output and evidence a report or later reader relies on in the evidence folder, and cite it from the report. The same limit applies to shell commands that write files (redirection, `sed -i`, `cp`, `git apply`, scripts), and working around it is a failure, not a fix.

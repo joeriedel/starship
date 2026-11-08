@@ -3,9 +3,11 @@
 A hook refuses Edit, Write and NotebookEdit outside the caller's folders; keep shell writes inside them. A read-only role's (`explorer`, `reviewer`) Bash is refused when it changes a remote: push, `gh` writes, publishing, `ensign` commands that push.
 
 - Session: the bridge, temp, `~/.claude`, and the `session-edit` folders in `bridge.yaml` (user-added; never code). Plus, for one turn, the code folder the user opened with `go` after `ensign direct ask` (`ensign help direct`); subagents never get it.
-- Run coder, style reviewer: code folders, scratch, temp.
-- Run documentation stage: the `@docs` paths, scratch, temp.
-- Others: temp, scratch.
+- Run coder, style reviewer: code folders, scratch, evidence, temp.
+- Run documentation stage: the `@docs` paths, scratch, evidence, temp.
+- Others: temp, scratch, evidence.
+
+The evidence folder is `reports/evidence/` in the run folder. Scratch is emptied when the run ends; evidence stays. Elsewhere in `reports/` only ensign writes.
 
 ## Connector tools
 

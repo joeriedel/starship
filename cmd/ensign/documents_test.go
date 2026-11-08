@@ -932,8 +932,8 @@ func TestAdvisoryStageNeverFailsTheRun(t *testing.T) {
 			t.Fatal(err)
 		}
 		st := w.runState(run)
-		if st.Status != "success" || !strings.Contains(strings.Join(st.Notes, "\n"), missing) {
-			t.Errorf("status %s notes %v", st.Status, st.Notes)
+		if st.Status != "success" || !st.Finished || !strings.Contains(strings.Join(st.Notes, "\n"), missing) {
+			t.Errorf("status %s finished %v notes %v", st.Status, st.Finished, st.Notes)
 		}
 	})
 	t.Run("reported", func(t *testing.T) {

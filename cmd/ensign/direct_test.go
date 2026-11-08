@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -269,44 +270,105 @@ func TestDirectEditClosedByWritesGo(t *testing.T) {
 	w.expectEdit("", "", file, true)
 }
 
-func TestDirtyNotice(t *testing.T) {
-	w := newWorld(t)
+// dirtyWorkspace makes the world's workspace a git repository with one committed file.
+func dirtyWorkspace(t *testing.T, w *world) string {
+	t.Helper()
 	ws := w.workspace()
-	if got := dirtyNotice(false, &Snapshot{Workspace: ws}); got != "" {
-		t.Errorf("a workspace that is not a git repository gets no notice: %q", got)
-	}
 	runGit(t, ws, "init", "-q", "-b", "main")
 	write(t, filepath.Join(ws, "a.go"), "package a\n")
 	runGit(t, ws, "add", "-A")
 	runGit(t, ws, "commit", "-q", "-m", "base")
-	if got := dirtyNotice(false, &Snapshot{Workspace: ws}); got != "" {
-		t.Errorf("a clean workspace gets no notice: %q", got)
+	return ws
+}
+
+func TestDirtyFolderCheck(t *testing.T) {
+	w := newWorld(t)
+	ws := w.workspace()
+	if err := dirtyFolder(&Snapshot{Workspace: ws}); err != nil {
+		t.Errorf("a workspace that is not a git repository is not dirty: %v", err)
 	}
-	write(t, filepath.Join(ws, "b.go"), "package b\n")
-	write(t, filepath.Join(ws, "a.go"), "package a // edited\n")
-	got := dirtyNotice(false, &Snapshot{Workspace: ws}, &Snapshot{Workspace: ws})
-	if strings.Count(got, "uncommitted") != 1 || !strings.Contains(got, ws) || !strings.Contains(got, "2 uncommitted path(s)") || !strings.Contains(got, "b.go") || !strings.Contains(got, "ask how to proceed") {
-		t.Errorf("notice: %q", got)
+	dirtyWorkspace(t, w)
+	if err := dirtyFolder(&Snapshot{Workspace: ws}); err != nil {
+		t.Errorf("a clean workspace is not dirty: %v", err)
 	}
-	if out := w.run("supernova/auth-refactor"); !strings.Contains(out, "2 uncommitted path(s)") {
-		t.Errorf("ensign run prints the notice:\n%s", out)
+	for _, n := range []string{"b.go", "c.go", "d.go", "e.go", "f.go", "g.go"} {
+		write(t, filepath.Join(ws, n), "package b\n")
 	}
-	if out, err := w.seq("run", "supernova/auth-refactor"); err != nil || !strings.Contains(out, "2 uncommitted path(s)") {
-		t.Errorf("a sequence step prints the notice: %v\n%s", err, out)
+	err := dirtyFolder(&Snapshot{Workspace: ws})
+	var d *dirtyFolderError
+	if !errors.As(err, &d) || len(d.paths) != 6 {
+		t.Fatalf("dirty: %v", err)
+	}
+	if got := err.Error(); !strings.Contains(got, ws) || !strings.Contains(got, "6 uncommitted path(s)") || !strings.Contains(got, "b.go") || strings.Contains(got, "g.go") || !strings.Contains(got, "..., ") && !strings.Contains(got, ", ...") || !strings.Contains(got, "commit, stash or discard") {
+		t.Errorf("message: %q", got)
 	}
 }
 
-func TestDirtyNoticeOfARunAlreadyStartingDoesNotAskForGo(t *testing.T) {
+func TestRunIsRefusedWhileTheWorkFolderIsDirty(t *testing.T) {
 	w := newWorld(t)
-	ws := w.workspace()
-	runGit(t, ws, "init", "-q", "-b", "main")
-	write(t, filepath.Join(ws, "a.go"), "package a\n")
-	runGit(t, ws, "add", "-A")
-	runGit(t, ws, "commit", "-q", "-m", "base")
+	ws := dirtyWorkspace(t, w)
 	write(t, filepath.Join(ws, "b.go"), "package b\n")
-	got := dirtyNotice(true, &Snapshot{Workspace: ws})
-	if !strings.Contains(got, "1 uncommitted path(s)") || strings.Contains(got, "before you ask for go") || !strings.Contains(got, "halt the sequence") {
-		t.Errorf("notice: %q", got)
+	err := w.runErr("supernova/auth-refactor")
+	if err == nil || !strings.Contains(err.Error(), "b.go") || !strings.Contains(err.Error(), "commit, stash or discard") {
+		t.Fatalf("ensign run should be refused naming the path: %v", err)
+	}
+	if runs, _ := listRuns(w.bridge); len(runs) != 0 {
+		t.Errorf("a refused run creates nothing: %d runs", len(runs))
+	}
+	os.Remove(filepath.Join(ws, "b.go"))
+	w.run("supernova/auth-refactor")
+	write(t, filepath.Join(ws, "c.go"), "package c\n")
+	res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "go"})
+	ctx := dig(res, "hookSpecificOutput", "additionalContext")
+	if !strings.Contains(ctx, "was not started") || !strings.Contains(ctx, "c.go") || !strings.Contains(ctx, "commit, stash or discard") {
+		t.Fatalf("go should be refused naming the path: %q", ctx)
+	}
+	if st := w.state(); st.Status != "pending" || st.Approved {
+		t.Fatalf("the refused run stays pending: %+v", st)
+	}
+	os.Remove(filepath.Join(ws, "c.go"))
+	w.approve()
+}
+
+func TestRetryIsExemptFromTheDirtyFolderRefusal(t *testing.T) {
+	w := newWorld(t)
+	ws := dirtyWorkspace(t, w)
+	w.run("supernova/auth-refactor")
+	r, err := openSessionRun(w.bridge, w.sid)
+	if err != nil || r == nil {
+		t.Fatalf("no run: %v", err)
+	}
+	r.State.RetryOf = "20260101-000000-earlier"
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	r.close()
+	write(t, filepath.Join(ws, "left.go"), "package left\n")
+	w.approve()
+}
+
+func TestSequenceStepWaitsWhileTheWorkFolderIsDirty(t *testing.T) {
+	w := newWorld(t)
+	ws := dirtyWorkspace(t, w)
+	write(t, filepath.Join(ws, "b.go"), "package b\n")
+	if out, err := w.seq("run", "supernova/auth-refactor"); err != nil || strings.Contains(out, "uncommitted") {
+		t.Fatalf("adding the step prints no notice: %v\n%s", err, out)
+	}
+	res, _ := w.hook("UserPromptSubmit", map[string]any{"prompt": "go"})
+	ctx := dig(res, "hookSpecificOutput", "additionalContext")
+	st := w.step(1)
+	if st.Status == "active" || len(st.Runs) != 1 || !strings.HasPrefix(st.Runs[0].Reason, "waiting:") || !strings.Contains(st.Runs[0].Reason, "b.go") {
+		t.Fatalf("the step should wait on the dirty folder: %+v (go said %q)", st.Runs, ctx)
+	}
+	if got := waitingText(st); !strings.Contains(got, "b.go") {
+		t.Errorf("the waiting text should show it: %q", got)
+	}
+	os.Remove(filepath.Join(ws, "b.go"))
+	if _, err := advanceSequence(w.bridge, w.sid); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.step(1); st.Status != "active" {
+		t.Errorf("the step should start once the folder is clean: %+v", st)
 	}
 }
 

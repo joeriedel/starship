@@ -46,7 +46,9 @@ func (w *world) docsWith(lead, outcome, files string, edit func()) (string, stri
 	if edit != nil {
 		edit()
 	}
-	return id, w.stop(id, "documentation", strings.Replace(coderReport(outcome, files), "\n```\n", "\nchecked: cmd/ensign/hook.go parseReport\n```\n", 1), false)
+	blocked := w.stop(id, "documentation", strings.Replace(coderReport(outcome, files), "\n```\n", "\nchecked: cmd/ensign/hook.go parseReport\n```\n", 1), false)
+	w.gateMet(w.runOfAgent(lead))
+	return id, blocked
 }
 
 func (w *world) hasNote(sub string) bool {
