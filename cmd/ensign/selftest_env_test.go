@@ -5,6 +5,7 @@ package main
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -44,7 +45,7 @@ func TestIsolatedClaudeEnv(t *testing.T) {
 		"ANTHROPIC_API_KEY=sk-real", "ANTHROPIC_AUTH_TOKEN=real-token", "ANTHROPIC_BASE_URL=https://gateway.supernova.test",
 		"ANTHROPIC_MODEL=real-model", "ANTHROPIC_DEFAULT_HAIKU_MODEL=real-haiku", "anthropic_custom_headers=x: y",
 		"CLAUDE_CODE_OAUTH_TOKEN=oauth", "CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CODE_USE_VERTEX=1", "CLAUDE_CODE_SKIP_BEDROCK_AUTH=1",
-		"AWS_BEARER_TOKEN_BEDROCK=bearer", "CLAUDECODE=1", "CLAUDE_ENV_FILE=/x", "NO_PROXY=elsewhere.test", "CLAUDE_CODE_GIT_BASH_PATH=C:/git/bash.exe",
+		"AWS_BEARER_TOKEN_BEDROCK=bearer", "CLAUDECODE=1", "CLAUDE_ENV_FILE=/x", "NO_PROXY=elsewhere.test", "no_proxy=elsewhere.test", "CLAUDE_CODE_GIT_BASH_PATH=C:/git/bash.exe",
 	}
 	env := isolatedClaudeEnv(base, root, "http://127.0.0.1:9")
 	got := envMap(env)
@@ -63,6 +64,9 @@ func TestIsolatedClaudeEnv(t *testing.T) {
 	if !strings.Contains(got["NO_PROXY"], "127.0.0.1") || strings.Contains(got["NO_PROXY"], "elsewhere") {
 		t.Errorf("NO_PROXY = %q", got["NO_PROXY"])
 	}
+	if runtime.GOOS != "windows" && (!strings.Contains(got["no_proxy"], "127.0.0.1") || strings.Contains(got["no_proxy"], "elsewhere")) {
+		t.Errorf("no_proxy = %q", got["no_proxy"])
+	}
 	for _, gone := range []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "anthropic_custom_headers", "CLAUDE_CODE_OAUTH_TOKEN",
 		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_SKIP_BEDROCK_AUTH", "AWS_BEARER_TOKEN_BEDROCK", "CLAUDECODE", "CLAUDE_ENV_FILE"} {
 		if _, ok := got[gone]; ok {
@@ -72,7 +76,10 @@ func TestIsolatedClaudeEnv(t *testing.T) {
 	counts := map[string]int{}
 	for _, kv := range env {
 		k, _, _ := strings.Cut(kv, "=")
-		counts[strings.ToUpper(k)]++
+		if runtime.GOOS == "windows" {
+			k = strings.ToUpper(k)
+		}
+		counts[k]++
 	}
 	for k, n := range counts {
 		if n > 1 {
