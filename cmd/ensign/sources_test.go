@@ -52,20 +52,51 @@ func TestDeclaredSourcesParse(t *testing.T) {
 	}
 }
 
+func TestDeclaredSourcesLookahead(t *testing.T) {
+	for _, c := range []struct {
+		line string
+		want int
+	}{{"", 7}, {"    lookahead: 0\n", 0}, {"    lookahead: 14\n", 14}, {"    lookahead: 31\n", 31}} {
+		w := sourcesWorld(t, "sources:\n  supernova-x:\n    kind: calendar\n"+c.line+"    watch: [Work]\n")
+		got, err := loadDeclaredSources(w.bridge)
+		if err != nil || len(got) != 1 || got[0].Lookahead != c.want {
+			t.Errorf("lookahead %q: want %d, got %+v, %v", c.line, c.want, got, err)
+		}
+	}
+	w := sourcesWorld(t, "sources:\n  supernova-x:\n    lookahead: 2\n    kind: calendar\n    watch: [Work]\n  supernova-m:\n    kind: mail\n    watch: [inbox]\n")
+	got, err := loadDeclaredSources(w.bridge)
+	if err != nil || got[0].Lookahead != 0 || got[1].Lookahead != 2 {
+		t.Errorf("key order is free and mail has no lookahead: %+v, %v", got, err)
+	}
+	_, err = loadDeclaredSources(sourcesWorld(t, "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox]\n    lookahead: 3\n").bridge)
+	if err == nil || !strings.Contains(err.Error(), "supernova-x: lookahead is only for calendar sources") {
+		t.Errorf("lookahead on mail: %v", err)
+	}
+}
+
 func TestDeclaredSourcesInvalid(t *testing.T) {
 	for name, yml := range map[string]string{
-		"bad name":      "sources:\n  Bad_Name:\n    kind: mail\n    watch: [inbox]\n",
-		"bad kind":      "sources:\n  supernova-x:\n    kind: fax\n    watch: [inbox]\n",
-		"no kind":       "sources:\n  supernova-x:\n    watch: [inbox]\n",
-		"no watch":      "sources:\n  supernova-x:\n    kind: mail\n",
-		"empty watch":   "sources:\n  supernova-x:\n    kind: mail\n    watch: []\n",
-		"empty entry":   "sources:\n  supernova-x:\n    kind: mail\n    watch: [\"  \"]\n",
-		"newline":       "sources:\n  supernova-x:\n    kind: mail\n    watch: [\"a\\nb\"]\n",
-		"duplicate":     "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox, \" inbox \"]\n",
-		"unknown key":   "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox]\n    cursor: 1\n",
-		"repeated key":  "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox]\n    watch: [archive]\n",
-		"not a mapping": "sources: [a, b]\n",
-		"nested entry":  "sources:\n  supernova-x:\n    kind: mail\n    watch: [[inbox]]\n",
+		"bad name":                 "sources:\n  Bad_Name:\n    kind: mail\n    watch: [inbox]\n",
+		"bad kind":                 "sources:\n  supernova-x:\n    kind: fax\n    watch: [inbox]\n",
+		"no kind":                  "sources:\n  supernova-x:\n    watch: [inbox]\n",
+		"no watch":                 "sources:\n  supernova-x:\n    kind: mail\n",
+		"empty watch":              "sources:\n  supernova-x:\n    kind: mail\n    watch: []\n",
+		"empty entry":              "sources:\n  supernova-x:\n    kind: mail\n    watch: [\"  \"]\n",
+		"newline":                  "sources:\n  supernova-x:\n    kind: mail\n    watch: [\"a\\nb\"]\n",
+		"duplicate":                "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox, \" inbox \"]\n",
+		"unknown key":              "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox]\n    cursor: 1\n",
+		"repeated key":             "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox]\n    watch: [archive]\n",
+		"not a mapping":            "sources: [a, b]\n",
+		"lookahead on mail":        "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox]\n    lookahead: 3\n",
+		"lookahead first on slack": "sources:\n  supernova-x:\n    lookahead: 3\n    kind: slack\n    watch: [\"#supernova-launch\"]\n",
+		"lookahead word":           "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    lookahead: abc\n",
+		"lookahead fraction":       "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    lookahead: 7.5\n",
+		"lookahead negative":       "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    lookahead: -1\n",
+		"lookahead empty":          "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    lookahead:\n",
+		"lookahead list":           "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    lookahead: [7]\n",
+		"lookahead too big":        "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    lookahead: 32\n",
+		"lookahead repeated":       "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    lookahead: 3\n    lookahead: 4\n",
+		"nested entry":             "sources:\n  supernova-x:\n    kind: mail\n    watch: [[inbox]]\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := sourcesWorld(t, yml)
@@ -90,7 +121,7 @@ func TestCatchUpBrief(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Dispatch the reader", "catch-up pass", "Catch-up section", "- supernova-slack (slack)", "  - #supernova-launch", "  - @nova-lead", "- work-mail (mail)", "  - inbox", "- supernova-slack (slack): #supernova-qa", "- work-mail (mail): archive", "no cursor"} {
+	for _, want := range []string{"Dispatch the reader", "agenda of upcoming meetings", "catch-up pass", "Catch-up section", "- supernova-slack (slack)", "  - #supernova-launch", "  - @nova-lead", "- work-mail (mail)", "  - inbox", "- supernova-slack (slack): #supernova-qa", "- work-mail (mail): archive", "no cursor"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("brief lacks %q:\n%s", want, out)
 		}
@@ -200,6 +231,8 @@ func TestReaderRoleKeepsCatchUpRules(t *testing.T) {
 		`(?i)@dms. reads every DM and group DM the user is a member of, never public or private channels`,
 		"(?i)`- <source> @dms: <position> \\(<YYYY-MM-DD read>\\)`",
 		`(?i)report .@dms. as unreadable`,
+		`(?i)not proposals and are never written to .reader/proposals\.md.`,
+		`(?i)never accept or decline one`,
 	} {
 		if !regexp.MustCompile(re).Match(data) {
 			t.Errorf("roles/reader.md does not match %q", re)
@@ -212,7 +245,7 @@ func TestCatchUpTopicPrints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ensign catch-up", "--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "reader/proposals.md", "`go` is not the accept word", "ensign help notes", "ensign journal commit", "`@dms`", "literally `dms`"} {
+	for _, want := range []string{"ensign catch-up", "--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "reader/proposals.md", "`go` is not the accept word", "ensign help notes", "ensign journal commit", "`@dms`", "literally `dms`", "`lookahead`", "agenda of upcoming meetings"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("catch-up topic lacks %q", want)
 		}
@@ -345,6 +378,24 @@ func TestCatchUpKindNotes(t *testing.T) {
 	}
 	if !strings.Contains(out, "  - #supernova-launch\n  - @nova-lead\n  - "+slack+"\n") {
 		t.Errorf("the threads line follows the slack watch items:\n%s", out)
+	}
+}
+
+func TestCatchUpCalendarWindow(t *testing.T) {
+	for _, c := range []struct{ line, want string }{
+		{"", "upcoming meetings from the time of the pass through 7 days ahead"},
+		{"    lookahead: 21\n", "through 21 days ahead"},
+		{"    lookahead: 0\n", "lookahead is off, read no upcoming meetings"},
+	} {
+		w := sourcesWorld(t, "sources:\n  supernova-cal:\n    kind: calendar\n"+c.line+"    watch: [Work]\n")
+		out, err := w.catchUp()
+		if err != nil || !strings.Contains(out, "- supernova-cal (calendar)\n  - Work\n  - window: past meetings since the cursor") || !strings.Contains(out, c.want) {
+			t.Errorf("lookahead %q: want %q in:\n%s (%v)", c.line, c.want, out, err)
+		}
+	}
+	out, _ := sourcesWorld(t, sourcesYAML).catchUp()
+	if strings.Contains(out, "window:") {
+		t.Errorf("only a calendar source has a window:\n%s", out)
 	}
 }
 
