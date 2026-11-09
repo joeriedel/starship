@@ -1268,6 +1268,13 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 		}
 	}
 	printLinks(bridge, project, filepath.Join(taskDir, "task.md"), front, out)
+	if lines, err := linkedItemLines(bridge, task); err != nil {
+		fmt.Fprintf(out, "items      not listed, the secretary files do not parse: %v\n", err)
+	} else {
+		for _, l := range lines {
+			fmt.Fprintf(out, "item       %s\n", l.Line)
+		}
+	}
 	notes, err := projectNotes(bridge, project)
 	if err != nil {
 		return err

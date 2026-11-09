@@ -15,3 +15,7 @@ A task with `pipeline: none` needs no code folder: `task open` prints no workspa
 ## Linked items
 
 `task open` lists the task's `links:`, also for a task without code (`ensign help project`). When the bridge declares the `reader`, dispatch it with those links before you start work: it compares each item with what it kept, and you tell the user what it says changed.
+
+## Linked secretary items
+
+`task open` also prints an `item` line for each secretary item in `notes/secretary/items.md` whose `tasks:` names the task (id, title, status, due date and goal). `task close` lists them again and you ask the user whether each is done too. If the secretary files don't parse, one line says so and the command still succeeds (`ensign help briefing`).

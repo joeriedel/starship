@@ -279,3 +279,67 @@ func TestBriefingTopicSession(t *testing.T) {
 		}
 	}
 }
+
+func itemsLinkedWorld(t *testing.T, goals, items string) *world {
+	t.Helper()
+	return secretaryWorld(t, goals, strings.ReplaceAll(items, "supernova/launch-plan", "supernova/auth-refactor"))
+}
+
+func TestTaskOpenAndCloseListLinkedItems(t *testing.T) {
+	w := itemsLinkedWorld(t, goodGoals, goodItems)
+	want := `item       I1 "Answer the launch review comments" [open] due 2026-11-10 goal G1 "Ship the supernova launch"`
+	out, err := w.taskCmd("open", "supernova/auth-refactor")
+	if err != nil || !strings.Contains(out, want) || strings.Contains(out, "I2") {
+		t.Errorf("open: %v\n%s", err, out)
+	}
+	out, err = closeTask(w, "auth-refactor")
+	if err != nil || !strings.Contains(out, "Deal with the following") || !strings.Contains(out, "[secretary] linked item I1 ") || !strings.Contains(out, "ask the user whether this item is done too") {
+		t.Errorf("close: %v\n%s", err, out)
+	}
+}
+
+func TestTaskCloseDoesNotAskAboutDoneItem(t *testing.T) {
+	w := itemsLinkedWorld(t, goodGoals, strings.Replace(goodItems, "status: open", "status: done", 1))
+	out, err := closeTask(w, "auth-refactor")
+	if err != nil || !strings.Contains(out, "Linked item I1 ") || strings.Contains(out, "ask the user") || strings.Contains(out, "Deal with") {
+		t.Errorf("close: %v\n%s", err, out)
+	}
+}
+
+func TestTaskOpenAndCloseWithoutLinkedItems(t *testing.T) {
+	for _, w := range []*world{secretaryWorld(t, "", ""), secretaryWorld(t, goodGoals, goodItems)} {
+		out, err := w.taskCmd("open", "supernova/auth-refactor")
+		if err != nil || strings.Contains(out, "item ") {
+			t.Errorf("open: %v\n%s", err, out)
+		}
+		out, err = closeTask(w, "auth-refactor")
+		if err != nil || strings.Contains(out, "secretary") {
+			t.Errorf("close: %v\n%s", err, out)
+		}
+	}
+}
+
+func TestTaskOpenAndCloseBrokenSecretaryFiles(t *testing.T) {
+	w := itemsLinkedWorld(t, goodGoals, "```starship-items\n- id: bogus\n```\n")
+	out, err := w.taskCmd("open", "supernova/auth-refactor")
+	if err != nil || strings.Count(out, "do not parse") != 1 || !strings.Contains(out, "items.md") {
+		t.Errorf("open: %v\n%s", err, out)
+	}
+	out, err = closeTask(w, "auth-refactor")
+	if err != nil || strings.Count(out, "do not parse") != 1 || !strings.Contains(out, "Closed supernova/auth-refactor.") {
+		t.Errorf("close: %v\n%s", err, out)
+	}
+}
+
+func TestBriefReportsMissingTask(t *testing.T) {
+	w := secretaryWorld(t, goodGoals, goodItems)
+	out, err := w.brief()
+	if err != nil || !strings.Contains(out, "Problem: item I1") || !strings.Contains(out, "supernova/launch-plan") || !strings.Contains(out, "Brief for ") {
+		t.Errorf("brief: %v\n%s", err, out)
+	}
+	w = itemsLinkedWorld(t, goodGoals, goodItems)
+	out, err = w.brief()
+	if err != nil || strings.Contains(out, "Problem:") {
+		t.Errorf("existing task: %v\n%s", err, out)
+	}
+}

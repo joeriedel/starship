@@ -164,6 +164,17 @@ func cmdTaskClose(bridge, task string, out io.Writer) error {
 
 	fmt.Fprintf(out, "Closed %s.\n", task)
 	items = append(items, augmentItems...)
+	if lines, err := linkedItemLines(bridge, task); err != nil {
+		fmt.Fprintf(out, "Linked secretary items not listed, the secretary files do not parse: %v\n", err)
+	} else {
+		for _, l := range lines {
+			if l.Status == "open" || l.Status == "waiting" {
+				items = append(items, item{"secretary", "linked item " + l.Line + ": ask the user whether this item is done too"})
+			} else {
+				fmt.Fprintf(out, "Linked item %s: nothing to ask.\n", l.Line)
+			}
+		}
+	}
 	if len(items) > 0 {
 		fmt.Fprintln(out, "Deal with the following before ending this turn; if it needs the user, ask them now:")
 		for _, it := range items {

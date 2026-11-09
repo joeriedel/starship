@@ -329,6 +329,59 @@ func checkSecretaryFiles(bridge string) error {
 	return err
 }
 
+// linkedItem is one listed line of a linked secretary item and the item's status.
+type linkedItem struct{ Line, Status string }
+
+// linkedItemLines returns one line per secretary item whose tasks: names task (project/task), with the item's id, title, status, due date and goal. The error is a goals.md or items.md that doesn't parse; missing files give no lines.
+func linkedItemLines(bridge, task string) ([]linkedItem, error) {
+	goals, err := parseGoals(bridge)
+	if err != nil {
+		return nil, err
+	}
+	items, err := parseItems(bridge, goals)
+	if err != nil {
+		return nil, err
+	}
+	var lines []linkedItem
+	for _, it := range items {
+		if !containsString(it.Tasks, task) {
+			continue
+		}
+		line := fmt.Sprintf("%s %q [%s]", it.ID, it.Title, it.Status)
+		if it.Due != "" {
+			line += " due " + it.Due
+		}
+		for _, g := range goals {
+			if g.ID == it.Goal {
+				line += fmt.Sprintf(" goal %s %q", g.ID, g.Title)
+			}
+		}
+		lines = append(lines, linkedItem{line, it.Status})
+	}
+	return lines, nil
+}
+
+// missingItemTasks returns one report per tasks: entry of an item that names a task without a task.md.
+func missingItemTasks(bridge string) ([]string, error) {
+	goals, err := parseGoals(bridge)
+	if err != nil {
+		return nil, err
+	}
+	items, err := parseItems(bridge, goals)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, it := range items {
+		for _, t := range it.Tasks {
+			if _, err := os.Stat(filepath.Join(taskDirOf(bridge, t), "task.md")); err != nil {
+				out = append(out, fmt.Sprintf("item %s (%q) lists task %s in tasks:, but there is no such task", it.ID, it.Title, t))
+			}
+		}
+	}
+	return out, nil
+}
+
 // pruneIntake removes the reader/intake/<YYYY-MM-DD>/ folders dated more than intakeKeepDays before now; anything else in reader/intake is left alone.
 func pruneIntake(bridge string, now time.Time) error {
 	dir := filepath.Join(bridge, "reader", "intake")

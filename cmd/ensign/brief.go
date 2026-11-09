@@ -42,6 +42,10 @@ func cmdBrief(args []string, out io.Writer) error {
 	if err := checkSecretaryFiles(bridge); err != nil {
 		return fmt.Errorf("%v (fix it, or ask the session to, before a briefing: ensign help briefing)", err)
 	}
+	missing, err := missingItemTasks(bridge)
+	if err != nil {
+		return err
+	}
 	now := time.Now()
 	if err := pruneIntake(bridge, now); err != nil {
 		return err
@@ -65,6 +69,9 @@ func cmdBrief(args []string, out io.Writer) error {
 			fmt.Fprintf(out, "- %s (command)\n", s.Name)
 			printCommandSource(out, s, failed[s.Name])
 		}
+	}
+	for _, m := range missing {
+		fmt.Fprintf(out, "Problem: %s; fix the entry in notes/secretary/items.md or create the task (ensign help briefing).\n", m)
 	}
 	fmt.Fprintln(out, "Dispatch one reader agent for each brief below, all of them at once in one message, each with its brief's text up to its end line. Read nothing yourself (ensign help briefing).")
 	for _, s := range sources {

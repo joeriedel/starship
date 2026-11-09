@@ -8,7 +8,7 @@ Any request for a briefing in plain words ("brief me", "what's going on", "what 
 
 ## Steps
 
-1. Run `ensign brief`, with `--also <source>=<item>` for an item the user names for this pass only (no cursor, not saved). On Windows, prefix `MSYS_NO_PATHCONV=1` when an item starts with `/`. It refuses, running nothing, if `notes/secretary/goals.md` or `items.md` doesn't parse: the error names the file and line, so fix that block (see Corrections) and run it again. It removes intake folders older than 30 days, runs the command sources, then prints one brief per declared source, each ending with `End of brief.`. The reader must be declared under `connectors:`.
+1. Run `ensign brief`, with `--also <source>=<item>` for an item the user names for this pass only (no cursor, not saved). On Windows, prefix `MSYS_NO_PATHCONV=1` when an item starts with `/`. It refuses, running nothing, if `notes/secretary/goals.md` or `items.md` doesn't parse: the error names the file and line, so fix that block (see Corrections) and run it again. It removes intake folders older than 30 days, runs the command sources, then prints a `Problem:` line for each item `tasks:` entry that names a task that doesn't exist (the briefing still runs: fix the entry in `items.md` or create the task), then prints one brief per declared source, each ending with `End of brief.`. The reader must be declared under `connectors:`.
 2. Dispatch one `reader` agent per brief, all of them at once in one message, each with its brief's text up to its end line. Read nothing yourself.
 3. When all have finished, dispatch one `secretary` agent with a brief naming the date and its intake folder `reader/intake/<YYYY-MM-DD>/`. It writes under `notes/secretary/` and replies with the briefing.
 4. Show the user that briefing in full, in the chat, as the secretary wrote it. Do not summarise it or add to it.
@@ -20,6 +20,7 @@ The files are the user's to correct, and you make the correction directly, with 
 
 - "I23 is done", "drop I7", "move I9 to Friday": edit that item in `notes/secretary/items.md` (`status`, `due`) and add a log entry with today's date and `source: the user`.
 - "Add a goal": add it to `notes/secretary/goals.md` with the next free id (`G1`, `G2`, ...), `title`, optional `target` and `status: active`. A goal the secretary proposed in its briefing is added only when the user says yes.
+- "Make a task for I23": create the task with `ensign task new <project>/<task>` (`ensign help project`), then add `<project>/<task>` to the item's `tasks:` list in `items.md` and a log entry with `source: the user`. "Link I23 to project/task": add it to `tasks:`. `tasks:` is the only stored link: `ensign task open` and `ensign task close` list an item's tasks from `items.md`, and the secretary tracks the item's progress from those tasks.
 - Keep each file's single fenced block valid: `starship-goals` in `goals.md`, `starship-items` in `items.md`. Item `status` is `open`, `waiting`, `done` or `dropped`; dates are `YYYY-MM-DD`; an item's `goal` must be an id in `goals.md`.
 - Run `ensign journal commit` afterwards. The secretary keeps corrections made in its files.
 
