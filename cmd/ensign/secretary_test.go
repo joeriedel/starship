@@ -247,7 +247,7 @@ func TestSecretaryRole(t *testing.T) {
 			t.Errorf("roles/secretary.md does not match %q", re)
 		}
 	}
-	order := []string{"1. **Urgent.**", "2. **Due soon.**", "3. **Meetings today and tomorrow.**", "4. **Waiting on the user.**", "5. **Progress on goals.**", "6. **Everything else.**"}
+	order := []string{"1. **Urgent.**", "2. **Due soon.**", "3. **Meetings today and tomorrow.**", "4. **Waiting on the user.**", "5. **Progress on goals.**", "6. **Everything else.**", "7. **Suggestions.**"}
 	last := -1
 	for _, o := range order {
 		i := strings.Index(doc, o)
@@ -272,7 +272,7 @@ func TestBriefingTopicSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ensign brief", "one `reader` agent per brief", "all of them at once", "one `secretary` agent", "reader/intake/<YYYY-MM-DD>/", "in full", "ensign journal commit", "notes/secretary/items.md", "notes/secretary/goals.md", "I23 is done", "Add a goal", "only when the user says yes", "starship-goals", "starship-items"} {
+	for _, want := range []string{"ensign brief", "one `reader` agent per brief", "all of them at once", "one `secretary` agent", "reader/intake/<YYYY-MM-DD>/", "in full", "ensign journal commit", "notes/secretary/items.md", "notes/secretary/goals.md", "I23 is done", "Add a goal", "only when the user says yes", "starship-goals", "starship-items", "notes/secretary/preferences.md", "dated rule quoting the user", "not `bridge.yaml`", "Suggestions"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("briefing topic lacks %q", want)
 		}

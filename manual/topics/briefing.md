@@ -21,6 +21,7 @@ The files are the user's to correct, and you make the correction directly, with 
 - "I23 is done", "drop I7", "move I9 to Friday": edit that item in `notes/secretary/items.md` (`status`, `due`) and add a log entry with today's date and `source: the user`.
 - "Add a goal": add it to `notes/secretary/goals.md` with the next free id (`G1`, `G2`, ...), `title`, optional `target` and `status: active`. A goal the secretary proposed in its briefing is added only when the user says yes.
 - "Make a task for I23": create the task with `ensign task new <project>/<task>` (`ensign help project`), then add `<project>/<task>` to the item's `tasks:` list in `items.md` and a log entry with `source: the user`. "Link I23 to project/task": add it to `tasks:`. `tasks:` is the only stored link: `ensign task open` and `ensign task close` list an item's tasks from `items.md`, and the secretary tracks the item's progress from those tasks.
+- "X isn't urgent", "always flag Y": fix the item, and add a dated rule quoting the user to `notes/secretary/preferences.md` (plain language, e.g. `2026-11-09: "always flag anything from the supernova launch channel"`). A rule the secretary suggested in Suggestions is added only when the user says yes. Priority rules live in `preferences.md`, not `bridge.yaml`.
 - Keep each file's single fenced block valid: `starship-goals` in `goals.md`, `starship-items` in `items.md`. Item `status` is `open`, `waiting`, `done` or `dropped`; dates are `YYYY-MM-DD`; an item's `goal` must be an id in `goals.md`.
 - Run `ensign journal commit` afterwards. The secretary keeps corrections made in its files.
 
@@ -28,7 +29,7 @@ The files are the user's to correct, and you make the correction directly, with 
 
 - `reader/intake/<YYYY-MM-DD>/<source>.md`: one per source per day, written by the readers. Each entry has a `summary:` line; unreadable items are listed as `unreadable:` with the reason and keep their cursor. A second pass on the same day appends under a heading with its pass time.
 - `notes/focal/<period>.brag.md`: the living brag file, kept by the secretary when `bridge.yaml` declares `focal:` (`ensign help impact`).
-- `notes/secretary/`: `goals.md`, `items.md`, `items-archive.md`, `people.md` and `briefings/<YYYY-MM-DD>.md`. A second briefing the same day rewrites that day's file and marks what is new.
+- `notes/secretary/`: `goals.md`, `items.md`, `items-archive.md`, `people.md`, `preferences.md` (the user's priority rules, read-only for the secretary) and `briefings/<YYYY-MM-DD>.md`. The briefing ends with a Suggestions section: proposed goals, proposed preference rules and channels to start watching. A second briefing the same day rewrites that day's file and marks what is new.
 - `reader/cursors.md`, `reader/mail-read.md`, `reader/command/`: the readers' state. All of it is Markdown under `reader/` or `notes/`, so `ensign journal commit` commits it. A briefing never touches mail and never offers to move it; when the user asks for cleanup, see `ensign help mail-cleanup`.
 
 ## Declaring
