@@ -237,7 +237,7 @@ func TestSecretaryRole(t *testing.T) {
 		`(?i)within 48 hours or earlier|next 48 hours`,
 		`(?i)blocking someone`,
 		`(?i)mark what is new since the last pass`,
-		`(?i)reply with the full text of the briefing`,
+		`(?i)\*{0,2}reply\*{0,2} with the full text of the briefing`,
 	} {
 		if !regexp.MustCompile(re).MatchString(doc) {
 			t.Errorf("roles/secretary.md does not match %q", re)

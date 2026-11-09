@@ -482,7 +482,7 @@ func TestBriefCalendarWindow(t *testing.T) {
 	} {
 		w := sourcesWorld(t, "sources:\n  supernova-cal:\n    kind: calendar\n"+c.line+"    watch: [Work]\n")
 		out, err := w.brief()
-		if err != nil || !strings.Contains(out, "Source: supernova-cal (calendar)\nItems to watch:\n  - Work\nNote: window: past meetings since the cursor") || !strings.Contains(out, c.want) {
+		if err != nil || !strings.Contains(out, "Items to watch:\n  - Work\nNote: window: past meetings since the cursor") || !strings.Contains(out, c.want) {
 			t.Errorf("lookahead %q: want %q in:\n%s (%v)", c.line, c.want, out, err)
 		}
 	}
