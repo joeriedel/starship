@@ -242,6 +242,23 @@ func TestSecretaryRole(t *testing.T) {
 		`(?i)blocking someone`,
 		`(?i)mark what is new since the last pass`,
 		`(?i)\*{0,2}reply\*{0,2} with the full text of the briefing`,
+		`(?i)read .preferences\.md. and apply it every pass`,
+		`(?i)never add or edit a rule`,
+		`(?i)suggest a rule in suggestions`,
+		`(?i)preferences steer the briefing only`,
+		`(?i)focal.{0,40}comes from the rubric alone`,
+		`(?i)preference never changes the brag file`,
+		`(?i)rank with the user's rules in .preferences\.md. and your own judgement`,
+		`(?i)by default anything due within 48 hours or blocking someone is flagged`,
+		`(?i)every flagged line says why it is flagged`,
+		`(?i)each has a default that .preferences\.md. can override`,
+		`(?i)meeting prep.{1,80}open items involving its attendees, recent threads with them, and the last decisions`,
+		`(?i)conflicts.{1,10}a deadline on a fully booked day, double bookings, a due date before something it depends on`,
+		`(?i)untouched 7 days,\s+a review waiting on the user 3 days,\s+a DM or mail to the user unanswered 2 days`,
+		`(?i)a goal with no progress in 2 weeks, and work that fits no goal`,
+		`(?i)a promise the user made in their own messages or sent mail becomes an item with a due date`,
+		`(?i)7\. \*\*suggestions\.\*\* goals you propose, preference rules you suggest, and channels the user might start watching`,
+		`(?i)announcements and FYIs do not: they go only in the briefing's Everything else section`,
 	} {
 		if !regexp.MustCompile(re).MatchString(doc) {
 			t.Errorf("roles/secretary.md does not match %q", re)
