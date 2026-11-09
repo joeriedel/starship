@@ -34,7 +34,7 @@ The files are the user's to correct, and you make the correction directly, with 
 
 ## Declaring
 
-The user edits `bridge.yaml` (you do not), and the reader must be declared under `connectors:`:
+You edit `bridge.yaml` when the user asks, and tell them what you changed; the reader must be declared under `connectors:`:
 
 ```yaml
 sources:

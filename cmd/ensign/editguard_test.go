@@ -125,6 +125,54 @@ func TestEditGuardRunAgents(t *testing.T) {
 	w.expectEdit(reviewer, "reviewer", tmpFile, false)
 }
 
+func TestEditGuardBridgeYAML(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	bridgeYAML := filepath.Join(w.bridge, "bridge.yaml")
+	w.expectEdit("", "", bridgeYAML, false)
+	lead := w.startLead()
+	w.expectEdit(lead, "orchestrator", bridgeYAML, true)
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	w.expectEdit(coder, "coder", bridgeYAML, true)
+
+	write(t, bridgeYAML, "control-plane:\n  path: "+repoRoot(t)+"\nconnectors:\n  reader:\n    - mcp__supernova__read\n")
+	w.expectEdit("", "", bridgeYAML, false)
+	w.expectEdit("rd", "reader", bridgeYAML, true)
+	w.expectEdit("sec", "secretary", bridgeYAML, true)
+}
+
+func TestEditGuardBridgeYAMLStyleReviewer(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	w.project("use: [style-learning]\n")
+	lead := w.startLead()
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	w.stop(coder, "coder", report("compiled"), false)
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	style, why := w.spawn(lead, "orchestrator", "style-reviewer")
+	if style == "" {
+		t.Fatal(why)
+	}
+	w.expectEdit(style, "style-reviewer", filepath.Join(w.bridge, "bridge.yaml"), true)
+}
+
+func TestEditGuardBridgeYAMLDocumentation(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	w.docsBinding(`{ paths: [docs, README.md] }`)
+	lead := w.startLead()
+	w.toDocs(lead)
+	doc, why := w.spawn(lead, "orchestrator", "documentation")
+	if doc == "" {
+		t.Fatal(why)
+	}
+	w.expectEdit(doc, "documentation", filepath.Join(w.bridge, "bridge.yaml"), true)
+}
+
 func TestEditGuardAgentWithoutRun(t *testing.T) {
 	w, tmp := newGuardWorld(t)
 	w.expectEdit("ghost", "explorer", filepath.Join(w.workspace(), "main.go"), true)

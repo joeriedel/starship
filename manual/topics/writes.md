@@ -10,7 +10,7 @@ Any connector tool not listed under `connectors:`. That includes:
 - Creating a mail draft: the user then sends it, since the connector can't.
 - Creating or changing a meeting invite: it reaches others as soon as it is written.
 
-A tool in neither list is refused as a write. The user adds it to `connector_writes:`; the tool's allow entry arrives at the next session start (`/compact`, `/clear` or restarting claude).
+A tool in neither list is refused as a write. When the user asks, you add it to `connector_writes:` in `bridge.yaml`; the tool's allow entry arrives at the next session start (`/compact`, `/clear` or restarting claude).
 
 ## Flow
 
