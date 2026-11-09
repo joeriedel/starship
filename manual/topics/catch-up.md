@@ -20,15 +20,25 @@ sources:
     kind: calendar
     watch: [Work]
     lookahead: 7
+  supernova-review:
+    kind: command
+    command: [gh, pr, list, --state, open, --json, number,title,updatedAt]
+    timeout: 60
+    env:
+      GH_HOST: git.supernova.example
 ```
 
 A slack item is `#channel` (no spaces) or `@person` (a DM; spaces allowed), or the reserved `@dms` (any case): every DM and group DM the user is in, never channels, in `watch` and in `--also`; a person whose handle is literally `dms` can't be watched by name. Never a pattern (`*`, `?`) or `@here`, `@channel`, `@everyone`. A slack source also covers the threads the user is in or mentioned in, and never the rest of the workspace. Extra slack items given with `--also` follow the same forms. A calendar item is a calendar's name; the pass reads who met and across which orgs. A calendar source also takes `lookahead`: whole days of upcoming meetings to read, 0 to 31, default 7, 0 is off; no other kind takes it. Upcoming meetings are not proposals: the reader lists them as an agenda in its reply, re-read whole each pass with no cursor, and you show that agenda to the user.
 
-Kinds: mail, slack, calendar, ticket, wiki. A name is lower-case letters, digits and hyphens. An entry starting with `#` or `@` must be quoted, in the block form and in `[...]`: unquoted, `#` reads as a comment and `@` is a YAML syntax error, and a syntax error breaks all of `bridge.yaml` for every command, not only `catch-up`.
+A command source is for a system with no connector, such as a code review server read with `gh`. It has `command` instead of `watch`: a list of strings, the program first, then its arguments. `ensign catch-up` runs it with no shell (so no pipes, quoting or expansion), from the bridge folder, with the user's environment plus any `env:` entries, which override variables of the same name. `timeout` is whole seconds, 1 to 600, default 60. Only a command source takes `command`, `timeout` and `env`, and it takes no `watch` and no `--also` items. `bridge.yaml` is committed and pushed: `env:` holds server names and usernames, never tokens or passwords (the program finds those in the user's own environment or login). The owner is trusted to declare read-only commands; ensign runs them as given and does not check what they do.
+
+On success the output becomes `reader/command/<name>.out`, and the one before it becomes `reader/command/<name>.prev`, so the reader can compare what changed; the output is a snapshot of current state with no cursor, and anything past 1 MB is cut with a marker line. On failure (non-zero exit, timeout, program not found) neither file changes, the brief lists the source as unreadable with the reason and the last lines of the program's stderr, and the other sources still run. These files are committed by `ensign journal commit` with the other reader files.
+
+Kinds: mail, slack, calendar, command, ticket, wiki. A name is lower-case letters, digits and hyphens. An entry starting with `#` or `@` must be quoted, in the block form and in `[...]`: unquoted, `#` reads as a comment and `@` is a YAML syntax error, and a syntax error breaks all of `bridge.yaml` for every command, not only `catch-up`.
 
 ## A pass
 
-1. Run `ensign catch-up`. For each extra item the user names for this pass only, add `--also <source>=<item>`. Extras are not saved and get no cursor. On Windows, prefix `MSYS_NO_PATHCONV=1` when an item starts with `/`, or Git Bash rewrites it into a Windows path.
+1. Run `ensign catch-up`; it runs any command sources before it prints the brief. For each extra item the user names for this pass only, add `--also <source>=<item>`. Extras are not saved and get no cursor. On Windows, prefix `MSYS_NO_PATHCONV=1` when an item starts with `/`, or Git Bash rewrites it into a Windows path.
 2. Dispatch the `reader` agent with the printed brief. You cannot call its connectors yourself.
 3. List every item in `reader/proposals.md`, numbered, including any left from earlier passes. Also show the user the agenda of upcoming meetings from the reader's reply, if it gave one; it is written nowhere else.
 4. A pass also keeps `reader/mail-read.md`, one line per mail message read. A catch-up never touches mail and never offers to move it; when the user asks for cleanup, see `ensign help mail-cleanup`.

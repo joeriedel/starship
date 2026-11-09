@@ -36,7 +36,7 @@ func journalChanges(bridge string) ([]string, error) {
 	}
 	var out []string
 	add := func(path string, keep bool) {
-		if !keep && (strings.HasPrefix(path, "notes/") || strings.HasPrefix(path, "reader/")) && !isNoteFile(path) {
+		if !keep && (strings.HasPrefix(path, "notes/") || strings.HasPrefix(path, "reader/")) && !isNoteFile(path) && !isCommandOutput(path) {
 			return
 		}
 		if p, ok := strings.CutPrefix(path, "projects/"); ok {
@@ -52,9 +52,9 @@ func journalChanges(bridge string) ([]string, error) {
 		if len(t) < 4 {
 			continue
 		}
-		// A rename lists both sides; both are committed so the old path is removed, and a Markdown file on either side keeps both.
+		// A rename lists both sides; both are committed so the old path is removed, and a kept file on either side keeps both.
 		if strings.ContainsAny(t[:2], "RC") && i+1 < len(toks) {
-			keep := isNoteFile(t[3:]) || isNoteFile(toks[i+1])
+			keep := isNoteFile(t[3:]) || isNoteFile(toks[i+1]) || isCommandOutput(t[3:]) || isCommandOutput(toks[i+1])
 			add(t[3:], keep)
 			i++
 			add(toks[i], keep)

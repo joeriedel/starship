@@ -6,12 +6,17 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMain lets this test binary stand in for a released ensign: with STARSHIP_TEST_ENSIGN set it records its arguments in STARSHIP_TEST_ENSIGN_LOG, then fails if STARSHIP_TEST_ENSIGN_FAIL is set, and otherwise runs as ensign.
 func TestMain(m *testing.M) {
+	if mode := os.Getenv("STARSHIP_TEST_FAKE_CMD"); mode != "" {
+		fakeCommand(mode)
+	}
 	if os.Getenv("STARSHIP_TEST_ENSIGN") != "" {
 		if log := os.Getenv("STARSHIP_TEST_ENSIGN_LOG"); log != "" {
 			if f, err := os.OpenFile(log, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
@@ -35,4 +40,28 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// fakeCommand is the program a command-source test runs: this test binary with STARSHIP_TEST_FAKE_CMD naming what it does. print writes its arguments and the working directory's base name, fail writes eight stderr lines and exits 3, sleep outlasts any timeout, big writes more than 1 MB, env writes the variable named by STARSHIP_TEST_FAKE_VAR.
+func fakeCommand(mode string) {
+	switch mode {
+	case "print":
+		wd, _ := os.Getwd()
+		os.Stdout.WriteString(strings.Join(os.Args[1:], " ") + "\n" + filepath.Base(wd) + "\n")
+	case "fail":
+		for i := 1; i <= 8; i++ {
+			os.Stderr.WriteString("fake error " + strconv.Itoa(i) + "\n")
+		}
+		os.Exit(3)
+	case "sleep":
+		time.Sleep(time.Minute)
+	case "big":
+		line := strings.Repeat("x", 1023) + "\n"
+		for i := 0; i < 1024+100; i++ {
+			os.Stdout.WriteString(line)
+		}
+	case "env":
+		os.Stdout.WriteString(os.Getenv(os.Getenv("STARSHIP_TEST_FAKE_VAR")) + "\n")
+	}
+	os.Exit(0)
 }
