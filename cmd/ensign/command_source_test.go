@@ -73,7 +73,7 @@ func TestDeclaredCommandSourceInvalid(t *testing.T) {
 
 func TestCommandSourceWritesAndRotates(t *testing.T) {
 	w := sourcesWorld(t, "sources:\n"+commandSourceYAML(t, "supernova-review", "print", "", "pr", "list"))
-	out, err := w.catchUp()
+	out, err := w.brief()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestCommandSourceWritesAndRotates(t *testing.T) {
 		}
 	}
 	write(t, outFile, "first\n")
-	if _, err := w.catchUp(); err != nil {
+	if _, err := w.brief(); err != nil {
 		t.Fatal(err)
 	}
 	prev, _ := os.ReadFile(filepath.Join(w.bridge, "reader", "command", "supernova-review.prev"))
@@ -106,11 +106,11 @@ func TestCommandSourceFailureKeepsFiles(t *testing.T) {
 	dir := filepath.Join(w.bridge, "reader", "command")
 	write(t, filepath.Join(dir, "supernova-review.out"), "old\n")
 	write(t, filepath.Join(dir, "supernova-review.prev"), "older\n")
-	out, err := w.catchUp()
+	out, err := w.brief()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"unreadable this pass: exit status 3", "fake error 8", "fake error 4", "- work-mail (mail)", "  - inbox"} {
+	for _, want := range []string{"unreadable this pass: exit status 3", "fake error 8", "fake error 4", "Source: work-mail (mail)", "  - inbox"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("brief lacks %q:\n%s", want, out)
 		}
@@ -127,7 +127,7 @@ func TestCommandSourceFailureKeepsFiles(t *testing.T) {
 
 func TestCommandSourceTimeout(t *testing.T) {
 	w := sourcesWorld(t, "sources:\n"+commandSourceYAML(t, "supernova-review", "sleep", "    timeout: 1\n"))
-	out, err := w.catchUp()
+	out, err := w.brief()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestCommandSourceTimeout(t *testing.T) {
 
 func TestCommandSourceMissingProgram(t *testing.T) {
 	w := sourcesWorld(t, "sources:\n  supernova-review:\n    kind: command\n    command: [supernova-no-such-program]\n")
-	out, err := w.catchUp()
+	out, err := w.brief()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestCommandSourceMissingProgram(t *testing.T) {
 
 func TestCommandSourceOutputCap(t *testing.T) {
 	w := sourcesWorld(t, "sources:\n"+commandSourceYAML(t, "supernova-review", "big", ""))
-	if _, err := w.catchUp(); err != nil {
+	if _, err := w.brief(); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(w.bridge, "reader", "command", "supernova-review.out"))
@@ -166,7 +166,7 @@ func TestCommandSourceEnv(t *testing.T) {
 	t.Setenv("SUPERNOVA_USER", "from-user")
 	t.Setenv("SUPERNOVA_HOST", "from-user")
 	w := sourcesWorld(t, "sources:\n"+commandSourceYAML(t, "supernova-review", "env", "      STARSHIP_TEST_FAKE_VAR: SUPERNOVA_HOST\n      SUPERNOVA_HOST: git.supernova.example\n"))
-	if _, err := w.catchUp(); err != nil {
+	if _, err := w.brief(); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(w.bridge, "reader", "command", "supernova-review.out"))
@@ -179,13 +179,13 @@ func TestCommandSourceEnv(t *testing.T) {
 	}
 }
 
-func TestCatchUpAlsoOnCommandSource(t *testing.T) {
+func TestBriefAlsoOnCommandSource(t *testing.T) {
 	w := sourcesWorld(t, "sources:\n"+commandSourceYAML(t, "supernova-review", "print", ""))
-	if _, err := w.catchUp("--also", "supernova-review=x"); err == nil || !strings.Contains(err.Error(), "command source") {
+	if _, err := w.brief("--also", "supernova-review=x"); err == nil || !strings.Contains(err.Error(), "command source") {
 		t.Errorf("--also on a command source: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(w.bridge, "reader", "command")); err == nil {
-		t.Errorf("a refused catch-up must not run the command")
+		t.Errorf("a refused brief must not run the command")
 	}
 }
 

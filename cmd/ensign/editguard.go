@@ -35,21 +35,24 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 	if why := snapshotGuard(bridge, in, target, goos); why != "" {
 		return why, "", nil
 	}
-	if in.AgentID != "" && in.AgentType == "reader" {
+	if in.AgentID != "" && (in.AgentType == "reader" || in.AgentType == "secretary") {
 		bf, err := loadBridgeFile(bridge)
 		var rules map[string][]string
 		if err == nil {
 			rules, err = bf.connectorRules()
 		}
 		if err != nil {
-			return "this edit was refused because bridge.yaml can't be read or is invalid, so a reader's folder can't be checked: " + err.Error(), "", nil
+			return "this edit was refused because bridge.yaml can't be read or is invalid, so a " + in.AgentType + "'s folder can't be checked: " + err.Error(), "", nil
 		}
 		if _, declared := rules["reader"]; declared {
 			folder := filepath.Join(bridge, "reader")
+			if in.AgentType == "secretary" {
+				folder = filepath.Join(bridge, "notes", "secretary")
+			}
 			if pathWithin(resolveEditTarget(expanded, in.Cwd, goos), resolveEditFolder(folder, goos), goos) {
 				return "", "", nil
 			}
-			return "this edit was refused because " + target + " is outside " + folder + ", the only folder a reader may edit. Working around the guard is a failure, not a fix.", "", nil
+			return "this edit was refused because " + target + " is outside " + folder + ", the only folder a " + in.AgentType + " may edit. Working around the guard is a failure, not a fix.", "", nil
 		}
 	}
 	var folders []string

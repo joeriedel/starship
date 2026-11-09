@@ -28,16 +28,6 @@ func sourcesWorld(t *testing.T, extra string) *world {
 	return connWorld(t, readerRules+extra)
 }
 
-func (w *world) catchUp(args ...string) (string, error) {
-	w.t.Helper()
-	wd, _ := os.Getwd()
-	defer os.Chdir(wd)
-	os.Chdir(w.bridge)
-	var out bytes.Buffer
-	err := cmdCatchUp(args, &out)
-	return out.String(), err
-}
-
 func TestDeclaredSourcesParse(t *testing.T) {
 	w := sourcesWorld(t, sourcesYAML)
 	got, err := loadDeclaredSources(w.bridge)
@@ -114,19 +104,19 @@ func TestDeclaredSourcesInvalid(t *testing.T) {
 	}
 }
 
-func TestCatchUpBrief(t *testing.T) {
+func TestBriefAlsoExtras(t *testing.T) {
 	w := sourcesWorld(t, sourcesYAML)
 	before, _ := os.ReadFile(filepath.Join(w.bridge, "bridge.yaml"))
-	out, err := w.catchUp("--also", "supernova-slack=#supernova-qa", "--also", "supernova-slack=#supernova-qa", "--also", "supernova-slack=@nova-lead", "--also", "work-mail=archive")
+	out, err := w.brief("--also", "supernova-slack=#supernova-qa", "--also", "supernova-slack=#supernova-qa", "--also", "supernova-slack=@nova-lead", "--also", "work-mail=archive")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Dispatch the reader", "agenda of upcoming meetings", "catch-up pass", "Catch-up section", "- supernova-slack (slack)", "  - #supernova-launch", "  - @nova-lead", "- work-mail (mail)", "  - inbox", "- supernova-slack (slack): #supernova-qa", "- work-mail (mail): archive", "no cursor"} {
+	for _, want := range []string{"Dispatch one reader", "gather pass", "Gather section", "Source: supernova-slack (slack)", "  - #supernova-launch", "  - @nova-lead", "Source: work-mail (mail)", "  - inbox", "  - #supernova-qa", "  - archive", "no cursor"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("brief lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Index(out, "supernova-slack (slack)\n") > strings.Index(out, "work-mail (mail)\n") {
+	if strings.Index(out, "Source: supernova-slack (slack)\n") > strings.Index(out, "Source: work-mail (mail)\n") {
 		t.Errorf("sources should be sorted:\n%s", out)
 	}
 	if n := strings.Count(out, "#supernova-qa"); n != 1 {
@@ -141,9 +131,9 @@ func TestCatchUpBrief(t *testing.T) {
 	}
 }
 
-func TestCatchUpNoExtrasSection(t *testing.T) {
+func TestBriefNoExtrasSection(t *testing.T) {
 	w := sourcesWorld(t, sourcesYAML)
-	out, err := w.catchUp()
+	out, err := w.brief()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,39 +142,39 @@ func TestCatchUpNoExtrasSection(t *testing.T) {
 	}
 }
 
-func TestCatchUpErrors(t *testing.T) {
+func TestBriefAlsoErrors(t *testing.T) {
 	w := sourcesWorld(t, sourcesYAML)
 	for _, args := range [][]string{
 		{"--also"}, {"--also", "work-mail"}, {"--also", "=x"}, {"--also", "work-mail="}, {"--also", "work-mail=  "}, {"bogus"},
 	} {
-		if _, err := w.catchUp(args...); err == nil || !strings.Contains(err.Error(), "usage:") {
+		if _, err := w.brief(args...); err == nil || !strings.Contains(err.Error(), "usage:") {
 			t.Errorf("%v: want a usage error, got %v", args, err)
 		}
 	}
-	if _, err := w.catchUp("--also", "nope=x"); err == nil || !strings.Contains(err.Error(), "supernova-slack, work-mail") {
+	if _, err := w.brief("--also", "nope=x"); err == nil || !strings.Contains(err.Error(), "supernova-slack, work-mail") {
 		t.Errorf("undeclared source should name the declared ones: %v", err)
 	}
-	if _, err := w.catchUp("--also", "work-mail=a\nb"); err == nil {
+	if _, err := w.brief("--also", "work-mail=a\nb"); err == nil {
 		t.Errorf("a newline in an item should be refused")
 	}
 }
 
-func TestCatchUpRefusals(t *testing.T) {
+func TestBriefSourceRefusals(t *testing.T) {
 	w := connWorld(t, sourcesYAML)
-	if _, err := w.catchUp(); err == nil || !strings.Contains(err.Error(), "reader is not declared") {
+	if _, err := w.brief(); err == nil || !strings.Contains(err.Error(), "reader is not declared") {
 		t.Errorf("no reader: %v", err)
 	}
 	w = sourcesWorld(t, "")
-	if _, err := w.catchUp(); err == nil || !strings.Contains(err.Error(), "no sources") {
+	if _, err := w.brief(); err == nil || !strings.Contains(err.Error(), "no sources") {
 		t.Errorf("no sources: %v", err)
 	}
 	w = sourcesWorld(t, "sources: {}\n")
-	if _, err := w.catchUp(); err == nil || !strings.Contains(err.Error(), "no sources") {
+	if _, err := w.brief(); err == nil || !strings.Contains(err.Error(), "no sources") {
 		t.Errorf("empty sources: %v", err)
 	}
 }
 
-func TestJournalChangesPicksUpReaderCatchUpFiles(t *testing.T) {
+func TestJournalChangesPicksUpReaderFiles(t *testing.T) {
 	w := sourcesWorld(t, sourcesYAML)
 	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "base"}} {
 		if err := git(w.bridge, args...); err != nil {
@@ -192,46 +182,42 @@ func TestJournalChangesPicksUpReaderCatchUpFiles(t *testing.T) {
 		}
 	}
 	write(t, filepath.Join(w.bridge, "reader", "cursors.md"), "- supernova-slack #supernova-launch: 1 (2026-11-04)\n")
-	write(t, filepath.Join(w.bridge, "reader", "proposals.md"), "- Nova lead owns launch (slack, 2026-11-04)\n")
 	write(t, filepath.Join(w.bridge, "reader", "mail-read.md"), "- work-mail | inbox | m1 | 2026-11-03 | 2026-11-04 | nova@example.com | Launch\n")
 	got, err := journalChanges(w.bridge)
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "reader/cursors.md") || !strings.Contains(joined, "reader/proposals.md") || !strings.Contains(joined, "reader/mail-read.md") {
+	if !strings.Contains(joined, "reader/cursors.md") || !strings.Contains(joined, "reader/mail-read.md") {
 		t.Errorf("journalChanges = %v", got)
 	}
 }
 
-func TestReaderRoleKeepsCatchUpRules(t *testing.T) {
+func TestReaderRoleKeepsGatherRules(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), "roles", "reader.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, re := range []string{
-		`(?m)^## Catch-up$`,
+		`(?m)^## Gather$`,
 		`reader/cursors\.md`,
-		`reader/proposals\.md`,
 		`(?i)do not write .reader/facts\.md. or .reader/history\.md. in a pass`,
 		`(?i)first look: go back 14 days`,
 		`(?i)never write a cursor for them`,
-		`(?i)proposals first, then move its cursor`,
+		`(?i)intake entries first, then move its cursor`,
 		`reader/mail-read\.md`,
 		`(?i)- <source> \| <folder> \| <message id> \| <received YYYY-MM-DD> \| <read YYYY-MM-DD> \| <sender> \| <subject>`,
 		`(?i)never moves, deletes, flags or marks mail`,
-		`(?i)never proposes or offers cleanup`,
-		`(?i)no proposal may suggest archiving mail`,
+		`(?i)never offers cleanup`,
 		`(?m)^## Location check$`,
 		`(?i)report each id with its current folder, .not found. or .unreadable.`,
 		`(?i)each in the source given with it`,
 		`(?i)any failure to look it up .* is .unreadable.`,
-		`(?i)not a catch-up pass: no cursor moves`,
+		`(?i)not a gather pass: no cursor moves`,
 		`(?i)known id seen in a different folder gets its line.s folder updated and adds no new line`,
 		`(?i)@dms. reads every DM and group DM the user is a member of, never public or private channels`,
 		"(?i)`- <source> @dms: <position> \\(<YYYY-MM-DD read>\\)`",
 		`(?i)report .@dms. as unreadable`,
-		`(?i)not proposals and are never written to .reader/proposals\.md.`,
 		`(?i)never accept or decline one`,
 	} {
 		if !regexp.MustCompile(re).Match(data) {
@@ -240,23 +226,46 @@ func TestReaderRoleKeepsCatchUpRules(t *testing.T) {
 	}
 }
 
-func TestCatchUpTopicPrints(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join(repoRoot(t), "manual", "topics", "catch-up.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"ensign catch-up", "--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "reader/proposals.md", "`go` is not the accept word", "ensign help notes", "ensign journal commit", "`@dms`", "literally `dms`", "`lookahead`", "agenda of upcoming meetings", "`tree: <page URL>`", "`query: <query>`", "`@mine`", "`@assigned`", "`@reported`", "`@mentions`", "kind: wiki", "kind: ticket", "in `watch` and in `--also`"} {
-		if !strings.Contains(string(data), want) {
-			t.Errorf("catch-up topic lacks %q", want)
-		}
+func TestCatchUpRetired(t *testing.T) {
+	root := repoRoot(t)
+	if _, err := os.Stat(filepath.Join(root, "manual", "topics", "catch-up.md")); err == nil {
+		t.Errorf("the catch-up topic should be gone")
 	}
 	w := linkedWorld(t)
 	wd, _ := os.Getwd()
 	defer os.Chdir(wd)
 	os.Chdir(w.bridge)
 	var out bytes.Buffer
-	if err := cmdHelp([]string{"catch-up"}, &out); err != nil || out.Len() == 0 {
-		t.Errorf("help catch-up: %v", err)
+	if err := cmdHelp([]string{"catch-up"}, &out); err == nil {
+		t.Errorf("help catch-up should not find a topic")
+	}
+	for _, f := range []string{filepath.Join("manual", "session.md"), filepath.Join("roles", "reader.md"), filepath.Join("roles", "secretary.md")} {
+		d, err := os.ReadFile(filepath.Join(root, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(strings.ToLower(string(d)), "catch-up") || strings.Contains(string(d), "proposals.md") {
+			t.Errorf("%s still mentions catch-up or proposals.md", f)
+		}
+	}
+	main, err := os.ReadFile(filepath.Join(root, "cmd", "ensign", "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(main), "catch-up") {
+		t.Errorf("main.go still names catch-up")
+	}
+}
+
+func TestBriefingTopicDeclaresSources(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "manual", "topics", "briefing.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "`@dms`", "literally `dms`", "`lookahead`", "`tree: <page URL>`", "`query: <query>`", "`@mine`", "`@assigned`", "`@reported`", "`@mentions`", "kind: wiki", "kind: ticket", "in `watch` and in `--also`"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("briefing topic lacks %q", want)
+		}
 	}
 }
 
@@ -337,23 +346,23 @@ func TestWikiTicketItemForms(t *testing.T) {
 func TestWikiTicketSourcesInBrief(t *testing.T) {
 	yml := "sources:\n  supernova-wiki:\n    kind: wiki\n    watch: [\"@MINE\", \"Tree: https://wiki.supernova.example/launch\"]\n  supernova-tickets:\n    kind: ticket\n    watch: [SUPERNOVA, \"@Assigned\"]\n"
 	w := sourcesWorld(t, yml)
-	out, err := w.catchUp("--also", "supernova-wiki=@MENTIONS", "--also", "supernova-tickets=@ASSIGNED", "--also", "supernova-tickets=@REPORTED", "--also", "supernova-tickets=@Reported")
+	out, err := w.brief("--also", "supernova-wiki=@MENTIONS", "--also", "supernova-tickets=@ASSIGNED", "--also", "supernova-tickets=@REPORTED", "--also", "supernova-tickets=@Reported")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"  - @mine\n", "  - tree: https://wiki.supernova.example/launch\n", "  - @assigned\n", "- supernova-wiki (wiki): @mentions\n", "- supernova-tickets (ticket): @reported\n", kindNote("wiki", false), kindNote("ticket", false)} {
+	for _, want := range []string{"  - @mine\n", "  - tree: https://wiki.supernova.example/launch\n", "  - @assigned\n", "  - @mentions\n", "  - @reported\n", kindNote("wiki", false), kindNote("ticket", false)} {
 		if !strings.Contains(out, want) {
 			t.Errorf("brief lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Count(out, "supernova-tickets (ticket): @reported\n") != 1 || strings.Contains(out, "supernova-tickets (ticket): @assigned") || strings.Contains(out, "MINE") || strings.Contains(out, "@Assigned") {
+	if strings.Count(out, "  - @reported\n") != 1 || strings.Count(out, "  - @assigned\n") != 1 || strings.Contains(out, "MINE") || strings.Contains(out, "@Assigned") {
 		t.Errorf("reserved extras collapse and show lower case:\n%s", out)
 	}
 	if !strings.Contains(kindNote("wiki", false), "never widened to the space") || !strings.Contains(kindNote("ticket", false), "never widened to the tracker") {
 		t.Errorf("the notes must forbid widening")
 	}
 	for _, c := range []string{"supernova-wiki=@assigned", "supernova-tickets=@mine", "supernova-wiki=tree:", "supernova-tickets=query:"} {
-		if _, err := w.catchUp("--also", c); err == nil {
+		if _, err := w.brief("--also", c); err == nil {
 			t.Errorf("--also %q should be refused", c)
 		}
 	}
@@ -373,44 +382,44 @@ func TestWikiTicketSourcesInBrief(t *testing.T) {
 	}
 }
 
-func TestCatchUpAlsoSlackForms(t *testing.T) {
+func TestBriefAlsoSlackForms(t *testing.T) {
 	w := sourcesWorld(t, sourcesYAML)
-	if _, err := w.catchUp("--also", "supernova-slack=#supernova*"); err == nil || !strings.Contains(err.Error(), "#supernova*") {
+	if _, err := w.brief("--also", "supernova-slack=#supernova*"); err == nil || !strings.Contains(err.Error(), "#supernova*") {
 		t.Errorf("a bad slack extra should fail naming the item: %v", err)
 	}
-	if _, err := w.catchUp("--also", "supernova-slack=general"); err == nil {
+	if _, err := w.brief("--also", "supernova-slack=general"); err == nil {
 		t.Errorf("an unprefixed slack extra should fail")
 	}
-	out, err := w.catchUp("--also", "supernova-slack=@Nova Lead", "--also", "work-mail=a b*")
+	out, err := w.brief("--also", "supernova-slack=@Nova Lead", "--also", "work-mail=a b*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"- supernova-slack (slack): @Nova Lead", "- work-mail (mail): a b*"} {
+	for _, want := range []string{"  - @Nova Lead\n", "  - a b*\n"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("brief lacks %q:\n%s", want, out)
 		}
 	}
 }
 
-func TestCatchUpAlsoAllDMs(t *testing.T) {
+func TestBriefAlsoAllDMs(t *testing.T) {
 	w := sourcesWorld(t, sourcesYAML)
-	out, err := w.catchUp("--also", "supernova-slack=@DMS", "--also", "supernova-slack=@dms")
+	out, err := w.brief("--also", "supernova-slack=@DMS", "--also", "supernova-slack=@dms")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(out, "- supernova-slack (slack): @dms\n") != 1 || !strings.Contains(out, kindNote("slack", true)) {
+	if strings.Count(out, "  - @dms\n") != 1 || !strings.Contains(out, kindNote("slack", true)) {
 		t.Errorf("an @dms extra appears once and adds the @dms note:\n%s", out)
 	}
 	if strings.Contains(out, "@DMS") {
 		t.Errorf("a stray @DMS line:\n%s", out)
 	}
 	for _, bad := range []string{"@here", "@Channel", "@everyone", "@dms*", "#supernova?"} {
-		if _, err := w.catchUp("--also", "supernova-slack="+bad); err == nil {
+		if _, err := w.brief("--also", "supernova-slack="+bad); err == nil {
 			t.Errorf("--also %q should be refused", bad)
 		}
 	}
 	w = sourcesWorld(t, strings.Replace(sourcesYAML, "- \"@nova-lead\"", "- \"@nova-lead\"\n      - \"@dms\"", 1))
-	out, err = w.catchUp("--also", "supernova-slack=@DMS")
+	out, err = w.brief("--also", "supernova-slack=@DMS")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +430,7 @@ func TestCatchUpAlsoAllDMs(t *testing.T) {
 
 func TestWatchAllDMsNormalized(t *testing.T) {
 	w := sourcesWorld(t, strings.Replace(sourcesYAML, "- \"@nova-lead\"", "- \"@DMS\"", 1))
-	out, err := w.catchUp()
+	out, err := w.brief()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,22 +438,22 @@ func TestWatchAllDMsNormalized(t *testing.T) {
 		t.Errorf("a watched @DMS shows as @dms:\n%s", out)
 	}
 	w = sourcesWorld(t, strings.Replace(sourcesYAML, "- \"@nova-lead\"", "- \"@dms\"\n      - \"@DMS\"", 1))
-	if _, err := w.catchUp(); err == nil || !strings.Contains(err.Error(), "twice") {
+	if _, err := w.brief(); err == nil || !strings.Contains(err.Error(), "twice") {
 		t.Errorf("@dms and @DMS should be refused as a repeat, got %v", err)
 	}
 	w = sourcesWorld(t, sourcesYAML)
-	out, err = w.catchUp("--also", "supernova-slack=@DMS", "--also", "supernova-slack=@DMS")
+	out, err = w.brief("--also", "supernova-slack=@DMS", "--also", "supernova-slack=@DMS")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(out, "- supernova-slack (slack): @dms\n") != 1 || strings.Contains(out, "@DMS") {
+	if strings.Count(out, "  - @dms\n") != 1 || strings.Contains(out, "@DMS") {
 		t.Errorf("a repeated @DMS extra is one @dms line:\n%s", out)
 	}
 }
 
-func TestCatchUpKindNotes(t *testing.T) {
+func TestBriefKindNotes(t *testing.T) {
 	w := sourcesWorld(t, sourcesYAML+"  work-calendar:\n    kind: calendar\n    watch: [Work]\n")
-	out, err := w.catchUp()
+	out, err := w.brief()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,28 +465,28 @@ func TestCatchUpKindNotes(t *testing.T) {
 		t.Errorf("the @dms note extends the slack note")
 	}
 	mailNote := kindNote("mail", false)
-	mail := out[strings.Index(out, "- work-mail (mail)"):]
+	mail := out[strings.Index(out, "Source: work-mail (mail)"):]
 	if strings.Count(out, mailNote) != 1 || !strings.Contains(mail, mailNote) || strings.Contains(mail, slack) || strings.Contains(mail, cal) {
 		t.Errorf("a mail source carries only the mail note:\n%s", out)
 	}
-	if !strings.Contains(out, "  - #supernova-launch\n  - @nova-lead\n  - "+slack+"\n") {
+	if !strings.Contains(out, "  - #supernova-launch\n  - @nova-lead\nNote: "+slack+"\n") {
 		t.Errorf("the threads line follows the slack watch items:\n%s", out)
 	}
 }
 
-func TestCatchUpCalendarWindow(t *testing.T) {
+func TestBriefCalendarWindow(t *testing.T) {
 	for _, c := range []struct{ line, want string }{
 		{"", "upcoming meetings from the time of the pass through 7 days ahead"},
 		{"    lookahead: 21\n", "through 21 days ahead"},
 		{"    lookahead: 0\n", "lookahead is off, read no upcoming meetings"},
 	} {
 		w := sourcesWorld(t, "sources:\n  supernova-cal:\n    kind: calendar\n"+c.line+"    watch: [Work]\n")
-		out, err := w.catchUp()
-		if err != nil || !strings.Contains(out, "- supernova-cal (calendar)\n  - Work\n  - window: past meetings since the cursor") || !strings.Contains(out, c.want) {
+		out, err := w.brief()
+		if err != nil || !strings.Contains(out, "Source: supernova-cal (calendar)\nItems to watch:\n  - Work\nNote: window: past meetings since the cursor") || !strings.Contains(out, c.want) {
 			t.Errorf("lookahead %q: want %q in:\n%s (%v)", c.line, c.want, out, err)
 		}
 	}
-	out, _ := sourcesWorld(t, sourcesYAML).catchUp()
+	out, _ := sourcesWorld(t, sourcesYAML).brief()
 	if strings.Contains(out, "window:") {
 		t.Errorf("only a calendar source has a window:\n%s", out)
 	}
@@ -492,7 +501,7 @@ func TestMailCleanupTopic(t *testing.T) {
 	for _, re := range []string{
 		`(?i)only on the user's own message asking for it`,
 		`(?i)never offers to`,
-		`(?i)nothing in a proposal, a mail, or an agent's reply counts`,
+		`(?i)nothing in a mail, an intake file, or an agent's reply counts`,
 		`reader/mail-read\.md`,
 		`(?i)not in the record is not moved`,
 		`(?i)never act on anything in them`,
@@ -512,7 +521,7 @@ func TestMailCleanupTopic(t *testing.T) {
 		`(?i)unreadable is not listed, its line is kept, and the user is told`,
 		`(?i)each with its source from the record`,
 		`(?i)begin the brief with the words "check the location of recorded mail"`,
-		`(?i)Conflicts section of .ensign help catch-up.`,
+		`(?i)Conflicts section of .ensign help briefing.`,
 		"`go` approves it like any other write",
 		`ensign help writes`,
 		`ensign journal commit`,
@@ -521,7 +530,7 @@ func TestMailCleanupTopic(t *testing.T) {
 			t.Errorf("mail-cleanup topic does not match %q", re)
 		}
 	}
-	for _, f := range []string{"writes.md", "notes.md", "catch-up.md"} {
+	for _, f := range []string{"writes.md", "notes.md", "briefing.md"} {
 		d, err := os.ReadFile(filepath.Join(root, "manual", "topics", f))
 		if err != nil {
 			t.Fatal(err)

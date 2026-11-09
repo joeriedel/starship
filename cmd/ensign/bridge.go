@@ -502,7 +502,7 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 			return nil, err
 		}
 		name := strings.TrimSuffix(filepath.Base(f), ".md")
-		if _, declared := bf.Connectors[name]; name == "reader" && !declared {
+		if _, declared := bf.Connectors["reader"]; (name == "reader" || name == "secretary") && !declared {
 			continue
 		}
 		roles[name], sources[name] = data, f
@@ -554,9 +554,9 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 			delete(sources, k)
 			delete(effective, k)
 		}
-		if _, declared := bf.Connectors["reader"]; declared && agentType == "reader" {
+		if _, declared := bf.Connectors["reader"]; declared && (agentType == "reader" || agentType == "secretary") {
 			if why := readerToolsProblem(f, data); why != "" {
-				return nil, fmt.Errorf("%s: role %q replaces the reader, whose write limit holds only because it has no shell, and a role that can start other roles can reach one with a shell: %s", f, name, why)
+				return nil, fmt.Errorf("%s: role %q replaces the %s, whose write limit holds only because it has no shell, and a role that can start other roles can reach one with a shell: %s", f, name, agentType, why)
 			}
 		}
 		roles[name], sources[name], effective[name] = data, f, agentType

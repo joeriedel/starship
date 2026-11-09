@@ -57,7 +57,7 @@ func TestBriefOnePerSource(t *testing.T) {
 	if n := strings.Count(out, "End of brief.\n"); n != 3 {
 		t.Errorf("want 3 briefs, got %d:\n%s", n, out)
 	}
-	for _, want := range []string{"all of them at once in one message", "Read nothing yourself", "ensign journal commit", "ensign help briefing", "reader/intake/" + date + "/", "secretary", "not available yet"} {
+	for _, want := range []string{"all of them at once in one message", "Read nothing yourself", "ensign journal commit", "ensign help briefing", "reader/intake/" + date + "/", "secretary"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -164,7 +164,6 @@ func TestReaderRoleGather(t *testing.T) {
 		`(?i)decided later by the secretary`,
 		`(?i)keeps its cursor`,
 		`(?i)intake entries first, then move its cursor`,
-		`(?i)write no proposals`,
 		`(?i)never rewrite earlier entries`,
 		`(?i)do not write .reader/facts\.md. or .reader/history\.md. in a pass`,
 		`summary:`,
@@ -173,8 +172,8 @@ func TestReaderRoleGather(t *testing.T) {
 			t.Errorf("roles/reader.md does not match %q", re)
 		}
 	}
-	if i, j := strings.Index(string(data), "## Catch-up"), strings.Index(string(data), "## Gather"); i < 0 || j < i {
-		t.Errorf("Gather must follow Catch-up")
+	if strings.Contains(string(data), "## Catch-up") {
+		t.Errorf("the Catch-up section is retired")
 	}
 }
 
@@ -183,7 +182,7 @@ func TestBriefingTopicPrints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ensign brief", "--also <source>=<item>", "one `reader` agent per brief", "all of them at once", "reader/intake/", "ensign journal commit", "not available yet", "no proposals", "ensign help catch-up"} {
+	for _, want := range []string{"ensign brief", "--also <source>=<item>", "one `reader` agent per brief", "all of them at once", "reader/intake/", "ensign journal commit"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("briefing topic lacks %q", want)
 		}

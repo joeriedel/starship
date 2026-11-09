@@ -39,6 +39,13 @@ func cmdBrief(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := checkSecretaryFiles(bridge); err != nil {
+		return fmt.Errorf("%v (fix it, or ask the session to, before a briefing: ensign help briefing)", err)
+	}
+	now := time.Now()
+	if err := pruneIntake(bridge, now); err != nil {
+		return err
+	}
 	failed := map[string]*commandFailure{}
 	for _, s := range sources {
 		if s.Kind != "command" {
@@ -52,7 +59,6 @@ func cmdBrief(args []string, out io.Writer) error {
 			failed[s.Name] = f
 		}
 	}
-	now := time.Now()
 	date, passTime := now.Format("2006-01-02"), now.Format("2006-01-02 15:04 -0700")
 	for _, s := range sources {
 		if s.Kind == "command" {
@@ -105,6 +111,6 @@ func cmdBrief(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "End of brief.")
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "When all the readers have finished, the secretary would compose the briefing, but it is not available yet. Instead show the user the summary lines from this pass's intake files in reader/intake/%s/, then run ensign journal commit (ensign help briefing).\n", date)
+	fmt.Fprintf(out, "When all the readers have finished, dispatch one secretary agent with a brief naming the date %s and the intake folder reader/intake/%s/, then show the user its briefing in full, then run ensign journal commit (ensign help briefing).\n", date, date)
 	return nil
 }

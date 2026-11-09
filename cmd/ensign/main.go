@@ -61,8 +61,6 @@ func main() {
 		err = cmdProject(os.Args[2:], os.Stdout)
 	case "task":
 		err = cmdTask(os.Args[2:], os.Stdout)
-	case "catch-up":
-		err = cmdCatchUp(os.Args[2:], os.Stdout)
 	case "brief":
 		err = cmdBrief(os.Args[2:], os.Stdout)
 	case "journal":
@@ -196,7 +194,6 @@ func usage() {
   ensign document propose <name> <text> [--evidence <text>]
   ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]
   ensign journal commit -m <message> [files…] | ensign journal push
-  ensign catch-up [--also <source>=<item>]...
   ensign brief [--also <source>=<item>]...
   ensign git-catalog squash <project>/<task> [--location <name>] -m <message>
   ensign github-pr pull-request|merge|update <project>/<task> [--location <name>]
