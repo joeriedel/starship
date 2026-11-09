@@ -409,9 +409,10 @@ type BridgeFile struct {
 	Connectors map[string][]string `yaml:"connectors"`
 	// ConnectorWrites lists the exact connector tools the session may call once the user has approved the call with go. Its presence, even as an empty list, turns approved connector writes on; connectorWrites reads it.
 	ConnectorWrites yaml.Node `yaml:"connector_writes"`
-	// Sources and Documents are read from bridge.yaml by loadDeclaredSources and loadDeclaredDocuments; they are here so strict decoding accepts them.
+	// Sources, Documents and Focal are read from bridge.yaml by loadDeclaredSources, loadDeclaredDocuments and loadFocal; they are here so strict decoding accepts them.
 	Sources   yaml.Node `yaml:"sources"`
 	Documents yaml.Node `yaml:"documents"`
+	Focal     yaml.Node `yaml:"focal"`
 }
 
 func loadBridgeFile(bridge string) (*BridgeFile, error) {

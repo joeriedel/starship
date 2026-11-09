@@ -10,5 +10,5 @@ help:
     does: record the user's own account of a task's impact, closed tasks included
     run: ensign help impact   (put the user's words in the task's "### User" with the date; update the inferred lines in the same turn)
   - say: '"write my brag file for <period>"'
-    does: write the brag file from the tasks closed in a period, organized by theme
-    run: ensign help impact   (writes notes/focal/<period>.brag.md in the session; no pipeline run and no agent)
+    does: write the brag file from the tasks closed in a period, organized by theme; with a focal declared in bridge.yaml, polish the living file the secretary keeps
+    run: ensign help impact   (writes notes/focal/<period>.brag.md in the session; no pipeline run and no agent; with a focal the secretary also keeps it current on each briefing)

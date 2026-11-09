@@ -28,6 +28,17 @@ A task's `task.md` has an `## Impact` section, between Decisions and Notes, and 
 
 ## The brag file
 
+With `focal:` declared in `bridge.yaml` (and `use:` naming `impact`), the secretary keeps `notes/focal/<period>.brag.md` as a living document on every briefing pass:
+
+```yaml
+focal:
+  period: 2026-h2
+  ends: 2026-12-31
+  rubric: notes/focal-rubric.md   # optional: a .md file under notes/ that names the themes
+```
+
+It files closed tasks and work found in intake under the rubric's themes (or the defaults below), following the `[inferred]` convention: it rewrites only `[inferred]` lines, keeps the user's, and a confirmed line drops its mark. The rule that work needs a task to count is relaxed for the brag file: work outside tasks found in intake (reviews, unblocking others, cross-org help, design shaped in meetings) goes into the file with source links. The briefing flags goals and rubric themes with no evidence, closed tasks with no Impact in the user's words, and a period ending within 2 weeks. Starship ships no rubric content. A period name other than `YYYY`, `YYYY-hN` or `YYYY-qN` gives the secretary no start, so only tasks with a `counts for <period>.` line are filed for it. A malformed `focal:` shows as a `Problem:` line from `ensign brief`. With `focal:` declared, a request to write the brag file polishes the living file, following the convention, rather than building one from scratch; without `focal:` the steps below apply.
+
 A session request naming the period ("write my brag file for 2026-h2"), never a pipeline run or an agent. The user may give guidance in the request.
 
 1. Find tasks closed in the period with greps across the files, never a read per task (a bridge's closed tasks add up to hundreds of files). `status: closed` in `projects/*/tasks/*/task.md` marks a closed task, and the task's last `- YYYY-MM-DD: closed.` line in the period selects it (a reopened task has two). That line is in `projects/*/tasks/*/history.md`; a task not yet split, with a `## Progress log` in `task.md` and no `history.md`, has it at the end of that log. Also select any closed task with a `- YYYY-MM-DD: counts for <period>.` line for the requested period, whichever date it closed on (in `history.md`, or the `## Progress log` of an unsplit task). That line overrides the closing date: a task that has one is counted only in the period it names, not in the one it closed in.

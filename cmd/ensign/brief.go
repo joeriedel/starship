@@ -118,6 +118,20 @@ func cmdBrief(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "End of brief.")
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "When all the readers have finished, dispatch one secretary agent with a brief naming the date %s and the intake folder reader/intake/%s/, then show the user its briefing in full, then run ensign journal commit (ensign help briefing).\n", date, date)
+	focalNote := ""
+	if uses, _ := bridgeUses(bridge, impactExtension); uses {
+		f, err := loadFocal(bridge)
+		switch {
+		case err != nil:
+			fmt.Fprintf(out, "Problem: %v; the secretary does its pass without focal work (ensign help impact).\n", err)
+		case f != nil:
+			rubric := "no rubric, so the default themes apply"
+			if f.Rubric != "" {
+				rubric = "rubric " + f.Rubric
+			}
+			focalNote = fmt.Sprintf(", and the focal: period %s, ends %s, brag file %s, %s", f.Period, f.Ends, f.bragPath(), rubric)
+		}
+	}
+	fmt.Fprintf(out, "When all the readers have finished, dispatch one secretary agent with a brief naming the date %s and the intake folder reader/intake/%s/%s, then show the user its briefing in full, then run ensign journal commit (ensign help briefing).\n", date, date, focalNote)
 	return nil
 }

@@ -45,14 +45,21 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 			return "this edit was refused because bridge.yaml can't be read or is invalid, so a " + in.AgentType + "'s folder can't be checked: " + err.Error(), "", nil
 		}
 		if _, declared := rules["reader"]; declared {
-			folder := filepath.Join(bridge, "reader")
+			folders := []string{filepath.Join(bridge, "reader")}
 			if in.AgentType == "secretary" {
-				folder = filepath.Join(bridge, "notes", "secretary")
+				folders = []string{filepath.Join(bridge, "notes", "secretary"), filepath.Join(bridge, "notes", "focal")}
 			}
-			if pathWithin(resolveEditTarget(expanded, in.Cwd, goos), resolveEditFolder(folder, goos), goos) {
-				return "", "", nil
+			resolved := resolveEditTarget(expanded, in.Cwd, goos)
+			for _, folder := range folders {
+				if pathWithin(resolved, resolveEditFolder(folder, goos), goos) {
+					return "", "", nil
+				}
 			}
-			return "this edit was refused because " + target + " is outside " + folder + ", the only folder a " + in.AgentType + " may edit. Working around the guard is a failure, not a fix.", "", nil
+			only := "folder " + folders[0] + ", the only folder"
+			if len(folders) > 1 {
+				only = "folders " + strings.Join(folders, " and ") + ", the only folders"
+			}
+			return "this edit was refused because " + target + " is outside " + only + " a " + in.AgentType + " may edit. Working around the guard is a failure, not a fix.", "", nil
 		}
 	}
 	var folders []string

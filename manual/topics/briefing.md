@@ -10,7 +10,7 @@ Any request for a briefing in plain words ("brief me", "what's going on", "what 
 
 1. Run `ensign brief`, with `--also <source>=<item>` for an item the user names for this pass only (no cursor, not saved). On Windows, prefix `MSYS_NO_PATHCONV=1` when an item starts with `/`. It refuses, running nothing, if `notes/secretary/goals.md` or `items.md` doesn't parse: the error names the file and line, so fix that block (see Corrections) and run it again. It removes intake folders older than 30 days, runs the command sources, then prints a `Problem:` line for each item `tasks:` entry that names a task that doesn't exist (the briefing still runs: fix the entry in `items.md` or create the task), then prints one brief per declared source, each ending with `End of brief.`. The reader must be declared under `connectors:`.
 2. Dispatch one `reader` agent per brief, all of them at once in one message, each with its brief's text up to its end line. Read nothing yourself.
-3. When all have finished, dispatch one `secretary` agent with a brief naming the date and its intake folder `reader/intake/<YYYY-MM-DD>/`. It writes under `notes/secretary/` and replies with the briefing.
+3. When all have finished, dispatch one `secretary` agent with a brief naming the date and its intake folder `reader/intake/<YYYY-MM-DD>/`. When `ensign brief` closes with a focal (period, ends date, brag file path, rubric), put those facts in the secretary's brief too; a `Problem:` line for `focal:` means the pass runs without focal work (fix `focal:` in `bridge.yaml`, `ensign help impact`). It writes under `notes/secretary/` (and `notes/focal/` for a focal) and replies with the briefing.
 4. Show the user that briefing in full, in the chat, as the secretary wrote it. Do not summarise it or add to it.
 5. Run `ensign journal commit`.
 
@@ -27,6 +27,7 @@ The files are the user's to correct, and you make the correction directly, with 
 ## Files
 
 - `reader/intake/<YYYY-MM-DD>/<source>.md`: one per source per day, written by the readers. Each entry has a `summary:` line; unreadable items are listed as `unreadable:` with the reason and keep their cursor. A second pass on the same day appends under a heading with its pass time.
+- `notes/focal/<period>.brag.md`: the living brag file, kept by the secretary when `bridge.yaml` declares `focal:` (`ensign help impact`).
 - `notes/secretary/`: `goals.md`, `items.md`, `items-archive.md`, `people.md` and `briefings/<YYYY-MM-DD>.md`. A second briefing the same day rewrites that day's file and marks what is new.
 - `reader/cursors.md`, `reader/mail-read.md`, `reader/command/`: the readers' state. All of it is Markdown under `reader/` or `notes/`, so `ensign journal commit` commits it. A briefing never touches mail and never offers to move it; when the user asks for cleanup, see `ensign help mail-cleanup`.
 
