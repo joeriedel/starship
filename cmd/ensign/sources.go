@@ -73,9 +73,38 @@ const allDMsItem = "@dms"
 // isAllDMs reports whether a slack item is the reserved all-DMs item, in any case.
 func isAllDMs(item string) bool { return strings.EqualFold(item, allDMsItem) }
 
-// checkSourceItem checks an already cleaned item against its source's kind. Only slack has a form: a pattern could reach the whole workspace, so a channel is #name, a DM is @name, and @dms is all of the user's DMs.
+// reservedItems are the items a kind reserves for what concerns the user, matched in any case and kept in this canonical form. A wiki page or ticket project with such a name can't be watched by that name.
+var reservedItems = map[string][]string{
+	"slack":  {allDMsItem},
+	"wiki":   {"@mine", "@mentions"},
+	"ticket": {"@assigned", "@reported", "@mentions"},
+}
+
+// itemPrefixes are the prefixes that make a wiki or ticket item a scope rather than a single page or project, matched in any case.
+var itemPrefixes = map[string]string{"wiki": "tree:", "ticket": "query:"}
+
+// canonicalItem returns an already checked item in its canonical form: a reserved item in lowercase, a prefixed item as the lowercase prefix, one space, and the rest as given.
+func canonicalItem(kind, item string) string {
+	for _, r := range reservedItems[kind] {
+		if strings.EqualFold(item, r) {
+			return r
+		}
+	}
+	if p := itemPrefixes[kind]; p != "" && len(item) >= len(p) && strings.EqualFold(item[:len(p)], p) {
+		return p + " " + strings.TrimSpace(item[len(p):])
+	}
+	return item
+}
+
+// checkSourceItem checks an already cleaned item against its source's kind. Slack, wiki and ticket have forms: a pattern or a bare space or tracker could reach everything, so each item names a channel, DM, page, page tree, project or query, or is a reserved item for what concerns the user. Mail and calendar items are opaque.
 func checkSourceItem(kind, item string) error {
-	if kind != "slack" {
+	switch kind {
+	case "wiki":
+		return checkScopeItem("wiki", item, "needs a page URL after tree:", "must be a page URL, tree: <page URL>, @mine or @mentions")
+	case "ticket":
+		return checkScopeItem("ticket", item, "needs a query after query:", "must be a project key, query: <query>, @assigned, @reported or @mentions")
+	case "slack":
+	default:
 		return nil
 	}
 	if len(item) < 2 || (item[0] != '#' && item[0] != '@') {
@@ -94,6 +123,18 @@ func checkSourceItem(kind, item string) error {
 	return nil
 }
 
+// checkScopeItem checks a wiki or ticket item: a prefixed item needs something after the prefix, an @ item must be one of the kind's reserved items, and anything else is a page or project as given.
+func checkScopeItem(kind, item, needs, forms string) error {
+	p := itemPrefixes[kind]
+	if len(item) >= len(p) && strings.EqualFold(item[:len(p)], p) && strings.TrimSpace(item[len(p):]) == "" {
+		return fmt.Errorf("%s item %q %s", kind, item, needs)
+	}
+	if item[0] == '@' && !slices.ContainsFunc(reservedItems[kind], func(r string) bool { return strings.EqualFold(item, r) }) {
+		return fmt.Errorf("%s item %q %s", kind, item, forms)
+	}
+	return nil
+}
+
 // kindNote is the line a brief prints after a source's watch items, or "" for a kind with none. allDMs is true when a slack source's items include @dms.
 func kindNote(kind string, allDMs bool) string {
 	switch kind {
@@ -107,6 +148,10 @@ func kindNote(kind string, allDMs bool) string {
 		return "read who met and across which orgs, per the Catch-up section of your role"
 	case "mail":
 		return "record every message read per the Catch-up section of your role; never change mail"
+	case "wiki":
+		return "read only what each item names; tree: is the page and every page under it, @mine the pages the user created or owns and new comments on them, @mentions pages and comments that mention the user; if the connector can't run the search an item needs, the item is unreadable, never widened to the space"
+	case "ticket":
+		return "read only what each item names; query: runs as given, @assigned is open tickets assigned to the user, @reported tickets the user reported, @mentions tickets and comments that mention the user; if the connector can't run the search an item needs, the item is unreadable, never widened to the tracker"
 	case "command":
 		return "the output file is a snapshot of current state with no cursor; read it with the Read tool (never a shell) and compare it with the previous file to see what changed"
 	}
@@ -239,9 +284,7 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 			if err := checkSourceItem(s.Kind, item); err != nil {
 				return nil, fmt.Errorf("bridge.yaml: sources: %s: watch: %v", name, err)
 			}
-			if s.Kind == "slack" && isAllDMs(item) {
-				item = allDMsItem
-			}
+			item = canonicalItem(s.Kind, item)
 			if have[item] {
 				return nil, fmt.Errorf("bridge.yaml: sources: %s: watch lists %q twice", name, item)
 			}
@@ -359,9 +402,7 @@ func cmdCatchUp(args []string, out io.Writer) error {
 		if err := checkSourceItem(s.Kind, e.item); err != nil {
 			return fmt.Errorf("--also %s=%s: %v", e.source, e.item, err)
 		}
-		if s.Kind == "slack" && isAllDMs(e.item) {
-			e.item = allDMsItem
-		}
+		e.item = canonicalItem(s.Kind, e.item)
 		if seen[e] || contains(s.Watch, e.item) {
 			continue
 		}

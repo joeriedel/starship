@@ -245,7 +245,7 @@ func TestCatchUpTopicPrints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ensign catch-up", "--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "reader/proposals.md", "`go` is not the accept word", "ensign help notes", "ensign journal commit", "`@dms`", "literally `dms`", "`lookahead`", "agenda of upcoming meetings"} {
+	for _, want := range []string{"ensign catch-up", "--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "reader/proposals.md", "`go` is not the accept word", "ensign help notes", "ensign journal commit", "`@dms`", "literally `dms`", "`lookahead`", "agenda of upcoming meetings", "`tree: <page URL>`", "`query: <query>`", "`@mine`", "`@assigned`", "`@reported`", "`@mentions`", "kind: wiki", "kind: ticket", "in `watch` and in `--also`"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("catch-up topic lacks %q", want)
 		}
@@ -280,12 +280,96 @@ func TestSlackItemForms(t *testing.T) {
 			t.Errorf("watch %q: %v", item, err)
 		}
 	}
-	for _, kind := range []string{"mail", "calendar", "ticket", "wiki"} {
-		for _, item := range []string{"Work", "inbox", "nova*", "x y", "#a b"} {
+	for _, kind := range []string{"mail", "calendar"} {
+		for _, item := range []string{"Work", "inbox", "nova*", "x y", "#a b", "@mine", "tree:"} {
 			if err := checkSourceItem(kind, item); err != nil {
 				t.Errorf("%s item %q should stay opaque: %v", kind, item, err)
 			}
 		}
+	}
+	for _, kind := range []string{"ticket", "wiki"} {
+		for _, item := range []string{"Work", "inbox", "nova*", "x y", "#a b"} {
+			if err := checkSourceItem(kind, item); err != nil {
+				t.Errorf("%s item %q should be a plain page or project: %v", kind, item, err)
+			}
+		}
+	}
+}
+
+func TestWikiTicketItemForms(t *testing.T) {
+	ok := map[string][]string{
+		"wiki":   {"https://wiki.supernova.example/pages/launch", "tree: https://wiki.supernova.example/pages/launch", "Tree:https://wiki.supernova.example/pages/launch", "@mine", "@MINE", "@Mentions"},
+		"ticket": {"SUPERNOVA", "query: project = SUPERNOVA", "QUERY:project = SUPERNOVA", "@assigned", "@Reported", "@MENTIONS"},
+	}
+	for kind, items := range ok {
+		for _, item := range items {
+			if err := checkSourceItem(kind, item); err != nil {
+				t.Errorf("%s item %q: %v", kind, item, err)
+			}
+		}
+	}
+	bad := []struct{ kind, item, want string }{
+		{"wiki", "@assigned", "@mine or @mentions"},
+		{"wiki", "@nova-lead", "tree: <page URL>"},
+		{"wiki", "tree:", "needs a page URL"},
+		{"wiki", "TREE:  ", "needs a page URL"},
+		{"ticket", "@mine", "@assigned, @reported or @mentions"},
+		{"ticket", "@dms", "query: <query>"},
+		{"ticket", "query:", "needs a query"},
+		{"ticket", "Query:  ", "needs a query"},
+	}
+	for _, c := range bad {
+		err := checkSourceItem(c.kind, c.item)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s item %q: want an error with %q, got %v", c.kind, c.item, c.want, err)
+		}
+	}
+	for item, want := range map[string]string{"@MINE": "@mine", "Tree:  https://wiki.supernova.example/a": "tree: https://wiki.supernova.example/a", "@Mentions": "@mentions", "https://wiki.supernova.example/Tree:": "https://wiki.supernova.example/Tree:"} {
+		if got := canonicalItem("wiki", item); got != want {
+			t.Errorf("canonicalItem(wiki, %q) = %q, want %q", item, got, want)
+		}
+	}
+	if got := canonicalItem("ticket", "QUERY:  Assignee = Nova  AND x"); got != "query: Assignee = Nova  AND x" {
+		t.Errorf("a query is kept as given: %q", got)
+	}
+}
+
+func TestWikiTicketSourcesInBrief(t *testing.T) {
+	yml := "sources:\n  supernova-wiki:\n    kind: wiki\n    watch: [\"@MINE\", \"Tree: https://wiki.supernova.example/launch\"]\n  supernova-tickets:\n    kind: ticket\n    watch: [SUPERNOVA, \"@Assigned\"]\n"
+	w := sourcesWorld(t, yml)
+	out, err := w.catchUp("--also", "supernova-wiki=@MENTIONS", "--also", "supernova-tickets=@ASSIGNED", "--also", "supernova-tickets=@REPORTED", "--also", "supernova-tickets=@Reported")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"  - @mine\n", "  - tree: https://wiki.supernova.example/launch\n", "  - @assigned\n", "- supernova-wiki (wiki): @mentions\n", "- supernova-tickets (ticket): @reported\n", kindNote("wiki", false), kindNote("ticket", false)} {
+		if !strings.Contains(out, want) {
+			t.Errorf("brief lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "supernova-tickets (ticket): @reported\n") != 1 || strings.Contains(out, "supernova-tickets (ticket): @assigned") || strings.Contains(out, "MINE") || strings.Contains(out, "@Assigned") {
+		t.Errorf("reserved extras collapse and show lower case:\n%s", out)
+	}
+	if !strings.Contains(kindNote("wiki", false), "never widened to the space") || !strings.Contains(kindNote("ticket", false), "never widened to the tracker") {
+		t.Errorf("the notes must forbid widening")
+	}
+	for _, c := range []string{"supernova-wiki=@assigned", "supernova-tickets=@mine", "supernova-wiki=tree:", "supernova-tickets=query:"} {
+		if _, err := w.catchUp("--also", c); err == nil {
+			t.Errorf("--also %q should be refused", c)
+		}
+	}
+	dup := "sources:\n  supernova-wiki:\n    kind: wiki\n    watch: [\"@mine\", \"@MINE\"]\n"
+	if _, err := loadDeclaredSources(sourcesWorld(t, dup).bridge); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("a second casing should be refused as a repeat, got %v", err)
+	}
+	for _, item := range []string{"@nova-lead", "tree:"} {
+		yml := "sources:\n  supernova-x:\n    kind: wiki\n    watch: [\"" + item + "\"]\n"
+		if _, err := loadDeclaredSources(sourcesWorld(t, yml).bridge); err == nil {
+			t.Errorf("watch %q should be refused", item)
+		}
+	}
+	tickets := "sources:\n  supernova-x:\n    kind: ticket\n    watch: [\"query:\"]\n"
+	if _, err := loadDeclaredSources(sourcesWorld(t, tickets).bridge); err == nil {
+		t.Errorf("a ticket watch of bare query: should be refused")
 	}
 }
 

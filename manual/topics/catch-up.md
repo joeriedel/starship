@@ -20,6 +20,21 @@ sources:
     kind: calendar
     watch: [Work]
     lookahead: 7
+  supernova-wiki:
+    kind: wiki
+    watch:
+      - https://wiki.supernova.example/pages/launch-plan
+      - "tree: https://wiki.supernova.example/pages/launch"
+      - "@mine"
+      - "@mentions"
+  supernova-tickets:
+    kind: ticket
+    watch:
+      - SUPERNOVA
+      - "query: project = SUPERNOVA AND status = Open"
+      - "@assigned"
+      - "@reported"
+      - "@mentions"
   supernova-review:
     kind: command
     command: [gh, pr, list, --state, open, --json, number,title,updatedAt]
@@ -29,6 +44,8 @@ sources:
 ```
 
 A slack item is `#channel` (no spaces) or `@person` (a DM; spaces allowed), or the reserved `@dms` (any case): every DM and group DM the user is in, never channels, in `watch` and in `--also`; a person whose handle is literally `dms` can't be watched by name. Never a pattern (`*`, `?`) or `@here`, `@channel`, `@everyone`. A slack source also covers the threads the user is in or mentioned in, and never the rest of the workspace. Extra slack items given with `--also` follow the same forms. A calendar item is a calendar's name; the pass reads who met and across which orgs. A calendar source also takes `lookahead`: whole days of upcoming meetings to read, 0 to 31, default 7, 0 is off; no other kind takes it. Upcoming meetings are not proposals: the reader lists them as an agenda in its reply, re-read whole each pass with no cursor, and you show that agenda to the user.
+
+A wiki item is a page URL (that page and its comments), `tree: <page URL>` (the page and every page under it), or the reserved `@mine` (pages the user created or owns, and new comments on them) or `@mentions` (pages and comments that mention the user). A ticket item is a project key, `query: <query>` (a saved query in the tracker's language, run as given), or the reserved `@assigned` (open tickets assigned to the user), `@reported` or `@mentions`. Reserved items and the `tree:`/`query:` prefix are accepted in any case and shown in lower case, in `watch` and in `--also`; any other `@` item is refused, and a `tree:` or `query:` with nothing after it too. A pass reads only what an item names, never a whole space or tracker: if the connector can't run the search an item needs, the item is unreadable. The cursor is a last-modified time, and a first look goes back 14 days.
 
 A command source is for a system with no connector, such as a code review server read with `gh`. It has `command` instead of `watch`: a list of strings, the program first, then its arguments. `ensign catch-up` runs it with no shell (so no pipes, quoting or expansion), from the bridge folder, with the user's environment plus any `env:` entries, which override variables of the same name. `timeout` is whole seconds, 1 to 600, default 60. Only a command source takes `command`, `timeout` and `env`, and it takes no `watch` and no `--also` items. `bridge.yaml` is committed and pushed: `env:` holds server names and usernames, never tokens or passwords (the program finds those in the user's own environment or login). The owner is trusted to declare read-only commands; ensign runs them as given and does not check what they do.
 
