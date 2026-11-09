@@ -321,7 +321,7 @@ func TestRemoteChangePasses(t *testing.T) {
 
 func TestRemoteChangeBounds(t *testing.T) {
 	deep := "git push"
-	for i := 0; i < 20; i++ {
+	for i := 0; i < shellDepthLimit+2; i++ {
 		deep = "sh -c '" + strings.ReplaceAll(deep, "'", `'\''`) + "'"
 	}
 	if got := remoteChange(deep); got != "" {
