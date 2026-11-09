@@ -197,6 +197,9 @@ func TestReaderRoleKeepsCatchUpRules(t *testing.T) {
 		`(?i)any failure to look it up .* is .unreadable.`,
 		`(?i)not a catch-up pass: no cursor moves`,
 		`(?i)known id seen in a different folder gets its line.s folder updated and adds no new line`,
+		`(?i)@dms. reads every DM and group DM the user is a member of, never public or private channels`,
+		"(?i)`- <source> @dms: <position> \\(<YYYY-MM-DD read>\\)`",
+		`(?i)report .@dms. as unreadable`,
 	} {
 		if !regexp.MustCompile(re).Match(data) {
 			t.Errorf("roles/reader.md does not match %q", re)
@@ -209,7 +212,7 @@ func TestCatchUpTopicPrints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ensign catch-up", "--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "reader/proposals.md", "`go` is not the accept word", "ensign help notes", "ensign journal commit"} {
+	for _, want := range []string{"ensign catch-up", "--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "reader/proposals.md", "`go` is not the accept word", "ensign help notes", "ensign journal commit", "`@dms`", "literally `dms`"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("catch-up topic lacks %q", want)
 		}
@@ -235,9 +238,13 @@ func TestSlackItemForms(t *testing.T) {
 			t.Errorf("watch %q: want a sources error naming the source, got %v", item, err)
 		}
 	}
-	for _, item := range []string{"#supernova-launch", "@nova-lead", "@Nova Lead"} {
+	for _, item := range []string{"#supernova-launch", "@nova-lead", "@Nova Lead", "@dms", "@DMS", "@Dms"} {
 		if err := checkSourceItem("slack", item); err != nil {
 			t.Errorf("slack item %q: %v", item, err)
+		}
+		yml := "sources:\n  supernova-x:\n    kind: slack\n    watch: [\"" + item + "\"]\n"
+		if _, err := loadDeclaredSources(sourcesWorld(t, yml).bridge); err != nil {
+			t.Errorf("watch %q: %v", item, err)
 		}
 	}
 	for _, kind := range []string{"mail", "calendar", "ticket", "wiki"} {
@@ -268,17 +275,70 @@ func TestCatchUpAlsoSlackForms(t *testing.T) {
 	}
 }
 
+func TestCatchUpAlsoAllDMs(t *testing.T) {
+	w := sourcesWorld(t, sourcesYAML)
+	out, err := w.catchUp("--also", "supernova-slack=@DMS", "--also", "supernova-slack=@dms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out, "- supernova-slack (slack): @dms\n") != 1 || !strings.Contains(out, kindNote("slack", true)) {
+		t.Errorf("an @dms extra appears once and adds the @dms note:\n%s", out)
+	}
+	if strings.Contains(out, "@DMS") {
+		t.Errorf("a stray @DMS line:\n%s", out)
+	}
+	for _, bad := range []string{"@here", "@Channel", "@everyone", "@dms*", "#supernova?"} {
+		if _, err := w.catchUp("--also", "supernova-slack="+bad); err == nil {
+			t.Errorf("--also %q should be refused", bad)
+		}
+	}
+	w = sourcesWorld(t, strings.Replace(sourcesYAML, "- \"@nova-lead\"", "- \"@nova-lead\"\n      - \"@dms\"", 1))
+	out, err = w.catchUp("--also", "supernova-slack=@DMS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "Extra items") || strings.Contains(out, "@DMS") || strings.Count(out, kindNote("slack", true)) != 1 {
+		t.Errorf("an @DMS extra already watched as @dms is skipped:\n%s", out)
+	}
+}
+
+func TestWatchAllDMsNormalized(t *testing.T) {
+	w := sourcesWorld(t, strings.Replace(sourcesYAML, "- \"@nova-lead\"", "- \"@DMS\"", 1))
+	out, err := w.catchUp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "  - @dms\n") || strings.Contains(out, "@DMS") {
+		t.Errorf("a watched @DMS shows as @dms:\n%s", out)
+	}
+	w = sourcesWorld(t, strings.Replace(sourcesYAML, "- \"@nova-lead\"", "- \"@dms\"\n      - \"@DMS\"", 1))
+	if _, err := w.catchUp(); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("@dms and @DMS should be refused as a repeat, got %v", err)
+	}
+	w = sourcesWorld(t, sourcesYAML)
+	out, err = w.catchUp("--also", "supernova-slack=@DMS", "--also", "supernova-slack=@DMS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out, "- supernova-slack (slack): @dms\n") != 1 || strings.Contains(out, "@DMS") {
+		t.Errorf("a repeated @DMS extra is one @dms line:\n%s", out)
+	}
+}
+
 func TestCatchUpKindNotes(t *testing.T) {
 	w := sourcesWorld(t, sourcesYAML+"  work-calendar:\n    kind: calendar\n    watch: [Work]\n")
 	out, err := w.catchUp()
 	if err != nil {
 		t.Fatal(err)
 	}
-	slack, cal := kindNote("slack"), kindNote("calendar")
+	slack, cal := kindNote("slack", false), kindNote("calendar", false)
 	if strings.Count(out, slack) != 1 || strings.Count(out, cal) != 1 {
 		t.Errorf("want one threads line and one calendar line:\n%s", out)
 	}
-	mailNote := kindNote("mail")
+	if !strings.Contains(kindNote("slack", true), slack) || strings.Contains(slack, "@dms") || !strings.Contains(kindNote("slack", true), "@dms means every DM and group DM") {
+		t.Errorf("the @dms note extends the slack note")
+	}
+	mailNote := kindNote("mail", false)
 	mail := out[strings.Index(out, "- work-mail (mail)"):]
 	if strings.Count(out, mailNote) != 1 || !strings.Contains(mail, mailNote) || strings.Contains(mail, slack) || strings.Contains(mail, cal) {
 		t.Errorf("a mail source carries only the mail note:\n%s", out)

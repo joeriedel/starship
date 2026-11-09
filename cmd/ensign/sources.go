@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -45,7 +46,13 @@ func cleanSourceItem(item string) (string, error) {
 	return item, nil
 }
 
-// checkSourceItem checks an already cleaned item against its source's kind. Only slack has a form: a pattern could reach the whole workspace, so a channel is #name and a DM is @name.
+// allDMsItem is the reserved slack item for every DM and group DM the user is a member of; a person whose handle is literally dms can't be watched by name.
+const allDMsItem = "@dms"
+
+// isAllDMs reports whether a slack item is the reserved all-DMs item, in any case.
+func isAllDMs(item string) bool { return strings.EqualFold(item, allDMsItem) }
+
+// checkSourceItem checks an already cleaned item against its source's kind. Only slack has a form: a pattern could reach the whole workspace, so a channel is #name, a DM is @name, and @dms is all of the user's DMs.
 func checkSourceItem(kind, item string) error {
 	if kind != "slack" {
 		return nil
@@ -66,11 +73,15 @@ func checkSourceItem(kind, item string) error {
 	return nil
 }
 
-// kindNote is the line a brief prints after a source's watch items, or "" for a kind with none.
-func kindNote(kind string) string {
+// kindNote is the line a brief prints after a source's watch items, or "" for a kind with none. allDMs is true when a slack source's items include @dms.
+func kindNote(kind string, allDMs bool) string {
 	switch kind {
 	case "slack":
-		return "also the threads the user is in or mentioned in; never read the rest of the workspace"
+		note := "also the threads the user is in or mentioned in; never read the rest of the workspace"
+		if allDMs {
+			note += "; @dms means every DM and group DM the user is a member of, never public or private channels, and if the DM conversations can't be listed the item is unreadable, never widened to a search"
+		}
+		return note
 	case "calendar":
 		return "read who met and across which orgs, per the Catch-up section of your role"
 	case "mail":
@@ -154,6 +165,9 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 			if err := checkSourceItem(s.Kind, item); err != nil {
 				return nil, fmt.Errorf("bridge.yaml: sources: %s: watch: %v", name, err)
 			}
+			if s.Kind == "slack" && isAllDMs(item) {
+				item = allDMsItem
+			}
 			if have[item] {
 				return nil, fmt.Errorf("bridge.yaml: sources: %s: watch lists %q twice", name, item)
 			}
@@ -221,6 +235,9 @@ func cmdCatchUp(args []string, out io.Writer) error {
 		if err := checkSourceItem(s.Kind, e.item); err != nil {
 			return fmt.Errorf("--also %s=%s: %v", e.source, e.item, err)
 		}
+		if s.Kind == "slack" && isAllDMs(e.item) {
+			e.item = allDMsItem
+		}
 		if seen[e] || contains(s.Watch, e.item) {
 			continue
 		}
@@ -237,7 +254,11 @@ func cmdCatchUp(args []string, out io.Writer) error {
 		for _, w := range s.Watch {
 			fmt.Fprintf(out, "  - %s\n", w)
 		}
-		if note := kindNote(s.Kind); note != "" {
+		allDMs := slices.ContainsFunc(s.Watch, isAllDMs)
+		for _, e := range extras {
+			allDMs = allDMs || (e.source == s.Name && isAllDMs(e.item))
+		}
+		if note := kindNote(s.Kind, allDMs); note != "" {
 			fmt.Fprintf(out, "  - %s\n", note)
 		}
 	}
