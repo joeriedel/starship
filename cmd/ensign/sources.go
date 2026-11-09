@@ -344,26 +344,68 @@ func parseCommandSource(s *DeclaredSource, command, timeout, env *yaml.Node) err
 	return nil
 }
 
-// cmdCatchUp implements `ensign catch-up [--also <source>=<item>]...`: it runs the command sources, writing their output under reader/command/, and prints the brief for a reader catch-up pass.
-func cmdCatchUp(args []string, out io.Writer) error {
-	usage := fmt.Errorf("usage: ensign catch-up [--also <source>=<item>]...")
-	type extra struct{ source, item string }
-	var also []extra
+// alsoExtra is one --also <source>=<item> value.
+type alsoExtra struct{ source, item string }
+
+// parseAlso reads a list of --also <source>=<item> arguments; any other argument is the usage error.
+func parseAlso(args []string, usage error) ([]alsoExtra, error) {
+	var also []alsoExtra
 	for i := 0; i < len(args); i++ {
 		if args[i] != "--also" || i+1 >= len(args) {
-			return usage
+			return nil, usage
 		}
 		i++
 		src, item, ok := strings.Cut(args[i], "=")
 		src = strings.TrimSpace(src)
 		if !ok || src == "" || strings.TrimSpace(item) == "" {
-			return usage
+			return nil, usage
 		}
 		item, err := cleanSourceItem(item)
 		if err != nil {
-			return fmt.Errorf("--also %s: %v", src, err)
+			return nil, fmt.Errorf("--also %s: %v", src, err)
 		}
-		also = append(also, extra{src, item})
+		also = append(also, alsoExtra{src, item})
+	}
+	return also, nil
+}
+
+// checkAlso validates the extras against the declared sources and drops duplicates and items already watched. It also returns the sources by name.
+func checkAlso(also []alsoExtra, sources []DeclaredSource) ([]alsoExtra, map[string]DeclaredSource, error) {
+	byName := map[string]DeclaredSource{}
+	var names []string
+	for _, s := range sources {
+		byName[s.Name] = s
+		names = append(names, s.Name)
+	}
+	var extras []alsoExtra
+	seen := map[alsoExtra]bool{}
+	for _, e := range also {
+		s, ok := byName[e.source]
+		if !ok {
+			return nil, nil, fmt.Errorf("--also: %q is not a declared source; declared: %s", e.source, strings.Join(names, ", "))
+		}
+		if s.Kind == "command" {
+			return nil, nil, fmt.Errorf("--also does not apply to a command source (%s): it has no items to add", e.source)
+		}
+		if err := checkSourceItem(s.Kind, e.item); err != nil {
+			return nil, nil, fmt.Errorf("--also %s=%s: %v", e.source, e.item, err)
+		}
+		e.item = canonicalItem(s.Kind, e.item)
+		if seen[e] || contains(s.Watch, e.item) {
+			continue
+		}
+		seen[e] = true
+		extras = append(extras, e)
+	}
+	return extras, byName, nil
+}
+
+// cmdCatchUp implements `ensign catch-up [--also <source>=<item>]...`: it runs the command sources, writing their output under reader/command/, and prints the brief for a reader catch-up pass.
+func cmdCatchUp(args []string, out io.Writer) error {
+	usage := fmt.Errorf("usage: ensign catch-up [--also <source>=<item>]...")
+	also, err := parseAlso(args, usage)
+	if err != nil {
+		return err
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
@@ -383,31 +425,9 @@ func cmdCatchUp(args []string, out io.Writer) error {
 	if len(sources) == 0 {
 		return fmt.Errorf("bridge.yaml declares no sources: add a sources: key to catch up (see ensign help catch-up)")
 	}
-	byName := map[string]DeclaredSource{}
-	var names []string
-	for _, s := range sources {
-		byName[s.Name] = s
-		names = append(names, s.Name)
-	}
-	var extras []extra
-	seen := map[extra]bool{}
-	for _, e := range also {
-		s, ok := byName[e.source]
-		if !ok {
-			return fmt.Errorf("--also: %q is not a declared source; declared: %s", e.source, strings.Join(names, ", "))
-		}
-		if s.Kind == "command" {
-			return fmt.Errorf("--also does not apply to a command source (%s): it has no items to add", e.source)
-		}
-		if err := checkSourceItem(s.Kind, e.item); err != nil {
-			return fmt.Errorf("--also %s=%s: %v", e.source, e.item, err)
-		}
-		e.item = canonicalItem(s.Kind, e.item)
-		if seen[e] || contains(s.Watch, e.item) {
-			continue
-		}
-		seen[e] = true
-		extras = append(extras, e)
+	extras, byName, err := checkAlso(also, sources)
+	if err != nil {
+		return err
 	}
 	failed := map[string]*commandFailure{}
 	for _, s := range sources {

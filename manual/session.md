@@ -86,5 +86,5 @@ Workspace commits, pushes and submits need the user's explicit approval **every 
 - `status` lists a held fact: `ensign help skill`.
 - Several steps asked: `ensign help sequence` first. A task with a `subtasks/` folder: `ensign help subtasks`.
 - To improve starship itself: `ensign help starship`; declared documents: `ensign help document`.
-- A note from the user, a catch-up request, or notes inbox items: `ensign help notes`.
+- A note, a catch-up request, notes inbox items: `ensign help notes`; a briefing: `ensign help briefing`.
 - Old runs (cleanup, questions), another session's run blocking you, or user says stop: `ensign help runs`.
