@@ -312,8 +312,11 @@ func TestP4ReconcileBinding(t *testing.T) {
 	if !strings.Contains(string(data), "- opened-by-binding 101") || !strings.Contains(string(data), "- second.go") {
 		t.Errorf("reconcile.md:\n%s", data)
 	}
-	if strings.Contains(p4Log(t, log), "reconcile") {
-		t.Errorf("p4 reconcile ran instead of the binding:\n%s", p4Log(t, log))
+	for _, line := range strings.Split(p4Log(t, log), "\n") {
+		// The review diff's `reconcile -n` preview opens nothing.
+		if strings.Contains(line, "reconcile") && !strings.Contains(line, "reconcile -n") {
+			t.Errorf("p4 reconcile ran instead of the binding:\n%s", p4Log(t, log))
+		}
 	}
 }
 

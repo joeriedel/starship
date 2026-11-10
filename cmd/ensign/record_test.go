@@ -285,10 +285,17 @@ func TestP4ReviewDiffFallsBackToTheShelf(t *testing.T) {
 func TestGitReviewDispatchNamesTheDiffCommand(t *testing.T) {
 	needGit(t)
 	w := newWorld(t)
-	w.gitWorkspace()
+	ws := w.gitWorkspace()
 	w.project("use: [git-catalog]\n")
 	lead := w.startLead()
-	w.leaf(lead, "coder", "compiled")
+	write(t, filepath.Join(ws, "a.txt"), "new\n")
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	if r := w.stop(coder, "coder", coderReport("compiled", "a.txt"), false); r != "" {
+		t.Fatalf("coder stop was blocked: %s", r)
+	}
 	id, why := w.spawn(lead, "orchestrator", "reviewer")
 	if id == "" {
 		t.Fatal(why)
@@ -306,8 +313,15 @@ func TestGitReviewLineListsUntrackedFiles(t *testing.T) {
 		w.setRecord(record, "")
 		w.project("use: [git-catalog]\n")
 		lead := w.startLead()
+		coder, why := w.spawn(lead, "orchestrator", "coder")
+		if coder == "" {
+			t.Fatal(why)
+		}
+		write(t, filepath.Join(ws, "lib.txt"), "one\n")
+		if r := w.stop(coder, "coder", coderReport("compiled", "lib.txt"), false); r != "" {
+			t.Fatalf("coder stop was blocked: %s", r)
+		}
 		write(t, filepath.Join(ws, "fresh.txt"), "new\n")
-		w.leaf(lead, "coder", "compiled")
 		id, why := w.spawn(lead, "orchestrator", "reviewer")
 		if id == "" {
 			t.Fatal(why)

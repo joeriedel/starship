@@ -169,6 +169,7 @@ func TestStrictKeysExtension(t *testing.T) {
 		"top level": {"name: supernova-feed\nsumary: x\n", "sumary"},
 		"provides":  {"name: supernova-feed\nprovides: x\n", "provides"},
 		"x- key":    {"name: supernova-feed\nx-a: 1\n", "x-a"},
+		"record":    {"name: supernova-feed\nrecord: none\n", "record"},
 		"help":      {"name: supernova-feed\nhelp:\n  - { say: a, doe: b }\n", "help[0].doe"},
 		"handler":   {"name: supernova-feed\nevents:\n  task.close:\n    - { requires: ./a.sh }\n", "events.task.close[0].requires"},
 	} {
@@ -276,7 +277,7 @@ func TestStrictKeysSchemasCoverStructs(t *testing.T) {
 	var ext Extension
 	var handler HandlerSpec
 	for _, k := range yamlTags(t, layer) {
-		if !has(projectKeys, k) || !has(taskKeys, k) && k != "platforms" || !has(extensionKeys, k) && k != "platforms" {
+		if !has(projectKeys, k) || !has(taskKeys, k) && k != "platforms" || !has(extensionKeys, k) && k != "platforms" && k != "record" {
 			t.Errorf("Layer key %q is missing from a schema", k)
 		}
 	}
