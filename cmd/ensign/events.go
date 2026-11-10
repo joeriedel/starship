@@ -110,6 +110,9 @@ func handlerEnv(r *RunFiles, d *Dispatch) []string {
 	return projectEnv(r.Snap.Bridge, r.Snap.Project, env)
 }
 
+// bindingBash finds the Git Bash that bindings run through on Windows; tests replace it.
+var bindingBash = gitBashPath
+
 // shell runs a command line through the platform's shell.
 func shell(dir, command string, env []string) (string, error) {
 	return shellFor(dir, command, env, handlerTimeout)
@@ -118,7 +121,7 @@ func shell(dir, command string, env []string) (string, error) {
 // killWaitDelay bounds how long a timed-out command's leftover pipe holders can keep shellFor waiting.
 const killWaitDelay = 5 * time.Second
 
-// shellFor runs a command line through the platform's shell with a time limit; a limit of zero or less means none.
+// shellFor runs a command line through sh, or Git Bash on Windows, with a time limit; a limit of zero or less means none.
 func shellFor(dir, command string, env []string, limit time.Duration) (string, error) {
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -129,15 +132,12 @@ func shellFor(dir, command string, env []string, limit time.Duration) (string, e
 	}
 	defer cancel()
 	var c *exec.Cmd
-	switch {
-	case runtime.GOOS != "windows":
+	if hostOS != "windows" {
 		c = exec.CommandContext(ctx, "sh", "-c", command)
-	default:
-		if bash := gitBashPath(); bash != "" {
-			c = exec.CommandContext(ctx, bash, "-c", command)
-		} else {
-			c = exec.CommandContext(ctx, "cmd", "/C", command)
-		}
+	} else if bash := bindingBash(); bash != "" {
+		c = exec.CommandContext(ctx, bash, "-c", command)
+	} else {
+		return "", errors.New("Git Bash not found: bindings on Windows run through Git Bash; install Git for Windows or set CLAUDE_CODE_GIT_BASH_PATH to bash.exe")
 	}
 	c.Dir, c.Env = dir, env
 	started, finish := func() {}, func() error { return nil }

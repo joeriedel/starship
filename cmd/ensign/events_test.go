@@ -4,6 +4,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -259,4 +260,45 @@ func TestRunEntrySubfolderWorkspaceListsWorkspaceRelativeNames(t *testing.T) {
 
 func TestRunEntrySubfolderWorkspaceIgnoresDiffRelativeConfig(t *testing.T) {
 	runEntrySubfolder(t, true)
+}
+
+func TestShellForWindowsWithoutGitBashFailsBeforeRunning(t *testing.T) {
+	hostOS, bindingBash = "windows", func() string { return "" }
+	t.Cleanup(func() { hostOS, bindingBash = runtime.GOOS, gitBashPath })
+	marker := filepath.Join(t.TempDir(), "supernova-ran")
+	out, err := shellFor(t.TempDir(), "touch "+marker, os.Environ(), 0)
+	if err == nil || !strings.Contains(err.Error(), "Git Bash") || !strings.Contains(err.Error(), "CLAUDE_CODE_GIT_BASH_PATH") {
+		t.Errorf("error %v does not name Git Bash and CLAUDE_CODE_GIT_BASH_PATH", err)
+	}
+	if out != "" {
+		t.Errorf("output %q, want none", out)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the command ran")
+	}
+}
+
+func TestShellForWindowsRunsGitBashWithDashC(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stub is a POSIX script")
+	}
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "bash")
+	argsFile := filepath.Join(dir, "args")
+	script := "#!/bin/sh\nprintf '%s|%s' \"$1\" \"$2\" > " + singleQuote(argsFile) + "\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostOS, bindingBash = "windows", func() string { return stub }
+	t.Cleanup(func() { hostOS, bindingBash = runtime.GOOS, gitBashPath })
+	if _, err := shellFor(dir, "echo supernova", os.Environ(), 0); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "-c|echo supernova" {
+		t.Errorf("bash got args %q, want -c then the command", got)
+	}
 }

@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -17,12 +16,12 @@ import (
 
 const depApply = `  apply-dependency: { command: "echo $STARSHIP_DEPENDENCY $STARSHIP_DEPENDENCY_BRANCH $STARSHIP_DEPENDENCY_PATH > dep.env; echo replace >> go.mod; echo go.mod > \"$STARSHIP_APPLIED_FILES\"; echo dep.env >> \"$STARSHIP_APPLIED_FILES\"" }`
 
-// needPOSIXShell skips when the binding shell is not POSIX: shellFor runs sh -c, or bash -c on Windows when bash is on PATH, else cmd /C.
+// needPOSIXShell skips when the binding shell is not POSIX: shellFor runs sh -c, or Git Bash on Windows, and fails without one.
 func needPOSIXShell(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		if _, err := exec.LookPath("bash"); err != nil {
-			t.Skip("no bash on PATH, so bindings run under cmd /C and the commands here are POSIX shell")
+		if gitBashPath() == "" {
+			t.Skip("no Git Bash, so bindings fail on Windows")
 		}
 	}
 }

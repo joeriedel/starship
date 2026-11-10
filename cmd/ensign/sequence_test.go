@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -5077,9 +5076,6 @@ func TestSequencePublishCommandSeesWhichSessionsLockItHolds(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("do", "placeholder")
 	command := "echo held=$STARSHIP_SEQUENCE_LOCK_HELD #"
-	if runtime.GOOS == "windows" && gitBashPath() == "" {
-		command = "echo held=%STARSHIP_SEQUENCE_LOCK_HELD% & rem"
-	}
 	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
 		sf.Sequences[0].Steps[0] = &seqStep{Kind: "publish", Task: "supernova/auth-refactor", Command: command, Status: "pending"}
 		return nil
@@ -5316,9 +5312,6 @@ func TestSequencePublishCommandSeesWhichTaskPublishLockItHolds(t *testing.T) {
 	w := newWorld(t)
 	w.mustSeq("do", "placeholder")
 	command := "echo held=$STARSHIP_PUBLISH_LOCK_HELD #"
-	if runtime.GOOS == "windows" && gitBashPath() == "" {
-		command = "echo held=%STARSHIP_PUBLISH_LOCK_HELD% & rem"
-	}
 	if err := withSeq(w.bridge, w.sid, func(sf *seqFile) error {
 		sf.Sequences[0].Steps[0] = &seqStep{Kind: "publish", Task: "supernova/auth-refactor", Command: command, Status: "pending"}
 		return nil
