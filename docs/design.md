@@ -201,6 +201,7 @@ Conventional names, reused before new ones are invented:
 | `@checkout` | open one file for edit in the task's changelist before a run agent edits it (Perforce: `p4 edit -c`); receives `STARSHIP_FILE` |
 | `@add` | open a new file the agent wrote for add in the task's changelist (Perforce: `p4 add -c`); receives `STARSHIP_FILE` |
 | `@reconcile` | open the files shell commands changed in the task's changelist before a test stage (Perforce: `p4 reconcile -c`); each line it prints is a file it opened |
+| `@record` | record a Perforce task's changelist at the end of a successful run in place of `p4 submit` or `p4 shelve`; receives `STARSHIP_RECORD`, `STARSHIP_CHANGELIST` and `STARSHIP_CLIENT` |
 | `@state` | a Perforce workspace's state, shown by `task open` and recorded at run start in place of ensign's own `p4` inspection; output shown as is |
 | `@compile` | fast compile-only check; falls back to `@build` |
 | `@build` | build |
@@ -223,6 +224,16 @@ Before a run agent's Edit, Write or NotebookEdit inside the workspace (not its s
 Before a stage whose role is tester starts (the first dispatch of an agent stage, or a plain `ensign run-stage`), `p4ReconcileBefore` reconciles the workspace into the task's changelist. Without a `@reconcile` binding, `p4ReconcileRun` previews with `reconcile -n`, drops the files `p4 opened -C` shows open in other changelists, and reconciles the rest with `p4 -x - reconcile -c <changelist>`, so a file in another changelist is never passed to p4. With `@reconcile`, each line it prints is a file it opened. The files opened are appended to `<run>/reports/reconcile.md` and shown by `ensign next` and the plain stage report (`Dispatch.Reconciled`); a failure refuses that stage start.
 
 `@checkout`, `@add` and `@reconcile` run in the workspace with the usual handler environment plus `STARSHIP_CHANGELIST` and `STARSHIP_CLIENT`, and for `@checkout` and `@add` `STARSHIP_FILE`, the file's absolute path; a not-applicable binding does nothing (`p4Bound`).
+
+**Recording the run's work (`record:`).** How a run records its tested work is a setting, `record: commit | shelve | none`, read from `project.yaml` and from task frontmatter; the task's value wins. It is a project and task setting only: `bridge.yaml` refuses it (naming the file and pointing at `project.yaml`) and an extension's `extension.yaml` does not accept the key. Any other value is an error naming the file (`resolveRecord`, `cmd/ensign/config.go`). Unset, it is `commit` for git and `shelve` for Perforce; a task whose `vcs.kind` is anything but `p4` is treated as git. `record: shelve` on a git task is refused when the setting is read, naming the file and saying git has no shelve. The resolved value is frozen in the run snapshot (`Snapshot.Record`), so editing the setting mid-run changes nothing for that run.
+
+For git, `commit` is the commit the github-pr and git-catalog steps already make. With `none` the work is left uncommitted in the workspace: github-pr's `commit` and `commit-docs` steps and git-catalog's `commit-pass` and `squash` make no commits, `ready` writes no tested marker and notes that the user lands the work by hand, and `ensign github-pr ci` as the test stage refuses, naming `record: none`, since CI would test only what is already on the task branch.
+
+For Perforce nothing is recorded before tests. At the end of a successful run (`finishRun`, after the `run.finish:success` handlers, so after the docs stage), `p4Record` records the task's changelist under the condition the tested marker is written on: the test passed and the run went through the whole pipeline (otherwise it notes that the changelist was not recorded). `commit` runs `p4 submit -c <changelist>` and `shelve` runs `p4 shelve -f -c <changelist>`; a project `@record` binding replaces either, run with `STARSHIP_RECORD` (the mode), `STARSHIP_CHANGELIST` and `STARSHIP_CLIENT`. `none` does nothing and leaves the changelist open. A changelist with no open files records nothing, with a note. A failure to record fails the run. Because a Perforce task's work is recorded this way, the git-catalog and github-pr steps (`record-base`, `commit-pass`, `squash`, `commit`, `commit-docs`, `ready`, `branch`, `ci`) do nothing for it (`internalHandler`), so a Perforce run starts.
+
+Publishing a task whose record is `none` is refused on every publish path (`runPublish` and `tested()`), with a message that nothing was recorded and the user lands the work by hand. Starship ships no code-review-system specifics: landing stays the project's own publish command.
+
+Reviewers see the run's change whatever the VCS (`reviewChangeLine`, added to the stage prompt). For git the prompt carries a `git diff <base>` line (marked as uncommitted under `record: none`) plus the untracked paths, which that diff does not show. For Perforce the dispatch writes `reports/change-<dispatch>.diff` and names it: the files open in the task's changelist (edits as a unified diff, adds as a whole-file addition, deletes listed), the files a `p4 reconcile -n` preview finds that are not yet open (it opens nothing, and never previews a project's `@reconcile` binding, so p4's own reconcile is what is previewed), and, when nothing is open or unopened, the changelist's shelf (`p4 describe -S -du`) (`writeP4Change`, `p4Unopened`).
 
 ### 4.2 Events
 
@@ -1121,6 +1132,7 @@ events:
   sweeping in or stashing someone's work.
   Reported names and git's status are compared relative to the workspace, so in a workspace that is a subfolder of its repo a reported `code.txt` matches `sub/code.txt`. Any dirty or staged path outside the workspace, including unrelated files elsewhere in the repo, and a staged rename whose origin lies outside it, ends the run the same way and commits nothing.
 - **A clean tree is required at `run.start`.**
+- **Under `record: none`** (§4.1) `commit-pass` and `squash` commit nothing, and for a Perforce task every `git-catalog` step does nothing.
 - **The orchestrator learns about the catalog only through the extension's augment**, so
   its role definition never mentions git.
 - **Squashing is placed by the project.** `ensign git-catalog squash` (`git reset --soft <base>`, one
