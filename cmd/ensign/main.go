@@ -578,6 +578,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	// Hand edits to notes/ are committed first: a dirty tracked file would stop the sync. A compaction happens mid-session, when the session's own filing may be half done.
 	synced := false
+	// A pull whose output is discarded (the notes commit's push) is not told to the session at start, so the mark stays before it and the Stop hook reports it.
+	incomingMark := incomingEnd(bridge)
+	loggedAtStart := incomingMark
 	if in.Source != "compact" {
 		var note string
 		if note, synced = commitNotes(bridge); note != "" {
@@ -585,8 +588,15 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		}
 	}
 	if !synced {
-		if note := syncBridge(bridge); note != "" {
+		if note := syncBridge(bridge, in.SessionID); note != "" {
 			lines.add(linePrioritySync, note)
+		}
+		incomingMark = incomingEnd(bridge)
+	}
+	// A session that keeps its id (compact, resume) keeps its mark unless it had been told everything logged before this start.
+	if in.SessionID != "" {
+		if mark, has := readIncomingMark(bridge, in.SessionID); !has || mark >= loggedAtStart {
+			setIncomingMark(bridge, in.SessionID, incomingMark)
 		}
 	}
 	if note := migrateWorkspaces(bridge); note != "" {

@@ -79,27 +79,56 @@ func remoteName(dir string) string {
 	return strings.Fields(out)[0]
 }
 
-// unpushed reports whether the bridge's branch has commits its remote doesn't. It asks
-// the remote, not the local tracking ref, which can be stale.
-func unpushed(bridge string) bool {
-	remote := remoteName(bridge)
+// bridgeSync is how the bridge's branch stands against its remote's.
+type bridgeSync int
+
+const (
+	syncUnknown bridgeSync = iota // no remote, no branch, or the remote can't be reached
+	syncInSync
+	syncAhead       // the remote lacks commits the bridge has, or lacks the branch
+	syncBehind      // the remote has commits the bridge lacks
+	syncDiverged    // each has commits the other lacks
+	syncFetchFailed // the remote's head could not be fetched, so the standing is unknown
+)
+
+// classifyBridge compares the bridge's HEAD with the remote's branch head. It asks the remote, not the local tracking ref, which can be stale, and fetches the remote's head when the bridge lacks it. remoteHead is the remote's head, set for behind and diverged.
+func classifyBridge(bridge string) (state bridgeSync, remote, branch, remoteHead string) {
+	remote = remoteName(bridge)
 	if remote == "" {
-		return false
+		return syncUnknown, "", "", ""
 	}
 	branch, err := gitOut(bridge, "symbolic-ref", "--short", "HEAD")
 	if err != nil {
-		return false
+		return syncUnknown, remote, "", ""
 	}
 	head, err := gitOut(bridge, "rev-parse", "HEAD")
 	if err != nil {
-		return false
+		return syncUnknown, remote, branch, ""
 	}
 	out, err := gitOut(bridge, "ls-remote", remote, "refs/heads/"+branch)
 	if err != nil {
-		return false // can't reach the remote; don't trap the session
+		return syncUnknown, remote, branch, "" // can't reach the remote; don't trap the session
 	}
 	fields := strings.Fields(out)
-	return len(fields) == 0 || fields[0] != head
+	if len(fields) == 0 {
+		return syncAhead, remote, branch, ""
+	}
+	remoteHead = fields[0]
+	if remoteHead == head {
+		return syncInSync, remote, branch, ""
+	}
+	if git(bridge, "cat-file", "-e", remoteHead+"^{commit}") != nil {
+		if git(bridge, "fetch", "-q", remote, branch) != nil || git(bridge, "cat-file", "-e", remoteHead+"^{commit}") != nil {
+			return syncFetchFailed, remote, branch, ""
+		}
+	}
+	switch {
+	case git(bridge, "merge-base", "--is-ancestor", remoteHead, head) == nil:
+		return syncAhead, remote, branch, ""
+	case git(bridge, "merge-base", "--is-ancestor", head, remoteHead) == nil:
+		return syncBehind, remote, branch, remoteHead
+	}
+	return syncDiverged, remote, branch, remoteHead
 }
 
 // hookStop keeps a turn from ending with journal changes uncommitted or unpushed, or with a sequence step waiting.
@@ -110,10 +139,45 @@ func hookStop(bridge string, in *HookInput) any {
 	if out := writesStop(bridge, in); out != nil {
 		return out
 	}
-	if out := journalStop(bridge, in); out != nil {
-		return out // a journal block spends none of the sequence's budget
+	note, _ := journalStop(bridge, in).(map[string]any)
+	if note != nil && note["decision"] != nil {
+		return note // a journal block spends none of the sequence's budget
 	}
-	return sequenceStop(bridge, in)
+	out := sequenceStop(bridge, in)
+	if note == nil {
+		return out
+	}
+	if out == nil {
+		return note
+	}
+	if m, ok := out.(map[string]any); ok {
+		m["systemMessage"] = note["systemMessage"]
+	}
+	return out
+}
+
+// dirtyTracked lists the tracked files with uncommitted changes.
+func dirtyTracked(bridge string) ([]string, error) {
+	toks, err := gitZ(bridge, "status", "--porcelain", "-z", "--untracked-files=no")
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for i := 0; i < len(toks); i++ {
+		if len(toks[i]) < 4 {
+			continue
+		}
+		out = append(out, toks[i][3:])
+		if strings.ContainsAny(toks[i][:2], "RC") {
+			i++ // a rename's second token is its old path
+		}
+	}
+	return out, nil
+}
+
+func behindDirtyReason(remote, branch string, dirty []string) string {
+	return fmt.Sprintf("the bridge is behind its remote (%s/%s) and has uncommitted changes, so it wasn't fast-forwarded: %s. Run: ensign journal push, whose pull takes in the remote's commits and keeps those changes uncommitted. Don't commit these files unless the user asks",
+		remote, branch, listFiles(dirty))
 }
 
 func journalStop(bridge string, in *HookInput) any {
@@ -127,18 +191,44 @@ func journalStop(bridge string, in *HookInput) any {
 		}
 		return block(fmt.Sprintf("the bridge's journal changes could not be read, so they may be uncommitted: %v", err))
 	}
-	ahead := len(changed) == 0 && unpushed(bridge)
-	if len(changed) == 0 && !ahead {
-		return nil
+	if len(changed) > 0 {
+		if in.StopHookActive {
+			return nil // asked once already; don't trap the session
+		}
+		return block(fmt.Sprintf("commit the bridge's journal changes before ending the turn: "+
+			"ensign journal commit -m \"<what changed>\". Changed: %s", strings.Join(changed, ", ")))
 	}
-	if in.StopHookActive {
-		return nil // asked once already; don't trap the session
+	state, remote, branch, remoteHead := classifyBridge(bridge)
+	if state == syncBehind {
+		dirty, err := dirtyTracked(bridge)
+		if err != nil || len(dirty) > 0 {
+			if in.StopHookActive {
+				return nil // asked once already; don't trap the session
+			}
+			if err != nil {
+				return block(fmt.Sprintf("the bridge is behind its remote (%s/%s), and its status could not be read: %v", remote, branch, err))
+			}
+			return block(behindDirtyReason(remote, branch, dirty))
+		}
+		oldHead, _ := gitOut(bridge, "rev-parse", "HEAD")
+		// merge.autoStash=true would stash, fast-forward and exit 0 on a conflicting pop.
+		if git(bridge, "-c", "merge.autoStash=false", "merge", "-q", "--ff-only", remoteHead) == nil {
+			recordIntake(bridge, oldHead, remoteHead)
+			state = syncInSync
+		} else {
+			state = syncDiverged
+		}
 	}
-	if ahead {
+	if state == syncAhead || state == syncFetchFailed || state == syncDiverged {
+		if in.StopHookActive {
+			return nil // asked once already; don't trap the session
+		}
+		if state == syncDiverged {
+			return block(fmt.Sprintf("the remote (%s/%s) moved: another session or machine pushed to it, and the bridge could not take that in as it is. Run: ensign journal push, which rebases the bridge's journal commits on top", remote, branch))
+		}
 		return block("the bridge has journal commits that are not pushed. Run: ensign journal push")
 	}
-	return block(fmt.Sprintf("commit the bridge's journal changes before ending the turn: "+
-		"ensign journal commit -m \"<what changed>\". Changed: %s", strings.Join(changed, ", ")))
+	return incomingStop(bridge, in)
 }
 
 // cmdJournal implements `ensign journal commit -m <message> [files…]` and `ensign journal push`.
@@ -301,6 +391,7 @@ func pushBridge(bridge string, out io.Writer) error {
 	}
 	var conflicted []string
 	if remoteHas(bridge, remote, branch) {
+		oldHead, _ := gitOut(bridge, "rev-parse", "HEAD")
 		if err := git(bridge, "pull", "-q", "--rebase", "--autostash", remote, branch); err != nil {
 			conflicts, checkErr := unmergedFiles(bridge)
 			git(bridge, "rebase", "--abort")
@@ -312,6 +403,12 @@ func pushBridge(bridge string, out io.Writer) error {
 			}
 			return fmt.Errorf("another machine changed the same files (%s). Pull with rebase, merge the two versions — "+
 				"keep both where each only added lines — and run ensign journal push", strings.Join(conflicts, ", "))
+		}
+		if newHead, err := gitOut(bridge, "rev-parse", "FETCH_HEAD"); err == nil {
+			commits, files := recordIntake(bridge, oldHead, newHead)
+			if report := incomingReport(commits, files, sessionProject(bridge, os.Getenv("STARSHIP_SESSION"))); report != "" {
+				fmt.Fprintln(out, report)
+			}
 		}
 		conflicted, err = unmergedFiles(bridge)
 		if err != nil {
@@ -391,8 +488,8 @@ const syncLocalChangesNote = "starship: the bridge has local changes, so it was 
 const syncDivergedNote = "starship: the bridge could not fast-forward from its remote (it has diverged); resolve with a rebase."
 const syncStatusFmt = "starship: the bridge's status could not be read (%v), so it was not updated from its remote."
 
-// syncBridge fast-forwards a clean bridge from its remote at session start.
-func syncBridge(bridge string) string {
+// syncBridge fast-forwards a clean bridge from its remote at session start and says what arrived.
+func syncBridge(bridge, session string) string {
 	if !isGit(bridge) || remoteName(bridge) == "" {
 		return ""
 	}
@@ -407,8 +504,17 @@ func syncBridge(bridge string) string {
 	if err != nil || !remoteHas(bridge, remoteName(bridge), branch) {
 		return ""
 	}
+	oldHead, _ := gitOut(bridge, "rev-parse", "HEAD")
 	if err := git(bridge, "pull", "-q", "--ff-only", remoteName(bridge), branch); err != nil {
 		return syncDivergedNote
+	}
+	newHead, err := gitOut(bridge, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		return ""
+	}
+	commits, files := recordIntake(bridge, oldHead, newHead)
+	if report := incomingReport(commits, files, sessionProject(bridge, session)); report != "" {
+		return "starship: " + report
 	}
 	return ""
 }

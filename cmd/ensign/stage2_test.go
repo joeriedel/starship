@@ -1078,7 +1078,7 @@ func TestGitStatusFailuresAreNotACleanTree(t *testing.T) {
 	})
 	t.Run("syncBridge", func(t *testing.T) {
 		b := failingBridge(t, map[string]string{"projects/supernova/project.yaml": "x: 1\n"})
-		got := syncBridge(b)
+		got := syncBridge(b, "")
 		if !strings.Contains(got, "could not be read") || !strings.Contains(got, "not updated") {
 			t.Errorf("got %q", got)
 		}

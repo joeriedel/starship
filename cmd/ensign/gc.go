@@ -362,7 +362,7 @@ func sessionOfFile(name string) (string, bool) {
 	if strings.HasSuffix(name, ".gc") {
 		return "", false
 	}
-	for _, suf := range []string{".task", ".pin", ".env", ".lines", ".sequence", ".sequence.corrupt", ".writes", ".direct", ".moved"} {
+	for _, suf := range []string{".task", ".pin", ".env", ".lines", ".sequence", ".sequence.corrupt", ".writes", ".direct", ".moved", ".incoming"} {
 		if strings.HasSuffix(name, suf) {
 			return strings.TrimSuffix(name, suf), true
 		}
@@ -941,7 +941,7 @@ func settleSession(dir, id string, files, renamed []string, s *sessionSweep) {
 // sessionIDPaths is the bare id and the fixed suffixes of a session's files.
 func sessionIDPaths(dir, id string) []string {
 	var paths []string
-	for _, suf := range []string{"", ".task", ".pin", ".env", ".sequence", ".sequence.corrupt", ".writes", ".direct", ".moved"} {
+	for _, suf := range []string{"", ".task", ".pin", ".env", ".sequence", ".sequence.corrupt", ".writes", ".direct", ".moved", ".incoming"} {
 		paths = append(paths, filepath.Join(dir, id+suf))
 	}
 	return paths
