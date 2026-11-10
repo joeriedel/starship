@@ -21,6 +21,7 @@ type declaredFocalFile struct {
 // focalConfig is the focal: declaration: the period whose brag file the secretary keeps, when it ends, and an optional rubric path relative to the bridge.
 type focalConfig struct {
 	Period string
+	Starts string
 	Ends   string
 	Rubric string
 }
@@ -45,7 +46,7 @@ func loadFocal(bridge string) (*focalConfig, error) {
 		return nil, nil
 	}
 	if n.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("bridge.yaml: focal: must be a mapping with period, ends and optionally rubric")
+		return nil, fmt.Errorf("bridge.yaml: focal: must be a mapping with period, ends and optionally starts and rubric")
 	}
 	f := &focalConfig{}
 	seen := map[string]bool{}
@@ -55,8 +56,8 @@ func loadFocal(bridge string) (*focalConfig, error) {
 			return nil, fmt.Errorf("bridge.yaml: focal: %s is given twice", key)
 		}
 		seen[key] = true
-		if key != "period" && key != "ends" && key != "rubric" {
-			return nil, fmt.Errorf("bridge.yaml: focal: unknown key %q (focal has only period, ends and rubric)", key)
+		if key != "period" && key != "ends" && key != "starts" && key != "rubric" {
+			return nil, fmt.Errorf("bridge.yaml: focal: unknown key %q (focal has only period, starts, ends and rubric)", key)
 		}
 		if val.Kind != yaml.ScalarNode {
 			return nil, fmt.Errorf("bridge.yaml: focal: %s must be a string", key)
@@ -64,6 +65,8 @@ func loadFocal(bridge string) (*focalConfig, error) {
 		switch key {
 		case "period":
 			f.Period = val.Value
+		case "starts":
+			f.Starts = val.Value
 		case "ends":
 			f.Ends = val.Value
 		default:
@@ -79,8 +82,18 @@ func loadFocal(bridge string) (*focalConfig, error) {
 	if f.Ends == "" {
 		return nil, fmt.Errorf("bridge.yaml: focal: ends is missing")
 	}
-	if _, err := time.Parse("2006-01-02", f.Ends); err != nil {
+	endsAt, err := time.Parse("2006-01-02", f.Ends)
+	if err != nil {
 		return nil, fmt.Errorf("bridge.yaml: focal: ends %q must be a date, YYYY-MM-DD", f.Ends)
+	}
+	if f.Starts != "" {
+		startsAt, err := time.Parse("2006-01-02", f.Starts)
+		if err != nil {
+			return nil, fmt.Errorf("bridge.yaml: focal: starts %q must be a date, YYYY-MM-DD", f.Starts)
+		}
+		if !startsAt.Before(endsAt) {
+			return nil, fmt.Errorf("bridge.yaml: focal: starts %s must be before ends %s", f.Starts, f.Ends)
+		}
 	}
 	if f.Rubric != "" {
 		if strings.Contains(f.Rubric, `\`) || filepath.IsAbs(f.Rubric) || strings.HasPrefix(f.Rubric, "/") {

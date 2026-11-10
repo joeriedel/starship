@@ -32,6 +32,10 @@ func TestLoadFocal(t *testing.T) {
 	if f, err = loadFocal(dir); err != nil || f == nil || f.Rubric != "notes/rubric.md" {
 		t.Fatalf("focal with rubric = %+v, %v", f, err)
 	}
+	dir = focalBridge(t, "focal:\n  period: fy2027-h1\n  starts: 2026-12-01\n  ends: 2027-05-31\n")
+	if f, err = loadFocal(dir); err != nil || f == nil || f.Starts != "2026-12-01" || f.Ends != "2027-05-31" {
+		t.Fatalf("focal with starts = %+v, %v", f, err)
+	}
 	for _, y := range []string{"use: [impact]\n", "focal:\n", "focal: null\n"} {
 		if f, err = loadFocal(focalBridge(t, y)); f != nil || err != nil {
 			t.Errorf("%q: want no focal and no error, got %+v, %v", y, f, err)
@@ -58,6 +62,12 @@ func TestLoadFocalErrors(t *testing.T) {
 		{"rubric missing", "focal:\n  period: 2026-h2\n  ends: 2026-12-31\n  rubric: notes/none.md\n"},
 		{"rubric a folder", "focal:\n  period: 2026-h2\n  ends: 2026-12-31\n  rubric: notes/dir.md\n"},
 		{"unknown key", "focal:\n  period: 2026-h2\n  ends: 2026-12-31\n  rubrik: notes/rubric.md\n"},
+		{"bad starts", "focal:\n  period: fy2027-h1\n  starts: autumn\n  ends: 2027-05-31\n"},
+		{"impossible starts", "focal:\n  period: fy2027-h1\n  starts: 2026-02-30\n  ends: 2027-05-31\n"},
+		{"starts equals ends", "focal:\n  period: fy2027-h1\n  starts: 2027-05-31\n  ends: 2027-05-31\n"},
+		{"starts after ends", "focal:\n  period: fy2027-h1\n  starts: 2027-06-01\n  ends: 2027-05-31\n"},
+		{"starts twice", "focal:\n  period: fy2027-h1\n  starts: 2026-12-01\n  starts: 2026-12-02\n  ends: 2027-05-31\n"},
+		{"nested starts", "focal:\n  period: fy2027-h1\n  starts: [a]\n  ends: 2027-05-31\n"},
 		{"nested value", "focal:\n  period: [a]\n  ends: 2026-12-31\n"},
 	}
 	for _, c := range cases {
@@ -100,6 +110,15 @@ func TestBriefNamesFocal(t *testing.T) {
 		}
 	}
 
+	if strings.Contains(closing, "starts") {
+		t.Errorf("closing instruction names starts although none is declared:\n%s", closing)
+	}
+
+	w = sourcesWorld(t, sourcesYAML+"use: [impact]\nfocal:\n  period: fy2027-h1\n  starts: 2026-12-01\n  ends: 2027-05-31\n")
+	if out, err = w.brief(); err != nil || !strings.Contains(out, "focal: period fy2027-h1, starts 2026-12-01, ends 2027-05-31, brag file notes/focal/fy2027-h1.brag.md") {
+		t.Errorf("brief should name starts: %v\n%s", err, out)
+	}
+
 	w = sourcesWorld(t, sourcesYAML+"use: [impact]\nfocal:\n  period: 2026-h2\n  ends: 2026-12-31\n")
 	if out, err = w.brief(); err != nil || !strings.Contains(out, "default themes apply") {
 		t.Errorf("no rubric should say the defaults apply: %v\n%s", err, out)
@@ -126,13 +145,13 @@ func TestFocalTexts(t *testing.T) {
 		return string(data)
 	}
 	role := read("roles", "secretary.md")
-	for _, want := range []string{"`<bridge>/notes/secretary/` and `<bridge>/notes/focal/`", "only when your brief names a focal", "notes/focal/<period>.brag.md", "Business impact, Cross-org reach, Leadership and influence", "`[inferred]`", "never in the task file", "a confirmed line drops its mark", "a rubric theme with nothing under it", "within 2 weeks", "counts for <period>.` line overrides that date", "gives no start: do not guess one"} {
+	for _, want := range []string{"`<bridge>/notes/secretary/` and `<bridge>/notes/focal/`", "only when your brief names a focal", "notes/focal/<period>.brag.md", "Business impact, Cross-org reach, Leadership and influence", "`[inferred]`", "never in the task file", "a confirmed line drops its mark", "a rubric theme with nothing under it", "within 2 weeks", "counts for <period>.` line overrides that date", "gives no start: do not guess one", "When the brief names a `starts` date", "optional starts date"} {
 		if !strings.Contains(role, want) {
 			t.Errorf("secretary role lacks %q", want)
 		}
 	}
 	topic := read("manual", "topics", "impact.md")
-	for _, want := range []string{"focal:", "period: 2026-h2", "ends:", "rubric:", "living document", "relaxed", "ships no rubric content", "polishes the living file", "gives the secretary no start"} {
+	for _, want := range []string{"focal:", "period: 2026-h2", "ends:", "rubric:", "living document", "relaxed", "ships no rubric content", "polishes the living file", "gives the secretary no start", "starts: 2026-12-01", "period: fy2027-h1", "assumes no calendar or fiscal year"} {
 		if !strings.Contains(topic, want) {
 			t.Errorf("impact topic lacks %q", want)
 		}

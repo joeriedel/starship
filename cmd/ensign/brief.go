@@ -129,7 +129,11 @@ func cmdBrief(args []string, out io.Writer) error {
 			if f.Rubric != "" {
 				rubric = "rubric " + f.Rubric
 			}
-			focalNote = fmt.Sprintf(", and the focal: period %s, ends %s, brag file %s, %s", f.Period, f.Ends, f.bragPath(), rubric)
+			starts := ""
+			if f.Starts != "" {
+				starts = ", starts " + f.Starts
+			}
+			focalNote = fmt.Sprintf(", and the focal: period %s%s, ends %s, brag file %s, %s", f.Period, starts, f.Ends, f.bragPath(), rubric)
 		}
 	}
 	fmt.Fprintf(out, "When all the readers have finished, dispatch one secretary agent with a brief naming the date %s and the intake folder reader/intake/%s/%s, then show the user its briefing in full, then run ensign journal commit (ensign help briefing).\n", date, date, focalNote)
