@@ -17,11 +17,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DeclaredSource is one external place the user has declared for briefing passes, with the items to watch in it. Lookahead is the days of upcoming meetings a calendar source reads (0 is off) and is 0 for every other kind. A command source has no Watch; it has the Command to run, its Timeout in seconds and the Env set on top of the user's environment.
+// DeclaredSource is one external place the user has declared for briefing passes, with the items to watch in it. Digest lists the watch items of a mail or slack source read as a digest, one entry per subject group instead of one per message. Lookahead is the days of upcoming meetings a calendar source reads (0 is off) and is 0 for every other kind. A command source has no Watch; it has the Command to run, its Timeout in seconds and the Env set on top of the user's environment.
 type DeclaredSource struct {
 	Name      string
 	Kind      string
 	Watch     []string
+	Digest    []string
 	Lookahead int
 	Command   []string
 	Timeout   int
@@ -165,7 +166,7 @@ func calendarWindow(lookahead int) string {
 	return fmt.Sprintf("window: past meetings since the cursor, and upcoming meetings from the time of the pass through %d days ahead", lookahead)
 }
 
-// loadDeclaredSources reads the sources: key of bridge.yaml, sorted by name. An absent or empty key declares none. A source has a kind and a watch list, a calendar source may also have lookahead, and a command source has a command instead of a watch list.
+// loadDeclaredSources reads the sources: key of bridge.yaml, sorted by name. An absent or empty key declares none. A source has a kind and a watch list, a mail or slack source may also have digest, a calendar source may also have lookahead, and a command source has a command instead of a watch list.
 func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 	data, err := os.ReadFile(filepath.Join(bridge, "bridge.yaml"))
 	if err != nil {
@@ -201,7 +202,7 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 			return nil, fmt.Errorf("bridge.yaml: sources: %s needs a kind and a watch list", name)
 		}
 		s := DeclaredSource{Name: name}
-		var watch, lookahead, command, timeout, env *yaml.Node
+		var watch, digest, lookahead, command, timeout, env *yaml.Node
 		keys := map[string]bool{}
 		for j := 0; j+1 < len(body.Content); j += 2 {
 			key, val := body.Content[j], body.Content[j+1]
@@ -217,6 +218,8 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 				s.Kind = val.Value
 			case "watch":
 				watch = val
+			case "digest":
+				digest = val
 			case "lookahead":
 				lookahead = val
 			case "command":
@@ -226,7 +229,7 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 			case "env":
 				env = val
 			default:
-				return nil, fmt.Errorf("bridge.yaml: sources: %s: unknown key %q (a source has only kind and watch, a calendar source also lookahead, and a command source command, timeout and env instead of watch)", name, key.Value)
+				return nil, fmt.Errorf("bridge.yaml: sources: %s: unknown key %q (a source has only kind and watch, a mail or slack source also digest, a calendar source also lookahead, and a command source command, timeout and env instead of watch)", name, key.Value)
 			}
 		}
 		ok := false
@@ -243,6 +246,9 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 			if lookahead != nil {
 				return nil, fmt.Errorf("bridge.yaml: sources: %s: lookahead is only for calendar sources", name)
 			}
+			if digest != nil {
+				return nil, fmt.Errorf("bridge.yaml: sources: %s: digest is only for mail and slack sources", name)
+			}
 			if err := parseCommandSource(&s, command, timeout, env); err != nil {
 				return nil, fmt.Errorf("bridge.yaml: sources: %s: %v", name, err)
 			}
@@ -256,6 +262,9 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 			if k.val != nil {
 				return nil, fmt.Errorf("bridge.yaml: sources: %s: %s is only for command sources", name, k.key)
 			}
+		}
+		if digest != nil && s.Kind != "mail" && s.Kind != "slack" {
+			return nil, fmt.Errorf("bridge.yaml: sources: %s: digest is only for mail and slack sources", name)
 		}
 		switch {
 		case lookahead != nil && s.Kind != "calendar":
@@ -292,6 +301,28 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 			}
 			have[item] = true
 			s.Watch = append(s.Watch, item)
+		}
+		if digest != nil {
+			if digest.Kind != yaml.SequenceNode || len(digest.Content) == 0 {
+				return nil, fmt.Errorf("bridge.yaml: sources: %s: digest must be a list with at least one entry", name)
+			}
+			for _, e := range digest.Content {
+				if e.Kind != yaml.ScalarNode {
+					return nil, fmt.Errorf("bridge.yaml: sources: %s: each digest entry must be a string", name)
+				}
+				item, err := cleanSourceItem(e.Value)
+				if err != nil {
+					return nil, fmt.Errorf("bridge.yaml: sources: %s: digest: %v", name, err)
+				}
+				item = canonicalItem(s.Kind, item)
+				if !have[item] {
+					return nil, fmt.Errorf("bridge.yaml: sources: %s: digest item %q is not in the watch list", name, item)
+				}
+				if slices.Contains(s.Digest, item) {
+					return nil, fmt.Errorf("bridge.yaml: sources: %s: digest lists %q twice", name, item)
+				}
+				s.Digest = append(s.Digest, item)
+			}
 		}
 		out = append(out, s)
 	}

@@ -42,6 +42,14 @@ func TestDeclaredSourcesParse(t *testing.T) {
 	}
 }
 
+func TestDeclaredSourcesDigest(t *testing.T) {
+	w := sourcesWorld(t, "sources:\n  supernova-x:\n    kind: slack\n    digest: [\"#supernova-ci\", \"@DMS\"]\n    watch: [\"#supernova-launch\", \"#supernova-ci\", \"@dms\"]\n")
+	got, err := loadDeclaredSources(w.bridge)
+	if err != nil || len(got) != 1 || len(got[0].Digest) != 2 || got[0].Digest[0] != "#supernova-ci" || got[0].Digest[1] != "@dms" {
+		t.Errorf("digest: %+v, %v", got, err)
+	}
+}
+
 func TestDeclaredSourcesLookahead(t *testing.T) {
 	for _, c := range []struct {
 		line string
@@ -86,6 +94,11 @@ func TestDeclaredSourcesInvalid(t *testing.T) {
 		"lookahead list":           "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    lookahead: [7]\n",
 		"lookahead too big":        "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    lookahead: 32\n",
 		"lookahead repeated":       "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    lookahead: 3\n    lookahead: 4\n",
+		"digest not in watch":      "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox]\n    digest: [archive]\n",
+		"digest on calendar":       "sources:\n  supernova-x:\n    kind: calendar\n    watch: [Work]\n    digest: [Work]\n",
+		"digest on command":        "sources:\n  supernova-x:\n    kind: command\n    command: [echo]\n    digest: [echo]\n",
+		"digest duplicate":         "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox]\n    digest: [inbox, \" inbox \"]\n",
+		"digest empty":             "sources:\n  supernova-x:\n    kind: mail\n    watch: [inbox]\n    digest: []\n",
 		"nested entry":             "sources:\n  supernova-x:\n    kind: mail\n    watch: [[inbox]]\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -208,7 +221,12 @@ func TestReaderRoleKeepsGatherRules(t *testing.T) {
 		`(?i)do not write .reader/facts\.md. or .reader/history\.md. in a pass`,
 		`(?i)first look: go back 14 days`,
 		`(?i)never write a cursor for them`,
-		`(?i)intake entries first, then move its cursor`,
+		`(?i)batches of at most 50 things`,
+		`(?i)newest thing in that batch`,
+		`(?i)- more remaining: <source> <item>`,
+		`(?i)skip the extra items`,
+		`(?i)one entry per subject group`,
+		`(?i)intake entries first, then move the item's cursor`,
 		`reader/mail-read/<source>\.md`,
 		`(?i)- <source> \| <folder> \| <message id> \| <received YYYY-MM-DD> \| <read YYYY-MM-DD> \| <sender> \| <subject>`,
 		`(?i)never moves, deletes, flags or marks mail`,
@@ -266,7 +284,7 @@ func TestBriefingTopicDeclaresSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "`@dms`", "literally `dms`", "`lookahead`", "`tree: <page URL>`", "`query: <query>`", "`@mine`", "`@assigned`", "`@reported`", "`@mentions`", "kind: wiki", "kind: ticket", "in `watch` and in `--also`"} {
+	for _, want := range []string{"--also <source>=<item>", "keep lines added on either side and keep removed lines removed", "`@dms`", "literally `dms`", "`lookahead`", "`tree: <page URL>`", "`query: <query>`", "`@mine`", "`@assigned`", "`@reported`", "`@mentions`", "kind: wiki", "kind: ticket", "in `watch` and in `--also`", "`digest:`", "`more remaining`", "50 things"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("briefing topic lacks %q", want)
 		}

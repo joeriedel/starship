@@ -82,7 +82,7 @@ func cmdBrief(args []string, out io.Writer) error {
 	if n := countUnparsed(bridge); n > 0 {
 		fmt.Fprintf(out, "Problem: %d lines that could not be read are kept in reader/cursors/unparsed.md; move each into its source's file under reader/cursors/ or reader/mail-read/, or delete it, then remove the file.\n", n)
 	}
-	fmt.Fprintln(out, "Dispatch one reader agent for each brief below, all of them at once in one message, each with its brief's text up to its end line. Read nothing yourself (ensign help briefing).")
+	fmt.Fprintln(out, "Dispatch one reader agent for each brief below, all of them at once in one message, each with its brief's text up to its end line. Read nothing yourself. A reader handles at most 50 things per watched item (extra items are read in full on the first dispatch) and reports each item drained, more remaining or unreadable: for each source with an item reported more remaining, dispatch a fresh reader with that source's same brief plus the line \""+continueLine+"\", and repeat until no item of any source reports more remaining; an unreadable item counts as finished (ensign help briefing).")
 	for _, s := range sources {
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "Brief for %s:\n", s.Name)
@@ -103,7 +103,14 @@ func cmdBrief(args []string, out io.Writer) error {
 		}
 		fmt.Fprintln(out, "Items to watch:")
 		for _, w := range s.Watch {
-			fmt.Fprintf(out, "  - %s\n", w)
+			if slices.Contains(s.Digest, w) {
+				fmt.Fprintf(out, "  - %s (digest)\n", w)
+			} else {
+				fmt.Fprintf(out, "  - %s\n", w)
+			}
+		}
+		if len(s.Digest) > 0 {
+			fmt.Fprintln(out, "Note: an item marked (digest) is read as a digest: write one entry per subject group instead of one per message.")
 		}
 		allDMs := slices.ContainsFunc(s.Watch, isAllDMs)
 		var mine []alsoExtra
@@ -146,9 +153,12 @@ func cmdBrief(args []string, out io.Writer) error {
 			focalNote = fmt.Sprintf(", and the focal: period %s%s, ends %s, brag file %s, %s", f.Period, starts, f.Ends, f.bragPath(), rubric)
 		}
 	}
-	fmt.Fprintf(out, "When all the readers have finished, dispatch one secretary agent with a brief naming the date %s and the intake folder reader/intake/%s/%s, then show the user its briefing in full, then run ensign journal commit (ensign help briefing).\n", date, date, focalNote)
+	fmt.Fprintf(out, "When all the readers have finished and no item of any source reports more remaining (no backlog carries to the next briefing), dispatch one secretary agent with a brief naming the date %s and the intake folder reader/intake/%s/%s, then show the user its briefing in full, then run ensign journal commit (ensign help briefing).\n", date, date, focalNote)
 	return nil
 }
+
+// continueLine is the line the session adds to a source's brief to dispatch a reader that continues a pass from the saved cursors.
+const continueLine = "This continues a pass from the saved cursors: append to the same intake file, and skip the extra items and the upcoming meetings window, which the first dispatch read in full."
 
 // countUnparsed counts the non-blank lines of reader/cursors/unparsed.md, which is absent when nothing is waiting to be sorted out.
 func countUnparsed(bridge string) int {

@@ -33,7 +33,7 @@ All under `<bridge>/notes/secretary/` unless stated. Create what is missing.
 
 Your brief names the date and the intake folder `reader/intake/<YYYY-MM-DD>/`, and may name a focal. In order:
 
-1. **Read.** Every file in the day's intake folder, your own files (`preferences.md` included), and the bridge task files that items or intake entries name. An intake entry with `user:` of `mentioned`, `waited on` or `both`, or a non-`none` `ask:`, deserves a close look. Unreadable sources are listed in the briefing so the user knows what is missing.
+1. **Read.** Every file in the day's intake folder, your own files (`preferences.md` included), and the bridge task files that items or intake entries name. An intake entry with `user:` of `mentioned`, `waited on` or `both`, or a non-`none` `ask:`, deserves a close look. Unreadable sources are listed in the briefing so the user knows what is missing. A `- more remaining: <source> <item>` line is a progress marker from an earlier dispatch; the session dispatches you only after no item reports more remaining, so ignore it.
 2. **Update items.**
    - Anything that asks something of the user, or a commitment the user made, becomes an item. Only actions for the user and things the user waits on (status `waiting`) become items. Announcements and FYIs do not: they go only in the briefing's Everything else section.
    - Match new evidence to existing items before creating one. When evidence says an item moved on (answered, done, deadline changed, handed off), change its status or due date and add a log entry with the date and its source. A task that shows the work done, blocked or reassigned counts as evidence.

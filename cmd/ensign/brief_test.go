@@ -47,6 +47,19 @@ func TestBriefRefusedRunsNoCommand(t *testing.T) {
 	}
 }
 
+func TestBriefDigestAndContinue(t *testing.T) {
+	w := sourcesWorld(t, "sources:\n  work-mail:\n    kind: mail\n    watch: [inbox, alerts]\n    digest: [alerts]\n")
+	out, err := w.brief()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"  - inbox\n", "  - alerts (digest)\n", "one entry per subject group", "more remaining", "dispatch a fresh reader", continueLine, "repeat until no item of any source reports more remaining", "no backlog carries to the next briefing"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestBriefOnePerSource(t *testing.T) {
 	w := sourcesWorld(t, sourcesYAML+"  supernova-cal:\n    kind: calendar\n    watch: [Work]\n")
 	out, err := w.brief()
@@ -163,7 +176,11 @@ func TestReaderRoleGather(t *testing.T) {
 		`(?i)no filtering for importance`,
 		`(?i)decided later by the secretary`,
 		`(?i)keeps its cursor`,
-		`(?i)intake entries first, then move its cursor`,
+		`(?i)intake entries first, then move the item's cursor`,
+		`The cap does not apply to extra items`,
+		`first dispatch read in full`,
+		`exactly one of .drained., .more remaining. or .unreadable.`,
+		`(?i)unreadable.{1,3} never .more remaining.`,
 		`(?i)never rewrite earlier entries`,
 		`(?i)do not write .reader/facts\.md. or .reader/history\.md. in a pass`,
 		`summary:`,

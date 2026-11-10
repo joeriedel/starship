@@ -9,8 +9,8 @@ Any request for a briefing in plain words ("brief me", "what's going on", "what 
 ## Steps
 
 1. Run `ensign brief`, with `--also <source>=<item>` for an item the user names for this pass only (no cursor, not saved). On Windows, prefix `MSYS_NO_PATHCONV=1` when an item starts with `/`. It refuses, running nothing, if `notes/secretary/goals.md` or `items.md` doesn't parse: the error names the file and line, so fix that block (see Corrections) and run it again. It removes intake folders older than 30 days, runs the command sources, then prints a `Problem:` line for each item `tasks:` entry that names a task that doesn't exist (the briefing still runs: fix the entry in `items.md` or create the task), then prints one brief per declared source, each ending with `End of brief.`. The reader must be declared under `connectors:`.
-2. Dispatch one `reader` agent per brief, all of them at once in one message, each with its brief's text up to its end line. Read nothing yourself.
-3. When all have finished, dispatch one `secretary` agent with a brief naming the date and its intake folder `reader/intake/<YYYY-MM-DD>/`. When `ensign brief` closes with a focal (period, starts date when set, ends date, brag file path, rubric), put those facts in the secretary's brief too; a `Problem:` line for `focal:` means the pass runs without focal work (fix `focal:` in `bridge.yaml`, `ensign help impact`). It writes under `notes/secretary/` (and `notes/focal/` for a focal) and replies with the briefing.
+2. Dispatch one `reader` agent per brief, all of them at once in one message, each with its brief's text up to its end line. Read nothing yourself. A reader reads each item oldest first in batches of at most 50 things, writes each batch's entries and moves the item's cursor after it, and handles at most 50 things per watched item per dispatch (an `--also` extra has no cursor, so it is read in full on the first dispatch and reported `drained`, or `unreadable` when it cannot be read). It replies per item exactly one of `drained`, `more remaining` or `unreadable` (an unreadable item is never `more remaining` and writes no `- more remaining:` line). For each source with an item `more remaining`, dispatch a fresh reader with that source's same brief plus the continuation line `ensign brief` prints in its dispatch instructions (it continues a pass from the saved cursors, appends to the same intake file and skips the `--also` extras and the calendar upcoming meetings window, already read in full), and repeat until no item of any source reports `more remaining` (an unreadable item counts as finished). A briefing drains every item fully: no backlog carries to the next one.
+3. When no item of any source reports `more remaining`, dispatch one `secretary` agent with a brief naming the date and its intake folder `reader/intake/<YYYY-MM-DD>/`. When `ensign brief` closes with a focal (period, starts date when set, ends date, brag file path, rubric), put those facts in the secretary's brief too; a `Problem:` line for `focal:` means the pass runs without focal work (fix `focal:` in `bridge.yaml`, `ensign help impact`). It writes under `notes/secretary/` (and `notes/focal/` for a focal) and replies with the briefing.
 4. Show the user that briefing in full, in the chat, as the secretary wrote it. Do not summarise it or add to it.
 5. Run `ensign journal commit`.
 
@@ -27,7 +27,7 @@ The files are the user's to correct, and you make the correction directly, with 
 
 ## Files
 
-- `reader/intake/<YYYY-MM-DD>/<source>.md`: one per source per day, written by the readers. Each entry has a `summary:` line; unreadable items are listed as `unreadable:` with the reason and keep their cursor. A second pass on the same day appends under a heading with its pass time.
+- `reader/intake/<YYYY-MM-DD>/<source>.md`: one per source per day, written by the readers. Each entry has a `summary:` line; unreadable items are listed as `unreadable:` with the reason and keep their cursor. A second pass on the same day, or a continuation dispatch, appends under a heading with its pass time. An item with more left is listed as `- more remaining: <source> <item>`.
 - `notes/focal/<period>.brag.md`: the living brag file, kept by the secretary when `bridge.yaml` declares `focal:` (`ensign help impact`).
 - `notes/secretary/`: `goals.md`, `items.md`, `items-archive.md`, `people.md`, `preferences.md` (the user's priority rules, read-only for the secretary) and `briefings/<YYYY-MM-DD>.md`. The briefing ends with a Suggestions section: proposed goals, proposed preference rules and channels to start watching. A second briefing the same day rewrites that day's file and marks what is new.
 - `reader/cursors/<source>.md`, `reader/mail-read/<source>.md`, `reader/command/`: the readers' state. All of it is Markdown under `reader/` or `notes/`, so `ensign journal commit` commits it. A briefing never touches mail and never offers to move it; when the user asks for cleanup, see `ensign help mail-cleanup`. Lines the migration of an old shared `reader/cursors.md` or `reader/mail-read.md` could not read are kept in `reader/cursors/unparsed.md`; every brief reports them as a Problem until you move each into its source's file or delete it and remove the file.
@@ -71,6 +71,15 @@ sources:
     timeout: 60
     env:
       GH_HOST: git.supernova.example
+```
+
+A mail or slack source may also take `digest:`, a list of items from its own `watch` list (compared the same way; an item not in `watch`, or listed twice, is refused) that are read as a digest, for a folder or channel of automated notifications. The brief marks them `(digest)`: the reader writes one entry per subject group (a ticket, bug or review id, else the normalized subject) with the count, first and last times, latest state and a link to the latest message, and still writes its own entry for any message that names the user or asks something of them. No other kind takes `digest:`. Batches and the cap of 50 things apply to digest items too.
+
+```yaml
+  work-alerts:
+    kind: mail
+    watch: [inbox, alerts]
+    digest: [alerts]
 ```
 
 A slack item is `#channel` (no spaces) or `@person` (a DM; spaces allowed), or the reserved `@dms` (any case): every DM and group DM the user is in, never channels, in `watch` and in `--also`; a person whose handle is literally `dms` can't be watched by name. Never a pattern (`*`, `?`) or `@here`, `@channel`, `@everyone`. A slack source also covers the threads the user is in or mentioned in, and never the rest of the workspace. Extra slack items given with `--also` follow the same forms. A calendar item is a calendar's name; the reader reads who met and which orgs they come from. A calendar source also takes `lookahead`: whole days of upcoming meetings to read, 0 to 31, default 7, 0 is off; no other kind takes it. Upcoming meetings are re-read whole each pass with no cursor.
