@@ -30,7 +30,7 @@ The files are the user's to correct, and you make the correction directly, with 
 - `reader/intake/<YYYY-MM-DD>/<source>.md`: one per source per day, written by the readers. Each entry has a `summary:` line; unreadable items are listed as `unreadable:` with the reason and keep their cursor. A second pass on the same day appends under a heading with its pass time.
 - `notes/focal/<period>.brag.md`: the living brag file, kept by the secretary when `bridge.yaml` declares `focal:` (`ensign help impact`).
 - `notes/secretary/`: `goals.md`, `items.md`, `items-archive.md`, `people.md`, `preferences.md` (the user's priority rules, read-only for the secretary) and `briefings/<YYYY-MM-DD>.md`. The briefing ends with a Suggestions section: proposed goals, proposed preference rules and channels to start watching. A second briefing the same day rewrites that day's file and marks what is new.
-- `reader/cursors.md`, `reader/mail-read.md`, `reader/command/`: the readers' state. All of it is Markdown under `reader/` or `notes/`, so `ensign journal commit` commits it. A briefing never touches mail and never offers to move it; when the user asks for cleanup, see `ensign help mail-cleanup`.
+- `reader/cursors/<source>.md`, `reader/mail-read/<source>.md`, `reader/command/`: the readers' state. All of it is Markdown under `reader/` or `notes/`, so `ensign journal commit` commits it. A briefing never touches mail and never offers to move it; when the user asks for cleanup, see `ensign help mail-cleanup`. Lines the migration of an old shared `reader/cursors.md` or `reader/mail-read.md` could not read are kept in `reader/cursors/unparsed.md`; every brief reports them as a Problem until you move each into its source's file or delete it and remove the file.
 
 ## Declaring
 
@@ -81,8 +81,8 @@ A command source is for a system with no connector, such as a code review server
 
 On success the output becomes `reader/command/<name>.out`, and the one before it becomes `reader/command/<name>.prev`, so the reader can compare what changed; the output is a snapshot of current state with no cursor, and anything past 1 MB is cut with a marker line. On failure (non-zero exit, timeout, program not found) neither file changes, the brief lists the source as unreadable with the reason and the last lines of the program's stderr, and the other sources still run. These files are committed by `ensign journal commit` with the other reader files.
 
-Kinds: mail, slack, calendar, command, ticket, wiki. A name is lower-case letters, digits and hyphens. An entry starting with `#` or `@` must be quoted, in the block form and in `[...]`: unquoted, `#` reads as a comment and `@` is a YAML syntax error, and a syntax error breaks all of `bridge.yaml` for every command, not only `brief`.
+Kinds: mail, slack, calendar, command, ticket, wiki. A name is lower-case letters, digits and hyphens; `unparsed` is reserved. An entry starting with `#` or `@` must be quoted, in the block form and in `[...]`: unquoted, `#` reads as a comment and `@` is a YAML syntax error, and a syntax error breaks all of `bridge.yaml` for every command, not only `brief`.
 
 ## Conflicts
 
-A rebase conflict on `reader/cursors.md`: keep the later position for each line. On `reader/mail-read.md`: keep lines added on either side and keep removed lines removed, because a removed line means the mail has moved or gone. On `notes/secretary/items.md` or `goals.md`: keep both sides' changes in one valid block.
+A rebase conflict on a `reader/cursors/<source>.md` file: keep the later position for each line. On a `reader/mail-read/<source>.md` file: keep lines added on either side and keep removed lines removed, because a removed line means the mail has moved or gone. On `notes/secretary/items.md` or `goals.md`: keep both sides' changes in one valid block.

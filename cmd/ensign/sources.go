@@ -190,6 +190,9 @@ func loadDeclaredSources(bridge string) ([]DeclaredSource, error) {
 		if !declaredSourceNameRe.MatchString(name) {
 			return nil, fmt.Errorf("bridge.yaml: sources: name %q must be lower-case letters, digits and hyphens, starting with a letter or digit", name)
 		}
+		if name == "unparsed" {
+			return nil, fmt.Errorf("bridge.yaml: sources: the name unparsed is reserved: reader/cursors/unparsed.md holds the lines the reader could not read")
+		}
 		if seen[name] {
 			return nil, fmt.Errorf("bridge.yaml: sources: %s is declared twice", name)
 		}

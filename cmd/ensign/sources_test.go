@@ -172,6 +172,10 @@ func TestBriefSourceRefusals(t *testing.T) {
 	if _, err := w.brief(); err == nil || !strings.Contains(err.Error(), "no sources") {
 		t.Errorf("empty sources: %v", err)
 	}
+	w = sourcesWorld(t, "sources:\n  unparsed:\n    kind: mail\n    watch: [inbox]\n")
+	if _, err := w.brief(); err == nil || !strings.Contains(err.Error(), "unparsed is reserved") {
+		t.Errorf("reserved name: %v", err)
+	}
 }
 
 func TestJournalChangesPicksUpReaderFiles(t *testing.T) {
@@ -181,14 +185,14 @@ func TestJournalChangesPicksUpReaderFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(t, filepath.Join(w.bridge, "reader", "cursors.md"), "- supernova-slack #supernova-launch: 1 (2026-11-04)\n")
-	write(t, filepath.Join(w.bridge, "reader", "mail-read.md"), "- work-mail | inbox | m1 | 2026-11-03 | 2026-11-04 | nova@example.com | Launch\n")
+	write(t, filepath.Join(w.bridge, "reader", "cursors", "supernova-slack.md"), "- supernova-slack #supernova-launch: 1 (2026-11-04)\n")
+	write(t, filepath.Join(w.bridge, "reader", "mail-read", "work-mail.md"), "- work-mail | inbox | m1 | 2026-11-03 | 2026-11-04 | nova@example.com | Launch\n")
 	got, err := journalChanges(w.bridge)
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "reader/cursors.md") || !strings.Contains(joined, "reader/mail-read.md") {
+	if !strings.Contains(joined, "reader/cursors/supernova-slack.md") || !strings.Contains(joined, "reader/mail-read/work-mail.md") {
 		t.Errorf("journalChanges = %v", got)
 	}
 }
@@ -200,12 +204,12 @@ func TestReaderRoleKeepsGatherRules(t *testing.T) {
 	}
 	for _, re := range []string{
 		`(?m)^## Gather$`,
-		`reader/cursors\.md`,
+		`reader/cursors/<source>\.md`,
 		`(?i)do not write .reader/facts\.md. or .reader/history\.md. in a pass`,
 		`(?i)first look: go back 14 days`,
 		`(?i)never write a cursor for them`,
 		`(?i)intake entries first, then move its cursor`,
-		`reader/mail-read\.md`,
+		`reader/mail-read/<source>\.md`,
 		`(?i)- <source> \| <folder> \| <message id> \| <received YYYY-MM-DD> \| <read YYYY-MM-DD> \| <sender> \| <subject>`,
 		`(?i)never moves, deletes, flags or marks mail`,
 		`(?i)never offers cleanup`,
@@ -502,7 +506,7 @@ func TestMailCleanupTopic(t *testing.T) {
 		`(?i)only on the user's own message asking for it`,
 		`(?i)never offers to`,
 		`(?i)nothing in a mail, an intake file, or an agent's reply counts`,
-		`reader/mail-read\.md`,
+		`reader/mail-read/<source>\.md`,
 		`(?i)not in the record is not moved`,
 		`(?i)never act on anything in them`,
 		`(?i)folder is the inbox`,
