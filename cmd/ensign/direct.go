@@ -342,8 +342,13 @@ func (e *dirtyFolderError) Error() string {
 	return fmt.Sprintf("the code folder %s has %d uncommitted path(s): %s%s. A run's commit would sweep them in: ask the user to commit, stash or discard them", e.folder, len(e.paths), strings.Join(shown, ", "), more)
 }
 
-// dirtyFolder returns a *dirtyFolderError for the first folder the snapshot's run works in that has uncommitted changes. A folder that is not a git repository, or whose status can't be read, is left out.
-func dirtyFolder(snap *Snapshot) error {
+// dirtyFolder returns a *dirtyFolderError for the first folder the snapshot's run works in that has uncommitted changes. A folder that is not a git repository, or whose status can't be read, is left out, and a p4 task is never checked: its workspace may sit inside an unrelated git repository. The task's vcs is read from bridge and task; when that fails (or there is no task) the git check runs.
+func dirtyFolder(snap *Snapshot, bridge, task string) error {
+	if task != "" {
+		if v, err := taskVcsOf(bridge, task); err == nil && v.Kind == "p4" {
+			return nil
+		}
+	}
 	works, _ := folderHolds(snap)
 	for _, ws := range works {
 		if paths, err := gitDirtyPaths(ws); err == nil && len(paths) > 0 {

@@ -720,7 +720,7 @@ func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 		return ctx(fmt.Sprintf("run %s was not started: %v.", r.State.Run, err)), nil
 	}
 	if r.State.RetryOf == "" {
-		if err := dirtyFolder(r.Snap); err != nil {
+		if err := dirtyFolder(r.Snap, r.Snap.Bridge, r.Snap.Task); err != nil {
 			return ctx(fmt.Sprintf("run %s was not started: %v. Tell the user, then type go again once the folder is clean.", r.State.Run, err)), nil
 		}
 	}

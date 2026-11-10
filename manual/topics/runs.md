@@ -4,7 +4,7 @@
 
 ## Uncommitted edits before a run
 
-A run is refused while its work folder has uncommitted changes, and the refusal names the paths (up to 5). Ask the user to commit, stash or discard them, then run again; a direct edit leaves such changes. This applies to `ensign run` and again at `go`, which is refused the same way and can be typed again once the folder is clean. A sequence step is not refused: it waits like a step on a busy folder (`waiting: …` in the listing and the Stop message) and starts by itself once the folder is clean. A retry is exempt: its dirty tree is the failed attempt's work, carried into the new run. A run's commit sweeps in everything dirty, which is why a run never starts on top of someone's work.
+A run is refused while its work folder has uncommitted git changes (a p4 task is never refused for them), and the refusal names the paths (up to 5). Ask the user to commit, stash or discard them, then run again; a direct edit leaves such changes. This applies to `ensign run` and again at `go`, which is refused the same way and can be typed again once the folder is clean. A sequence step is not refused: it waits like a step on a busy folder (`waiting: …` in the listing and the Stop message) and starts by itself once the folder is clean. A retry is exempt: its dirty tree is the failed attempt's work, carried into the new run. A run's commit sweeps in everything dirty, which is why a run never starts on top of someone's work.
 
 ## The closing gate
 

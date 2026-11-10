@@ -1939,7 +1939,7 @@ func startRun(bridge, session, task, run string) (string, error) {
 		return "", err
 	}
 	if r.State.RetryOf == "" {
-		if err := dirtyFolder(r.Snap); err != nil {
+		if err := dirtyFolder(r.Snap, r.Snap.Bridge, r.Snap.Task); err != nil {
 			return "", err
 		}
 	}

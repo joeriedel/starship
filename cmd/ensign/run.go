@@ -1878,7 +1878,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 			return nil, err
 		}
 		if o.retryOf == "" {
-			if err := dirtyFolder(want); err != nil {
+			if err := dirtyFolder(want, bridge, task); err != nil {
 				return nil, err
 			}
 		}

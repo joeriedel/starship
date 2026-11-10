@@ -284,17 +284,17 @@ func dirtyWorkspace(t *testing.T, w *world) string {
 func TestDirtyFolderCheck(t *testing.T) {
 	w := newWorld(t)
 	ws := w.workspace()
-	if err := dirtyFolder(&Snapshot{Workspace: ws}); err != nil {
+	if err := dirtyFolder(&Snapshot{Workspace: ws}, "", ""); err != nil {
 		t.Errorf("a workspace that is not a git repository is not dirty: %v", err)
 	}
 	dirtyWorkspace(t, w)
-	if err := dirtyFolder(&Snapshot{Workspace: ws}); err != nil {
+	if err := dirtyFolder(&Snapshot{Workspace: ws}, "", ""); err != nil {
 		t.Errorf("a clean workspace is not dirty: %v", err)
 	}
 	for _, n := range []string{"b.go", "c.go", "d.go", "e.go", "f.go", "g.go"} {
 		write(t, filepath.Join(ws, n), "package b\n")
 	}
-	err := dirtyFolder(&Snapshot{Workspace: ws})
+	err := dirtyFolder(&Snapshot{Workspace: ws}, "", "")
 	var d *dirtyFolderError
 	if !errors.As(err, &d) || len(d.paths) != 6 {
 		t.Fatalf("dirty: %v", err)
@@ -369,6 +369,27 @@ func TestSequenceStepWaitsWhileTheWorkFolderIsDirty(t *testing.T) {
 	}
 	if st := w.step(1); st.Status != "active" {
 		t.Errorf("the step should start once the folder is clean: %+v", st)
+	}
+}
+
+func TestP4TaskInsideADirtyGitRepoIsNotRefused(t *testing.T) {
+	w := p4World(t, "{ kind: p4, client: supernova-ws }")
+	ws := dirtyWorkspace(t, w)
+	write(t, filepath.Join(ws, "b.go"), "package b\n")
+	w.run("supernova/auth-refactor")
+	w.approve()
+}
+
+func TestP4SequenceStepDoesNotWaitForADirtyGitRepo(t *testing.T) {
+	w := p4World(t, "{ kind: p4, client: supernova-ws }")
+	ws := dirtyWorkspace(t, w)
+	write(t, filepath.Join(ws, "b.go"), "package b\n")
+	if _, err := w.seq("run", "supernova/auth-refactor"); err != nil {
+		t.Fatal(err)
+	}
+	w.hook("UserPromptSubmit", map[string]any{"prompt": "go"})
+	if st := w.step(1); st.Status != "active" {
+		t.Fatalf("the step should start: %+v", st.Runs)
 	}
 }
 
