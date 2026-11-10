@@ -37,9 +37,9 @@ func TestRecordSetting(t *testing.T) {
 		{"task overrides project", "", "none", "commit", "commit", false},
 		{"task none over project commit", p4, "commit", "none", "none", false},
 		{"p4 commit", p4, "commit", "", "commit", false},
-		{"bad project value", "", "stash", "", "supernova/project.yaml: record must be commit, shelve or none", true},
+		{"bad project value", "", "stash", "", filepath.Join("supernova", "project.yaml") + ": record must be commit, shelve or none", true},
 		{"bad task value", "", "", "stash", "task.md: record must be commit, shelve or none", true},
-		{"git shelve in project", "", "shelve", "", "supernova/project.yaml: record: shelve is not available for a git task", true},
+		{"git shelve in project", "", "shelve", "", filepath.Join("supernova", "project.yaml") + ": record: shelve is not available for a git task", true},
 		{"git shelve in task", "", "", "shelve", "task.md: record: shelve is not available for a git task", true},
 		{"git shelve overridden", "", "shelve", "none", "none", false},
 	}
@@ -201,7 +201,7 @@ func TestP4RecordBindingReplacesTheDefault(t *testing.T) {
 	w := p4World(t, p4Task)
 	w.setRecord("commit", "")
 	out := filepath.Join(t.TempDir(), "recorded")
-	w.binding(`record: { command: "echo $STARSHIP_RECORD $STARSHIP_CHANGELIST $STARSHIP_CLIENT > ` + out + `" }`)
+	w.binding(`record: { command: "echo $STARSHIP_RECORD $STARSHIP_CHANGELIST $STARSHIP_CLIENT > ` + filepath.ToSlash(out) + `" }`)
 	st, log := p4Recorded(t, w, "a.go:101")
 	if st.Status != "success" {
 		t.Fatalf("status %s (%s)", st.Status, st.Reason)
