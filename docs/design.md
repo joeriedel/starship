@@ -199,6 +199,7 @@ Conventional names, reused before new ones are invented:
 |---|---|
 | `@sync` | bring the workspace up to date with its remote (git: pull/rebase the task branch; Perforce: sync or unshelve) |
 | `@checkout` | prepare files for editing (Perforce: `p4 edit`) |
+| `@state` | a Perforce workspace's state, shown by `task open` and recorded at run start in place of ensign's own `p4` inspection; output shown as is |
 | `@compile` | fast compile-only check; falls back to `@build` |
 | `@build` | build |
 | `@test` | run the test suite |
@@ -210,6 +211,8 @@ Conventional names, reused before new ones are invented:
 | `@done` | this project's definition of finished |
 | `@docs` | the workspace-relative files or folders the documentation stage may change; paths or not-applicable only, and with none declared the stage is skipped |
 | `@release` | release the project; receives the version in `VERSION` and runs in the project's workspace, with no time limit |
+
+**Perforce state.** A task with `vcs: { kind: p4, client: <client> }` has its workspace inspected by `task open` and at run start (`p4State`, `cmd/ensign/p4state.go`). The frontmatter key `vcs.changelist` is optional: a pending changelist number that the inspection only reads (a later change records it). Unless the project binds `@state` (and it is not `not-applicable`), ensign runs `p4 -c <client>` with `login -s`, `-ztag clients -e <client>`, `-ztag changes -s pending -c <client>` and `-ztag opened -C <client>`, in the workspace, with the project's machine environment (`Set` vars and `Path`); `p4` is looked up on that `PATH`, not the process's. The line names the client; the task's changelist with its opened-file count, or says it is not among the client's pending changelists; and the client's other pending changelists (`default` included when it has opened files) with their opened-file counts, or says there are none. Files opened in other changelists are normal in Perforce and never refuse a run, and the git dirty-tree refusal does not apply to a Perforce workspace. A `@state` binding replaces the inspection and its output is shown as is; it is resolved from the bridge, project, location and task layers (`loadTaskLayers`), the same at `task open` and run start, and a failing one is the problem `@state failed: <error>: <last lines>`. A problem is a single line: `p4: the task's vcs: has no client`, `p4: not found on PATH`, `p4: not logged in, run p4 login (<error>)`, `p4: client <c> is unknown to the server`, or any other failed `p4` command named with its first error line. After a problem `task open` still succeeds with the problem as its `vcs` line. At run start, on the lead's first spawn after `@sync` and before the `run.start` handlers, `runP4State` inspects a Perforce task the same way and records the line as `vcs_state` in the run state; on a problem the run fails with `the Perforce workspace is not ready: <line>` and does not start. A run without a task, or with a task of another kind, is not inspected. Every Perforce step is meant to have a `p4` default that a project can replace with its own binding command; only `@state` is implemented so far, and nothing calls `@checkout`, `@add` or `@reconcile` yet.
 
 ### 4.2 Events
 
