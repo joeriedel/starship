@@ -197,6 +197,59 @@ func TestP4RecordModes(t *testing.T) {
 	}
 }
 
+func TestP4TaskWithGitCatalogGetsPastRunStartAndRecords(t *testing.T) {
+	cases := []struct {
+		name, record, want, notWant string
+	}{
+		{"default shelves", "", "shelve -f -c 101", "submit"},
+		{"commit", "commit", "submit -c 101", "shelve"},
+	}
+	for _, dirty := range []bool{false, true} {
+		for _, c := range cases {
+			name := c.name + ", not a git repository"
+			if dirty {
+				name = c.name + ", dirty git repository"
+			}
+			t.Run(name, func(t *testing.T) {
+				w := p4World(t, p4Task)
+				if dirty {
+					needGit(t)
+					write(t, filepath.Join(dirtyWorkspace(t, w), "b.go"), "package b\n")
+				}
+				w.project("use: [git-catalog]\n")
+				w.setRecord(c.record, "")
+				log := filepath.Join(t.TempDir(), "p4.log")
+				t.Setenv("STARSHIP_TEST_P4_LOG", log)
+				t.Setenv("STARSHIP_TEST_P4_PENDING", "101")
+				t.Setenv("STARSHIP_TEST_P4_OPENFILES", "a.go:101")
+				lead, why := w.runStart()
+				if lead == "" {
+					t.Fatalf("git-catalog must not refuse a Perforce run at run.start: %s", why)
+				}
+				coder, why := w.spawn(lead, "orchestrator", "coder")
+				if coder == "" {
+					t.Fatal(why)
+				}
+				if r := w.stop(coder, "coder", coderReport("compiled", "a.go"), false); r != "" {
+					t.Fatalf("coder stop was blocked: %s", r)
+				}
+				w.gateMet(w.runOfAgent(lead))
+				w.leaf(lead, "reviewer", "clean")
+				w.leaf(lead, "reviewer", "clean")
+				w.leaf(lead, "style-reviewer", "done")
+				w.leaf(lead, "tester", "pass")
+				if st := w.state(); st.Status != "success" {
+					t.Fatalf("status %s (%s)", st.Status, st.Reason)
+				}
+				data, _ := os.ReadFile(log)
+				if !strings.Contains(string(data), c.want) || strings.Contains(string(data), c.notWant) {
+					t.Errorf("p4 log should have %q and not %q:\n%s", c.want, c.notWant, data)
+				}
+			})
+		}
+	}
+}
+
 func TestP4RecordBindingReplacesTheDefault(t *testing.T) {
 	w := p4World(t, p4Task)
 	w.setRecord("commit", "")
