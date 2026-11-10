@@ -221,8 +221,7 @@ func TestP4StateProjectEnv(t *testing.T) {
 }
 
 func TestRunP4StateNoTask(t *testing.T) {
-	r := &RunFiles{}
-	r.Snap.Bridge = t.TempDir()
+	r := &RunFiles{Snap: &Snapshot{Bridge: t.TempDir()}}
 	got, err := runP4State(r)
 	if got != "" || err != nil {
 		t.Errorf("runP4State with no task = %q, %v", got, err)
