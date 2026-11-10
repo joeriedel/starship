@@ -1241,7 +1241,7 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 					fmt.Fprintf(out, "location   %s: STOP: %v\n", loc, err)
 				default:
 					fmt.Fprintf(out, "location   %s: %s\n", loc, p)
-					fmt.Fprintln(out, "vcs        "+vcsState(p, tf.Vcs))
+					fmt.Fprintln(out, "vcs        "+taskVcsLine(bridge, task, loc, p, tf.Vcs))
 				}
 			}
 		}
@@ -1262,7 +1262,7 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 				fmt.Fprintf(out, "workspace  STOP: %s does not exist\n", ws)
 			} else {
 				fmt.Fprintf(out, "workspace  %s\n", ws)
-				fmt.Fprintln(out, "vcs        "+vcsState(ws, tf.Vcs))
+				fmt.Fprintln(out, "vcs        "+taskVcsLine(bridge, task, "", ws, tf.Vcs))
 				printShippedDrift(bridge, project, ws, "", out)
 			}
 		}

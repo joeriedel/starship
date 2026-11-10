@@ -62,6 +62,47 @@ func fakeCommand(mode string) {
 		}
 	case "env":
 		os.Stdout.WriteString(os.Getenv(os.Getenv("STARSHIP_TEST_FAKE_VAR")) + "\n")
+	case "p4":
+		fakeP4(os.Args[1:])
+	}
+	os.Exit(0)
+}
+
+// fakeP4 answers the p4 commands the workspace inspection runs, in -ztag form. STARSHIP_TEST_P4_LOGIN=fail and STARSHIP_TEST_P4_CLIENT=unknown make those commands fail; STARSHIP_TEST_P4_PENDING lists the pending changelists ("101 102"), STARSHIP_TEST_P4_OPENED the opened files' changelists ("101 101 default"). STARSHIP_TEST_P4_NEED names a variable that must be set for any command to succeed.
+func fakeP4(args []string) {
+	if len(args) < 3 || args[0] != "-c" {
+		os.Stderr.WriteString("fake p4: expected -c <client>\n")
+		os.Exit(2)
+	}
+	client, rest := args[1], args[2:]
+	if need := os.Getenv("STARSHIP_TEST_P4_NEED"); need != "" && os.Getenv(need) == "" {
+		os.Stderr.WriteString("fake p4: " + need + " is not set\n")
+		os.Exit(1)
+	}
+	if rest[0] == "-ztag" {
+		rest = rest[1:]
+	}
+	switch rest[0] {
+	case "login":
+		if os.Getenv("STARSHIP_TEST_P4_LOGIN") == "fail" {
+			os.Stderr.WriteString("Perforce password (P4PASSWD) invalid or unset.\nsecond line\n")
+			os.Exit(1)
+		}
+	case "clients":
+		if os.Getenv("STARSHIP_TEST_P4_CLIENT") != "unknown" {
+			os.Stdout.WriteString("... client " + client + "\n... Owner supernova\n\n")
+		}
+	case "changes":
+		for _, c := range strings.Fields(os.Getenv("STARSHIP_TEST_P4_PENDING")) {
+			os.Stdout.WriteString("... change " + c + "\n... client " + client + "\n... status pending\n\n")
+		}
+	case "opened":
+		for i, c := range strings.Fields(os.Getenv("STARSHIP_TEST_P4_OPENED")) {
+			os.Stdout.WriteString("... depotFile //supernova/main/f" + strconv.Itoa(i) + ".go\n... change " + c + "\n\n")
+		}
+	default:
+		os.Stderr.WriteString("fake p4: unknown command " + rest[0] + "\n")
+		os.Exit(2)
 	}
 	os.Exit(0)
 }

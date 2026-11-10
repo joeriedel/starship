@@ -263,6 +263,12 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 				return deny(r, s.ID, "the run could not start: "+r.State.Reason), nil
 			}
 		}
+		state, err := runP4State(r)
+		if err != nil {
+			m.fail("handler", "the Perforce workspace is not ready: "+err.Error())
+			return deny(r, s.ID, "the run could not start: "+r.State.Reason), nil
+		}
+		r.State.VcsState = state
 		if err := fire(r, "run.start", nil); err != nil {
 			m.fail("handler", err.Error())
 			return deny(r, s.ID, "the run could not start: "+r.State.Reason), nil

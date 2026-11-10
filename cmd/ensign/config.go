@@ -468,6 +468,8 @@ type TaskVcs struct {
 	Kind   string `yaml:"kind"`
 	Branch string `yaml:"branch"`
 	Client string `yaml:"client"`
+	// Changelist is a pending Perforce changelist number; task open and run start only read it.
+	Changelist string `yaml:"changelist"`
 }
 
 type TaskFile struct {
@@ -1104,8 +1106,13 @@ func loadProjectBindings(bridge, project, location string) (*Config, error) {
 
 // loadTaskEvents merges the layers that name a task's events and bindings with no pipeline, workspace or location: bridge, project, then the task. Extensions merge as in loadTarget.
 func loadTaskEvents(bridge, task string) (*Config, error) {
+	return loadTaskLayers(bridge, task, "")
+}
+
+// loadTaskLayers is loadTaskEvents with the location's layer between the project's and the task's when location is not empty, the order loadTarget merges them in.
+func loadTaskLayers(bridge, task, location string) (*Config, error) {
 	project, name, _ := strings.Cut(task, "/")
-	c := &Config{Bridge: bridge, Project: project, Task: task, Bindings: map[string]Binding{},
+	c := &Config{Bridge: bridge, Project: project, Task: task, Location: location, Bindings: map[string]Binding{},
 		Events: map[string][]Handler{}, needs: map[string]string{}}
 	bl, err := c.bridgeLayer(bridge)
 	if err != nil {
@@ -1127,7 +1134,11 @@ func loadTaskEvents(bridge, task string) (*Config, error) {
 	if err := checkTaskKeys(taskFile, front); err != nil {
 		return nil, err
 	}
-	if err := c.mergeLayers([]layerEntry{bl, pl, {"task:" + relTo(bridge, taskFile), taskFile, tf.Layer}}); err != nil {
+	layers := []layerEntry{bl, pl}
+	if location != "" {
+		layers = append(layers, c.locationLayer(bridge))
+	}
+	if err := c.mergeLayers(append(layers, layerEntry{"task:" + relTo(bridge, taskFile), taskFile, tf.Layer})); err != nil {
 		return nil, err
 	}
 	return c, nil

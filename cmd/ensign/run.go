@@ -123,6 +123,7 @@ type State struct {
 	Carried    []string       `json:"carried,omitempty"`      // a retry: the paths already dirty when it started, committed with the coder's files
 	StaleOK    bool           `json:"stale_branch,omitempty"` // github-pr: run on a task branch that is behind the default branch
 	StartHead  string         `json:"start_head,omitempty"`   // the workspace's commit when the run started (git)
+	VcsState   string         `json:"vcs_state,omitempty"`    // the Perforce workspace's state when the run started
 	Transcript string         `json:"transcript,omitempty"`   // the session's transcript; agents' sit beside it
 	Notes      []string       `json:"notes,omitempty"`        // what handlers left for the report, e.g. a pull request
 	Finished   bool           `json:"finished,omitempty"`     // the end-of-run steps have run

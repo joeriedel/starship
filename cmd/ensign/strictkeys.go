@@ -51,7 +51,7 @@ var taskKeys = func() *keySchema {
 	for _, k := range []string{"pipeline", "locations", "links", "status"} {
 		m[k] = nil
 	}
-	m["vcs"] = &keySchema{keys: keyNames("kind", "branch", "client")}
+	m["vcs"] = &keySchema{keys: keyNames("kind", "branch", "client", "changelist")}
 	return &keySchema{keys: m}
 }()
 
