@@ -453,6 +453,9 @@ func githubCommit(r *RunFiles) error {
 	if err := checkNoDependencyWiring(r); err != nil {
 		return err
 	}
+	if recordsNothing(r) {
+		return nil
+	}
 	if d, err := dirty(ws); err != nil {
 		return err
 	} else if !d {
@@ -472,6 +475,9 @@ func githubCommit(r *RunFiles) error {
 func githubCommitDocs(r *RunFiles) error {
 	if _, err := onTaskBranch(r); err != nil {
 		return err
+	}
+	if recordsNothing(r) {
+		return nil
 	}
 	var base map[string]string
 	if d := lastDocsDispatch(r); d != nil {
@@ -503,6 +509,9 @@ func pushTask(ws, branch string) error {
 // step didn't run.
 func githubCI(r *RunFiles, deadline time.Time) (string, error) {
 	ws := r.Snap.Workspace
+	if recordsNothing(r) {
+		return "", fmt.Errorf("record: none commits nothing, so CI would test only what is already on the task branch: it can't be the test stage of a task that records nothing")
+	}
 	branch, err := onTaskBranch(r)
 	if err != nil {
 		return "", err
@@ -617,6 +626,10 @@ func githubReady(r *RunFiles) error {
 	branch, err := onTaskBranch(r)
 	if err != nil {
 		return err
+	}
+	if recordsNothing(r) {
+		r.State.note(fmt.Sprintf("record: none, so the work is left uncommitted in the workspace on %s and nothing is recorded as tested: land it by hand", branch))
+		return nil
 	}
 	sha, err := gitOut(ws, "rev-parse", "HEAD")
 	if err != nil {
@@ -932,6 +945,9 @@ func tested(bridge, task, location string) (c *Config, branch, sha string, err e
 	c, err = loadConfigAt(bridge, task, location)
 	if err != nil {
 		return nil, "", "", err
+	}
+	if c.Record == "none" {
+		return nil, "", "", errNoRecord(task)
 	}
 	data, err := readFileRetry(testedFile(bridge, task, c.Location))
 	if err != nil {

@@ -12,6 +12,8 @@ If the test stage needs services, add `@services-up` (start them) and `@services
 
 `documentation: off` in `project.yaml` or a task's frontmatter turns the documentation stage off; a later layer wins, and `on` turns it back on.
 
+`record: commit|shelve|none` in `project.yaml` sets how a run records its tested work; a task's frontmatter `record:` overrides it (the task wins). It is refused in `bridge.yaml`, and any other value is an error naming the file. Unset, a git task commits and a Perforce task (`vcs: { kind: p4 }`) shelves; a task with no `vcs.kind` is git, and `record: shelve` on a git task is refused when the setting is read, because git has no shelve. See `ensign help runs`.
+
 `rules:` lists standing run rules, one string per rule, under `bridge.yaml`, an extension, `project.yaml` or a location (`rules: ["Never touch the vault."]` for project `supernova`). They merge in layer order with duplicates dropped, skip the task's frontmatter, and reach every run's work item under `## Project rules` (a retry keeps the original run's) and the run summary with their source. Task-specific rules go in the task's Scope.
 
 `projects/<project>/project.md` holds session notes; `project new` doesn't create it, so write it when needed.

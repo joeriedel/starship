@@ -99,6 +99,12 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 		return fmt.Errorf("commit-pass runs only after a stage")
 	}
 	ws := r.Snap.Workspace
+	if recordsNothing(r) {
+		if d.Role == "documentation" {
+			return nil
+		}
+		return checkNoDependencyWiring(r)
+	}
 	if d.Role == "documentation" {
 		root, inside, _, err := docsChanged(r, d.DocsBase)
 		if err != nil {
@@ -258,6 +264,9 @@ func short(sha string) string {
 
 // catalogSquashRun is the handler form: it squashes this run's own commits.
 func catalogSquashRun(r *RunFiles) error {
+	if recordsNothing(r) {
+		return nil
+	}
 	msg := firstLine(strings.TrimPrefix(strings.TrimSpace(section(r.Snap.WorkItem, "Goal")), "- "))
 	if msg == "" {
 		msg = r.Snap.Task

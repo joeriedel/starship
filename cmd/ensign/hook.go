@@ -1021,6 +1021,7 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 	}
 	if s.Role == "reviewer" {
 		b.WriteString(platformsLine(r))
+		b.WriteString(reviewChangeLine(r, d))
 	}
 	b.WriteString("\n## Your brief\n\n" + original + "\n\n## Report\n\n" + reportInstructions(s) + "\n")
 	if len(r.Snap.KnownSkills) > 0 && !privateStage(s) {

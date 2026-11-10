@@ -2002,6 +2002,9 @@ func runPublish(bridge, session string, seq *sequence, st *seqStep) (string, err
 		return "", err
 	}
 	defer unlock()
+	if err := noRecordRefusal(bridge, st.Task); err != nil {
+		return "", err
+	}
 	var targets []string
 	if st.Landing {
 		// The record goes when its last location lands elsewhere or the task closes, so none left means all landed.

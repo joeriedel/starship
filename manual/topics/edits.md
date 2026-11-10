@@ -16,6 +16,7 @@ For a task with `vcs: { kind: p4 }` ensign keeps the run's files in the task's c
 - Before an allowed edit of a file in the workspace: open in the task's changelist, nothing; tracked and not open, `p4 edit -c <changelist> <file>` (or `@checkout`); open in another changelist (`default` included), the edit is refused naming that changelist, and ensign never reopens it; not in the depot, nothing yet. A failing `p4` refuses the edit with its error. A refusal is reported to your caller.
 - After a Write of a file not in the depot: `p4 add -c <changelist> <file>` (or `@add`).
 - Before each tester stage starts (agent or run by ensign): `p4 reconcile` of the workspace into the task's changelist (or `@reconcile`, whose stdout lines are the files it opened), so files changed by shell commands are opened too. Files open in another changelist are skipped and untouched. Every file opened is listed in `reports/reconcile.md` in the run folder, one section per pass, and in `ensign next` after the stage; a failure refuses the stage's start.
+- At the end of a successful run, the task's changelist is shelved or submitted, or left open, per `record:` (or `@record`): `ensign help runs`.
 
 ## Connector tools
 

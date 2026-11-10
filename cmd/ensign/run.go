@@ -47,9 +47,11 @@ type Snapshot struct {
 	Project      string               `json:"project,omitempty"`
 	Platforms    []string             `json:"platforms,omitempty"`
 	// Documentation is "off" when the documentation stage was turned off; older snapshots read empty, which is on.
-	Documentation string   `json:"documentation,omitempty"`
-	Extensions    []string `json:"extensions,omitempty"`
-	Created       string   `json:"created"`
+	Documentation string `json:"documentation,omitempty"`
+	// Record is how the task's run records its tested work (commit, shelve or none); older snapshots read empty, which is the VCS's default.
+	Record     string   `json:"record,omitempty"`
+	Extensions []string `json:"extensions,omitempty"`
+	Created    string   `json:"created"`
 }
 
 type Dispatch struct {
@@ -1919,6 +1921,7 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		Project:       c.Project,
 		Platforms:     c.Platforms,
 		Documentation: c.Documentation,
+		Record:        c.Record,
 		Created:       time.Now().Format(time.RFC3339),
 	}
 	for _, hs := range snap.Events {

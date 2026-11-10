@@ -80,6 +80,8 @@ Write task files and accounts one line per paragraph; never reflow existing text
 
 Workspace commits, pushes and submits need the user's explicit approval **every time**. Open a pull request only when asked, as a separate step. Never add an agent attribution line (co-author trailer, "generated with").
 
+A project or task `record: commit` or `shelve` is the user's standing approval for the run to commit, submit or shelve its own tested work; `record: none` means you land it by hand, and a publish refuses (`ensign help runs`).
+
 ## Reading more
 
 - Writes stay in the caller's folders; after a refusal, or before writing elsewhere: `ensign help edits`.

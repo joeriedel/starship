@@ -38,7 +38,7 @@ func layerKeySchema() map[string]*keySchema {
 
 var projectKeys = func() *keySchema {
 	m := layerKeySchema()
-	for _, k := range []string{"platforms", "pipeline", "links"} {
+	for _, k := range []string{"platforms", "pipeline", "links", "record"} {
 		m[k] = nil
 	}
 	m["locations"] = &keySchema{values: &keySchema{keys: keyNames("depends-on", "bindings", "platforms", "documentation", "rules")}}
@@ -48,7 +48,7 @@ var projectKeys = func() *keySchema {
 
 var taskKeys = func() *keySchema {
 	m := layerKeySchema()
-	for _, k := range []string{"pipeline", "locations", "links", "status"} {
+	for _, k := range []string{"pipeline", "locations", "links", "status", "record"} {
 		m[k] = nil
 	}
 	m["vcs"] = &keySchema{keys: keyNames("kind", "branch", "client", "changelist")}

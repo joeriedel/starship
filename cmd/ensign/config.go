@@ -357,6 +357,8 @@ type Layer struct {
 	Platforms []string `yaml:"platforms"` // a project setting: read from project.yaml only
 	// Documentation is on or off: whether the pipeline's documentation stage runs. A later layer wins.
 	Documentation string `yaml:"documentation"`
+	// Record is how a run records its tested work: commit, shelve or none. A project setting that a task may override; the task wins.
+	Record string `yaml:"record"`
 }
 
 // HandlerSpec is one handler as written: exactly one of require, observe or augment.
@@ -501,6 +503,7 @@ type Config struct {
 	Platforms     []string // the platforms the project declares, from project.yaml
 	JournalOff    string   // reason, when the project turned journal commits off
 	Documentation string   // "off" when a layer turned the documentation stage off; empty means on
+	Record        string   // how a task's run records its tested work: commit, shelve or none, defaults applied; empty for a run without a task
 	Skills        []SkillDelivery
 	needs         map[string]string // binding -> what requires it, from extensions
 	problems      []string
@@ -859,6 +862,9 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 			name = "coding"
 		}
 		layers = append(layers, layerEntry{"task:" + relTo(bridge, taskFile), taskFile, tf.Layer})
+		if c.Record, err = resolveRecord(layers, tf.Vcs.Kind); err != nil {
+			return nil, err
+		}
 	} else {
 		if name == "" {
 			return nil, fmt.Errorf("a run needs a task, or a pipeline (with --project for a project-wide one)")
@@ -994,6 +1000,9 @@ func (c *Config) bridgeLayer(bridge string) (layerEntry, error) {
 	}
 	if data, rerr := os.ReadFile(bridgeFile); rerr == nil && hasKey(data, "platforms") {
 		return layerEntry{}, fmt.Errorf("%s: platforms: is a project setting; declare it in projects/<project>/project.yaml", bridgeFile)
+	}
+	if bfp.Record != "" {
+		return layerEntry{}, fmt.Errorf("%s: record: is a project setting; declare it in projects/<project>/project.yaml", bridgeFile)
 	}
 	if c.ControlPlane, err = controlPlaneDir(bridge, bfp); err != nil {
 		return layerEntry{}, err
@@ -1138,10 +1147,38 @@ func loadTaskLayers(bridge, task, location string) (*Config, error) {
 	if location != "" {
 		layers = append(layers, c.locationLayer(bridge))
 	}
-	if err := c.mergeLayers(append(layers, layerEntry{"task:" + relTo(bridge, taskFile), taskFile, tf.Layer})); err != nil {
+	layers = append(layers, layerEntry{"task:" + relTo(bridge, taskFile), taskFile, tf.Layer})
+	if c.Record, err = resolveRecord(layers, tf.Vcs.Kind); err != nil {
+		return nil, err
+	}
+	if err := c.mergeLayers(layers); err != nil {
 		return nil, err
 	}
 	return c, nil
+}
+
+// resolveRecord is a task's record mode: the last of the project's and the task's record: settings, else the VCS's default (commit for git, shelve for Perforce). Only a Perforce task has kind p4; any other kind is treated as git, which has no shelve.
+func resolveRecord(layers []layerEntry, kind string) (string, error) {
+	mode, from := "", ""
+	for _, l := range layers {
+		v := l.layer.Record
+		if v == "" {
+			continue
+		}
+		if v != "commit" && v != "shelve" && v != "none" {
+			return "", fmt.Errorf("%s: record must be commit, shelve or none, not %q", l.file, v)
+		}
+		mode, from = v, l.file
+	}
+	switch {
+	case mode == "" && kind == "p4":
+		return "shelve", nil
+	case mode == "":
+		return "commit", nil
+	case mode == "shelve" && kind != "p4":
+		return "", fmt.Errorf("%s: record: shelve is not available for a git task, git has no shelve; use commit or none", from)
+	}
+	return mode, nil
 }
 
 // mergeLayers adds each layer's extensions, events and bindings in order, an extension's before the layer that uses it.

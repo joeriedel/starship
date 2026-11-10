@@ -69,7 +69,7 @@ func fakeCommand(mode string) {
 	os.Exit(0)
 }
 
-// fakeP4 answers the p4 commands the workspace inspection and the changelist handling run, in -ztag form. `change -i` creates changelist STARSHIP_TEST_P4_NEWCHANGE (4242); fstat knows the files in STARSHIP_TEST_P4_FILES ("a.go=head b.go=open:101"); reconcile finds STARSHIP_TEST_P4_RECONCILE ("a.go:edit b.go:add"); opened also lists STARSHIP_TEST_P4_OPENFILES ("a.go:102"); STARSHIP_TEST_P4_OPEN_FAIL makes edit and add fail with its text; every command is appended to the file STARSHIP_TEST_P4_LOG. STARSHIP_TEST_P4_LOGIN=fail and STARSHIP_TEST_P4_CLIENT=unknown make those commands fail; STARSHIP_TEST_P4_PENDING lists the pending changelists ("101 102"), STARSHIP_TEST_P4_OPENED the opened files' changelists ("101 101 default"). STARSHIP_TEST_P4_NEED names a variable that must be set for any command to succeed.
+// fakeP4 answers the p4 commands the workspace inspection and the changelist handling run, in -ztag form. `change -i` creates changelist STARSHIP_TEST_P4_NEWCHANGE (4242); fstat knows the files in STARSHIP_TEST_P4_FILES ("a.go=head b.go=open:101"); reconcile finds STARSHIP_TEST_P4_RECONCILE ("a.go:edit b.go:add"); opened also lists STARSHIP_TEST_P4_OPENFILES ("a.go:102", or "b.go:102:add" with an action); submit and shelve succeed unless STARSHIP_TEST_P4_RECORD_FAIL holds a message; diff, describe and where answer with fixed text; STARSHIP_TEST_P4_OPEN_FAIL makes edit and add fail with its text; every command is appended to the file STARSHIP_TEST_P4_LOG. STARSHIP_TEST_P4_LOGIN=fail and STARSHIP_TEST_P4_CLIENT=unknown make those commands fail; STARSHIP_TEST_P4_PENDING lists the pending changelists ("101 102"), STARSHIP_TEST_P4_OPENED the opened files' changelists ("101 101 default"). STARSHIP_TEST_P4_NEED names a variable that must be set for any command to succeed.
 func fakeP4(args []string) {
 	if len(args) < 3 || args[0] != "-c" {
 		os.Stderr.WriteString("fake p4: expected -c <client>\n")
@@ -156,8 +156,28 @@ func fakeP4(args []string) {
 		}
 		for _, f := range strings.Fields(os.Getenv("STARSHIP_TEST_P4_OPENFILES")) {
 			name, c, _ := strings.Cut(f, ":")
-			os.Stdout.WriteString("... depotFile //supernova/main/" + name + "\n... change " + c + "\n\n")
+			c, action, _ := strings.Cut(c, ":")
+			os.Stdout.WriteString("... depotFile //supernova/main/" + name + "\n... change " + c + "\n")
+			if action != "" {
+				os.Stdout.WriteString("... action " + action + "\n")
+			}
+			os.Stdout.WriteString("\n")
 		}
+	case "submit", "shelve":
+		if msg := os.Getenv("STARSHIP_TEST_P4_RECORD_FAIL"); msg != "" {
+			os.Stderr.WriteString("fake p4: " + msg + "\n")
+			os.Exit(1)
+		}
+		os.Stdout.WriteString("Change " + rest[len(rest)-1] + " " + rest[0] + " done.\n")
+	case "diff":
+		name := filepath.Base(rest[len(rest)-1])
+		os.Stdout.WriteString("--- //supernova/main/" + name + "#1\n+++ " + name + "\n@@ -1 +1 @@\n-old\n+new\n")
+	case "describe":
+		os.Stdout.WriteString("Change " + rest[len(rest)-1] + " by supernova@" + client + " *pending*\n\nShelved files ...\n+shelved line\n")
+	case "where":
+		wd, _ := os.Getwd()
+		local := strings.NewReplacer("%25", "%", "%40", "@", "%23", "#", "%2A", "*").Replace(filepath.Base(rest[len(rest)-1]))
+		os.Stdout.WriteString("... depotFile " + rest[len(rest)-1] + "\n... path " + filepath.Join(wd, local) + "\n\n")
 	default:
 		os.Stderr.WriteString("fake p4: unknown command " + rest[0] + "\n")
 		os.Exit(2)

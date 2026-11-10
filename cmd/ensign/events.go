@@ -185,6 +185,10 @@ func lastLines(s string, n int) string {
 
 // internalHandler runs a built-in handler against the open run.
 func internalHandler(r *RunFiles, args []string, d *Dispatch) error {
+	// A Perforce task has no git work to commit; its changelist is recorded by p4Record.
+	if len(args) > 0 && (args[0] == "git-catalog" || args[0] == "github-pr") && runVcs(r).Kind == "p4" {
+		return nil
+	}
 	switch strings.Join(args, " ") {
 	case "git-catalog record-base":
 		return catalogRecordBase(r)
@@ -220,7 +224,11 @@ func finishRun(r *RunFiles) {
 		}
 	}
 	status := st.Status
-	if err := fire(r, "run.finish:"+status, nil); err != nil && status == "success" {
+	err := fire(r, "run.finish:"+status, nil)
+	if err == nil && status == "success" {
+		err = p4Record(r)
+	}
+	if err != nil && status == "success" {
 		st.Status = "running"
 		m.fail("handler", err.Error())
 		fire(r, "run.finish:error", nil)
