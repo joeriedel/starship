@@ -406,7 +406,13 @@ func cmdRunStage(args []string, out io.Writer) (err error) {
 	}
 	d := newDispatch(r, scope, s, s.Role)
 	if len(sc.Branches) == 0 {
-		if err := fire(r, "stage.before:"+s.ID, d); err != nil {
+		err := p4ReconcileBefore(r, d)
+		if err != nil {
+			err = fmt.Errorf("the Perforce reconcile failed: %v", err)
+		} else {
+			err = fire(r, "stage.before:"+s.ID, d)
+		}
+		if err != nil {
 			m.fail("handler", err.Error())
 			err1 := finishIfTerminal(r, false, os.Stderr)
 			err2 := r.save()
@@ -588,6 +594,9 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 
 	summary := strings.Join(steps, "; ")
 	report := "Run by ensign: this project's @test binding is plain.\n\n- " + strings.Join(steps, "\n- ") + "\n"
+	if d.Reconciled != "" {
+		report += "\n" + d.Reconciled + "\n"
+	}
 	report += noticesSection(readNotices(r, d))
 	switch {
 	case failed != "":

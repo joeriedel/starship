@@ -468,7 +468,7 @@ type TaskVcs struct {
 	Kind   string `yaml:"kind"`
 	Branch string `yaml:"branch"`
 	Client string `yaml:"client"`
-	// Changelist is a pending Perforce changelist number; task open and run start only read it.
+	// Changelist is the task's pending Perforce changelist number; run start creates it, or replaces it when it is no longer pending, and records it here.
 	Changelist string `yaml:"changelist"`
 }
 

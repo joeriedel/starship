@@ -9,6 +9,14 @@ A hook refuses Edit, Write and NotebookEdit outside the caller's folders; keep s
 
 The evidence folder is `reports/evidence/` in the run folder. Scratch is emptied when the run ends; evidence stays. Elsewhere in `reports/` only ensign writes.
 
+## Perforce workspaces
+
+For a task with `vcs: { kind: p4 }` ensign keeps the run's files in the task's changelist, so no agent runs `p4 edit`, `p4 add` or `p4 reconcile`, and none moves a file between changelists. It runs `p4 -c <client>` with the project's machine environment, and the project may replace each step with a binding that gets the handler environment plus `STARSHIP_CHANGELIST`, `STARSHIP_CLIENT` and (not `@reconcile`) `STARSHIP_FILE`, the file's absolute path; a `@checkout`, `@add` or `@reconcile` binding that is not applicable does nothing.
+
+- Before an allowed edit of a file in the workspace: open in the task's changelist, nothing; tracked and not open, `p4 edit -c <changelist> <file>` (or `@checkout`); open in another changelist (`default` included), the edit is refused naming that changelist, and ensign never reopens it; not in the depot, nothing yet. A failing `p4` refuses the edit with its error. A refusal is reported to your caller.
+- After a Write of a file not in the depot: `p4 add -c <changelist> <file>` (or `@add`).
+- Before each tester stage starts (agent or run by ensign): `p4 reconcile` of the workspace into the task's changelist (or `@reconcile`, whose stdout lines are the files it opened), so files changed by shell commands are opened too. Files open in another changelist are skipped and untouched. Every file opened is listed in `reports/reconcile.md` in the run folder, one section per pass, and in `ensign next` after the stage; a failure refuses the stage's start.
+
 ## Connector tools
 
 Only when `bridge.yaml` declares `connectors:`: a connector (MCP) tool, `mcp__<server>__<tool>`, is refused for the session, and for a role unless `connectors:` lists that exact tool for it. A refusal names the tool and role; carry on without the call. A role whose definition sets `mcpServers` can't be dispatched. A declaration applies from the next session start.

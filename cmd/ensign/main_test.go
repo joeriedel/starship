@@ -4,6 +4,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -68,7 +69,7 @@ func fakeCommand(mode string) {
 	os.Exit(0)
 }
 
-// fakeP4 answers the p4 commands the workspace inspection runs, in -ztag form. STARSHIP_TEST_P4_LOGIN=fail and STARSHIP_TEST_P4_CLIENT=unknown make those commands fail; STARSHIP_TEST_P4_PENDING lists the pending changelists ("101 102"), STARSHIP_TEST_P4_OPENED the opened files' changelists ("101 101 default"). STARSHIP_TEST_P4_NEED names a variable that must be set for any command to succeed.
+// fakeP4 answers the p4 commands the workspace inspection and the changelist handling run, in -ztag form. `change -i` creates changelist STARSHIP_TEST_P4_NEWCHANGE (4242); fstat knows the files in STARSHIP_TEST_P4_FILES ("a.go=head b.go=open:101"); reconcile finds STARSHIP_TEST_P4_RECONCILE ("a.go:edit b.go:add"); opened also lists STARSHIP_TEST_P4_OPENFILES ("a.go:102"); STARSHIP_TEST_P4_OPEN_FAIL makes edit and add fail with its text; every command is appended to the file STARSHIP_TEST_P4_LOG. STARSHIP_TEST_P4_LOGIN=fail and STARSHIP_TEST_P4_CLIENT=unknown make those commands fail; STARSHIP_TEST_P4_PENDING lists the pending changelists ("101 102"), STARSHIP_TEST_P4_OPENED the opened files' changelists ("101 101 default"). STARSHIP_TEST_P4_NEED names a variable that must be set for any command to succeed.
 func fakeP4(args []string) {
 	if len(args) < 3 || args[0] != "-c" {
 		os.Stderr.WriteString("fake p4: expected -c <client>\n")
@@ -79,10 +80,63 @@ func fakeP4(args []string) {
 		os.Stderr.WriteString("fake p4: " + need + " is not set\n")
 		os.Exit(1)
 	}
+	stdin := ""
+	if len(rest) > 2 && rest[0] == "-x" && rest[1] == "-" {
+		data, _ := io.ReadAll(os.Stdin)
+		stdin, rest = string(data), rest[2:]
+	}
 	if rest[0] == "-ztag" {
 		rest = rest[1:]
 	}
+	if log := os.Getenv("STARSHIP_TEST_P4_LOG"); log != "" {
+		if f, err := os.OpenFile(log, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			f.WriteString(strings.Join(rest, " ") + "\n")
+			f.Close()
+		}
+	}
 	switch rest[0] {
+	case "change":
+		form, _ := io.ReadAll(os.Stdin)
+		if !strings.Contains(string(form), "Description:\n\tsupernova/") {
+			os.Stderr.WriteString("fake p4: change form without the task's name\n")
+			os.Exit(1)
+		}
+		n := os.Getenv("STARSHIP_TEST_P4_NEWCHANGE")
+		if n == "" {
+			n = "4242"
+		}
+		os.Stdout.WriteString("Change " + n + " created.\n")
+	case "fstat":
+		base := filepath.Base(strings.NewReplacer("%25", "%", "%40", "@", "%23", "#", "%2A", "*").Replace(rest[len(rest)-1]))
+		for _, f := range strings.Fields(os.Getenv("STARSHIP_TEST_P4_FILES")) {
+			name, state, _ := strings.Cut(f, "=")
+			if name != base {
+				continue
+			}
+			os.Stdout.WriteString("... depotFile //supernova/main/" + name + "\n... headAction edit\n")
+			if cl, ok := strings.CutPrefix(state, "open:"); ok {
+				os.Stdout.WriteString("... action edit\n... change " + cl + "\n")
+			}
+			os.Stdout.WriteString("\n")
+		}
+	case "edit", "add":
+		if need := os.Getenv("STARSHIP_TEST_P4_OPEN_FAIL"); need != "" {
+			os.Stderr.WriteString("fake p4: " + need + "\n")
+			os.Exit(1)
+		}
+	case "reconcile":
+		wd, _ := os.Getwd()
+		listed := map[string]bool{}
+		for _, l := range strings.Fields(stdin) {
+			listed[filepath.Base(l)] = true
+		}
+		for _, f := range strings.Fields(os.Getenv("STARSHIP_TEST_P4_RECONCILE")) {
+			name, action, _ := strings.Cut(f, ":")
+			if stdin != "" && !listed[name] {
+				continue
+			}
+			os.Stdout.WriteString("... depotFile //supernova/main/" + name + "\n... clientFile " + filepath.Join(wd, name) + "\n... action " + action + "\n\n")
+		}
 	case "login":
 		if os.Getenv("STARSHIP_TEST_P4_LOGIN") == "fail" {
 			os.Stderr.WriteString("Perforce password (P4PASSWD) invalid or unset.\nsecond line\n")
@@ -99,6 +153,10 @@ func fakeP4(args []string) {
 	case "opened":
 		for i, c := range strings.Fields(os.Getenv("STARSHIP_TEST_P4_OPENED")) {
 			os.Stdout.WriteString("... depotFile //supernova/main/f" + strconv.Itoa(i) + ".go\n... change " + c + "\n\n")
+		}
+		for _, f := range strings.Fields(os.Getenv("STARSHIP_TEST_P4_OPENFILES")) {
+			name, c, _ := strings.Cut(f, ":")
+			os.Stdout.WriteString("... depotFile //supernova/main/" + name + "\n... change " + c + "\n\n")
 		}
 	default:
 		os.Stderr.WriteString("fake p4: unknown command " + rest[0] + "\n")

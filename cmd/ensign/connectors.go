@@ -353,7 +353,9 @@ func upgradeHookSettings(bridge string, bf *BridgeFile) error {
 	base := withoutConnectors(text)
 	known := false
 	for _, form := range []string{hookSettings(), hookSettingsWith(0, 0), hookSettingsWith(hookTimeout, 0)} {
-		known = known || base == form || base == narrowMatcher(form) || base == beforeHandback(form) || base == withoutBash(form) || base == beforeHandback(withoutBash(form))
+		for _, f := range []string{form, beforeEditPost(form)} {
+			known = known || base == f || base == narrowMatcher(f) || base == beforeHandback(f) || base == withoutBash(f) || base == beforeHandback(withoutBash(f))
+		}
 	}
 	known = known && ensignShaped(text)
 	if !known {

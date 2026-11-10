@@ -39,6 +39,11 @@ func lookP4(env []string) (string, error) {
 
 // p4Run runs one p4 command for the client in the workspace and returns its output; a failure is an error of one line.
 func p4Run(ws string, env []string, client string, args ...string) (string, error) {
+	return p4RunIn(ws, env, client, "", args...)
+}
+
+// p4RunIn is p4Run with text on the command's standard input.
+func p4RunIn(ws string, env []string, client, stdin string, args ...string) (string, error) {
 	prog, err := lookP4(env)
 	if err != nil {
 		return "", errors.New("p4: not found on PATH")
@@ -46,6 +51,9 @@ func p4Run(ws string, env []string, client string, args ...string) (string, erro
 	c := exec.Command(prog, append([]string{"-c", client}, args...)...)
 	c.Dir = ws
 	c.Env = append(env, "PWD="+ws)
+	if stdin != "" {
+		c.Stdin = strings.NewReader(stdin)
+	}
 	out, err := c.Output()
 	if err == nil {
 		return string(out), nil
@@ -148,22 +156,36 @@ func taskVcsLine(bridge, task, location, ws string, v TaskVcs) string {
 	return s
 }
 
-// runP4State inspects the Perforce workspace of a run whose task has vcs.kind p4; for any other task it returns an empty state.
+// runP4State inspects the Perforce workspace of a run whose task has vcs.kind p4 and makes sure the task has a pending changelist, creating and recording one when the recorded one is missing or no longer pending; for any other task it returns an empty state.
 func runP4State(r *RunFiles) (string, error) {
 	if r.Snap.Task == "" {
 		return "", nil
 	}
-	project, name, _ := strings.Cut(r.Snap.Task, "/")
-	front, _, err := splitFrontmatter(filepath.Join(r.Snap.Bridge, "projects", project, "tasks", name, "task.md"))
+	v, err := taskVcsOf(r.Snap.Bridge, r.Snap.Task)
 	if err != nil {
 		return "", err
 	}
-	var tf TaskFile
-	if err := decodeFrontmatter(front, &tf); err != nil {
-		return "", err
-	}
-	if tf.Vcs.Kind != "p4" {
+	if v.Kind != "p4" {
 		return "", nil
 	}
-	return p4State(r.Snap.Workspace, tf.Vcs, r.Snap.Bindings, handlerEnv(r, nil))
+	env := handlerEnv(r, nil)
+	state, err := p4State(r.Snap.Workspace, v, r.Snap.Bindings, env)
+	if err != nil {
+		return "", err
+	}
+	changelist, replaced, err := p4TaskChangelist(r, v, env)
+	if err != nil {
+		return "", err
+	}
+	if changelist == v.Changelist {
+		return state, nil
+	}
+	v.Changelist = changelist
+	if state, err = p4State(r.Snap.Workspace, v, r.Snap.Bindings, env); err != nil {
+		return "", err
+	}
+	if replaced != "" {
+		return fmt.Sprintf("%s; the recorded changelist %s is no longer pending (submitted or deleted), so changelist %s was created for the task and recorded in task.md", state, replaced, changelist), nil
+	}
+	return fmt.Sprintf("%s; changelist %s was created for the task and recorded in task.md", state, changelist), nil
 }

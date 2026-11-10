@@ -68,11 +68,12 @@ func TestP4State(t *testing.T) {
 		if got := w.openVcsLine(); got != "p4, client supernova-ws, no other pending changelists" {
 			t.Errorf("got %q", got)
 		}
+		t.Setenv("STARSHIP_TEST_P4_PENDING", "4242")
 		lead, why := w.runStart()
 		if lead == "" {
 			t.Fatalf("refused: %s", why)
 		}
-		if got := w.state().VcsState; got != "p4, client supernova-ws, no other pending changelists" {
+		if got := w.state().VcsState; got != "p4, client supernova-ws, task changelist 4242 (0 opened files), no other pending changelists; changelist 4242 was created for the task and recorded in task.md" {
 			t.Errorf("run state %q", got)
 		}
 	})
@@ -101,6 +102,7 @@ func TestP4State(t *testing.T) {
 		}
 	})
 	t.Run("state override", func(t *testing.T) {
+		t.Setenv("STARSHIP_TEST_P4_PENDING", "101")
 		w := p4World(t, vcs)
 		w.binding("state: { command: \"echo supernova stands ready\" }")
 		if got := w.openVcsLine(); got != "supernova stands ready" {
@@ -167,10 +169,11 @@ func TestP4StateProjectEnv(t *testing.T) {
 		if got := w.openVcsLine(); got != clean {
 			t.Errorf("task open: %q", got)
 		}
+		t.Setenv("STARSHIP_TEST_P4_PENDING", "4242")
 		if lead, why := w.runStart(); lead == "" {
 			t.Fatalf("run start refused: %s", why)
 		}
-		if got := w.state().VcsState; got != clean {
+		if got := w.state().VcsState; got != "p4, client supernova-ws, task changelist 4242 (0 opened files), no other pending changelists; changelist 4242 was created for the task and recorded in task.md" {
 			t.Errorf("run state %q", got)
 		}
 	})
@@ -214,7 +217,7 @@ func TestP4StateProjectEnv(t *testing.T) {
 		if lead, why := w.runStart(); lead == "" {
 			t.Fatalf("refused: %s", why)
 		}
-		if got := w.state().VcsState; got != "supernova task state" {
+		if got := w.state().VcsState; got != "supernova task state; changelist 4242 was created for the task and recorded in task.md" {
 			t.Errorf("run state %q", got)
 		}
 	})

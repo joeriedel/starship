@@ -277,6 +277,12 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 			r.State.StartHead, _ = gitOut(r.Snap.Workspace, "rev-parse", "HEAD")
 		}
 	}
+	if firstOfStage && s.Role == "tester" && !s.isLead() {
+		if err := p4ReconcileBefore(r, d); err != nil {
+			m.fail("handler", "the Perforce reconcile before stage "+s.ID+" failed: "+err.Error())
+			return deny(r, s.ID, "stage "+s.ID+" could not start: "+r.State.Reason), nil
+		}
+	}
 	if firstOfStage && !(s.isLead() && r.State.Scopes[s.ID] != nil && r.State.Scopes[s.ID].Stage != "") {
 		if err := fire(r, "stage.before:"+s.ID, d); err != nil {
 			if s.Advisory == "" {
@@ -1137,9 +1143,15 @@ func writeNext(r *RunFiles, out io.Writer) {
 			} else if _, err := os.Stat(report); err == nil {
 				fmt.Fprintf(out, "Stage %q (run by ensign) was stopped with the run, and the run did not use its result. Its report: %s%s\n", d.Stage, report, noticesNote)
 			}
+			if d.Reconciled != "" {
+				fmt.Fprintln(out, d.Reconciled)
+			}
 		} else if s != nil {
 			if line := agentReportsLine(r, m, i); line != "" {
 				fmt.Fprintln(out, line)
+			}
+			if d.Reconciled != "" {
+				fmt.Fprintln(out, d.Reconciled)
 			}
 		}
 		break

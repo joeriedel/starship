@@ -134,7 +134,7 @@ func hookSettingsConn(preTimeout, stopTimeout int, declared bool, tools []string
     "SessionStart":     ` + cmd("SessionStart") + `,
     "UserPromptSubmit": ` + cmd("UserPromptSubmit") + `,
     "PreToolUse":       [{"matcher": "` + matcher + `", "hooks": [` + pre + `]}],
-    "PostToolUse":      [{"matcher": "Agent|Task|Bash", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", bridgeEnsign+" hook PostToolUse") + `}]}],
+    "PostToolUse":      [{"matcher": "Agent|Task|Bash|Edit|Write|NotebookEdit", "hooks": [{"type": "command", "command": ` + fmt.Sprintf("%q", bridgeEnsign+" hook PostToolUse") + `}]}],
     "SubagentStop":     [{"hooks": [` + hook("SubagentStop", stopTimeout) + `]}],
     "Stop":             ` + cmd("Stop") + `
   }

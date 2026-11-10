@@ -77,6 +77,8 @@ type Dispatch struct {
 	DocsBase map[string]string `json:"docs_base,omitempty"`
 	// FinishedSeq is State.Clock when the dispatch's report was recorded; 0 while it runs.
 	FinishedSeq int `json:"finished_seq,omitempty"`
+	// Reconciled is what the Perforce reconcile before a test stage opened, for the lead; "" when it opened nothing.
+	Reconciled string `json:"reconciled,omitempty"`
 }
 
 type ScopeState struct {

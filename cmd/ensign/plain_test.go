@@ -167,7 +167,13 @@ func TestHookSettingsUpgrade(t *testing.T) {
 		"PreToolUse timeout":                          hookSettingsWith(hookTimeout, 0),
 		"no timeouts, before SubagentHandback":        beforeHandback(hookSettingsWith(0, 0)),
 		"PreToolUse timeout, before SubagentHandback": beforeHandback(hookSettingsWith(hookTimeout, 0)),
+		"both timeouts, before PostToolUse edits":     beforeEditPost(hookSettings()),
+		"no timeouts, before PostToolUse edits":       beforeEditPost(hookSettingsWith(0, 0)),
+		"before Bash, PostToolUse edits":              beforeEditPost(withoutBash(hookSettings())),
 	} {
+		if old == hookSettings() {
+			t.Fatalf("%s is the current form", name)
+		}
 		write(t, f, old)
 		_ = upgradeHookSettings(b, &BridgeFile{})
 		if data, _ := os.ReadFile(f); string(data) != hookSettings() {

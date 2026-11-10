@@ -330,6 +330,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			if err != nil {
 				return failHook(&in, nil, err, stderr)
 			}
+			if why == "" {
+				why = p4BeforeEdit(bridge, &in)
+			}
 			out := map[string]any{}
 			if why != "" {
 				out["hookSpecificOutput"] = map[string]any{
@@ -345,7 +348,15 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	case "PostToolUse":
 		// Only a background launch is recorded; taking the run lock for any other call
-		// would make every agent's Bash wait on whichever hook holds it.
+		// would make every agent's Bash wait on whichever hook holds it. An edit is
+		// checked without the lock too.
+		if isEditTool(in.ToolName) {
+			if note := p4AfterEdit(bridge, &in); note != "" {
+				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
+					"hookEventName": "PostToolUse", "additionalContext": note}})
+			}
+			return 0
+		}
 		if backgroundLaunch(&in) == "" {
 			return 0
 		}
@@ -726,6 +737,11 @@ func beforeHandback(settings string) string {
 	j := strings.Index(settings[i:], "\n")
 	settings = settings[:i] + settings[i+j+1:]
 	return strings.Replace(settings, "|SubagentHandback", "", 1)
+}
+
+// beforeEditPost is settings as ensign wrote them before PostToolUse matched Edit, Write and NotebookEdit.
+func beforeEditPost(settings string) string {
+	return strings.Replace(settings, `"matcher": "Agent|Task|Bash|Edit|Write|NotebookEdit"`, `"matcher": "Agent|Task|Bash"`, 1)
 }
 
 // narrowMatcher is settings as ensign wrote them before PreToolUse matched every tool.
