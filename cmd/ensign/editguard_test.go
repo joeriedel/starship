@@ -61,7 +61,7 @@ func TestSessionEditFolders(t *testing.T) {
 	w.expectEdit("", "", filepath.Join(extra, "a.txt"), false)
 	why := func() string { _, why := w.tryEdit("", "", filepath.Join(w.workspace(), "main.go")); return why }()
 	w.expectEdit("", "", filepath.Join(w.workspace(), "main.go"), true)
-	for _, want := range []string{"starship: ", w.bridge, "shell commands", "failure"} {
+	for _, want := range []string{"starship: ", w.bridge, "Only the Edit, Write and NotebookEdit tools are checked", "failure"} {
 		if !strings.Contains(why, want) {
 			t.Errorf("refusal lacks %q: %s", want, why)
 		}
