@@ -18,7 +18,7 @@ type declaredFocalFile struct {
 	Focal yaml.Node `yaml:"focal"`
 }
 
-// focalConfig is the focal: declaration: the period whose brag file the secretary keeps, when it ends, and an optional rubric path relative to the bridge.
+// focalConfig is the focal: declaration: the period whose brag file the secretary keeps (period), when it ends (ends), an optional start date (starts, YYYY-MM-DD, which must be before ends), and an optional rubric path relative to the bridge (rubric).
 type focalConfig struct {
 	Period string
 	Starts string
