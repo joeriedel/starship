@@ -1340,7 +1340,7 @@ depend on the project's VCS:
 ## 11. Build, platforms and installation
 
 Starship runs on **Linux, Windows and macOS**. A machine that only uses it needs **Claude Code
-and git**, nothing else.
+and git**, nothing else; on Windows, one that runs bindings needs Git for Windows (Git Bash), because bindings run through it.
 
 ### 11.1 `ensign`
 
@@ -1605,7 +1605,7 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
         - /home/me/sdk/go/bin
   ```
 
-  Ensign applies it to every command it runs for the project (handlers, plain bindings, `@done`, `@release`, publish steps), reading `machine.yaml` at that moment, so a binding can be a plain command on every platform. Agents' shells get it from a setup file next to the session's files, which the session's env file sources; each run writes it, so the project's setup reaches agents' commands from the next run. On Windows without Git Bash, where Claude Code accepts only `NAME=value` lines in the env file, session start writes every project's folders and variables there instead (a variable two projects set differently is left out, and the session is told). It is recorded with `ensign env <project> [NAME=<value> | --path <folder> | --drop-path <folder>]`.
+  Ensign applies it to every command it runs for the project (handlers, plain bindings, `@done`, `@release`, publish steps), reading `machine.yaml` at that moment, so a binding can be a plain command on every platform. A binding is written for a POSIX shell, `$STARSHIP_*` variables included, on every platform: on Linux and macOS it runs as `sh -c <command>`, on Windows as `<Git Bash> -c <command>`. Ensign finds Git Bash from `CLAUDE_CODE_GIT_BASH_PATH` when that is set and the path exists, else as `bash.exe` in `..\bin` or `..\..\bin` relative to the folder holding `git`. With none found, the binding is not run and fails with an error naming Git Bash (Git for Windows) and `CLAUDE_CODE_GIT_BASH_PATH`, reported like a binding that exits non-zero; there is no `cmd /C` fallback. Agents' shells get it from a setup file next to the session's files, which the session's env file sources; each run writes it, so the project's setup reaches agents' commands from the next run. On Windows without Git Bash, where Claude Code accepts only `NAME=value` lines in the env file, session start writes every project's folders and variables there instead (a variable two projects set differently is left out, and the session is told). It is recorded with `ensign env <project> [NAME=<value> | --path <folder> | --drop-path <folder>]`.
 
   A machine with no entry for a project asks the user once, the first time a task needs
   it, and records the answer (`ensign workspace <project>[/<task>] <path>`). It sits
