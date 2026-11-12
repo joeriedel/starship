@@ -186,7 +186,7 @@ func usage() {
   ensign run clear <run>
   ensign run finish [--bridge <dir>] [--run <id>] --goal met|not-met [<why>]
   ensign sequence [run <project>/<task> [run flags, e.g. --location <name> --sides <a,b>] | publish <project>/<task> | release <project> <version> [--location <name>] | do <instruction> | mode stop|keep-going | halt [--reason <text>] | clear [<session>] | discard [--reason <text>] | drop <n>... [--reason <text>] | retry <n> --diagnosis <why> --state <what is left> | accept <n> | skip <n> | done <n> [--note <text>] | fail <n> --reason <text>]
-  ensign writes [add --tool <name> (tool input as one JSON object on stdin) | drop <n>... | drop --all]
+  ensign writes [add --tool <name> [--short] [--title <text>] [--read <file> [--read-revision <id>]] (tool input as one JSON object on stdin) | drop <n>... | drop --all]
   ensign direct ask <folder> "<what the user asked for>" | ensign direct close
   ensign style ingest <project> <path-or-url> --trust authoritative|exemplar [--note <text>] [--location <name>]
   ensign style report <project>

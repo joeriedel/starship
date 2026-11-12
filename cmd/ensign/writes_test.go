@@ -306,13 +306,20 @@ func TestLargeWriteInput(t *testing.T) {
 	long := strings.Repeat("0123456789", 5000) + "TAIL-END"
 	plain, _ := json.Marshal(long)
 	other, _ := json.Marshal(long + "\x1b")
-	wf := &writesFile{Entries: []*writeEntry{{Tool: wikiPost, Input: json.RawMessage(fmt.Sprintf(`{"a":%s,"b":%s}`, plain, other))}}}
-	got := wf.listing()
+	w = writesWorld(t)
+	got := w.addWrite(wikiPost, fmt.Sprintf(`{"a":%s,"b":%s}`, plain, other))
 	if !strings.Contains(got, "\n"+long+"\n```\n") {
-		t.Error("the listing must carry a long plain string whole, tail included")
+		t.Error("by default the listing carries a long plain string whole, tail included")
 	}
 	if !strings.Contains(got, long+`\u001b"`+"\n```\n") {
-		t.Error("the listing must carry a long non-plain string whole as JSON, tail included")
+		t.Error("by default the listing carries a long non-plain string whole as JSON, tail included")
+	}
+	e := w.writesState().Entries[0]
+	if len(e.Files) != 3 {
+		t.Fatalf("the input and each long text are saved: %v", e.Files)
+	}
+	if saved, err := os.ReadFile(e.Files[1]); err != nil || string(saved) != long || !strings.Contains(got, e.Files[1]) {
+		t.Errorf("the long text is saved as-is and named in the listing: %v", err)
 	}
 }
 
@@ -581,6 +588,8 @@ func TestSessionWritesStateIsNotEditable(t *testing.T) {
 		filepath.Join(sessions, w.sid+".writes"),
 		filepath.Join(sessions, w.sid+".writes.lock"),
 		filepath.Join(sessions, w.sid+".writes.tmp"),
+		filepath.Join(sessions, w.sid+".writes.0123456789abcdef.json"),
+		filepath.Join(sessions, w.sid+".writes.0123456789abcdef.1.txt"),
 		filepath.Join(sessions, "other.writes"),
 		filepath.Join(sessions, "..", "sessions", w.sid+".writes"),
 		filepath.Join(".starship", "sessions", w.sid+".writes"),
@@ -662,9 +671,8 @@ func TestWindowsAmbiguousPath(t *testing.T) {
 }
 
 func TestWritesListing(t *testing.T) {
-	wf := &writesFile{Entries: []*writeEntry{{Tool: wikiPost, Input: json.RawMessage(
-		"{\"z\":\"```fence``` inside\",\"a\":\"plain\\ttext\\nline\",\"hidden\":\"x\\u202ey\",\"trail\":\"x\\n\",\"num\":12345678901234567890,\"list\":[1,\"b\"]}")}}}
-	got := wf.listing()
+	w := writesWorld(t)
+	got := w.addWrite(wikiPost, "{\"z\":\"```fence``` inside\",\"a\":\"plain\\ttext\\nline\",\"hidden\":\"x\\u202ey\",\"trail\":\"x\\n\",\"num\":12345678901234567890,\"list\":[1,\"b\"]}")
 	for _, want := range []string{
 		"1. " + wikiPost + "\n\"a\":\n```\nplain\ttext\nline\n```\n",
 		"\"z\":\n````\n```fence``` inside\n````\n",
@@ -680,15 +688,18 @@ func TestWritesListing(t *testing.T) {
 	if strings.Index(got, `"a":`) > strings.Index(got, `"z":`) || strings.Index(got, `"list":`) > strings.Index(got, `"num":`) {
 		t.Errorf("fields are in sorted key order:\n%s", got)
 	}
-	if got != wf.listing() || wf.digest() != wf.digest() {
+	e := w.writesState().Entries[0]
+	if !strings.Contains(got, "Full input: "+e.File+" (sha256 "+e.FileSHA+")\n") || !filepath.IsAbs(e.File) {
+		t.Errorf("the listing names the input file and its hash:\n%s", got)
+	}
+	if list, _ := w.runWrites(""); list != got {
 		t.Error("the listing is deterministic")
 	}
 }
 
 func TestWritesListingShowsControlCharacters(t *testing.T) {
-	wf := &writesFile{Entries: []*writeEntry{{Tool: wikiPost, Input: json.RawMessage(
-		`{"cr":"a\rb","del":"x\u007fy","nel":"x\u0085y"}`)}}}
-	got := wf.listing()
+	w := writesWorld(t)
+	got := w.addWrite(wikiPost, `{"cr":"a\rb","del":"x\u007fy","nel":"x\u0085y"}`)
 	for _, want := range []string{
 		"\"cr\":\n```json\n\"a\\rb\"\n```\n",
 		"\"del\":\n```json\n\"x\\u007fy\"\n```\n",
@@ -706,15 +717,8 @@ func TestWritesListingShowsControlCharacters(t *testing.T) {
 }
 
 func TestWritesListingFallbacks(t *testing.T) {
-	for _, input := range []string{`[1,2]`, `{"a":`, `"text"`} {
-		wf := &writesFile{Entries: []*writeEntry{{Tool: wikiPost, Input: json.RawMessage(input)}}}
-		got := wf.listing()
-		if !strings.Contains(got, "1. "+wikiPost+"\n```json\n") || strings.Contains(got, "(no input fields)") {
-			t.Errorf("%s: a non-object input is listed as JSON text:\n%s", input, got)
-		}
-	}
-	wf := &writesFile{Entries: []*writeEntry{{Tool: wikiPost, Input: json.RawMessage(`{}`)}}}
-	if got := wf.listing(); !strings.Contains(got, "1. "+wikiPost+"\n(no input fields)\n") {
+	w := writesWorld(t)
+	if got := w.addWrite(wikiPost, `{}`); !strings.Contains(got, "1. "+wikiPost+"\n(no input fields)\n") {
 		t.Errorf("an empty object says it has no fields:\n%s", got)
 	}
 }
@@ -736,18 +740,20 @@ func TestSweepRemovesOldWritesFiles(t *testing.T) {
 	w := writesWorld(t)
 	dir := filepath.Join(w.bridge, ".starship", "sessions")
 	var files []string
-	for _, n := range []string{"old.id.writes", "old.id.writes.lock", "orphan.writes.lock"} {
+	for _, n := range []string{"old.id.writes", "old.id.writes.lock", "orphan.writes.lock", "old.id.writes.0123456789abcdef.json", "old.id.writes.0123456789abcdef.1.txt"} {
 		oldFile(t, filepath.Join(dir, n), oldAge)
 		files = append(files, filepath.Join(dir, n))
 	}
 	young := filepath.Join(dir, "young.writes")
 	write(t, young, "{}")
+	youngInput := filepath.Join(dir, "young.writes.0123456789abcdef.json")
+	write(t, youngInput, "{}")
 	dropDeadLinks(w.bridge)
 	if !noneExist(files) {
 		t.Error("an old session's .writes and .writes.lock must be swept")
 	}
-	if !exists(young) {
-		t.Error("a young session's .writes must stay")
+	if !exists(young) || !exists(youngInput) {
+		t.Error("a young session's .writes and its saved input must stay")
 	}
 }
 
@@ -930,5 +936,363 @@ func TestGoApprovesNoWriteWhenGoWaitingCannotBeJudged(t *testing.T) {
 		if e.Approved {
 			t.Error("a write was approved")
 		}
+	}
+}
+
+const docsID = "1supernovaDocId"
+
+// docsBatchInput is a Docs batch update for the fictional supernova doc: one big insert, eight paragraph styles, four links, eight bullet runs and a revision guard.
+func docsBatchInput(text string) string {
+	textJSON, _ := json.Marshal(text)
+	var reqs []string
+	reqs = append(reqs, fmt.Sprintf(`{"insertText":{"location":{"index":1},"text":%s}}`, textJSON))
+	for i, style := range []string{"TITLE", "HEADING_1", "HEADING_1", "HEADING_1", "HEADING_1", "HEADING_1", "HEADING_1", "HEADING_2"} {
+		reqs = append(reqs, fmt.Sprintf(`{"updateParagraphStyle":{"range":{"startIndex":%d,"endIndex":%d},"paragraphStyle":{"namedStyleType":%q},"fields":"namedStyleType"}}`, i*10+1, i*10+9, style))
+	}
+	for i := 0; i < 4; i++ {
+		reqs = append(reqs, fmt.Sprintf(`{"updateTextStyle":{"range":{"startIndex":%d,"endIndex":%d},"textStyle":{"link":{"url":"https://supernova.example/page/%d?ref=a_b&x=1"}},"fields":"link"}}`, i*5+1, i*5+4, i))
+	}
+	for i := 0; i < 8; i++ {
+		reqs = append(reqs, fmt.Sprintf(`{"createParagraphBullets":{"range":{"startIndex":%d,"endIndex":%d},"bulletPreset":"BULLET_DISC_CIRCLE_SQUARE"}}`, i*7+1, i*7+6))
+	}
+	return fmt.Sprintf(`{"documentId":%q,"requests":[%s],"writeControl":{"requiredRevisionId":"rev7"}}`, docsID, strings.Join(reqs, ","))
+}
+
+func docsWorld(t *testing.T) *world {
+	return connWorld(t, "connector_writes:\n  - "+docsUpdate+"\n"+"  - "+wikiPost+"\n")
+}
+
+const docsUpdate = "mcp__supernova_docs__update_doc"
+
+func (w *world) addDocs(input string, args ...string) string {
+	w.t.Helper()
+	out, err := w.runWrites(input, append([]string{"add", "--tool", docsUpdate}, args...)...)
+	if err != nil {
+		w.t.Fatalf("writes add: %v", err)
+	}
+	return out
+}
+
+func TestLargeDocsBatchHasAShortListing(t *testing.T) {
+	w := docsWorld(t)
+	text := strings.Repeat("Supernova remnants cool slowly. ", 100) + "See https://supernova.example/notes or write nova@supernova.example."
+	input := docsBatchInput(text)
+	got := w.addDocs(input, "--short", "--title", "Nova notes")
+	for _, want := range []string{
+		"1. " + docsUpdate + "\n",
+		"Destination: Google Doc " + docsID + "\n",
+		`Title, given by the session and not checked: "Nova notes"`,
+		"shortened: first 200 of ",
+		"- 8 paragraph styles (TITLE ×1, HEADING_1 ×6, HEADING_2 ×1)\n",
+		"- 4 links (https://supernova.example/page/0?ref=a_b&x=1, https://supernova.example/page/1?ref=a_b&x=1, https://supernova.example/page/2?ref=a_b&x=1, https://supernova.example/page/3?ref=a_b&x=1)\n",
+		"- 8 bullet runs (BULLET_DISC_CIRCLE_SQUARE ×8)\n",
+		"- guarded by revision rev7",
+		"- https://supernova.example/notes\n",
+		"- nova@supernova.example\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("listing lacks %q:\n%s", want, got)
+		}
+	}
+	if len(got) > 2500 || len(got) > len(input)/2 {
+		t.Errorf("the listing should be short: %d bytes for %d bytes of input", len(got), len(input))
+	}
+	e := w.writesState().Entries[0]
+	if saved, err := os.ReadFile(e.Files[1]); err != nil || string(saved) != text {
+		t.Errorf("the whole text is saved as plain text: %v", err)
+	}
+	if !strings.Contains(got, e.Files[1]) || !strings.Contains(got, sha([]byte(text))) {
+		t.Error("the listing names the text file and its hash")
+	}
+	if data, err := os.ReadFile(e.File); err != nil || sha(data) != e.FileSHA {
+		t.Errorf("the input file holds the input: %v", err)
+	}
+	w.approveWrites()
+	if denied, reason := w.callTool("", "", docsUpdate, input); denied {
+		t.Fatalf("the approved batch passes: %q", reason)
+	}
+	for _, f := range e.Files {
+		if exists(f) {
+			t.Errorf("a consumed write's file %s must be removed", f)
+		}
+	}
+}
+
+func TestDocsDefaultShowsTextInFull(t *testing.T) {
+	w := docsWorld(t)
+	text := strings.Repeat("Supernova remnants cool slowly. ", 100) + "end"
+	got := w.addDocs(docsBatchInput(text))
+	if !strings.Contains(got, "\n"+text+"\n```\n") {
+		t.Error("without --short the text is shown in full")
+	}
+	if !strings.Contains(got, "also saved in") {
+		t.Errorf("a long text is saved and named even in full:\n%s", got)
+	}
+}
+
+func TestChangedInputOrEditedFileVoidsApproval(t *testing.T) {
+	w := docsWorld(t)
+	input := docsBatchInput("hello")
+	w.addDocs(input)
+	w.approveWrites()
+	changed := strings.Replace(input, "hello", "hellp", 1)
+	if denied, reason := w.callTool("", "", docsUpdate, changed); !denied || !strings.Contains(reason, "voided") {
+		t.Fatalf("changed input is refused and voids: %v %q", denied, reason)
+	}
+	if denied, _ := w.callTool("", "", docsUpdate, input); !denied {
+		t.Fatal("the voided approval must not pass")
+	}
+
+	// An edited input file, even one the call matches, is refused.
+	for name, edit := range map[string]func(file string){
+		"edited to match the call": func(file string) { write(t, file, changed) },
+		"removed":                  func(file string) { os.Remove(file) },
+	} {
+		w.addDocs(input)
+		w.approveWrites()
+		e := w.writesState().Entries[0]
+		edit(e.File)
+		if denied, _ := w.callTool("", "", docsUpdate, changed); !denied {
+			t.Errorf("%s: the call must be refused", name)
+		}
+		if denied, _ := w.callTool("", "", docsUpdate, input); !denied {
+			t.Errorf("%s: the approval was voided", name)
+		}
+	}
+
+	// A file edited between the listing and go is not approved.
+	w.addDocs(input)
+	list, _ := w.runWrites("")
+	w.replyStop(list, false)
+	write(t, w.writesState().Entries[0].File, changed)
+	if ctx := w.say("go"); !strings.Contains(ctx, "no connector write") || !strings.Contains(ctx, "changed") {
+		t.Fatalf("go must refuse an edited file: %q", ctx)
+	}
+}
+
+func TestDocsDeletesAreAlwaysStated(t *testing.T) {
+	w := docsWorld(t)
+	read := filepath.Join(t.TempDir(), "read.txt")
+	write(t, read, "Alpha beta gamma\nDelta 😀 beta\n")
+	input := func(guard string) string {
+		return `{"documentId":"` + docsID + `","requests":[` +
+			`{"deleteContentRange":{"range":{"startIndex":7,"endIndex":11}}},` + // "beta"
+			`{"replaceAllText":{"containsText":{"text":"beta","matchCase":true},"replaceText":"nova"}},` +
+			`{"replaceAllText":{"containsText":{"text":"gamma"},"replaceText":""}},` +
+			`{"deleteContentRange":{"range":{"startIndex":1,"endIndex":6}}}` +
+			`]` + guard + `}`
+	}
+	guard := `,"writeControl":{"requiredRevisionId":"rev3"}`
+
+	got := w.addDocs(input(""))
+	for _, want := range []string{
+		"Deletes 4 characters at index 7 to 11 (end excluded); what goes is not known: no read of the document was given.",
+		`Replaces every match of "beta" (case-sensitive: yes, regular expression: no) with "nova"`,
+		`Replaces every match of "gamma" (case-sensitive: no, regular expression: no) with "" (the matches are deleted)`,
+		"Deletes 5 characters at index 1 to 6 (end excluded); what goes is not known",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no read: listing lacks %q:\n%s", want, got)
+		}
+	}
+	w.runWrites("", "drop", "--all")
+
+	got = w.addDocs(input(guard), "--read", read, "--read-revision", "rev3")
+	for _, want := range []string{
+		"exact: the session read the document at revision rev3",
+		"Deletes 4 characters at index 7 to 11 (end excluded), which hold:\n```\nbeta\n```\n",
+		"  In the read: 1 match: \"beta\" ×1",
+		"  In the read: 1 match: \"gamma\" ×1",
+		// After the first delete the text is "Alpha  gamma..."; indexes 1 to 6 are "Alpha".
+		"Deletes 5 characters at index 1 to 6 (end excluded), which hold:\n```\nAlpha\n```\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("exact read: listing lacks %q:\n%s", want, got)
+		}
+	}
+	w.runWrites("", "drop", "--all")
+
+	for name, args := range map[string][]string{
+		"no revision declared": {"--read", read},
+		"other revision":       {"--read", read, "--read-revision", "rev2"},
+	} {
+		got = w.addDocs(input(guard), args...)
+		if strings.Contains(got, "exact:") || !strings.Contains(got, "the session's own read of the document, unverified") {
+			t.Errorf("%s: the read is labelled unverified:\n%s", name, got)
+		}
+		w.runWrites("", "drop", "--all")
+	}
+	got = w.addDocs(input(""), "--read", read, "--read-revision", "rev3")
+	if strings.Contains(got, "exact:") {
+		t.Errorf("a batch with no guard is never exact:\n%s", got)
+	}
+	w.runWrites("", "drop", "--all")
+
+	// A position outside the read falls back to the range and says why.
+	got = w.addDocs(`{"documentId":"`+docsID+`","requests":[{"deleteContentRange":{"range":{"startIndex":5,"endIndex":900}}},{"deleteContentRange":{"range":{"startIndex":1,"endIndex":3}}}]}`, "--read", read)
+	for _, want := range []string{
+		"Deletes 895 characters at index 5 to 900 (end excluded); what goes can't be shown: indexes 5 to 900 fall outside the read",
+		"Deletes 2 characters at index 1 to 3 (end excluded); what goes can't be shown",
+		"The read could not be applied past this point",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("out of range: listing lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestDocsReadCountsUTF16AndShiftsPositions(t *testing.T) {
+	w := docsWorld(t)
+	read := filepath.Join(t.TempDir(), "read.txt")
+	write(t, read, "A😀B\nsecond line\n")
+	// The emoji is two UTF-16 units: A is index 1, the emoji 2-3, B index 4. The insert of 3 units at index 1 moves B to 7.
+	got := w.addDocs(`{"documentId":"`+docsID+`","requests":[{"insertText":{"location":{"index":1},"text":"abc"}},{"deleteContentRange":{"range":{"startIndex":7,"endIndex":8}}}]}`, "--read", read)
+	if !strings.Contains(got, "which hold:\n```\nB\n```\n") {
+		t.Errorf("positions shift with each insert, in UTF-16 units:\n%s", got)
+	}
+	w.runWrites("", "drop", "--all")
+	got = w.addDocs(`{"documentId":"`+docsID+`","requests":[{"deleteContentRange":{"range":{"startIndex":3,"endIndex":4}}}]}`, "--read", read)
+	if !strings.Contains(got, "split a surrogate pair") {
+		t.Errorf("a range inside a pair is not applied:\n%s", got)
+	}
+}
+
+func TestDocsUnknownRequestsAreShownInFull(t *testing.T) {
+	w := docsWorld(t)
+	got := w.addDocs(`{"documentId":"` + docsID + `","requests":[` +
+		`{"insertInlineImage":{"uri":"https://supernova.example/img.png","location":{"index":1}}},` +
+		`{"insertText":{"text":"hi","location":{"index":1,"segmentId":"kix.abc"}}},` +
+		`{"updateParagraphStyle":{"range":{"startIndex":1,"endIndex":3},"paragraphStyle":{"alignment":"CENTER"},"fields":"alignment"}},` +
+		`{"updateTextStyle":{"range":{"startIndex":1,"endIndex":3},"textStyle":{"bold":true},"fields":"bold","extra":1}},` +
+		`{"deleteContentRange":{"range":{"startIndex":1,"endIndex":3,"tabId":"t.1"}}},` +
+		`{"deleteParagraphBullets":{"range":{"startIndex":1,"endIndex":3}}},` +
+		`{"updateTextStyle":{"range":{"startIndex":1,"endIndex":3},"textStyle":{},"fields":"link"}}` +
+		`],"writeControl":{"requiredRevisionId":"r","other":"x"},"mystery":{"k":"v"}}`)
+	for _, want := range []string{
+		`"insertInlineImage"`, `"uri": "https://supernova.example/img.png"`,
+		`"segmentId": "kix.abc"`, `"alignment": "CENTER"`, `"extra": 1`, `"tabId": "t.1"`, `"deleteParagraphBullets"`, `"fields": "link"`,
+		"Request 7, a kind or shape this summary does not cover, in full:",
+		`"writeControl":` + "\n```json\n{\n  \"other\": \"x\",\n  \"requiredRevisionId\": \"r\"\n}\n```\n",
+		`"mystery":` + "\n```json\n{\n  \"k\": \"v\"\n}\n```\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("listing lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "paragraph style") || strings.Contains(got, "text style run") || strings.Contains(got, "Formatting and guards") {
+		t.Errorf("a request with anything unaccounted for is not summarised:\n%s", got)
+	}
+}
+
+func TestDestinationsAndLinksAreNeverShortened(t *testing.T) {
+	w := docsWorld(t)
+	long := strings.Repeat("filler words go here. ", 60)
+	url := "https://supernova.example/a/very/long/path/" + strings.Repeat("seg/", 30) + "end?q=1"
+	got := w.addDocs(`{"documentId":"`+docsID+strings.Repeat("x", 600)+`","requests":[{"updateTextStyle":{"range":{"startIndex":1,"endIndex":3},"textStyle":{"link":{"url":"`+url+`"}},"fields":"link"}}]}`, "--short")
+	if !strings.Contains(got, docsID+strings.Repeat("x", 600)) || !strings.Contains(got, url) {
+		t.Errorf("a document ID and a link stay whole under --short:\n%s", got)
+	}
+	w.runWrites("", "drop", "--all")
+
+	// Fallback tool: recipients and IDs stay whole, an address inside a long body is listed in full.
+	to := strings.Repeat("a", 700) + "@supernova.example"
+	input := fmt.Sprintf(`{"to":%q,"threadId":%q,"body":%q,"nested":{"items":["%s",%q],"parentFolder":%q}}`,
+		to, strings.Repeat("t", 600), long+"mail nova@supernova.example or see "+url+" now. "+long,
+		long, long, strings.Repeat("f", 600))
+	got, err := w.runWrites(input, "add", "--tool", wikiPost, "--short")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{to, strings.Repeat("t", 600), strings.Repeat("f", 600), "- nova@supernova.example\n", "- " + url + "\n", "shortened: first 200 of "} {
+		if !strings.Contains(got, want) {
+			t.Errorf("under --short the listing lacks %q:\n%s", want[:min(len(want), 60)], got)
+		}
+	}
+	if strings.Contains(got, long) {
+		t.Error("--short must shorten the long text")
+	}
+	if len(w.writesState().Entries[0].Files) < 3 {
+		t.Error("the shortened texts are saved")
+	}
+}
+
+func TestShortTextIsAlwaysShownWhole(t *testing.T) {
+	w := writesWorld(t)
+	got := w.addWrite(wikiPost, `{"body":"a short note"}`)
+	got2, _ := w.runWrites(`{"body":"a short note"}`, "add", "--tool", wikiPost, "--short")
+	if !strings.Contains(got, "a short note") || !strings.Contains(got2, "a short note") || strings.Contains(got2, "shortened") {
+		t.Errorf("short text stays whole:\n%s\n%s", got, got2)
+	}
+	if n := len(w.writesState().Entries[0].Files); n != 1 {
+		t.Errorf("a short text has no file of its own: %d", n)
+	}
+}
+
+func TestCutOffDocsListingIsNotShown(t *testing.T) {
+	w := docsWorld(t)
+	w.addDocs(docsBatchInput("hello"))
+	list, _ := w.runWrites("")
+	cut := strings.TrimRight(list, "\n")
+	cut = cut[:len(cut)-20]
+	if res := w.replyStop("Pending:\n"+cut, false); dig(res, "decision") != "block" {
+		t.Fatalf("a cut-off listing must be blocked: %v", res)
+	}
+	if ctx := w.say("go"); !strings.Contains(ctx, "not shown") {
+		t.Fatalf("go after a cut-off listing approves nothing: %q", ctx)
+	}
+}
+
+func TestWritesFilesAreRemovedOnDropAndVoid(t *testing.T) {
+	w := writesWorld(t)
+	w.addWrite(wikiPost, `{"n":1}`)
+	w.addWrite(wikiPost, `{"n":2}`)
+	files := func(i int) []string { return w.writesState().Entries[i].Files }
+	first, second := files(0), files(1)
+	w.runWrites("", "drop", "1")
+	if !noneExist(first) || !exists(second[0]) {
+		t.Error("a dropped write's files go and the others stay")
+	}
+	w.approveWrites()
+	w.say("thanks")
+	if !noneExist(second) {
+		t.Error("a voided write's files go")
+	}
+	read := filepath.Join(t.TempDir(), "read.txt")
+	write(t, read, "text")
+	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--read", read); err == nil || !strings.Contains(err.Error(), "apply only to a Google Docs") {
+		t.Errorf("--read on a write that is not a Docs batch is refused: %v", err)
+	}
+}
+
+func TestWritesAddOptions(t *testing.T) {
+	w := docsWorld(t)
+	for name, args := range map[string][]string{
+		"unknown":               {"--tool", docsUpdate, "--bogus"},
+		"no tool":               {"--short"},
+		"twice":                 {"--tool", docsUpdate, "--short", "--short"},
+		"revision without read": {"--tool", docsUpdate, "--read-revision", "r"},
+		"missing value":         {"--tool", docsUpdate, "--title"},
+	} {
+		if _, err := w.runWrites(`{}`, append([]string{"add"}, args...)...); err == nil || !strings.Contains(err.Error(), "usage: ensign writes") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := w.runWrites(`{"documentId":"d","requests":[]}`, "add", "--tool", docsUpdate, "--read", filepath.Join(t.TempDir(), "missing")); err == nil || !strings.Contains(err.Error(), "--read") {
+		t.Errorf("an unreadable read file: %v", err)
+	}
+}
+
+func TestNestedLongTextIsSavedWithoutShort(t *testing.T) {
+	w := writesWorld(t)
+	body := strings.Repeat("hello nova ", 200)
+	got := w.addWrite(wikiPost, fmt.Sprintf(`{"message":{"to":"a@b.c","body":%q}}`, body))
+	if !strings.Contains(got, `Long text at "message.body"`) || !strings.Contains(got, "also saved in ") {
+		t.Errorf("the listing should name the file of the nested long text:\n%s", got)
+	}
+	if strings.Contains(got, `"message.to"`) {
+		t.Error("a short destination has no file")
+	}
+	if n := len(w.writesState().Entries[0].Files); n != 2 {
+		t.Errorf("want the input file and one text file, got %d", n)
 	}
 }

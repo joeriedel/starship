@@ -546,7 +546,7 @@ func controlPlaneEdit(bridge string, in *HookInput, goos string) string {
 	return ""
 }
 
-// writesStateEdit refuses file-tool edits to a session's connector writes file and its lock and temp companions, so the session can't approve a write itself.
+// writesStateEdit refuses file-tool edits to a session's connector writes file, its lock and temp companions and the input and text files saved for its writes, so the session can't approve a write itself.
 func writesStateEdit(bridge string, in *HookInput, goos string) string {
 	p, _ := in.ToolInput["file_path"].(string)
 	if p == "" {
@@ -571,6 +571,9 @@ func writesStateEdit(bridge string, in *HookInput, goos string) string {
 		return ""
 	}
 	name := path.Base(target)
+	if _, ok := writesFileSession(name); ok {
+		return "this is a file of the session's connector writes (a saved input or text), which is changed only through `ensign writes` and the user's go."
+	}
 	for _, suffix := range []string{".writes", ".writes.lock", ".writes.tmp"} {
 		if strings.HasSuffix(name, suffix) {
 			return "this is the session's connector writes state, which is changed only through `ensign writes` and the user's go."

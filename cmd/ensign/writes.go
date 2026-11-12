@@ -5,6 +5,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,11 +24,15 @@ import (
 	"github.com/gofrs/flock"
 )
 
-// writeEntry is one connector write the session registered: the tool and its complete input as compact JSON. Approved means the user's go covered it and one matching call may still be made.
+// writeEntry is one connector write the session registered: the tool, its complete input saved as compact JSON in File (sha256 FileSHA), and the part of the listing that describes it. Files is every file saved for the write, the input file and the plain-text files of its long texts. Approved means the user's go covered it and one matching call may still be made, with the input file still hashing to ApprovedSHA.
 type writeEntry struct {
-	Tool     string          `json:"tool"`
-	Input    json.RawMessage `json:"input"`
-	Approved bool            `json:"approved,omitempty"`
+	Tool        string   `json:"tool"`
+	File        string   `json:"file"`
+	FileSHA     string   `json:"file_sha"`
+	Files       []string `json:"files"`
+	Summary     string   `json:"summary"`
+	Approved    bool     `json:"approved,omitempty"`
+	ApprovedSHA string   `json:"approved_sha,omitempty"`
 }
 
 // writesFile is a session's connector writes. ShownDigest is the digest of the pending listing the Stop hook saw in the session's reply.
@@ -36,6 +42,32 @@ type writesFile struct {
 }
 
 func writesPath(bridge, session string) string { return sessionFile(bridge, session) + ".writes" }
+
+// writesFileSession returns the session id of a file saved for a write, <id>.writes.<token>.json (the input) or <id>.writes.<token>.<n>.txt (a long text), the files the gc sweep and the session edit guard treat as writes state.
+func writesFileSession(name string) (string, bool) {
+	if !strings.HasSuffix(name, ".json") && !strings.HasSuffix(name, ".txt") {
+		return "", false
+	}
+	id, rest, ok := strings.Cut(name, ".writes.")
+	return id, ok && id != "" && rest != ""
+}
+
+// removeFiles deletes the files saved for the write. One that can't be removed is left to the gc sweep.
+func (e *writeEntry) removeFiles() {
+	for _, f := range e.Files {
+		retry(retryWindow, isTransientFileError, func() error { return os.Remove(f) })
+	}
+}
+
+// allows reports whether a call's decoded input is what the user approved: the input file still has the approved hash and holds the same value.
+func (e *writeEntry) allows(got any) bool {
+	data, err := readFileRetry(e.File)
+	if err != nil || e.ApprovedSHA == "" || sha(data) != e.ApprovedSHA {
+		return false
+	}
+	want, err := decodeNumbers(data)
+	return err == nil && sameJSON(want, got)
+}
 
 // withWrites reads the session's writes under their lock, runs fn, and saves them when fn reports a change.
 func withWrites(bridge, session string, fn func(wf *writesFile) (changed bool, err error)) error {
@@ -69,10 +101,15 @@ func (wf *writesFile) pending() []*writeEntry {
 	return p
 }
 
-// voidApproved drops the approved entries and returns how many there were.
+// voidApproved drops the approved entries and their files and returns how many there were.
 func (wf *writesFile) voidApproved() int {
 	n := len(wf.Entries)
-	wf.Entries = slices.DeleteFunc(wf.Entries, func(e *writeEntry) bool { return e.Approved })
+	wf.Entries = slices.DeleteFunc(wf.Entries, func(e *writeEntry) bool {
+		if e.Approved {
+			e.removeFiles()
+		}
+		return e.Approved
+	})
 	return n - len(wf.Entries)
 }
 
@@ -185,7 +222,7 @@ func fence(text, info string) string {
 	return f + info + "\n" + text + "\n" + f + "\n"
 }
 
-// listing renders the pending writes: a number, the tool, then every input field in key order with its full value. Nothing is truncated.
+// listing renders the pending writes: a number and the tool, then each write's summary, which names the file holding its full input and that file's sha256. The digest of the listing therefore binds the input the user approves.
 func (wf *writesFile) listing() string {
 	pend := wf.pending()
 	if len(pend) == 0 {
@@ -194,24 +231,7 @@ func (wf *writesFile) listing() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Connector writes waiting for go (%d):\n", len(pend))
 	for i, e := range pend {
-		fmt.Fprintf(&b, "\n%d. %s\n", i+1, e.Tool)
-		v, err := decodeNumbers(e.Input)
-		obj, _ := v.(map[string]any)
-		if err != nil || obj == nil {
-			b.WriteString(fence(jsonText(string(e.Input)), "json"))
-			continue
-		}
-		if len(obj) == 0 {
-			b.WriteString("(no input fields)\n")
-		}
-		for _, k := range sortedKeys(obj) {
-			fmt.Fprintf(&b, "%s:\n", jsonText(k))
-			if s, ok := obj[k].(string); ok && plainString(s) {
-				b.WriteString(fence(s, ""))
-			} else {
-				b.WriteString(fence(jsonText(obj[k]), "json"))
-			}
-		}
+		fmt.Fprintf(&b, "\n%d. %s\n%s", i+1, e.Tool, e.Summary)
 	}
 	return b.String()
 }
@@ -284,7 +304,7 @@ func sessionReadDenial(rules map[string][]string, tool string) any {
 	return denial(fmt.Sprintf("the session may not call %s; dispatch a reader with what to look for and work from its facts (ensign help edits, Connector tools)", tool))
 }
 
-// writeDecision decides a connector call when connector_writes is declared. An agent may call only what its role lists. The session may call a write tool only as a call the user approved with go: the whole input must equal an approved entry, which one call consumes. A call that matches nothing voids the approvals still unused.
+// writeDecision decides a connector call when connector_writes is declared. An agent may call only what its role lists. The session may call a write tool only as a call the user approved with go: the whole input must equal the input file of an approved entry that still has its approved hash, and one call consumes the entry. A call that matches nothing voids the approvals still unused.
 func writeDecision(bridge string, in *HookInput, rules map[string][]string, writes []string) any {
 	tool := in.ToolName
 	if in.AgentID != "" {
@@ -312,7 +332,8 @@ func writeDecision(bridge string, in *HookInput, rules map[string][]string, writ
 			if !e.Approved || e.Tool != tool {
 				continue
 			}
-			if want, err := decodeNumbers(e.Input); err == nil && sameJSON(want, got) {
+			if e.allows(got) {
+				e.removeFiles()
 				wf.Entries = slices.Delete(wf.Entries, i, i+1)
 				matched = true
 				return true, nil
@@ -389,8 +410,15 @@ func promptWrites(bridge string, in *HookInput) (voided, text string, handled bo
 		case wf.ShownDigest != wf.digest():
 			text = "this go approved no connector write: the pending writes were not shown to the user. Run `ensign writes`, reproduce its output verbatim in your reply, and ask the user for go again."
 		default:
+			for i, e := range pend {
+				data, rerr := readFileRetry(e.File)
+				if rerr != nil || sha(data) != e.FileSHA {
+					text = fmt.Sprintf("this go approved no connector write: the input file of write %d (%s) is missing or was changed since it was listed. Drop the writes (ensign writes drop --all) and register them again.", i+1, e.Tool)
+					return changed, nil
+				}
+			}
 			for _, e := range pend {
-				e.Approved = true
+				e.Approved, e.ApprovedSHA = true, e.FileSHA
 			}
 			wf.ShownDigest = ""
 			changed = true
@@ -433,9 +461,12 @@ func writesStop(bridge string, in *HookInput) any {
 	return out
 }
 
-// cmdWrites implements `ensign writes [add --tool <name> | drop <n>... | drop --all]`.
+// writesUsage is the usage line of `ensign writes`.
+const writesUsage = "usage: ensign writes [add --tool <name> [--short] [--title <text>] [--read <file> [--read-revision <id>]] (the tool input as one JSON object on stdin) | drop <n>... | drop --all]"
+
+// cmdWrites implements `ensign writes [add --tool <name> [--short] [--title <text>] [--read <file> [--read-revision <id>]] | drop <n>... | drop --all]`.
 func cmdWrites(args []string, stdin io.Reader, out io.Writer) error {
-	usage := errors.New("usage: ensign writes [add --tool <name> (the tool input as one JSON object on stdin) | drop <n>... | drop --all]")
+	usage := errors.New(writesUsage)
 	session := os.Getenv("STARSHIP_SESSION")
 	if session == "" {
 		return errors.New("connector writes belong to a session, and STARSHIP_SESSION is not set")
@@ -454,20 +485,62 @@ func cmdWrites(args []string, stdin io.Reader, out io.Writer) error {
 		show(wf)
 		return nil
 	case args[0] == "add":
-		if len(args) != 3 || args[1] != "--tool" {
-			return usage
+		tool, o, err := parseAddArgs(args[1:])
+		if err != nil {
+			return fmt.Errorf("%v\n%s", err, usage)
 		}
 		if err := movedRefusal(bridge, session); err != nil {
 			return err
 		}
-		return writesAdd(bridge, session, args[2], stdin, show)
+		return writesAdd(bridge, session, tool, o, stdin, show)
 	case args[0] == "drop" && len(args) > 1:
 		return writesDrop(bridge, session, args[1:], show)
 	}
 	return usage
 }
 
-func writesAdd(bridge, session, tool string, stdin io.Reader, show func(*writesFile)) error {
+// parseAddArgs reads the arguments of `ensign writes add`: the tool and the session's choices for this write. The read file is not opened here.
+func parseAddArgs(args []string) (tool string, o *writeOpts, err error) {
+	o = &writeOpts{}
+	seen := map[string]bool{}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if seen[a] {
+			return "", nil, fmt.Errorf("%s given twice", a)
+		}
+		seen[a] = true
+		if a == "--short" {
+			o.short = true
+			continue
+		}
+		if a != "--tool" && a != "--title" && a != "--read" && a != "--read-revision" {
+			return "", nil, fmt.Errorf("unknown argument %q", a)
+		}
+		if i+1 >= len(args) {
+			return "", nil, fmt.Errorf("%s needs a value", a)
+		}
+		i++
+		switch a {
+		case "--tool":
+			tool = args[i]
+		case "--title":
+			o.title = args[i]
+		case "--read":
+			o.readPath = args[i]
+		case "--read-revision":
+			o.readRev = args[i]
+		}
+	}
+	switch {
+	case tool == "":
+		return "", nil, errors.New("--tool is required")
+	case o.readRev != "" && o.readPath == "":
+		return "", nil, errors.New("--read-revision goes with --read")
+	}
+	return tool, o, nil
+}
+
+func writesAdd(bridge, session, tool string, o *writeOpts, stdin io.Reader, show func(*writesFile)) error {
 	bf, err := loadBridgeFile(bridge)
 	if err != nil {
 		return err
@@ -490,12 +563,21 @@ func writesAdd(bridge, session, tool string, stdin io.Reader, show func(*writesF
 	if err != nil {
 		return fmt.Errorf("the tool input on stdin must be one JSON object: %v", err)
 	}
-	if _, ok := input.(map[string]any); !ok {
+	obj, ok := input.(map[string]any)
+	if !ok {
 		return errors.New("the tool input on stdin must be one JSON object")
 	}
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, raw); err != nil {
 		return err
+	}
+	if o.readPath != "" {
+		data, err := os.ReadFile(o.readPath)
+		if err != nil {
+			return fmt.Errorf("--read: %v", err)
+		}
+		o.hasRead, o.readSHA = true, sha(data)
+		o.read = strings.ReplaceAll(string(data), "\r\n", "\n")
 	}
 	waiting, err := goWaiting(bridge, session)
 	if err != nil {
@@ -508,16 +590,44 @@ func writesAdd(bridge, session, tool string, stdin io.Reader, show func(*writesF
 		return errors.New("a direct edit request is waiting for go, and connector writes can't wait with it; have the user answer it, or run `ensign direct close`, first")
 	}
 	return withWrites(bridge, session, func(wf *writesFile) (bool, error) {
-		wf.Entries = append(wf.Entries, &writeEntry{Tool: tool, Input: compact.Bytes()})
+		var token [8]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return false, err
+		}
+		base, err := filepath.Abs(sessionFile(bridge, session) + ".writes." + hex.EncodeToString(token[:]))
+		if err != nil {
+			return false, err
+		}
+		c := &writeCtx{short: o.short, base: base}
+		body, err := c.render(obj, o)
+		if err != nil {
+			return false, err
+		}
+		e := &writeEntry{Tool: tool, File: base + ".json", FileSHA: sha(compact.Bytes())}
+		e.Summary = body + fmt.Sprintf("Full input: %s (sha256 %s)\n", e.File, e.FileSHA)
+		files := map[string][]byte{e.File: compact.Bytes()}
+		e.Files = []string{e.File}
+		for _, t := range c.texts {
+			files[t.path] = []byte(t.text)
+			e.Files = append(e.Files, t.path)
+		}
+		for _, f := range e.Files {
+			if err := writeFileAtomic(bridge, f, files[f]); err != nil {
+				e.removeFiles()
+				return false, err
+			}
+		}
+		wf.Entries = append(wf.Entries, e)
 		show(wf)
 		return true, nil
 	})
 }
 
 func writesDrop(bridge, session string, args []string, show func(*writesFile)) error {
-	return withWrites(bridge, session, func(wf *writesFile) (bool, error) {
+	var drop []*writeEntry
+	err := withWrites(bridge, session, func(wf *writesFile) (bool, error) {
 		pend := wf.pending()
-		var drop []*writeEntry
+		drop = nil
 		if len(args) == 1 && args[0] == "--all" {
 			drop = pend
 		} else {
@@ -533,4 +643,11 @@ func writesDrop(bridge, session string, args []string, show func(*writesFile)) e
 		show(wf)
 		return len(drop) > 0, nil
 	})
+	if err != nil {
+		return err
+	}
+	for _, e := range drop {
+		e.removeFiles()
+	}
+	return nil
 }
