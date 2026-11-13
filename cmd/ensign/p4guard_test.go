@@ -50,37 +50,41 @@ func TestP4GuardHook(t *testing.T) {
 	refused := []string{"p4 edit a", "p4 -c x change -i", "p4 reopen -c 5 a"}
 	allowed := []string{"p4 opened", "p4 -ztag fstat a", "p4 diff"}
 
-	w := p4World(t, "{ kind: p4, client: supernova-ws, changelist: '101' }")
-	lead, coder, _ := p4Coder(t, w)
-	for _, c := range refused {
-		if !bash(w, coder, "coder", c) {
-			t.Errorf("coder's %q allowed", c)
+	t.Run("p4", func(t *testing.T) {
+		w := p4World(t, "{ kind: p4, client: supernova-ws, changelist: '101' }")
+		lead, coder, _ := p4Coder(t, w)
+		for _, c := range refused {
+			if !bash(w, coder, "coder", c) {
+				t.Errorf("coder's %q allowed", c)
+			}
+			if !bash(w, lead, "orchestrator", c) {
+				t.Errorf("lead's %q allowed", c)
+			}
+			if bash(w, "", "", c) {
+				t.Errorf("session's %q denied", c)
+			}
 		}
-		if !bash(w, lead, "orchestrator", c) {
-			t.Errorf("lead's %q allowed", c)
+		for _, c := range allowed {
+			if bash(w, coder, "coder", c) {
+				t.Errorf("coder's %q denied", c)
+			}
 		}
-		if bash(w, "", "", c) {
-			t.Errorf("session's %q denied", c)
-		}
-	}
-	for _, c := range allowed {
-		if bash(w, coder, "coder", c) {
-			t.Errorf("coder's %q denied", c)
-		}
-	}
+	})
 
-	g := newWorld(t)
-	glead, why := g.runStart()
-	if glead == "" {
-		t.Fatalf("run start refused: %s", why)
-	}
-	gcoder, why := g.spawn(glead, "orchestrator", "coder")
-	if gcoder == "" {
-		t.Fatalf("coder refused: %s", why)
-	}
-	for _, c := range refused {
-		if bash(g, gcoder, "coder", c) {
-			t.Errorf("git task: coder's %q denied", c)
+	t.Run("git", func(t *testing.T) {
+		g := newWorld(t)
+		glead, why := g.runStart()
+		if glead == "" {
+			t.Fatalf("run start refused: %s", why)
 		}
-	}
+		gcoder, why := g.spawn(glead, "orchestrator", "coder")
+		if gcoder == "" {
+			t.Fatalf("coder refused: %s", why)
+		}
+		for _, c := range refused {
+			if bash(g, gcoder, "coder", c) {
+				t.Errorf("git task: coder's %q denied", c)
+			}
+		}
+	})
 }
