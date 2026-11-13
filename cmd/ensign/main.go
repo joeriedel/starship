@@ -252,7 +252,16 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "UserPromptSubmit":
 		var writesText string
 		var handled bool
-		if voided, writesText, handled, err = promptWrites(bridge, &in); err != nil {
+		isGo := strings.TrimSpace(in.Prompt) == "go"
+		lockBound = promptLockWait
+		defer func() { lockBound = 0 }()
+		var be *lockBusyError
+		if voided, writesText, handled, err = promptWrites(bridge, &in); errors.As(err, &be) {
+			if isGo {
+				return busyPrompt(stdout, "", err)
+			}
+			err = nil // the writes stay as they are for a later prompt
+		} else if err != nil {
 			return failHook(&in, nil, err, stderr)
 		}
 		if handled {
@@ -268,6 +277,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 0
 		}
 		directNote, directText, directHandled, derr := promptDirect(bridge, &in)
+		if errors.As(derr, &be) {
+			return busyPrompt(stdout, voided, derr, "A direct edit request that was waiting for this go is dropped; ask for it again.")
+		}
 		if derr != nil {
 			return failHook(&in, nil, derr, stderr)
 		}
@@ -279,8 +291,11 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			json.NewEncoder(stdout).Encode(promptReply(voided, directText))
 			return 0
 		}
-		if strings.TrimSpace(in.Prompt) == "go" {
+		if isGo {
 			text, ok, err := approveSequence(bridge, in.SessionID)
+			if errors.As(err, &be) {
+				return busyPrompt(stdout, voided, err)
+			}
 			if err != nil {
 				return failHook(&in, nil, err, stderr)
 			}
@@ -294,6 +309,16 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			// box clears, where a block leaves the word in the box under an "operation
 			// blocked" warning. The text starts on its own line, under the harness's label.
 			json.NewEncoder(stdout).Encode(map[string]any{"continue": false, "stopReason": "\n" + text})
+			return 0
+		}
+		if !isGo {
+			// Nothing in a run is needed by a prompt that is not go, so it takes no run lock.
+			if reports := takeSequenceReports(bridge, in.SessionID); reports != "" {
+				voided = strings.TrimSpace(voided + "\n\nstarship: " + reports)
+			}
+			if voided != "" {
+				json.NewEncoder(stdout).Encode(contextNote(nil, voided))
+			}
 			return 0
 		}
 	case "PreToolUse":
@@ -367,22 +392,20 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 	r, err := openHookRun(bridge, &in)
+	var busy *lockBusyError
+	if errors.As(err, &busy) && event == "UserPromptSubmit" {
+		return busyPrompt(stdout, voided, err)
+	}
 	if err != nil {
 		return failHook(&in, nil, err, stderr)
 	}
-	if r == nil && event == "UserPromptSubmit" && strings.TrimSpace(in.Prompt) == "go" {
-		if r, err = claimRun(bridge, in.SessionID); err != nil {
+	if r == nil && event == "UserPromptSubmit" {
+		if r, err = claimRun(bridge, in.SessionID); errors.As(err, &busy) {
+			return busyPrompt(stdout, voided, err)
+		} else if err != nil {
 			return failHook(&in, nil, err, stderr)
 		}
 	} else if r == nil {
-		if event == "UserPromptSubmit" {
-			if reports := takeSequenceReports(bridge, in.SessionID); reports != "" {
-				voided = strings.TrimSpace(voided + "\n\nstarship: " + reports)
-			}
-			if voided != "" {
-				json.NewEncoder(stdout).Encode(contextNote(nil, voided))
-			}
-		}
 		role, _ := in.ToolInput["subagent_type"].(string)
 		if event == "PreToolUse" && in.AgentID != "" {
 			found, unread, listFailed := stageRoleAnywhere(bridge, role)
@@ -469,6 +492,13 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return failHook(&in, nil, err, stderr)
 		}
 	}
+	return 0
+}
+
+// busyPrompt answers a go that needed a lock still held when the wait for it ran out: nothing was approved, and the session tells the user to type go again.
+func busyPrompt(stdout io.Writer, voided string, err error, extra ...string) int {
+	text := "this go approved nothing: " + err.Error() + ", and everything stays pending. Tell the user to type go again in a moment. " + strings.Join(extra, " ")
+	json.NewEncoder(stdout).Encode(promptReply(voided, strings.TrimSpace(text)))
 	return 0
 }
 

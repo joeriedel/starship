@@ -712,6 +712,10 @@ func hookUserPromptSubmit(in *HookInput, r *RunFiles) (any, error) {
 		return ctx(fmt.Sprintf("run %s is %s, not waiting for approval.", r.State.Run, r.State.Status)), nil
 	}
 	l, err := lockFolders(r.Snap.Bridge)
+	var be *lockBusyError
+	if errors.As(err, &be) {
+		return ctx("this go approved nothing: " + err.Error() + ", and the run stays pending. Tell the user to type go again in a moment."), nil
+	}
 	if err != nil {
 		return nil, err
 	}

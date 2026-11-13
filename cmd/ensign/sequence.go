@@ -312,7 +312,11 @@ func withSeq(bridge, session string, fn func(sf *seqFile) error) error {
 		return err
 	}
 	l := flock.New(path + ".lock")
-	if err := l.Lock(); err != nil {
+	if err := lockWith(l, "the sequence"); err != nil {
+		var be *lockBusyError
+		if errors.As(err, &be) {
+			return err
+		}
 		return fmt.Errorf("locking the sequence: %w", err)
 	}
 	defer l.Unlock()
@@ -1476,7 +1480,7 @@ func (sf *seqFile) advanceParts(bridge, session string) []string {
 				}
 				st.Position = sf.position(st)
 				out, err := runPublish(bridge, session, seq, st)
-				if b := (*busyError)(nil); errors.As(err, &b) {
+				if b := (*lockBusyError)(nil); errors.As(err, &b) {
 					st.Reason = "waiting: " + err.Error()
 					parts = append(parts, fmt.Sprintf("step %s can't start yet: %v", st.ref(), err))
 					return parts
@@ -2033,7 +2037,7 @@ func runPublish(bridge, session string, seq *sequence, st *seqStep) (string, err
 	for i, loc := range targets {
 		out, err := landLocation(bridge, session, st, loc)
 		if err != nil {
-			busy := errors.As(err, new(*busyError))
+			busy := errors.As(err, new(*lockBusyError))
 			failure := publishFailure(append(slices.Clone(st.Landed), landed...), targets[i+1:], loc, err, several, busy)
 			if busy {
 				st.Landed = append(st.Landed, landed...)
@@ -2091,7 +2095,7 @@ func publishFailure(landed, never []string, failed string, err error, several, b
 	return errors.New(strings.Join(parts, "; "))
 }
 
-// landLocation lands one location of a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell once no run of the task and no run in the folder is going. A refusal because something is under way is a *busyError.
+// landLocation lands one location of a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell once no run of the task and no run in the folder is going. A refusal because something is under way is a *lockBusyError.
 func landLocation(bridge, session string, st *seqStep, loc string) (string, error) {
 	unlockLanding, err := lockLandingOf(bridge, st.Task, loc)
 	if err != nil {

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -238,6 +239,33 @@ type RunFiles struct {
 	rebound bool
 }
 
+// promptLockWait bounds every lock the UserPromptSubmit hook takes, since another hook or command can hold one for long and a prompt must not wait it out; a variable so a test can shorten it.
+var promptLockWait = 5 * time.Second
+
+// lockBound is the wait lockWith allows for a lock, 0 for none; cmdHook sets it for the length of a UserPromptSubmit.
+var lockBound time.Duration
+
+// lockBusyError says a lock was still held when the wait for it ran out.
+type lockBusyError struct{ what string }
+
+func (e *lockBusyError) Error() string { return e.what + " is busy" }
+
+// lockWith takes l, waiting for as long as it is held unless lockBound is set, and then at most that long, returning a lockBusyError for what.
+func lockWith(l *flock.Flock, what string) error {
+	if lockBound <= 0 {
+		return l.Lock()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), lockBound)
+	defer cancel()
+	if _, err := l.TryLockContext(ctx, 10*time.Millisecond); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return &lockBusyError{what}
+		}
+		return err
+	}
+	return nil
+}
+
 // openRun locks and loads one run. A run whose folder is gone gives an error matching fs.ErrNotExist.
 func openRun(bridge, id string) (*RunFiles, error) {
 	dir := filepath.Join(runsDir(bridge), id)
@@ -246,7 +274,11 @@ func openRun(bridge, id string) (*RunFiles, error) {
 		return nil, fmt.Errorf("run %s: %w", id, err)
 	}
 	l := flock.New(filepath.Join(dir, "lock"))
-	if err := l.Lock(); err != nil {
+	if err := lockWith(l, "run "+id); err != nil {
+		var be *lockBusyError
+		if errors.As(err, &be) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("locking run %s: %w", id, err)
 	}
 	r := &RunFiles{Dir: dir, lock: l, Snap: &Snapshot{}, State: &State{}}
@@ -752,7 +784,7 @@ func lockFolders(bridge string) (*flock.Flock, error) {
 		return nil, err
 	}
 	l := flock.New(filepath.Join(dir, "folders.lock"))
-	if err := l.Lock(); err != nil {
+	if err := lockWith(l, "the code folders lock"); err != nil {
 		return nil, err
 	}
 	return l, nil

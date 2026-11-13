@@ -76,7 +76,11 @@ func withWrites(bridge, session string, fn func(wf *writesFile) (changed bool, e
 		return err
 	}
 	l := flock.New(path + ".lock")
-	if err := l.Lock(); err != nil {
+	if err := lockWith(l, "the connector writes"); err != nil {
+		var be *lockBusyError
+		if errors.As(err, &be) {
+			return err
+		}
 		return fmt.Errorf("locking the connector writes: %w", err)
 	}
 	defer l.Unlock()
