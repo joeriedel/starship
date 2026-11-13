@@ -2026,7 +2026,11 @@ func runPublish(bridge, session string, seq *sequence, st *seqStep) (string, err
 		targets = publishTargets(bridge, seq, st.N, st.Task)
 	}
 	if len(targets) == 1 && !publishRecorded(bridge, st.Task) {
-		return landLocation(bridge, session, st, targets[0])
+		out, err := landLocation(bridge, session, st, targets[0])
+		if errors.As(err, new(*lockBusyError)) {
+			err = &busyError{err}
+		}
+		return out, err
 	}
 	left := slices.Clone(targets)
 	var landed []string

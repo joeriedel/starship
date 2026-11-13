@@ -178,3 +178,27 @@ func TestDirectGoKeepsTheRequestWhenTheFoldersLockIsHeld(t *testing.T) {
 		t.Errorf("a later go should open the guard: %q", ctx)
 	}
 }
+
+func TestSequenceGoWaitsForABusyFoldersLockInsteadOfFailingAPublishStep(t *testing.T) {
+	w, ws, remote, gh := githubWorld(t, "success", localTest)
+	w.passingRun(ws, gh)
+	w.mustSeq("publish", "supernova/auth-refactor")
+	l := flock.New(filepath.Join(w.bridge, ".starship", "folders.lock"))
+	if err := l.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := dig(promptHook(w, "go"), "hookSpecificOutput", "additionalContext")
+	if !strings.Contains(ctx, "can't start yet") || !strings.Contains(ctx, "is busy") {
+		t.Errorf("go should say the publish step is waiting on a busy lock: %q", ctx)
+	}
+	st := w.step(1)
+	if st.Status == "failed" || !strings.HasPrefix(st.Reason, "waiting:") {
+		t.Errorf("the publish step should be waiting: %+v", st)
+	}
+	l.Unlock()
+	w.stopHook()
+	w.wantStatus("done")
+	if got := runGit(t, ".", "--git-dir", remote, "show", "main:lib.txt"); got != "two" {
+		t.Errorf("the work did not land, main:lib.txt is %q", got)
+	}
+}
