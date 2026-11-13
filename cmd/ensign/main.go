@@ -227,10 +227,18 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	if event == "PreToolUse" && in.ToolName == "Bash" {
+		cmd, _ := in.ToolInput["command"].(string)
 		if in.AgentID != "" && (in.AgentType == "explorer" || in.AgentType == "reviewer") {
-			cmd, _ := in.ToolInput["command"].(string)
 			if what := remoteChange(cmd); what != "" {
 				json.NewEncoder(stdout).Encode(denial("this role can't change a remote, so `" + what + "` was refused. Probe git behaviour in a scratch repository under the system temp folder, pushing to a local path; otherwise report the need to your caller."))
+				return 0
+			}
+		}
+		if in.AgentID != "" && bridgeErr == nil {
+			if what := p4Change(cmd); what != "" {
+				if _, snap, _ := p4AgentTask(bridge, &in); snap != nil {
+					json.NewEncoder(stdout).Encode(denial("ensign keeps this task's files in its Perforce changelist, so `" + what + "` was refused. Only read-only p4 commands are allowed; report the need to your caller instead."))
+				}
 			}
 		}
 		return 0

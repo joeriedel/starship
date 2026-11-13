@@ -39,7 +39,7 @@ You do not look for bugs, error-handling gaps, crashes or spec mismatches. Those
 - **Trim comment noise** — but if you're unsure whether a comment carries real reasoning,
   leave it.
 - **Never commit, push, shelve or submit.**
-- **In a Perforce workspace never run `p4 edit`, `p4 add`, `p4 reconcile` or `p4 reopen`.** Ensign opens your files in the task's changelist as you edit and add the files you write; a refusal naming another changelist is reported to your caller, not worked around.
+- **In a Perforce workspace never run `p4 edit`, `p4 add`, `p4 reconcile` or `p4 reopen`.** The hook refuses your p4 commands other than read-only ones. Ensign opens your files in the task's changelist as you edit and add the files you write; a refusal naming another changelist is reported to your caller, not worked around.
 
 Read narrowly, batch lookups into one command, and don't browse beyond the change.
 

@@ -21,7 +21,7 @@ func remoteChange(cmd string) string {
 	if !slices.ContainsFunc(remoteTriggers, func(t string) bool { return strings.Contains(lower, t) }) {
 		return ""
 	}
-	return scanShell(cmd, 0)
+	return scanShell(cmd, 0, false)
 }
 
 type heredoc struct {
@@ -30,7 +30,7 @@ type heredoc struct {
 }
 
 // scanShell splits s into simple commands, quote-aware, and classifies each; substitutions and subshells are scanned too. Unterminated input is classified as far as it was read.
-func scanShell(s string, depth int) string {
+func scanShell(s string, depth int, p4 bool) string {
 	if depth > shellDepthLimit {
 		return ""
 	}
@@ -58,14 +58,14 @@ func scanShell(s string, depth int) string {
 	endCmd := func() {
 		endWord()
 		if found == "" {
-			found = classifyCommand(words, depth)
+			found = classifyCommand(words, depth, p4)
 		}
 		words = nil
 	}
 	sub := func(inner string) {
 		inWord = true
 		if found == "" {
-			found = scanShell(inner, depth+1)
+			found = scanShell(inner, depth+1, p4)
 		}
 	}
 	for i := 0; i < len(s) && found == ""; i++ {
@@ -323,7 +323,7 @@ func skipOptions(args, withValue []string) []string {
 }
 
 // classifyCommand finds the real command of one simple command, through assignments, keywords and wrappers, and returns it when it changes a remote.
-func classifyCommand(ws []string, depth int) string {
+func classifyCommand(ws []string, depth int, p4 bool) string {
 	for len(ws) > 0 {
 		if shellKeywords[ws[0]] || assignmentRe.MatchString(ws[0]) {
 			ws = ws[1:]
@@ -340,19 +340,25 @@ func classifyCommand(ws []string, depth int) string {
 			}
 			continue
 		}
-		return classifyTool(name, rest, depth)
+		return classifyTool(name, rest, depth, p4)
 	}
 	return ""
 }
 
-// classifyTool returns the command when name with args changes a remote.
-func classifyTool(name string, args []string, depth int) string {
+// classifyTool returns the command when name with args changes a remote, or with p4 set, when it is a p4 command that is not read-only.
+func classifyTool(name string, args []string, depth int, p4 bool) string {
 	label := func() string {
 		s := name + " " + strings.Join(args, " ")
 		if len(s) > 100 {
 			s = s[:100] + "..."
 		}
 		return strings.TrimSpace(s)
+	}
+	if p4 && name == "p4" {
+		if p4Refuses(args) {
+			return label()
+		}
+		return ""
 	}
 	refused := false
 	switch name {
@@ -366,7 +372,7 @@ func classifyTool(name string, args []string, depth int) string {
 						i++
 					}
 					if i < len(args) {
-						return scanShell(args[i], depth+1)
+						return scanShell(args[i], depth+1, p4)
 					}
 				}
 				break
@@ -380,17 +386,17 @@ func classifyTool(name string, args []string, depth int) string {
 			i += strings.Count(w, "o") + strings.Count(w, "O")
 		}
 	case "eval":
-		return scanShell(strings.Join(args, " "), depth+1)
+		return scanShell(strings.Join(args, " "), depth+1, p4)
 	case "cmd":
 		for i, w := range args {
 			if w = strings.ToLower(w); w == "/c" || w == "//c" || w == "/k" || w == "//k" {
-				return scanShell(strings.Join(args[i+1:], " "), depth+1)
+				return scanShell(strings.Join(args[i+1:], " "), depth+1, p4)
 			}
 		}
 	case "powershell", "pwsh":
 		for i, w := range args {
 			if w = strings.ToLower(w); w == "-c" || w == "-command" {
-				return scanShell(strings.Join(args[i+1:], " "), depth+1)
+				return scanShell(strings.Join(args[i+1:], " "), depth+1, p4)
 			}
 		}
 	case "find":
@@ -402,7 +408,7 @@ func classifyTool(name string, args []string, depth int) string {
 			for end < len(args) && args[end] != ";" && args[end] != "+" {
 				end++
 			}
-			if r := classifyCommand(args[i+1:end], depth); r != "" {
+			if r := classifyCommand(args[i+1:end], depth, p4); r != "" {
 				return r
 			}
 		}
@@ -432,7 +438,7 @@ func classifyTool(name string, args []string, depth int) string {
 				name == "docker" && len(words) > 1 && words[0] == "image" && words[1] == "push"
 		}
 	}
-	if refused {
+	if refused && !p4 {
 		return label()
 	}
 	return ""

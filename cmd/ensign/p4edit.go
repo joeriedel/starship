@@ -233,22 +233,34 @@ func p4TaskChangelist(r *RunFiles, v TaskVcs, env []string) (changelist, replace
 	return m[1], replaced, nil
 }
 
+// p4AgentTask finds, without the run lock, the run folder, snapshot and vcs of the Perforce task an agent's run belongs to. The snapshot is nil for a session's call, an agent outside a run or a task of another kind.
+func p4AgentTask(bridge string, in *HookInput) (dir string, snap *Snapshot, v TaskVcs) {
+	if in.AgentID == "" {
+		return "", nil, v
+	}
+	run, _ := agentTag(in)
+	if run == "" {
+		return "", nil, v
+	}
+	dir = filepath.Join(runsDir(bridge), run)
+	snap = &Snapshot{}
+	if readJSON(filepath.Join(dir, "pipeline.json"), snap) != nil || snap.Task == "" {
+		return "", nil, v
+	}
+	v, err := taskVcsOf(bridge, snap.Task)
+	if err != nil || v.Kind != "p4" {
+		return "", nil, v
+	}
+	return dir, snap, v
+}
+
 // p4EditTarget finds, without the run lock, the Perforce task of an agent's Edit, Write or NotebookEdit and the file it changes. It returns nil for anything else: a session's call, an agent outside a run, a task of another kind, or a file outside the task's workspace. The run's snapshot never changes, so reading it needs no lock, and git tasks wait on nothing.
 func p4EditTarget(bridge string, in *HookInput) (r *RunFiles, v TaskVcs, file string) {
 	if !isEditTool(in.ToolName) || in.AgentID == "" {
 		return nil, v, ""
 	}
-	run, _ := agentTag(in)
-	if run == "" {
-		return nil, v, ""
-	}
-	snap := &Snapshot{}
-	dir := filepath.Join(runsDir(bridge), run)
-	if readJSON(filepath.Join(dir, "pipeline.json"), snap) != nil || snap.Task == "" || snap.Workspace == "" {
-		return nil, v, ""
-	}
-	v, err := taskVcsOf(bridge, snap.Task)
-	if err != nil || v.Kind != "p4" {
+	dir, snap, v := p4AgentTask(bridge, in)
+	if snap == nil || snap.Workspace == "" {
 		return nil, v, ""
 	}
 	target, _ := in.ToolInput["file_path"].(string)
@@ -273,7 +285,7 @@ func p4EditTarget(bridge string, in *HookInput) (r *RunFiles, v TaskVcs, file st
 			return nil, v, ""
 		}
 	}
-	return &RunFiles{Dir: dir, Snap: snap, State: &State{Run: run}}, v, file
+	return &RunFiles{Dir: dir, Snap: snap, State: &State{Run: filepath.Base(dir)}}, v, file
 }
 
 type p4File struct {

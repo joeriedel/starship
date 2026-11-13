@@ -11,7 +11,7 @@ The evidence folder is `reports/evidence/` in the run folder. Scratch is emptied
 
 ## Perforce workspaces
 
-For a task with `vcs: { kind: p4 }` ensign keeps the run's files in the task's changelist, so no agent runs `p4 edit`, `p4 add` or `p4 reconcile`, and none moves a file between changelists. It runs `p4 -c <client>` with the project's machine environment, and the project may replace each step with a binding that gets the handler environment plus `STARSHIP_CHANGELIST`, `STARSHIP_CLIENT` and (not `@reconcile`) `STARSHIP_FILE`, the file's absolute path; a `@checkout`, `@add` or `@reconcile` binding that is not applicable does nothing.
+For a task with `vcs: { kind: p4 }` ensign keeps the run's files in the task's changelist, so no agent runs `p4 edit`, `p4 add` or `p4 reconcile`, and none moves a file between changelists; the hook refuses an agent's p4 commands other than read-only ones. It runs `p4 -c <client>` with the project's machine environment, and the project may replace each step with a binding that gets the handler environment plus `STARSHIP_CHANGELIST`, `STARSHIP_CLIENT` and (not `@reconcile`) `STARSHIP_FILE`, the file's absolute path; a `@checkout`, `@add` or `@reconcile` binding that is not applicable does nothing.
 
 - Before an allowed edit of a file in the workspace: open in the task's changelist, nothing; tracked and not open, `p4 edit -c <changelist> <file>` (or `@checkout`); open in another changelist (`default` included), the edit is refused naming that changelist, and ensign never reopens it; not in the depot, nothing yet. A failing `p4` refuses the edit with its error. A refusal is reported to your caller.
 - After a Write of a file not in the depot: `p4 add -c <changelist> <file>` (or `@add`).
