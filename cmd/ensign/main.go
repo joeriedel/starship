@@ -51,6 +51,8 @@ func main() {
 		err = cmdNext(os.Args[2:], os.Stdout)
 	case "dependency":
 		err = cmdDependency(os.Args[2:], os.Stdout)
+	case "p4":
+		err = cmdP4(os.Args[2:], os.Stdout)
 	case "run-stage":
 		err = cmdRunStage(os.Args[2:], os.Stdout)
 	case "init":
@@ -200,6 +202,7 @@ func usage() {
   ensign next [--bridge <dir>] [--run <id>]
   ensign run-stage [--bridge <dir>] [--run <id>]
   ensign dependency apply --side <location> | restore [--side <location>] [--bridge <dir>] [--run <id>]
+  ensign p4 open <path>... [--bridge <dir>] [--run <id>]
   ensign hook <SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|SubagentStop|Stop>`)
 }
 
@@ -237,7 +240,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if in.AgentID != "" && bridgeErr == nil {
 			if what := p4Change(cmd); what != "" {
 				if _, snap, _ := p4AgentTask(bridge, &in); snap != nil {
-					json.NewEncoder(stdout).Encode(denial("ensign keeps this task's files in its Perforce changelist, so `" + what + "` was refused. Only read-only p4 commands are allowed; report the need to your caller instead."))
+					json.NewEncoder(stdout).Encode(denial("ensign keeps this task's files in its Perforce changelist, so `" + what + "` was refused. Only read-only p4 commands are allowed. To open files that shell commands changed, added or deleted, run `ensign p4 open <path>...`; report any other need to your caller."))
 				}
 			}
 		}

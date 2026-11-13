@@ -136,9 +136,6 @@ type State struct {
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 
-	// ReconcileMark is unix nanoseconds: files modified or changed since then are the ones the next Perforce reconcile looks at; 0 until the run starts.
-	ReconcileMark int64 `json:"reconcile_mark,omitempty"`
-
 	Tasks map[string]string `json:"tasks,omitempty"` // background task id -> id of the agent that launched it
 
 	Sequence bool `json:"sequence,omitempty"` // the run is a step of its session's sequence

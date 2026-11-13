@@ -264,36 +264,21 @@ func TestP4EditGitTaskUntouched(t *testing.T) {
 	}
 }
 
-func TestP4ReconcileBeforeTest(t *testing.T) {
+func TestP4NoReconcileBeforeTest(t *testing.T) {
 	t.Setenv("STARSHIP_TEST_P4_PENDING", "101")
-	t.Setenv("STARSHIP_TEST_P4_RECONCILE", "a.go:edit b.go:add c.go:edit")
-	t.Setenv("STARSHIP_TEST_P4_OPENFILES", "c.go:102")
 	w := p4World(t, "{ kind: p4, client: supernova-ws, changelist: '101' }")
 	lead, log := p4Lead(t, w)
-	changedFiles(t, w.workspace(), "a.go", "b.go", "c.go")
+	write(t, filepath.Join(w.workspace(), "a.go"), "package a\n")
 	w.toTest(lead)
 	tester, why := w.spawn(lead, "orchestrator", "tester")
 	if tester == "" {
 		t.Fatalf("tester refused: %s", why)
 	}
-	run := filepath.Join(runsDir(w.bridge), w.state().Run)
-	data, _ := os.ReadFile(filepath.Join(run, "reports", "reconcile.md"))
-	md := string(data)
-	if !strings.Contains(md, "## test") || !strings.Contains(md, "Changelist 101") ||
-		!strings.Contains(md, "- edit "+filepath.Join(w.workspace(), "a.go")) || !strings.Contains(md, "- add "+filepath.Join(w.workspace(), "b.go")) {
-		t.Errorf("reconcile.md:\n%s", md)
+	if _, err := os.Stat(filepath.Join(runsDir(w.bridge), w.state().Run, "reports", "reconcile.md")); err == nil {
+		t.Error("reconcile.md was written with no @reconcile")
 	}
-	if strings.Contains(md, "c.go") {
-		t.Errorf("a file open in another changelist is listed:\n%s", md)
-	}
-	if !strings.Contains(p4Log(t, log), "reconcile -c 101") {
-		t.Errorf("no reconcile:\n%s", p4Log(t, log))
-	}
-	if r := w.stop(tester, "tester", report("pass"), false); r != "" {
-		t.Fatalf("tester stop was blocked: %s", r)
-	}
-	if next := w.next(); !strings.Contains(next, "Reconcile before this stage opened 2 file(s) in changelist 101") {
-		t.Errorf("next does not show the pass:\n%s", next)
+	if strings.Contains(p4Log(t, log), "reconcile") {
+		t.Errorf("p4 reconciled:\n%s", p4Log(t, log))
 	}
 }
 
@@ -313,11 +298,8 @@ func TestP4ReconcileBinding(t *testing.T) {
 	if !strings.Contains(string(data), "- opened-by-binding 101") || !strings.Contains(string(data), "- second.go") {
 		t.Errorf("reconcile.md:\n%s", data)
 	}
-	for _, line := range strings.Split(p4Log(t, log), "\n") {
-		// The review diff's `reconcile -n` preview opens nothing.
-		if strings.Contains(line, "reconcile") && !strings.Contains(line, "reconcile -n") {
-			t.Errorf("p4 reconcile ran instead of the binding:\n%s", p4Log(t, log))
-		}
+	if strings.Contains(p4Log(t, log), "reconcile") {
+		t.Errorf("p4 reconcile ran instead of the binding:\n%s", p4Log(t, log))
 	}
 }
 
@@ -336,28 +318,30 @@ func TestP4ReconcileFailureRefusesTheTestStage(t *testing.T) {
 	}
 }
 
-func TestP4ReconcileBeforePlainTest(t *testing.T) {
+func TestP4NoReconcileBeforePlainTest(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the commands here are POSIX shell")
 	}
 	t.Setenv("STARSHIP_TEST_P4_PENDING", "101")
-	t.Setenv("STARSHIP_TEST_P4_RECONCILE", "a.go:edit")
 	w := p4World(t, "{ kind: p4, client: supernova-ws, changelist: '101' }")
 	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
 	data, _ := os.ReadFile(p)
 	s := strings.Replace(string(data), `  build: { command: "./build.sh" }`, `  build: { command: "echo built", plain: true }`, 1)
 	write(t, p, strings.Replace(s, `  test:  { command: "./test.sh" }`, `  test:  { command: "echo 3 passed", plain: true }`, 1))
-	lead, _ := p4Lead(t, w)
-	changedFiles(t, w.workspace(), "a.go")
+	lead, log := p4Lead(t, w)
+	write(t, filepath.Join(w.workspace(), "a.go"), "package a\n")
 	w.toTest(lead)
 	out, err := w.runStage()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "Reconcile before this stage opened 1 file(s) in changelist 101") {
+	if strings.Contains(out, "Reconcile before this stage") {
 		t.Errorf("run-stage output:\n%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(runsDir(w.bridge), w.state().Run, "reports", "reconcile.md")); err != nil {
-		t.Error(err)
+	if _, err := os.Stat(filepath.Join(runsDir(w.bridge), w.state().Run, "reports", "reconcile.md")); err == nil {
+		t.Error("reconcile.md was written with no @reconcile")
+	}
+	if strings.Contains(p4Log(t, log), "reconcile") {
+		t.Errorf("p4 reconciled:\n%s", p4Log(t, log))
 	}
 }

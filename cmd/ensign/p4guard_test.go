@@ -19,7 +19,7 @@ func TestP4Change(t *testing.T) {
 	}
 	allowed := []string{
 		"p4 opened", "p4 -ztag fstat a", "p4 diff", "p4 -c x change -o", "p4 client -o", "p4 status", "p4 workspaces", "p4 workspace -o", "p4 changelist -o 5", "p4 login -s", "p4",
-		"p4 -c x -p host:1666 opened", "echo \"p4 edit\"", "echo p4edit", "ls", "git log", "p4 describe -s 5",
+		"p4 -c x -p host:1666 opened", "echo \"p4 edit\"", "echo p4edit", "ls", "git log", "p4 describe -s 5", "ensign p4 open foo.c", ".starship/bin/ensign p4 open a.c b.c",
 	}
 	for _, c := range allowed {
 		if what := p4Change(c); what != "" {
@@ -48,7 +48,7 @@ func TestP4GuardHook(t *testing.T) {
 		return dig(res, "hookSpecificOutput", "permissionDecision") == "deny"
 	}
 	refused := []string{"p4 edit a", "p4 -c x change -i", "p4 reopen -c 5 a"}
-	allowed := []string{"p4 opened", "p4 -ztag fstat a", "p4 diff"}
+	allowed := []string{"p4 opened", "p4 -ztag fstat a", "p4 diff", "ensign p4 open foo.c"}
 
 	t.Run("p4", func(t *testing.T) {
 		w := p4World(t, "{ kind: p4, client: supernova-ws, changelist: '101' }")

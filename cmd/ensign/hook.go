@@ -269,11 +269,6 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 			return deny(r, s.ID, "the run could not start: "+r.State.Reason), nil
 		}
 		r.State.VcsState = state
-		r.State.ReconcileMark = time.Now().Add(-reconcileSlack).UnixNano()
-		if err := recordStartDirs(r); err != nil {
-			m.fail("handler", "the workspace's folders could not be recorded: "+err.Error())
-			return deny(r, s.ID, "the run could not start: "+r.State.Reason), nil
-		}
 		if err := fire(r, "run.start", nil); err != nil {
 			m.fail("handler", err.Error())
 			return deny(r, s.ID, "the run could not start: "+r.State.Reason), nil

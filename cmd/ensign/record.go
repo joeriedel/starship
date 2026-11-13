@@ -165,7 +165,7 @@ func reviewChangeLine(r *RunFiles, d *Dispatch) string {
 	return fmt.Sprintf("\nThe run's change (%s of changelist %s) is in %s\n", what, v.Changelist, file)
 }
 
-// writeP4Change writes the diff of the task's changelist to file, and says what it covers: the files open in it plus the changes shell commands made that no reconcile has opened yet (found by a preview, which opens nothing), or, when there are none, its shelf.
+// writeP4Change writes the diff of the task's changelist to file, and says what it covers: the files open in it or, when none are, its shelf.
 func writeP4Change(r *RunFiles, v TaskVcs, file string) (string, error) {
 	ws := r.Snap.Workspace
 	env := p4Env(r, v, "")
@@ -176,16 +176,9 @@ func writeP4Change(r *RunFiles, v TaskVcs, file string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	unopened, err := p4Unopened(r, env, v, files)
-	if err != nil {
-		return "", err
-	}
 	var b strings.Builder
 	what := "the open files"
-	if len(unopened) > 0 {
-		what = "the open files and the changes not yet opened"
-	}
-	if len(files) == 0 && len(unopened) == 0 {
+	if len(files) == 0 {
 		out, err := p4Run(ws, env, v.Client, "describe", "-S", "-du", v.Changelist)
 		if err != nil {
 			return "", fmt.Errorf("changelist %s has no open files and no shelf (%v)", v.Changelist, err)
@@ -219,53 +212,10 @@ func writeP4Change(r *RunFiles, v TaskVcs, file string) (string, error) {
 			writeDiffText(&b, out)
 		}
 	}
-	for _, f := range unopened {
-		depot, client := f["depotFile"], f["clientFile"]
-		switch action := f["action"]; action {
-		case "delete":
-			fmt.Fprintf(&b, "deleted: %s\n", depot)
-		case "add":
-			if err := writeNewFileDiff(&b, depot, client); err != nil {
-				return "", err
-			}
-		default:
-			out, err := p4Run(ws, env, v.Client, "diff", "-f", "-du", p4Escape(client))
-			if err != nil {
-				return "", err
-			}
-			writeDiffText(&b, out)
-		}
-	}
 	if err := writeFile(file, b.String()); err != nil {
 		return "", err
 	}
 	return what, nil
-}
-
-// p4Unopened previews the reconcile (which opens nothing) of the files changed since the reconcile mark, and returns what it would open: the changes shell commands made. It leaves the mark where it is. It drops files already open in the changelist (open) and files open in another changelist. A project's @reconcile binding can't be previewed, so p4's own reconcile is what is previewed.
-func p4Unopened(r *RunFiles, env []string, v TaskVcs, open []map[string]string) ([]map[string]string, error) {
-	ws := r.Snap.Workspace
-	out, err := p4Run(ws, env, v.Client, "-ztag", "opened", "-C", v.Client)
-	if err != nil {
-		return nil, err
-	}
-	skip := map[string]bool{}
-	for _, rec := range p4Records(out) {
-		skip[rec["depotFile"]] = true
-		skip[foldPath(rec["clientFile"], hostOS)] = true
-	}
-	for _, rec := range open {
-		skip[rec["depotFile"]] = true
-	}
-	mark, err := reconcileMark(r)
-	if err != nil {
-		return nil, err
-	}
-	candidates, _, err := p4Candidates(r, env, v, mark)
-	if err != nil || len(candidates) == 0 {
-		return nil, err
-	}
-	return p4ReconcilePreview(r, env, v, candidates, skip)
 }
 
 // writeNewFileDiff writes the local file at path as a whole-file addition of depot.

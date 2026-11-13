@@ -324,7 +324,7 @@ func TestP4ReviewDispatchNamesTheChangeFile(t *testing.T) {
 func TestP4ReviewDiffFallsBackToTheShelf(t *testing.T) {
 	w := p4World(t, p4Task)
 	t.Setenv("STARSHIP_TEST_P4_PENDING", "101")
-	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{ReconcileMark: 1}}
+	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{}}
 	file := filepath.Join(r.Dir, "change.diff")
 	what, err := writeP4Change(r, TaskVcs{Kind: "p4", Client: "supernova-ws", Changelist: "101"}, file)
 	if err != nil || what != "the shelf" {
@@ -385,35 +385,27 @@ func TestGitReviewLineListsUntrackedFiles(t *testing.T) {
 	}
 }
 
-func TestP4ReviewDiffCoversChangesNotYetOpened(t *testing.T) {
+func TestP4ReviewDiffHasNoReconcilePreview(t *testing.T) {
 	w := p4World(t, p4Task)
 	t.Setenv("STARSHIP_TEST_P4_PENDING", "101")
-	t.Setenv("STARSHIP_TEST_P4_OPENFILES", "a.go:101 other.go:102")
-	t.Setenv("STARSHIP_TEST_P4_RECONCILE", "a.go:edit new.go:add gone.go:delete other.go:edit shell.go:edit")
+	t.Setenv("STARSHIP_TEST_P4_OPENFILES", "a.go:101")
 	log := filepath.Join(t.TempDir(), "p4.log")
 	t.Setenv("STARSHIP_TEST_P4_LOG", log)
-	changedFiles(t, w.workspace(), "a.go", "other.go", "shell.go")
-	write(t, filepath.Join(w.workspace(), "new.go"), "package n\n")
-	changedFiles(t, w.workspace(), "new.go")
-	t.Setenv("STARSHIP_TEST_P4_MISSING", "gone.go")
-	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{ReconcileMark: time.Now().UnixNano()}}
+	write(t, filepath.Join(w.workspace(), "a.go"), "package a\n")
+	write(t, filepath.Join(w.workspace(), "shell.go"), "package shell\n")
+	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{}}
 	file := filepath.Join(r.Dir, "change.diff")
 	what, err := writeP4Change(r, TaskVcs{Kind: "p4", Client: "supernova-ws", Changelist: "101"}, file)
-	if err != nil || !strings.Contains(what, "not yet opened") {
+	if err != nil || what != "the open files" {
 		t.Fatalf("%q, %v", what, err)
 	}
 	data, _ := os.ReadFile(file)
-	for _, want := range []string{"+++ //supernova/main/new.go", "+package n", "deleted: //supernova/main/gone.go", "+++ shell.go"} {
-		if !strings.Contains(string(data), want) {
-			t.Errorf("the diff lacks %q:\n%s", want, data)
-		}
-	}
-	if strings.Contains(string(data), "other.go") {
-		t.Errorf("a file open in another changelist is not this change:\n%s", data)
+	if strings.Contains(string(data), "shell.go") {
+		t.Errorf("a file nothing opened is not in the change:\n%s", data)
 	}
 	calls, _ := os.ReadFile(log)
-	if !strings.Contains(string(calls), "diff -f -du") || strings.Contains(string(calls), "reconcile -c") || strings.Contains(string(calls), "add ") {
-		t.Errorf("the preview must diff with -f and open nothing:\n%s", calls)
+	if strings.Contains(string(calls), "diff -f") || strings.Contains(string(calls), "reconcile") {
+		t.Errorf("the change file must not preview a reconcile:\n%s", calls)
 	}
 }
 
@@ -422,7 +414,7 @@ func TestP4ReviewDiffReadsAnEscapedDepotPathOnce(t *testing.T) {
 	t.Setenv("STARSHIP_TEST_P4_PENDING", "101")
 	t.Setenv("STARSHIP_TEST_P4_OPENFILES", "a%40b.md:101:add")
 	write(t, filepath.Join(w.workspace(), "a@b.md"), "hello\n")
-	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{ReconcileMark: 1}}
+	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{}}
 	file := filepath.Join(r.Dir, "change.diff")
 	if _, err := writeP4Change(r, TaskVcs{Kind: "p4", Client: "supernova-ws", Changelist: "101"}, file); err != nil {
 		t.Fatal(err)

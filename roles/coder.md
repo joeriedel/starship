@@ -79,7 +79,7 @@ into one command. Whatever you read is re-sent on every later turn.
 - **No unrequested extras:** no new dependencies, config, or speculative helpers.
 - **Never commit, push, shelve or submit.** If the pipeline keeps a per-pass history, the
   harness commits for you from the `files` in your report.
-- **In a Perforce workspace never run `p4 edit`, `p4 add`, `p4 reconcile` or `p4 reopen`.** The hook refuses your p4 commands other than read-only ones. Ensign opens your files in the task's changelist as you edit and add the files you write; a refusal naming another changelist is reported to your caller, not worked around.
+- **In a Perforce workspace never run `p4 edit`, `p4 add`, `p4 reconcile` or `p4 reopen`.** The hook refuses your p4 commands other than read-only ones. Ensign opens your files in the task's changelist as you edit and add the files you write; after a shell command that changes, adds or deletes tracked files, open them with `ensign p4 open <path>...`. A refusal naming another changelist is reported to your caller, not worked around.
 - **Never signal a process.** No `kill`, `pkill` or `killall`, directly or through a script. A process that must stop is reported to your caller.
 
 ## When you're blocked
