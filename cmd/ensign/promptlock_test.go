@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Joseph Riedel
+// Licensed under the MIT License. See LICENSE.
+
 package main
 
 import (
@@ -119,5 +122,59 @@ func TestGoApprovesNoSequenceWhenTheSequenceLockIsHeld(t *testing.T) {
 	}
 	if readSeq(w.bridge, w.sid).Sequences[0].Approved {
 		t.Error("the sequence should not be approved")
+	}
+}
+
+func TestSequenceGoWaitsForABusyRunLockInsteadOfFailingTheStep(t *testing.T) {
+	w := newWorld(t)
+	w.mustSeq("run", "supernova/auth-refactor")
+	all, err := listRuns(w.bridge)
+	if err != nil || len(all) != 1 {
+		t.Fatalf("want one run: %v %v", all, err)
+	}
+	l := flock.New(filepath.Join(runsDir(w.bridge), all[0].id, "lock"))
+	if err := l.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := dig(promptHook(w, "go"), "hookSpecificOutput", "additionalContext")
+	if !strings.Contains(ctx, "can't start yet") || !strings.Contains(ctx, "is busy") {
+		t.Errorf("go should say the step is waiting on a busy lock: %q", ctx)
+	}
+	st := readSeq(w.bridge, w.sid).Sequences[0].Steps[0]
+	if st.Status == "failed" || !strings.HasPrefix(st.Reason, "waiting:") {
+		t.Errorf("the step should be waiting: %+v", st)
+	}
+	l.Unlock()
+	if got := w.runState(all[0].id); got.Status != "pending" {
+		t.Errorf("the run should not be retired: %s", got.Status)
+	}
+	w.hook("Stop", map[string]any{})
+	st = readSeq(w.bridge, w.sid).Sequences[0].Steps[0]
+	if st.Status != "active" {
+		t.Errorf("the waiting step should start by itself once the lock is free: %+v", st)
+	}
+}
+
+func TestDirectGoKeepsTheRequestWhenTheFoldersLockIsHeld(t *testing.T) {
+	w, _ := newGuardWorld(t)
+	code := w.codeFolder("code")
+	if _, err := w.direct("ask", code, "fix the typo"); err != nil {
+		t.Fatal(err)
+	}
+	w.replyStop("I want to edit "+code, false)
+	l := flock.New(filepath.Join(w.bridge, ".starship", "folders.lock"))
+	if err := l.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := dig(promptHook(w, "go"), "hookSpecificOutput", "additionalContext")
+	if !strings.Contains(ctx, "approved nothing") || strings.Contains(ctx, "dropped") {
+		t.Errorf("go should say it approved nothing and keep the request: %q", ctx)
+	}
+	if df, err := readDirect(w.bridge, w.sid); err != nil || df == nil || df.Phase != directShown {
+		t.Fatalf("the request should still be shown: %+v %v", df, err)
+	}
+	l.Unlock()
+	if ctx := w.say("go"); !strings.Contains(ctx, "guard is open") {
+		t.Errorf("a later go should open the guard: %q", ctx)
 	}
 }

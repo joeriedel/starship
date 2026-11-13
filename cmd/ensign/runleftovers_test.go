@@ -65,7 +65,7 @@ func TestHookIgnoresAFinishedRunWithABadPipeline(t *testing.T) {
 		if err := writeSessionRuns(w.bridge, w.sid, []string{id}); err != nil {
 			t.Fatal(err)
 		}
-		if res, code := w.hook("UserPromptSubmit", map[string]any{"prompt": "hello"}); code != 2 {
+		if res, code := w.hook("UserPromptSubmit", map[string]any{"prompt": "go"}); code != 2 {
 			t.Errorf("a live run with a bad pipeline must still fail the hook: exit %d %v", code, res)
 		}
 	})

@@ -278,7 +278,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		directNote, directText, directHandled, derr := promptDirect(bridge, &in)
 		if errors.As(derr, &be) {
-			return busyPrompt(stdout, voided, derr, "A direct edit request that was waiting for this go is dropped; ask for it again.")
+			return busyPrompt(stdout, voided, derr)
 		}
 		if derr != nil {
 			return failHook(&in, nil, derr, stderr)

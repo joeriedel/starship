@@ -190,6 +190,12 @@ func promptDirect(bridge string, in *HookInput) (note, text string, handled bool
 	}
 	l, err := lockFolders(bridge)
 	if err != nil {
+		if errors.As(err, new(*lockBusyError)) {
+			// The request stays for the next go.
+			if werr := writeJSON(directPath(bridge, in.SessionID), df); werr != nil {
+				err = werr
+			}
+		}
 		return
 	}
 	defer l.Unlock()

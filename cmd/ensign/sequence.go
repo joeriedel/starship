@@ -1480,7 +1480,7 @@ func (sf *seqFile) advanceParts(bridge, session string) []string {
 				}
 				st.Position = sf.position(st)
 				out, err := runPublish(bridge, session, seq, st)
-				if b := (*lockBusyError)(nil); errors.As(err, &b) {
+				if b := (*busyError)(nil); errors.As(err, &b) {
 					st.Reason = "waiting: " + err.Error()
 					parts = append(parts, fmt.Sprintf("step %s can't start yet: %v", st.ref(), err))
 					return parts
@@ -1887,7 +1887,7 @@ func skipAffectedText(list []*seqStep) string {
 	return "These later steps may be affected, so check them:\n" + strings.Join(lines, "\n")
 }
 
-// startRuns starts the queued runs of a step's group, each in its own code folder. It returns what the session does next for each run it started, the first folder-busy error of a run that must wait for a later advance, and the first other error; a run that fails to start is retired.
+// startRuns starts the queued runs of a step's group, each in its own code folder. It returns what the session does next for each run it started, the first folder-busy or lock-busy error of a run that must wait for a later advance, and the first other error; a run that fails to start is retired.
 func startRuns(bridge, session string, st *seqStep) (texts []string, busy, failure error) {
 	for _, ru := range st.runs() {
 		if ru.Status != "" && ru.Status != "pending" {
@@ -1896,8 +1896,9 @@ func startRuns(bridge, session string, st *seqStep) (texts []string, busy, failu
 		text, err := startRun(bridge, session, st.Task, ru.Run)
 		var b *folderBusyError
 		var dirty *dirtyFolderError
+		var lockBusy *lockBusyError
 		switch {
-		case errors.As(err, &b) || errors.As(err, &dirty):
+		case errors.As(err, &b) || errors.As(err, &dirty) || errors.As(err, &lockBusy):
 			ru.Reason = "waiting: " + err.Error()
 			if busy == nil {
 				busy = err
@@ -1928,6 +1929,9 @@ func startRun(bridge, session, task, run string) (string, error) {
 	}
 	r, err := openRun(bridge, run)
 	if err != nil {
+		if errors.As(err, new(*lockBusyError)) {
+			return "", err
+		}
 		return "", fmt.Errorf("its run can't be opened: %v", err)
 	}
 	defer r.close()
@@ -2037,7 +2041,7 @@ func runPublish(bridge, session string, seq *sequence, st *seqStep) (string, err
 	for i, loc := range targets {
 		out, err := landLocation(bridge, session, st, loc)
 		if err != nil {
-			busy := errors.As(err, new(*lockBusyError))
+			busy := errors.As(err, new(*busyError)) || errors.As(err, new(*lockBusyError))
 			failure := publishFailure(append(slices.Clone(st.Landed), landed...), targets[i+1:], loc, err, several, busy)
 			if busy {
 				st.Landed = append(st.Landed, landed...)
@@ -2095,7 +2099,7 @@ func publishFailure(landed, never []string, failed string, err error, several, b
 	return errors.New(strings.Join(parts, "; "))
 }
 
-// landLocation lands one location of a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell once no run of the task and no run in the folder is going. A refusal because something is under way is a *lockBusyError.
+// landLocation lands one location of a publish step the way events run an extension's command: built-in "ensign …" operations in this process, anything else through the shell once no run of the task and no run in the folder is going. A refusal because something is under way is a *busyError.
 func landLocation(bridge, session string, st *seqStep, loc string) (string, error) {
 	unlockLanding, err := lockLandingOf(bridge, st.Task, loc)
 	if err != nil {
