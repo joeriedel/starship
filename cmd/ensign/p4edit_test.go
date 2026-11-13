@@ -270,6 +270,7 @@ func TestP4ReconcileBeforeTest(t *testing.T) {
 	t.Setenv("STARSHIP_TEST_P4_OPENFILES", "c.go:102")
 	w := p4World(t, "{ kind: p4, client: supernova-ws, changelist: '101' }")
 	lead, log := p4Lead(t, w)
+	changedFiles(t, w.workspace(), "a.go", "b.go", "c.go")
 	w.toTest(lead)
 	tester, why := w.spawn(lead, "orchestrator", "tester")
 	if tester == "" {
@@ -347,6 +348,7 @@ func TestP4ReconcileBeforePlainTest(t *testing.T) {
 	s := strings.Replace(string(data), `  build: { command: "./build.sh" }`, `  build: { command: "echo built", plain: true }`, 1)
 	write(t, p, strings.Replace(s, `  test:  { command: "./test.sh" }`, `  test:  { command: "echo 3 passed", plain: true }`, 1))
 	lead, _ := p4Lead(t, w)
+	changedFiles(t, w.workspace(), "a.go")
 	w.toTest(lead)
 	out, err := w.runStage()
 	if err != nil {

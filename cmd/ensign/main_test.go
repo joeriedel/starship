@@ -69,7 +69,7 @@ func fakeCommand(mode string) {
 	os.Exit(0)
 }
 
-// fakeP4 answers the p4 commands the workspace inspection and the changelist handling run, in -ztag form. `change -i` creates changelist STARSHIP_TEST_P4_NEWCHANGE (4242); fstat knows the files in STARSHIP_TEST_P4_FILES ("a.go=head b.go=open:101"); reconcile finds STARSHIP_TEST_P4_RECONCILE ("a.go:edit b.go:add"); opened also lists STARSHIP_TEST_P4_OPENFILES ("a.go:102", or "b.go:102:add" with an action); submit and shelve succeed unless STARSHIP_TEST_P4_RECORD_FAIL holds a message; diff, describe and where answer with fixed text; STARSHIP_TEST_P4_OPEN_FAIL makes edit and add fail with its text; every command is appended to the file STARSHIP_TEST_P4_LOG. STARSHIP_TEST_P4_LOGIN=fail and STARSHIP_TEST_P4_CLIENT=unknown make those commands fail; STARSHIP_TEST_P4_PENDING lists the pending changelists ("101 102"), STARSHIP_TEST_P4_OPENED the opened files' changelists ("101 101 default"). STARSHIP_TEST_P4_NEED names a variable that must be set for any command to succeed.
+// fakeP4 answers the p4 commands the workspace inspection and the changelist handling run, in -ztag form. `change -i` creates changelist STARSHIP_TEST_P4_NEWCHANGE (4242); fstat knows the files in STARSHIP_TEST_P4_FILES ("a.go=head b.go=open:101"); reconcile finds STARSHIP_TEST_P4_RECONCILE ("a.go:edit b.go:add"), only among the files given on standard input when there are any; diff -sd lists STARSHIP_TEST_P4_MISSING ("a.go b.go"); opened also lists STARSHIP_TEST_P4_OPENFILES ("a.go:102", or "b.go:102:add" with an action); submit and shelve succeed unless STARSHIP_TEST_P4_RECORD_FAIL holds a message; diff, describe and where answer with fixed text; STARSHIP_TEST_P4_OPEN_FAIL makes edit and add fail with its text; every command is appended to the file STARSHIP_TEST_P4_LOG. STARSHIP_TEST_P4_LOGIN=fail and STARSHIP_TEST_P4_CLIENT=unknown make those commands fail; STARSHIP_TEST_P4_PENDING lists the pending changelists ("101 102"), STARSHIP_TEST_P4_OPENED the opened files' changelists ("101 101 default"). STARSHIP_TEST_P4_NEED names a variable that must be set for any command to succeed.
 func fakeP4(args []string) {
 	if len(args) < 3 || args[0] != "-c" {
 		os.Stderr.WriteString("fake p4: expected -c <client>\n")
@@ -170,6 +170,13 @@ func fakeP4(args []string) {
 		}
 		os.Stdout.WriteString("Change " + rest[len(rest)-1] + " " + rest[0] + " done.\n")
 	case "diff":
+		if rest[1] == "-sd" {
+			wd, _ := os.Getwd()
+			for _, name := range strings.Fields(os.Getenv("STARSHIP_TEST_P4_MISSING")) {
+				os.Stdout.WriteString("... depotFile //supernova/main/" + name + "\n... clientFile " + filepath.Join(wd, name) + "\n\n")
+			}
+			break
+		}
 		name := filepath.Base(rest[len(rest)-1])
 		os.Stdout.WriteString("--- //supernova/main/" + name + "#1\n+++ " + name + "\n@@ -1 +1 @@\n-old\n+new\n")
 	case "describe":

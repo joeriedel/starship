@@ -359,7 +359,7 @@ func p4AfterEdit(bridge string, in *HookInput) string {
 	return ""
 }
 
-// p4ReconcileBefore opens, in the task's changelist, the files shell commands changed since the last pass, before a test stage starts. Files open in another changelist are left alone. The pass is appended to reports/reconcile.md and summarised in d.Reconciled for the lead. A task of another kind does nothing.
+// p4ReconcileBefore opens, in the task's changelist, the files shell commands changed since the last pass (found among the files modified or changed since the mark and the folders new since then), before a test stage starts. Files open in another changelist are left alone. The pass is appended to reports/reconcile.md and summarised in d.Reconciled for the lead. A task of another kind does nothing.
 func p4ReconcileBefore(r *RunFiles, d *Dispatch) error {
 	if r.Snap.Task == "" {
 		return nil
@@ -424,9 +424,28 @@ func p4ReconcileBefore(r *RunFiles, d *Dispatch) error {
 	return nil
 }
 
-// p4ReconcileRun previews the reconcile, drops the files open in another changelist, and reconciles just the rest into the task's changelist, so a file in another changelist is never touched whatever p4 reconcile does with one. It returns the files it opened, as "action path".
+// p4ReconcileRun previews the reconcile of the files changed since the mark, drops the files open in another changelist, and reconciles just the rest into the task's changelist, so a file in another changelist is never touched whatever p4 reconcile does with one. A pass that succeeds moves the mark to when it began and records the folders then. It returns the files it opened, as "action path".
 func p4ReconcileRun(r *RunFiles, env []string, v TaskVcs) ([]string, error) {
 	ws := r.Snap.Workspace
+	mark, err := reconcileMark(r)
+	if err != nil {
+		return nil, err
+	}
+	began := time.Now().Add(-reconcileSlack)
+	candidates, dirs, err := p4Candidates(r, env, v, mark)
+	if err != nil {
+		return nil, err
+	}
+	moveMark := func() error {
+		if err := writeReconcileDirs(r, dirs); err != nil {
+			return err
+		}
+		r.State.ReconcileMark = began.UnixNano()
+		return nil
+	}
+	if len(candidates) == 0 {
+		return nil, moveMark()
+	}
 	out, err := p4Run(ws, env, v.Client, "-ztag", "opened", "-C", v.Client)
 	if err != nil {
 		return nil, err
@@ -438,23 +457,22 @@ func p4ReconcileRun(r *RunFiles, env []string, v TaskVcs) ([]string, error) {
 			elsewhere[foldPath(rec["clientFile"], hostOS)] = true
 		}
 	}
-	out, err = p4Run(ws, env, v.Client, "-ztag", "reconcile", "-n", "-c", v.Changelist, "...")
+	previewed, err := p4ReconcilePreview(r, env, v, candidates, elsewhere)
 	if err != nil {
 		return nil, err
 	}
 	var files []string
-	for _, rec := range p4Records(out) {
-		client := rec["clientFile"]
-		if client == "" || elsewhere[rec["depotFile"]] || elsewhere[foldPath(client, hostOS)] {
-			continue
-		}
-		files = append(files, p4Escape(client))
+	for _, rec := range previewed {
+		files = append(files, p4Escape(rec["clientFile"]))
 	}
 	if len(files) == 0 {
-		return nil, nil
+		return nil, moveMark()
 	}
 	out, err = p4RunIn(ws, env, v.Client, strings.Join(files, "\n")+"\n", "-x", "-", "-ztag", "reconcile", "-c", v.Changelist)
 	if err != nil {
+		return nil, err
+	}
+	if err := moveMark(); err != nil {
 		return nil, err
 	}
 	var opened []string

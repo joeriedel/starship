@@ -242,7 +242,7 @@ func writeP4Change(r *RunFiles, v TaskVcs, file string) (string, error) {
 	return what, nil
 }
 
-// p4Unopened previews the reconcile (which opens nothing) and returns what it would open: the changes shell commands made. It drops files already open in the changelist (open) and files open in another changelist. A project's @reconcile binding can't be previewed, so p4's own reconcile is what is previewed.
+// p4Unopened previews the reconcile (which opens nothing) of the files changed since the reconcile mark, and returns what it would open: the changes shell commands made. It leaves the mark where it is. It drops files already open in the changelist (open) and files open in another changelist. A project's @reconcile binding can't be previewed, so p4's own reconcile is what is previewed.
 func p4Unopened(r *RunFiles, env []string, v TaskVcs, open []map[string]string) ([]map[string]string, error) {
 	ws := r.Snap.Workspace
 	out, err := p4Run(ws, env, v.Client, "-ztag", "opened", "-C", v.Client)
@@ -257,19 +257,15 @@ func p4Unopened(r *RunFiles, env []string, v TaskVcs, open []map[string]string) 
 	for _, rec := range open {
 		skip[rec["depotFile"]] = true
 	}
-	out, err = p4Run(ws, env, v.Client, "-ztag", "reconcile", "-n", "-c", v.Changelist, "...")
+	mark, err := reconcileMark(r)
 	if err != nil {
 		return nil, err
 	}
-	var found []map[string]string
-	for _, rec := range p4Records(out) {
-		client := rec["clientFile"]
-		if client == "" || skip[rec["depotFile"]] || skip[foldPath(client, hostOS)] {
-			continue
-		}
-		found = append(found, rec)
+	candidates, _, err := p4Candidates(r, env, v, mark)
+	if err != nil || len(candidates) == 0 {
+		return nil, err
 	}
-	return found, nil
+	return p4ReconcilePreview(r, env, v, candidates, skip)
 }
 
 // writeNewFileDiff writes the local file at path as a whole-file addition of depot.

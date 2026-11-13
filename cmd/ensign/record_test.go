@@ -324,7 +324,7 @@ func TestP4ReviewDispatchNamesTheChangeFile(t *testing.T) {
 func TestP4ReviewDiffFallsBackToTheShelf(t *testing.T) {
 	w := p4World(t, p4Task)
 	t.Setenv("STARSHIP_TEST_P4_PENDING", "101")
-	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{}}
+	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{ReconcileMark: 1}}
 	file := filepath.Join(r.Dir, "change.diff")
 	what, err := writeP4Change(r, TaskVcs{Kind: "p4", Client: "supernova-ws", Changelist: "101"}, file)
 	if err != nil || what != "the shelf" {
@@ -392,8 +392,11 @@ func TestP4ReviewDiffCoversChangesNotYetOpened(t *testing.T) {
 	t.Setenv("STARSHIP_TEST_P4_RECONCILE", "a.go:edit new.go:add gone.go:delete other.go:edit shell.go:edit")
 	log := filepath.Join(t.TempDir(), "p4.log")
 	t.Setenv("STARSHIP_TEST_P4_LOG", log)
+	changedFiles(t, w.workspace(), "a.go", "other.go", "shell.go")
 	write(t, filepath.Join(w.workspace(), "new.go"), "package n\n")
-	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{}}
+	changedFiles(t, w.workspace(), "new.go")
+	t.Setenv("STARSHIP_TEST_P4_MISSING", "gone.go")
+	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{ReconcileMark: time.Now().UnixNano()}}
 	file := filepath.Join(r.Dir, "change.diff")
 	what, err := writeP4Change(r, TaskVcs{Kind: "p4", Client: "supernova-ws", Changelist: "101"}, file)
 	if err != nil || !strings.Contains(what, "not yet opened") {
@@ -419,7 +422,7 @@ func TestP4ReviewDiffReadsAnEscapedDepotPathOnce(t *testing.T) {
 	t.Setenv("STARSHIP_TEST_P4_PENDING", "101")
 	t.Setenv("STARSHIP_TEST_P4_OPENFILES", "a%40b.md:101:add")
 	write(t, filepath.Join(w.workspace(), "a@b.md"), "hello\n")
-	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{}}
+	r := &RunFiles{Dir: t.TempDir(), Snap: &Snapshot{Bridge: w.bridge, Task: "supernova/auth-refactor", Workspace: w.workspace()}, State: &State{ReconcileMark: 1}}
 	file := filepath.Join(r.Dir, "change.diff")
 	if _, err := writeP4Change(r, TaskVcs{Kind: "p4", Client: "supernova-ws", Changelist: "101"}, file); err != nil {
 		t.Fatal(err)
