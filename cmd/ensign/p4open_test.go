@@ -120,7 +120,7 @@ func TestP4OpenRefusesPathsOutsideTheWorkspace(t *testing.T) {
 
 func TestP4OpenFindsTheBridgeFromTheBinaryOutsideIt(t *testing.T) {
 	t.Setenv("STARSHIP_TEST_P4_PENDING", "101")
-	t.Setenv("STARSHIP_TEST_P4_FILES", "gen/x.go=head")
+	t.Setenv("STARSHIP_TEST_P4_FILES", "x.go=head")
 	w := p4World(t, p4OpenVcs)
 	_, log := p4Lead(t, w)
 	write(t, filepath.Join(w.workspace(), "gen", "x.go"), "package gen\n")
@@ -135,7 +135,7 @@ func TestP4OpenFindsTheBridgeFromTheBinaryOutsideIt(t *testing.T) {
 	if err != nil || !strings.Contains(out.String(), "opened for edit") {
 		t.Fatalf("%q, %v", out.String(), err)
 	}
-	if !strings.Contains(p4Log(t, log), "edit -c 101 ") {
+	if !strings.Contains(p4Log(t, log), "edit -c 101 "+filepath.Join(w.workspace(), "gen", "x.go")) {
 		t.Errorf("no edit:\n%s", p4Log(t, log))
 	}
 }
