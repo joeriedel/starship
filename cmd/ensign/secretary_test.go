@@ -203,6 +203,32 @@ func TestSecretaryEditGuard(t *testing.T) {
 	}
 }
 
+func TestSecretaryEditGuardReaderUndeclared(t *testing.T) {
+	w, tmp := newGuardWorld(t)
+	sec := filepath.Join(w.bridge, "notes", "secretary")
+	focal := filepath.Join(w.bridge, "notes", "focal")
+	cases := []struct {
+		label, path string
+		denied      bool
+	}{
+		{"items", filepath.Join(sec, "items.md"), false},
+		{"brag file", filepath.Join(focal, "2026-h2.brag.md"), false},
+		{"a task file", filepath.Join(w.bridge, "projects", "supernova", "tasks", "launch-plan", "task.md"), true},
+		{"other notes", filepath.Join(w.bridge, "notes", "people.md"), true},
+		{"temp", filepath.Join(tmp, "x.md"), true},
+	}
+	for _, c := range cases {
+		res, denied := w.toolCall("s1", "secretary", "Write", map[string]any{"file_path": c.path, "content": "x"})
+		why := dig(res, "hookSpecificOutput", "permissionDecisionReason")
+		if denied != c.denied {
+			t.Errorf("%s: denied=%v %q", c.label, denied, why)
+		}
+		if denied && (!strings.Contains(why, sec) || !strings.Contains(why, focal) || !strings.Contains(why, "only folders a secretary may edit")) {
+			t.Errorf("%s: refusal %q should name the secretary's folders", c.label, why)
+		}
+	}
+}
+
 func TestSecretaryRole(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), "roles", "secretary.md"))
 	if err != nil {

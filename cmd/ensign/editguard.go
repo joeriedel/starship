@@ -36,19 +36,24 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 		return why, "", nil
 	}
 	if in.AgentID != "" && (in.AgentType == "reader" || in.AgentType == "secretary") {
-		bf, err := loadBridgeFile(bridge)
-		var rules map[string][]string
-		if err == nil {
-			rules, err = bf.connectorRules()
-		}
-		if err != nil {
-			return "this edit was refused because bridge.yaml can't be read or is invalid, so a " + in.AgentType + "'s folder can't be checked: " + err.Error(), "", nil
-		}
-		if _, declared := rules["reader"]; declared {
-			folders := []string{filepath.Join(bridge, "reader")}
-			if in.AgentType == "secretary" {
-				folders = []string{filepath.Join(bridge, "notes", "secretary"), filepath.Join(bridge, "notes", "focal")}
+		var folders []string
+		if in.AgentType == "secretary" {
+			// The secretary is confined whether or not the reader is declared: it can outlive the reader's removal until link is rerun.
+			folders = []string{filepath.Join(bridge, "notes", "secretary"), filepath.Join(bridge, "notes", "focal")}
+		} else {
+			bf, err := loadBridgeFile(bridge)
+			var rules map[string][]string
+			if err == nil {
+				rules, err = bf.connectorRules()
 			}
+			if err != nil {
+				return "this edit was refused because bridge.yaml can't be read or is invalid, so a reader's folder can't be checked: " + err.Error(), "", nil
+			}
+			if _, declared := rules["reader"]; declared {
+				folders = []string{filepath.Join(bridge, "reader")}
+			}
+		}
+		if folders != nil {
 			resolved := resolveEditTarget(expanded, in.Cwd, goos)
 			for _, folder := range folders {
 				if pathWithin(resolved, resolveEditFolder(folder, goos), goos) {
