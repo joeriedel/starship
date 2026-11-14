@@ -834,6 +834,81 @@ func TestJournalPushStashConflictNameWithSpace(t *testing.T) {
 	}
 }
 
+func TestJournalPushStashConflictBinary(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	name := "logo.bin"
+	other := cloneRemote(t, remote)
+	write(t, filepath.Join(other, name), "base\x00\n")
+	runGit(t, other, "add", "-A")
+	runGit(t, other, "commit", "-q", "-m", "logo")
+	runGit(t, other, "push", "-q")
+	runGit(t, w.bridge, "pull", "-q", "--ff-only")
+	write(t, filepath.Join(other, name), "theirs\x00\n")
+	runGit(t, other, "commit", "-q", "-am", "theirs")
+	runGit(t, other, "push", "-q")
+
+	write(t, filepath.Join(w.bridge, name), "mine\x00\n")
+	var out bytes.Buffer
+	err := cmdJournal([]string{"push"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "("+name+")") || !strings.Contains(err.Error(), "hold the pushed version without markers") {
+		t.Fatalf("want a stash conflict naming %q, got %v", name, err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(w.bridge, name)); string(data) != "theirs\x00\n" {
+		t.Fatalf("want the pushed version, got %q", data)
+	}
+	if runGit(t, w.bridge, "stash", "list") == "" {
+		t.Fatal("stash was not kept")
+	}
+	if !strings.Contains(err.Error(), "git checkout stash@{0} -- "+name) {
+		t.Fatalf("want recovery advice from the stash, got %v", err)
+	}
+	runGit(t, w.bridge, "checkout", "stash@{0}", "--", name)
+	if data, _ := os.ReadFile(filepath.Join(w.bridge, name)); string(data) != "mine\x00\n" {
+		t.Fatalf("want the local version from the stash, got %q", data)
+	}
+}
+
+func TestJournalPushStashConflictBinaryAndDeleted(t *testing.T) {
+	needGit(t)
+	w := newWorld(t)
+	remote := journalFixture(t, w)
+	bin, gone := "logo.bin", "notes.md"
+	other := cloneRemote(t, remote)
+	write(t, filepath.Join(other, bin), "base\x00\n")
+	write(t, filepath.Join(other, gone), "supernova base\n")
+	runGit(t, other, "add", "-A")
+	runGit(t, other, "commit", "-q", "-m", "files")
+	runGit(t, other, "push", "-q")
+	runGit(t, w.bridge, "pull", "-q", "--ff-only")
+	write(t, filepath.Join(other, bin), "theirs\x00\n")
+	write(t, filepath.Join(other, gone), "supernova theirs\n")
+	runGit(t, other, "commit", "-q", "-am", "theirs")
+	runGit(t, other, "push", "-q")
+
+	write(t, filepath.Join(w.bridge, bin), "mine\x00\n")
+	if err := os.Remove(filepath.Join(w.bridge, gone)); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := cmdJournal([]string{"push"}, &out)
+	if err == nil {
+		t.Fatal("want a stash conflict")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "git checkout stash@{0} -- "+bin+" (") {
+		t.Fatalf("want a checkout command naming only %s, got %v", bin, err)
+	}
+	if !strings.Contains(msg, "your changes deleted ("+gone+")") {
+		t.Fatalf("want %s named as deleted, got %v", gone, err)
+	}
+	runGit(t, w.bridge, "checkout", "stash@{0}", "--", bin)
+	if data, _ := os.ReadFile(filepath.Join(w.bridge, bin)); string(data) != "mine\x00\n" {
+		t.Fatalf("want the local version from the stash, got %q", data)
+	}
+}
+
 func TestJournalPushRefusesUnmergedFiles(t *testing.T) {
 	needGit(t)
 	w := newWorld(t)

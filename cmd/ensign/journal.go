@@ -418,7 +418,7 @@ func pushBridge(bridge string, out io.Writer) error {
 	// Re-applying the autostash can conflict while git still exits 0, keeping the stash.
 	stashNote := ""
 	if len(conflicted) > 0 {
-		// Unmerged index entries would block every later pull, so leave the markers as plain modifications.
+		// Unmerged index entries would block every later pull, so leave the files as plain modifications.
 		if err := git(bridge, append([]string{"reset", "-q", "--"}, literalPathspecs(conflicted)...)...); err != nil {
 			return fmt.Errorf("clearing the unmerged state of %s failed: %w", strings.Join(conflicted, ", "), err)
 		}
@@ -436,9 +436,33 @@ func pushBridge(bridge string, out io.Writer) error {
 		}
 		var notes []string
 		if len(marked) > 0 {
-			notes = append(notes, fmt.Sprintf("re-applying the bridge's uncommitted changes conflicted in (%s); they are kept in git stash and the files hold conflict markers. "+
-				"Either resolve the markers and run git stash drop, or run git checkout -- %s to take the pushed version and keep your changes in the stash",
-				strings.Join(marked, ", "), strings.Join(marked, " ")))
+			// A file your changes deleted is absent from the stash; if the listing fails, claim no deletions.
+			var inStash, deleted []string
+			if tree, err := gitOut(bridge, "ls-tree", "-r", "-z", "--name-only", "stash@{0}"); err != nil {
+				inStash = marked
+			} else {
+				present := map[string]bool{}
+				for _, f := range strings.Split(tree, "\x00") {
+					present[f] = true
+				}
+				for _, f := range marked {
+					if present[f] {
+						inStash = append(inStash, f)
+					} else {
+						deleted = append(deleted, f)
+					}
+				}
+			}
+			take := "Resolve any markers, and only then run git stash drop"
+			if len(inStash) > 0 {
+				take = fmt.Sprintf("Either resolve any markers, or take your version of a file with git checkout stash@{0} -- %s (git show stash@{0}:<file> inspects it and git stash show -p shows text changes), and only then run git stash drop", strings.Join(inStash, " "))
+			}
+			if len(deleted) > 0 {
+				take += fmt.Sprintf("; your changes deleted (%s), which the stash does not hold, so to keep that, delete them again yourself", strings.Join(deleted, ", "))
+			}
+			notes = append(notes, fmt.Sprintf("re-applying the bridge's uncommitted changes conflicted in (%s); they are kept in git stash. Text files hold conflict markers; other files (binary, or deleted by your changes) hold the pushed version without markers. "+
+				"%s; or run git checkout -- %s to take the pushed version and keep your changes in the stash",
+				strings.Join(marked, ", "), take, strings.Join(marked, " ")))
 		}
 		if len(removed) > 0 {
 			notes = append(notes, fmt.Sprintf("the pushed version deleted (%s), so they were removed from the bridge; your changes to them are kept in git stash (see git stash show -p)",
