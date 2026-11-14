@@ -931,7 +931,7 @@ stages:
       noted:   { finish: success }
       missing: `+missing+`
 `+tail)
-	w.run("--pipeline", "supernova-solo", "--document", "supernova-log")
+	w.run("--pipeline", "supernova-solo")
 	return w
 }
 
