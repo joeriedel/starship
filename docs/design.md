@@ -655,7 +655,7 @@ Review is the coding pipeline's fan-out stage; the curation and style-generation
   of the join spends as usual.
 - **Reviewers are read-only**, so branches can't conflict in the workspace.
 - **A stage may take an outcome with no dispatch.** `parallel.empty` names one of the stage's outcomes, which the stage takes, with no dispatch, when its list has no items. `empty` cannot be used with `over: dimensions`, and `--start` refuses a stage with `empty` set and no items. A run whose every `empty` stage has no items fails with the usual "nothing to do" reason, so `document-curate` with no pending proposals still fails with "no declared document has pending proposals to curate".
-- **A stage may be advisory.** `advisory: <outcome>` on a stage names an outcome (not an error) that a dispatch takes in place of any failure to report or to start, with no stop budget spent and no retry, so the join goes on and the run does not fail. `ensign run stop` during an advisory stage finishes the run through that outcome instead of cancelling it, and finishes it at once even when that outcome is a success, without the closing gate (§6.1). Advisory validates on any non-lead stage, but a stop takes the advisory outcome only on a `parallel` stage (§15.1).
+- **A stage may be advisory.** `advisory: <outcome>` on a stage names an outcome (not an error) that a dispatch takes in place of any failure to report or to start, with no stop budget spent and no retry, so the join goes on and the run does not fail. `ensign run stop` during an advisory stage finishes the run through that outcome instead of cancelling it, and finishes it at once even when that outcome is a success, without the closing gate (§6.1). Advisory validates on any non-lead stage, and a stop takes the advisory outcome on any such stage, parallel or not: each outstanding dispatch is completed with that outcome and noted "feedback for <dimension> is missing" (a stage that is not parallel notes its own id). If the outcome's transition finishes the run, the run finishes with that status; otherwise it moves on through the transition.
 
 ### 5.5 Concurrency model
 
@@ -1702,7 +1702,6 @@ Everything in §§2–14a is built, with unit tests (run in CI on Linux, Windows
 
 ### 15.1 Not done
 
-- **`ensign run stop` takes an advisory outcome only on a `parallel` stage (§5.4).** Validation allows `advisory` on any non-lead stage, but a stop during an advisory stage that is not parallel cancels the run.
 - **Connector content through the built-in resource tools is not measured (§5.3).** Whether connectors serve content through `ListMcpResourcesTool` and `ReadMcpResourceTool` has not been tested; they are covered by the rules either way.
 - **Harness checks not made (§5.5).** Not observed: macOS, Windows, a real model, and auto mode with the server-side review. Versions below 2.1.317 were not probed for a lower floor. Interactive `/fork` and `/branch`, 2.0.x `--continue` and interactive auto-compact were not probed, and the `-p` and interactive routes were compared only on 1.0.115.
 - **Deleting a moved note from a journal-off project is not asked for (§10.2).** Nothing names or asks for the deletion of the source of a note moved out of a `journal: off` project, so it stays uncommitted until someone commits it by name.
