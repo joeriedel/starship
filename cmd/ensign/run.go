@@ -2239,15 +2239,23 @@ func (st *State) canonicalizeBudgets() {
 	}
 }
 
-// stopAdvisory finishes a run stopped during an advisory stage through the stage's advisory outcome, since the work before it is done and ensign cannot tell a hung agent from a slow one. Each document with no completed dispatch is noted as missing. It reports false when the current stage is not advisory.
+// stopAdvisory finishes a run stopped during an advisory stage through the stage's advisory outcome, since the work before it is done and ensign cannot tell a hung agent from a slow one. Each document with no completed dispatch is noted as missing; a stage that is not parallel notes itself. It reports false when the current stage is not advisory.
 func stopAdvisory(r *RunFiles, m *machine) bool {
 	sc := r.State.Scopes[leadScope(r)]
 	if sc == nil || sc.Stage == "" {
 		return false
 	}
 	s := m.stage(sc.Stage)
-	if s == nil || s.Advisory == "" || s.Parallel == nil {
+	if s == nil || s.Advisory == "" {
 		return false
+	}
+	if s.Parallel == nil {
+		for _, d := range r.State.Dispatches {
+			if d.Scope == leadScope(r) && d.Stage == s.ID && !d.Done {
+				d.Done, d.Outcome = true, s.Advisory
+			}
+		}
+		r.State.noteOnce(missingNote(s.ID))
 	}
 	for _, dim := range s.Dimensions {
 		if id, ok := sc.Branches[dim]; ok {

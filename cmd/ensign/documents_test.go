@@ -907,6 +907,71 @@ stages:
 	return w
 }
 
+// advisorySoloWorld has a pipeline whose advisory stage is not parallel; the advisory outcome goes on to a second stage when next is true, and finishes the run otherwise.
+func advisorySoloWorld(t *testing.T, next bool) *world {
+	t.Helper()
+	w := twoDocWorld(t)
+	missing, tail := "{ finish: success }", ""
+	if next {
+		missing = "next"
+		tail = "  - id: wrap\n    role: curator\n    dispatched-by: session\n    brief: briefs/curate-document.md\n    outcomes:\n      noted: { finish: success }\n"
+	}
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-solo", "extension.yaml"), "name: supernova-solo\nsummary: a solo advisory stage\n")
+	write(t, filepath.Join(w.bridge, "extensions", "supernova-solo", "pipelines", "supernova-solo.yaml"), `pipeline: supernova-solo
+version: 1
+scope: bridge
+summary: A solo advisory stage.
+stages:
+  - id: check
+    role: curator
+    dispatched-by: session
+    brief: briefs/curate-document.md
+    advisory: missing
+    outcomes:
+      noted:   { finish: success }
+      missing: `+missing+`
+`+tail)
+	w.run("--pipeline", "supernova-solo", "--document", "supernova-log")
+	return w
+}
+
+func TestRunStopFinishesASoloAdvisoryStage(t *testing.T) {
+	note := "feedback for check is missing"
+	t.Run("finish", func(t *testing.T) {
+		w := advisorySoloWorld(t, false)
+		if id, why := w.spawn("", "", "curator"); id == "" {
+			t.Fatal(why)
+		}
+		run := w.state().Run
+		if _, err := w.stopRun(run); err != nil {
+			t.Fatal(err)
+		}
+		st := w.runState(run)
+		if st.Status != "success" || !st.Finished || !strings.Contains(strings.Join(st.Notes, "\n"), note) {
+			t.Errorf("status %s finished %v notes %v", st.Status, st.Finished, st.Notes)
+		}
+		for _, d := range st.Dispatches {
+			if !d.Done || d.Outcome != "missing" {
+				t.Errorf("dispatch %s done %v outcome %q", d.ID, d.Done, d.Outcome)
+			}
+		}
+	})
+	t.Run("next", func(t *testing.T) {
+		w := advisorySoloWorld(t, true)
+		if id, why := w.spawn("", "", "curator"); id == "" {
+			t.Fatal(why)
+		}
+		run := w.state().Run
+		if _, err := w.stopRun(run); err != nil {
+			t.Fatal(err)
+		}
+		st := w.runState(run)
+		if st.Status == "cancelled" || st.Scopes[""] == nil || st.Scopes[""].Stage != "wrap" {
+			t.Errorf("status %s reason %s scopes %v", st.Status, st.Reason, st.Scopes)
+		}
+	})
+}
+
 func TestAdvisoryStageNeverFailsTheRun(t *testing.T) {
 	missing := "feedback for supernova-log is missing"
 	check := func(t *testing.T, w *world) {
