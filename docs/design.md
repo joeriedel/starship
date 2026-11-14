@@ -177,6 +177,10 @@ Carried over from the reference design:
   Silence means nobody decided; `not-applicable` means somebody did.
 - **A binding that contradicts the workspace is also a stop** — a path that isn't there,
   a target that doesn't exist. Never substitute an equivalent.
+- **Agents are given a binding as the exact command** (`cd <workspace> && ./build.sh`),
+  and every prompt names the run's scratch folder for logs and its evidence folder, which
+  outlives the run. Agent instructions avoid shell variables such as `echo $?`, which
+  Claude Code's permission checks refuse unless allowed.
 - Platform variants are declared per platform; a binding with variants but none for the
   detected platform is a stop.
 - **A repository can ship its project settings** in `.starship/project.yaml`: bindings,
@@ -260,7 +264,9 @@ Handler kinds:
 | `augment` | adds text to the next dispatched prompt | — |
 
 **All events are fired by deterministic code** (§7), never by an agent. An event an
-agent forgets to fire is a silent skip, whatever the handler kind.
+agent forgets to fire is a silent skip, whatever the handler kind. An event on a stage a
+pipeline doesn't have is inactive for it, so an extension or layer can serve several
+pipelines.
 
 `task.close` is fired by `ensign task close <p>/<t>`, outside any run, for tasks with and without code. `require` handlers run first, in order; one that fails ends the close with nothing written, so it can be retried. A handler that doesn't set exactly one of `require`, `observe` and `augment` ends the close the same way, before any handler runs. Then, holding the task's publish lock, the task is marked closed (`status: closed` in its frontmatter, which makes a second close a no-op) and its `.publish` record and every `.tested` of the task, at all locations, are removed; a close is refused, leaving the task open, while a publish of the task holds the lock, and a failed removal only warns (`ensign gc` and the session-start cleanup retry it, see the run cleanup below). The records stay, with a warning, when another task of the same encoded name isn't closed, its status can't be read, or the task listing fails (`peerKeepsRecords`); gc removes them once all are closed, and a closed peer doesn't stop removal. A failed listing of the `.tested` records prints `warning: task.close could not list ...` and the `.publish` record is still removed. Then `observe` handlers run; a failing one only warns, as does a failure to journal the close. Handlers run in the bridge root with `STARSHIP_BRIDGE`, `STARSHIP_PROJECT` and `STARSHIP_TASK`, and without `STARSHIP_RUN`, `STARSHIP_RUN_DIR` or `STARSHIP_WORKSPACE`. `@binding` commands, `ensign …` handlers and generated `@name` augments need a run and are refused. The output of handlers and the text of `augment` files are printed after `Closed <p>/<t>.` for the session to act on in the same turn: this is how an extension asks the session (and through it the user) a question.
 
@@ -288,6 +294,8 @@ in the same format. A project or task enables extensions with `use: [<name>, ...
 extension declares the bindings it requires, so it cannot be enabled where it doesn't fit.
 
 An extension with `quiet: true` in its `extension.yaml` leaves no trace in a bridge whose own `bridge.yaml` `use:` does not name it, as `impact` (§9a) does: its `help:` entries and its pipelines' help are left out of the `help` word, `ensign help requests` and the session-start pointer. No quiet extension warns at session start except `impact` (§9a), which warns when a project or open task names it where `bridge.yaml` does not.
+
+A pipeline's or extension's `help:` entry may carry `run:`, the command that carries the request out. `help` never shows it; `ensign help requests` lists every one, generated at call time, and the SessionStart hook points at it after the manual, so the session doesn't have to guess how to "squash this task's commits".
 
 ### 4.4 Skills
 
@@ -351,7 +359,7 @@ in the bridge, without slowing the run. `ensign run --pipeline skill-curate` (sc
 `bridge`, no lead) dispatches one `curator` per skill with pending facts; each folds its
 facts into `skills/<skill>.learned.yaml` under the rules of §4.5, and the facts it was
 given are cleared either way. A skill's learned entries are appended to its text
-wherever it is delivered. A fact for a skill that doesn't exist is held in `skills/proposed/<name>/` until the user makes the skill or discards the facts.
+wherever it is delivered. A fact for a skill that doesn't exist is held in `skills/proposed/<name>/` until the user makes the skill or discards the facts: agents are told which skill names exist, `status` lists the held facts, `ensign skill new <name> --description <text>` creates the skill and makes its facts pending, and `ensign skill discard <name>` drops them. `skill new` refuses a Windows reserved name (`con`, `nul`, `com1` and the like), and a fact line naming one is skipped as an invalid name is; `skill discard` still accepts one, so facts already held under it can be cleared. `status` offers "make a <name> skill" or "discard the <name> facts" only for a held folder whose name is usable; for one that isn't (it fails the name rule, or Windows reserves it) it shows the fact count and tells you to remove the folder by hand, with no offer. A folder in `skills/pending` with facts whose name isn't a usable skill name is skipped with a warning when a skill-curate run lists its items, and stays on disk; a curation report for such a name is refused before anything is written.
 
 **Learned facts land in the bridge's copy of the skill, never the control plane's.**
 Promoting one into a public skill is a starship task like any other change (§3.2), stated
@@ -406,7 +414,7 @@ stop with the reasons if it fails:
 
 A declared document is Markdown so `notes/` can carry it: a `# <name>` line, a note that the curator maintains it, and exactly one `starship-document` block holding the YAML above, with ids `D1`, `D2`, … and no authoritative sources. A missing file is an empty document, so a first curation works. A file with no block, two blocks or invalid YAML is an error and is never overwritten; a rewrite replaces only the block and keeps the rest of the file and its line endings. A block ends at the first line that is exactly three backticks, and YAML indents entry text, so text may hold such a line. The write goes through a temp file and a rename. The notes index at session start lists file names only, never contents.
 
-Proposals arrive from any place and time: `ensign document propose <name> <text> [--evidence <text>]` writes one YAML file, `documents/pending/<name>/<time>-<random>.yaml`, holding the text, the date and the evidence if given (a proposal without evidence is cited as `proposal:<date>`), written through a temp file under `.starship/tmp/` so a killed write leaves nothing to commit, and which the journal commits (§10.2) so it follows the user between machines. The name must be declared. `ensign run --pipeline document-curate` (one `curate` stage, `curates: document`, parallel over the declared documents with a pending file) gives the curator the document, the rubric if there is one (which says what belongs and outranks the proposals), its entries and the proposals. Before any dispatch the run fails, naming the document and the problem and never its content, if a selected document does not load or its rubric is missing. A pending folder for an undeclared name is skipped with a warning. When the curator stops, the files it was given are removed whether or not it changed anything, so a proposal the curator leaves out is dropped, not deferred; one that arrived since survives.
+Proposals arrive from any place and time: `ensign document propose <name> <text> [--evidence <text>]` writes one YAML file, `documents/pending/<name>/<time>-<random>.yaml`, holding the text, the date and the evidence if given (a proposal without evidence is cited as `proposal:<date>`), written through a temp file under `.starship/tmp/` so a killed write leaves nothing to commit, and which the journal commits (§10.2) so it follows the user between machines. The name must be declared. `ensign run --pipeline document-curate` (one `curate` stage, `curates: document`, parallel over the declared documents with a pending file) gives the curator the document, the rubric if there is one (which says what belongs and outranks the proposals), its entries and the proposals. Before any dispatch the run fails, naming the document and the problem and never its content, if a selected document does not load or its rubric is missing. A pending folder for an undeclared name is skipped with a warning. The pipeline has no lead, so either outcome, `updated` or `unchanged`, finishes the run as success, with the reason "curate reported <outcome>". When the curator stops, the files it was given are removed whether or not it changed anything, so a proposal the curator leaves out is dropped, not deferred; one that arrived since survives.
 
 `ensign run --pipeline document-curate --document <name>` narrows the run to one document: its `pending-documents` stage gets that document alone, so there is at most one curator. Other documents' pending proposals stay pending. The flag is refused for an undeclared name and for a pipeline with no stage over `pending-documents`; a document with no pending proposals fails with an error naming it. Only the selected document is checked for problems, so a problem in another document doesn't refuse the run. The selection is saved as `State.Document` and a retry keeps it.
 
@@ -452,7 +460,7 @@ Budgets:
 - A budget is the maximum number of spends. The spend that would exceed it triggers
   `on-exhausted` instead.
 
-Nesting: a stage with its own `stages` is a lead that dispatches them. A pipeline has one lead; a lead inside a lead is rejected at validation (nested leads are backlog, §15.4). The driver tracks the lead through dispatch tags.
+Nesting: a stage with its own `stages` is a lead that dispatches them. A pipeline has one lead; a lead inside a lead is rejected at validation (nested leads are backlog, §15.2). The driver tracks the lead through dispatch tags.
 
 A top-level lead (a top-level stage with nested stages) must be `dispatched-by: session` and must be the pipeline's first stage; `validate` refuses a pipeline otherwise.
 
@@ -654,7 +662,7 @@ Review is the coding pipeline's fan-out stage; the curation and style-generation
   of the join spends as usual.
 - **Reviewers are read-only**, so branches can't conflict in the workspace.
 - **A stage may take an outcome with no dispatch.** `parallel.empty` names one of the stage's outcomes, which the stage takes, with no dispatch, when its list has no items. `empty` cannot be used with `over: dimensions`, and `--start` refuses a stage with `empty` set and no items. A run whose every `empty` stage has no items fails with the usual "nothing to do" reason, so `document-curate` with no pending proposals still fails with "no declared document has pending proposals to curate".
-- **A stage may be advisory.** `advisory: <outcome>` on a stage names an outcome (not an error) that a dispatch takes in place of any failure to report or to start, with no stop budget spent and no retry, so the join goes on and the run does not fail. `ensign run stop` during an advisory stage finishes the run through that outcome instead of cancelling it, and finishes it at once even when that outcome is a success, without the closing gate (§6.1). Advisory validates on any non-lead stage, but a stop takes the advisory outcome only on a `parallel` stage (§15.3).
+- **A stage may be advisory.** `advisory: <outcome>` on a stage names an outcome (not an error) that a dispatch takes in place of any failure to report or to start, with no stop budget spent and no retry, so the join goes on and the run does not fail. `ensign run stop` during an advisory stage finishes the run through that outcome instead of cancelling it, and finishes it at once even when that outcome is a success, without the closing gate (§6.1). Advisory validates on any non-lead stage, but a stop takes the advisory outcome only on a `parallel` stage (§15.1).
 
 ### 5.5 Concurrency model
 
@@ -760,7 +768,7 @@ instructions, with that stage's outcomes, to every dispatch (§7).
 
 ### 6.3 Creating a run: the resolver and the snapshot
 
-`ensign run <task> [--sync] [--start <stage>]` creates a run. A pipeline run without a task takes `--pipeline <name> [--project <p>]`; the other flags (`--location`, `--subtask`, `--sides`, `--dependency`, `--rebuild`, `--document`, `--stale-branch`, `--dry-run`) are listed in the command table (§15.1). A run's id is `<yyyymmdd-hhmmss>-<project>-<task>` (`-<project>-<pipeline>` for a pipeline run), with `-2`, `-3` appended on a collision.
+`ensign run <task> [--sync] [--start <stage>]` creates a run. A pipeline run without a task takes `--pipeline <name> [--project <p>]`; the other flags (`--location`, `--subtask`, `--sides`, `--dependency`, `--rebuild`, `--document`, `--stale-branch`, `--dry-run`) are listed in the command table (§14a). A run's id is `<yyyymmdd-hhmmss>-<project>-<task>` (`-<project>-<pipeline>` for a pipeline run), with `-2`, `-3` appended on a collision.
 
 1. **Merges** the pinned control plane → bridge → project → task, plus every extension they
    enable, applying each layer's ops in order and recording every field's source.
@@ -817,7 +825,7 @@ rules
 
 The summary ends with the `bindings` section and, when there are any rules, a `rules` section; a rule's source is `<layer>:<path>:<line>`, or `extension:<name>:<line>` for an extension's rule (for example `extension:house:3`), and a location's is `location:<path>#<location>:<line>`.
 
-The snapshot's hash is recorded in the state file (§15.3), and the creation line prints the pipeline's sha. A config change mid-run does not
+The snapshot's hash is recorded in the state file (§15.1), and the creation line prints the pipeline's sha. A config change mid-run does not
 affect that run.
 
 #### Sequences
@@ -914,7 +922,9 @@ The guard saves the run only when it rebinds it, and a failed save warns rather 
 6. Force the stage into the foreground: `run_in_background: true` becomes `false`. A
    lead then never spends a turn waiting on a stage. Waiting turns are where agents
    poll, send filler reports, dispatch placeholder agents and write invented results.
-   Parallel branches still run together, dispatched in one message.
+   Parallel branches still run together, dispatched in one message. Only `true` becomes
+   `false`: a dispatch with no `run_in_background` field is left as it is, so Claude Code's
+   default decides, and no report or outcome depends on it, since both come from hooks.
 7. Record the dispatch.
 
 At a run's first lead dispatch the hook first clears the task's `.tested` marker (unless the run starts at `docs`), runs `@sync` when the run was started with `--sync`, runs `runP4State`, fires `run.start` and records the workspace's HEAD as `StartHead`; a failure of any of these fails the run and denies the dispatch. A stage that ensign runs itself (`plainStage`) is denied with "ensign runs this stage itself". A stage marked advisory never fails the run: a `stage.before` failure or a dispatch that cannot start takes the advisory outcome and the join goes on. A `documentation` dispatch records a baseline (`docsBaseline`) against which SubagentStop checks what it changed. When an agent's run cannot be found (the session restarted and nothing ties the agent to a live run), a spawn of a role that is some stage's role, or one that can't be ruled out because pipeline files could not be read, is denied; a read-only role is let through, with a system message, in that last case (`stageRoleAnywhere`, `readOnlyRole`).
@@ -1041,6 +1051,8 @@ Connector calls:
 SubagentStop identifies the role but not the stage, which is why dispatches are tagged.
 Harness behaviour changes between builds, so `ensign selftest` re-checks these behaviours and is re-run after every Claude Code upgrade.
 
+**The session manual comes from the SessionStart hook, not `CLAUDE.md`.** Claude Code gives `CLAUDE.md` and its imports to every subagent, so importing the manual put it in every coder's and tester's context, telling them not to edit or run tests. The hook prints `.starship/session.md` after the heartbeat; SessionStart fires only for the session, and again after a compaction. `ensign selftest` checks from the session transcript that the hook's output reached the session whole, and from each agent's own transcript that it stays out of subagents.
+
 ### 7.2 Session words and help
 
 A few exact messages are handled by the UserPromptSubmit hook rather than the model:
@@ -1053,6 +1065,8 @@ A few exact messages are handled by the UserPromptSubmit hook rather than the mo
 | `status` | where things stand: bridge, project, task, the active run, what's outstanding |
 
 `go` also opens a waiting direct edit (§7.3). `status` and `help` leave a waiting direct request alone; any other prompt drops it, and closes an open one.
+
+A `claude` started from inside another Claude Code session is a child session: its prompt reaches UserPromptSubmit with a `Claude` line in front, so `help` doesn't match, and it inherits the parent's project directory. A user's own session isn't affected. `ensign` starts its own `claude` without the variables a session sets about itself (`cleanClaudeEnv` for `claude --version`; the selftest's probe sessions use `isolatedClaudeEnv`, which also strips them), and live tests should do the same.
 
 ### 7.3 Direct edits
 
@@ -1299,21 +1313,24 @@ Three kinds of repository, three defaults:
 
 | What | Commit | Push |
 |---|---|---|
-| control plane (`~/starship`) | automatic | automatic, after the gates in §3.2 |
-| task journals (`tasks/<task>/`, in the bridge) | automatic; a project may turn it off | automatic, with the commit |
-| workspaces (product code) | per pipeline (e.g. `git-catalog`) | only with explicit approval, every time |
+| control plane (starship's own repo) | the run that changes it commits on `task/<name>` (§3.2) | not by the run, except the task branch for CI; landing is the user's step (§3.2) |
+| task journals (`projects/`, `skills/`, `notes/`, `documents/` and a declared `reader/`, in the bridge) | automatic; a project may turn it off | automatic, with the commit |
+| workspaces (product code) | per pipeline (e.g. `git-catalog`); `github-pr` commits at the end of a run | only by the steps the user asks for or the pipeline binds: `github-pr ci` pushes the task branch for CI, `pull-request` pushes it, `merge` pushes the default branch and deletes the task branch on origin (§3.2) |
 
-In every case the agent writes the commit message, because it knows what the logical
+For journals the agent writes the commit message, because it knows what the logical
 change was, and a **Stop hook enforces that it happened**: a session turn cannot end with
-uncommitted control-plane or journal changes. The hook names what is outstanding and
-blocks; the agent commits and tries again. Wording is the agent's job; whether it
-happened is not.
+uncommitted journal changes or a bridge not pushed to its remote. The hook names what is
+outstanding and blocks; the agent commits and tries again. Wording is the agent's job;
+whether it happened is not.
+
+**System commits in the bridge.** When ensign itself changes a tracked file of the bridge it commits just that file with a fixed message: "New bridge" (`init`), "Update starship to <tag>" (`update`), "Commit hand edits to the bridge's notes", "Keep the bridge's text files at LF line endings", "Load the session manual from the SessionStart hook", "Scope the heartbeat rule to the session agent", "Move each task's progress log into history.md", "Update the starship hook settings" and "Workspace paths move to each machine's machine.yaml" (§12.6).
+
+**Workspace commits by the driver.** The `git-catalog` pass commit is `wip(c<cycle> p<pass>)[ BROKEN]: <summary>`, the summary cut to 60 characters in the subject and given whole as the body; `squash` takes the message it is given. `github-pr`'s commit before the test stage uses the task's name as its message.
 
 ### 10.1 Control plane
 
-- One commit per logical change, files staged by name, message short.
-- Pushed without asking. The Stop hook also blocks while the local branch is ahead of the
-  remote, checked with `git ls-remote`, not the local tracking ref.
+- Starship is changed as a task run in the project whose workspace is a starship checkout (§3.2): the run commits on `task/<name>`, and nothing is pushed by it except what `github-pr ci` pushes for CI. Landing, by pull request or by a push of the default branch, is the user's step.
+- No hook commits or pushes the control plane. The Stop hook checks only the bridge's journal paths and the bridge's remote.
 - **From a work machine, the control plane is the only thing pushed to the personal
   repo.** Bridges, journals and workspaces in a work context stay on that context's
   infrastructure.
@@ -1349,7 +1366,7 @@ depend on the project's VCS:
 - **Off:** the project declares `journal: { commit: off, reason: "<why>" }`. The Stop
   hook then skips journal checks for that project. Turning it off needs a reason, like a
   `not-applicable` binding.
-- A journal-off project's files are committed by naming them: `ensign journal commit -m "<message>" <path>`, which does not re-apply `journal: off` to named paths and may name a deleted tracked path. Only the no-path form and the Stop hook filter them out, so neither commits them nor blocks on them. This matters when a note moves from `projects/supernova/...` (journal off) into `notes/`: the notes commit takes only the new file under `notes/`, and the source's deletion stays uncommitted until it is committed by name. Nothing names or asks for that deletion. The tracked deletion keeps the tree dirty, so the notes commit does not push and the session-start fast-forward from the remote is skipped, at every session start until the deletion is committed.
+- A journal-off project's files are committed by naming them: `ensign journal commit -m "<message>" <path>`, which does not re-apply `journal: off` to named paths and may name a deleted tracked path. Only the no-path form and the Stop hook filter them out, so neither commits them nor blocks on them. This matters when a note moves from `projects/supernova/...` (journal off) into `notes/`: the notes commit takes only the new file under `notes/`, and the source's deletion stays uncommitted until it is committed by name. The tracked deletion keeps the tree dirty, so the notes commit does not push and the session-start fast-forward from the remote is skipped, at every session start until the deletion is committed.
 - Notes under `notes/` (§11.3) are journal files too: the Stop hook blocks on uncommitted ones, and `ensign journal commit` covers them. `projects/` filtering and `journal: off` do not apply to them.
 - The reader's files under `reader/` are journal files too, only when `bridge.yaml` declares the reader: Markdown files without a hidden path segment, subfolders included (so `reader/cursors/<source>.md` and `reader/mail-read/<source>.md`), are covered like notes, as are the `.out` and `.prev` files under `reader/command/` (command-source output, no hidden segment; it stays out of notes), other files are left out, and an unreadable or invalid `bridge.yaml` leaves `reader/` out. A rename with a Markdown file or a command-output file on either side keeps both paths.
 - The agent commits through `ensign journal commit -m "<message>" <files>`, which stages,
@@ -1393,20 +1410,22 @@ SHA256SUMS
 
 - **A release is cut by CI.** You trigger the release workflow with a version
   (`gh workflow run release -f version=1.4.0`, or from the GitHub UI). On one Linux
-  runner it tests, cross-compiles every target, tags the current commit `v1.4.0`, and
+  runner it checks out master's head, tests, cross-compiles every target, tags that commit `v1.4.0`, and
   publishes the release with the binaries attached, as a pre-release unless
   `-f prerelease=false`. Tags are never created by hand. Free for public repos.
-- **Each binary knows its release**: the build sets its version (the tag) and the repo it
-  came from, so `ensign init` with no flags pins exactly the release it is.
+- **Each binary knows its release**: the build sets its version (the tag, `-X main.version`) and the repo it
+  came from (`-X main.releaseRepo`), so `ensign init` with no flags pins exactly the release it is.
 - **A bridge downloads the binary for its pin and platform** and checks it against the
   release's `SHA256SUMS` before using it (`.starship/bin/ensign`, with the tag beside it
   in `ensign.tag`). The first one is downloaded by Claude when it makes the bridge or
-  sets up a machine; after that, `ensign update` downloads the new release's.
+  sets up a machine; after that, `ensign update` downloads the new release's. A download
+  is capped at 64 MiB and five minutes, and `STARSHIP_RELEASES`, set to a local folder of
+  `<tag>/<file>` entries, serves releases from there instead (tests, or a mirror).
 - **Only CI builds released binaries.** A local build embeds local file paths; building
   on a work machine would carry them into a public release.
 - **Builds are reproducible**: `CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid="`.
   Anyone can rebuild from the tagged source and compare.
-- **CI also tests on a Windows runner**: paths, locking, and running `ensign.exe` from
+- **CI runs `go vet` and the tests on Linux, Windows and macOS runners**: paths, locking, and running `ensign.exe` from
   PowerShell and Git Bash. The harness probe (§7.1) needs a Claude login and stays manual.
 - Go is needed only on a machine where `ensign` itself is being developed.
 
@@ -1425,25 +1444,24 @@ SHA256SUMS
     inbox.md                     unsorted notes, editable from anywhere; the session sorts it
 ```
 
-Nothing creates `notes/` up front. The session reads its files on demand from an index printed at session start; run agents never see it.
+Nothing creates `notes/` up front. The session reads its files on demand from an index printed at session start; run agents never see it. `init`'s `.gitignore` covers `.starship/`, `machine.yaml`, `.claude/agents/` and `.claude/settings.local.json`.
 
 **Pinning.** `bridge.yaml` names a release tag. The pinned clone is a shallow fetch of
-exactly that tag; a bridge needs no history. Every run snapshot records the tag.
+exactly that tag; a bridge needs no history. Every run snapshot records the tag. `control-plane:` holds either `path`, a local control plane used directly (`ensign init --control-plane <path>` writes it), or `remote` with a `tag` or, for trying unreleased changes, a `ref`.
 
 **`ensign update [<tag>]`** — on request only. You run it, or ask Claude to ("update
 the bridge"); no hook runs it and Claude never starts it on its own. `help` notes when a
-newer release exists. It fetches tags, moves the pin to the newest
-release (or the one named), refuses while any run in the bridge is active, then runs
-`ensign link`. The change to `bridge.yaml` is committed and pushed in the bridge's repo,
+newer release exists. It moves the pin to the newest
+release (the highest `vX.Y.Z` tag the remote lists) or the one named; it needs exactly one `tag:` line in `bridge.yaml`, and while any run in the bridge is active it refuses and says to wait. It fetches that tag's control plane and `ensign`, rewrites the tag, then runs `ensign link` with the new `ensign` and prints "updated <old> → <new>; restart claude to use it". The change to `bridge.yaml` is committed ("Update starship to <tag>") and pushed in the bridge's repo,
 so the bridge's history records every version it ran.
 
-**`ensign link`** makes the bridge match its pin: checks out the pinned tag and
-regenerates `.claude/agents/` from it plus the bridge's own
-extensions. It runs from `ensign update`, from `ensign init`, and from a SessionStart hook
+**`ensign link`** makes the bridge match its pin: it regenerates `.claude/agents/` from the
+clone already at `.starship/control-plane/` plus the bridge's own
+extensions. The shallow fetch and checkout of the pinned tag belong to setup and update, not to link. It runs from `ensign update`, from `ensign setup` and `ensign init`, and from a SessionStart hook
 that checks the generated files still match the pin (they won't after a fresh clone of
-the bridge). Rules:
+the bridge); `ensign link --migrate` also moves workspace paths to the current layout first (§12.6). Rules:
 
-- **Never while a run is active.** A run's roles cannot change under it.
+- **Never while a run is active.** A run's roles cannot change under it. `update` refuses for the same reason, and a SessionStart that finds the link stale during a run leaves it, silently, for the next start.
 - **Hand edits are protected.** Link keeps a manifest of hashes of what it wrote and
   refuses to overwrite a modified file, naming the right place for the change: the
   control plane, or a role in a bridge extension.
@@ -1456,23 +1474,23 @@ the bridge). Rules:
   files by default.
 
 **Developing the control plane.** A bridge may set `remote` to the local `~/starship`
-and `ref` to any commit instead of a tag, to try changes before release. The binaries at
+and `ref` to any commit instead of a tag, or set `path` to a local control plane, to try changes before release. The binaries at
 an untagged commit are those of the last release, so such runs are marked `dev` in
 their snapshot and in `help`.
 
-**Each bridge has its own `ensign`; nothing is installed for the machine.** `ensign
-link` copies the pinned release's binary to `.starship/bin/ensign` (gitignored, per
+**Each bridge has its own `ensign`; nothing is installed for the machine.** Setup and
+update put the pinned release's binary at `.starship/bin/ensign` (gitignored, per
 machine), replacing it by rename so a running copy can be updated. Hooks call it by
 path, `"$CLAUDE_PROJECT_DIR/.starship/bin/ensign" hook <event>`, so the committed
 `settings.json` is the same on every machine and platform, and two bridges pinned to
 different releases never share a binary. The SessionStart hook puts `.starship/bin` on
 the PATH of the session's own shell (through `CLAUDE_ENV_FILE`), so the session runs
-plain `ensign …`. A bridge that follows a local control plane (development) gets a copy
-of the `ensign` that ran `link`. Outside a bridge, hook events are no-ops.
+plain `ensign …`. A bridge that follows a local control plane (`path`, for development) gets a copy
+of the `ensign` that ran `link`, made by `link` itself. Outside a bridge, hook events are no-ops.
 
-**Connector settings.** `init` writes `settings.json` without connector parts. While `connectors:` or `connector_writes:` is declared, the PreToolUse matcher (`.*` otherwise) gains `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep` (earlier ensigns wrote `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool` or `|mcp__.*` alone; those forms are upgraded; undeclared settings carry neither `Read` nor `Grep`) and `permissions.allow` lists the declared tools, `connector_writes` included, sorted and without duplicates, after `Bash(ensign:*)`. SessionStart keeps the file in step: a file that equals a form ensign wrote once the connector parts are removed, and whose connector parts have the shape ensign writes (none, or the matcher with any `mcp__` tools sorted and deduplicated directly after `Bash(ensign:*)`), is rewritten and committed when a declaration is added, changed or removed (removing returns exactly the base form), and nothing about the settings alone is said to the session: claude applies `settings.json` edits to a running session (see the probe below), a change that arrived by the sync included. `settings.json` follows `bridge.yaml` only at a SessionStart, on every source, while the hook reads `bridge.yaml` on each call; so after `connector_writes:` is edited, the tool's allow entry arrives at the next session start (`/compact`, `/clear` or restarting claude), and the refusal texts say so. The restart note concerns role definitions only: it fires whenever the role signature changes across the sync, also after the last declaration is removed, and the signature (the set of `.claude/agents/*.md` file names and each one's frontmatter `tools:` value) is compared against what the claude process started with, so moving a tool between roles or adding `reader: []` gets the note, and other edits to a role's prompt don't. The baseline is kept in `<bridge>/.starship/sessions/<pid>.connectors` (keyed by `CLAUDE_PID`, created at the process's first SessionStart or on source `startup`, swept by the same age rule as the `.pid` record); it holds only the agents signature, keeps its old name, and an old record that also holds a settings signature still parses. The note repeats on every `/clear`, resume or compact until the process restarts, also warns a second process, and stops if the change is reverted. With `CLAUDE_PID` empty it compares before and after the sync within the one invocation. Limit: a reused pid starting with source `resume` trusts the stale record and gives a false note until the next restart. Line endings are compared as LF, so a CRLF copy is rewritten the same way. A hand-edited file, including one with `mcp__` allow entries but no matcher, is left alone; but if rules are declared and it lacks any of the first three matcher entries (`mcp__.*`, `ListMcpResourcesTool`, `ReadMcpResourceTool`) on the ensign PreToolUse hook or a declared tool in `allow`, connector calls would go unchecked, or, when `reader` is declared, lacks `Read` or `Grep`, reads of `reader/sources/` would go unchecked, so SessionStart reports starship as not ready and names what is missing. A matcher entry counts as present when some ensign PreToolUse hook matcher selects that tool as Claude Code reads it (`matcherMatches`): `.*`, `*`, an empty matcher and a regular expression or alternation that matches all count, and `mcp__.*` must cover two tool names from unrelated servers, so a matcher scoped to one server does not count. An invalid declaration is not ready either.
+**Connector settings.** `init` writes `settings.json` without connector parts: `permissions.allow` holds `Bash(ensign:*)`, so the lead calls plain `ensign next` without a prompt, and the PreToolUse and SubagentStop hooks carry `"timeout": 3600`. While `connectors:` or `connector_writes:` is declared, the PreToolUse matcher (`.*` otherwise) gains `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep` (earlier ensigns wrote `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool` or `|mcp__.*` alone; those forms are upgraded; undeclared settings carry neither `Read` nor `Grep`) and `permissions.allow` lists the declared tools, `connector_writes` included, sorted and without duplicates, after `Bash(ensign:*)`. SessionStart keeps the file in step: a file that equals a form ensign wrote once the connector parts are removed, and whose connector parts have the shape ensign writes (none, or the matcher with any `mcp__` tools sorted and deduplicated directly after `Bash(ensign:*)`), is rewritten and committed when a declaration is added, changed or removed (removing returns exactly the base form), and nothing about the settings alone is said to the session: claude applies `settings.json` edits to a running session (see the probe below), a change that arrived by the sync included. `settings.json` follows `bridge.yaml` only at a SessionStart, on every source, while the hook reads `bridge.yaml` on each call; so after `connector_writes:` is edited, the tool's allow entry arrives at the next session start (`/compact`, `/clear` or restarting claude), and the refusal texts say so. The restart note concerns role definitions only: it fires whenever the role signature changes across the sync, also after the last declaration is removed, and the signature (the set of `.claude/agents/*.md` file names and each one's frontmatter `tools:` value) is compared against what the claude process started with, so moving a tool between roles or adding `reader: []` gets the note, and other edits to a role's prompt don't. The baseline is kept in `<bridge>/.starship/sessions/<pid>.connectors` (keyed by `CLAUDE_PID`, created at the process's first SessionStart or on source `startup`, swept by the same age rule as the `.pid` record); it holds only the agents signature, keeps its old name, and an old record that also holds a settings signature still parses. The note repeats on every `/clear`, resume or compact until the process restarts, also warns a second process, and stops if the change is reverted. With `CLAUDE_PID` empty it compares before and after the sync within the one invocation. Limit: a reused pid starting with source `resume` trusts the stale record and gives a false note until the next restart. Line endings are compared as LF, so a CRLF copy is rewritten the same way. A hand-edited file, including one with `mcp__` allow entries but no matcher, is left alone; but if rules are declared and it lacks any of the first three matcher entries (`mcp__.*`, `ListMcpResourcesTool`, `ReadMcpResourceTool`) on the ensign PreToolUse hook or a declared tool in `allow`, connector calls would go unchecked, or, when `reader` is declared, lacks `Read` or `Grep`, reads of `reader/sources/` would go unchecked, so SessionStart reports starship as not ready and names what is missing. A matcher entry counts as present when some ensign PreToolUse hook matcher selects that tool as Claude Code reads it (`matcherMatches`): `.*`, `*`, an empty matcher and a regular expression or alternation that matches all count, and `mcp__.*` must cover two tool names from unrelated servers, so a matcher scoped to one server does not count. An invalid declaration is not ready either.
 
-Observed on Claude Code 2.1.319, Linux, 2026-11-07, in live probes against a local mock API (isolated HOME and CLAUDE_CONFIG_DIR; headless and interactive in tmux). PreToolUse matcher entries and `permissions.allow` apply to a running session within about 2 seconds, added or removed, whether the file is renamed into place or written in place, also when `.claude` didn't exist at startup (about 2 seconds headless, under 6 interactive), and for subagents spawned afterwards. `.claude/agents/*.md` do not reach a running session: an added file, a changed `tools:`, a deleted file (it still spawned) and a folder created after startup were unchanged after 30 seconds on both routes, and an agent file written during SessionStart is not seen, on `startup` or `resume`. A settings file written during SessionStart takes the same couple of seconds: a tool call 0.26 seconds after the write missed the new matcher, and calls from about 3 seconds saw it. Matcher forms, headless the same day: the hook fired on Bash for `Bash`, `Edit|Bash`, `Edit,Bash`, `Edit, Bash`, `Edit| Bash`, `Read|sh$`, `.*`, `*`, empty, `(Bash|Read)` and `Bas.`, and not for `Bashful`, `bash`, `Ba`, `[x` and `Edit|Bash|[x`. `ensign selftest` now checks the live-settings behaviour (a PreToolUse hook added to `.claude/settings.local.json` mid-session fires on a later Bash call). Not established: auto permission mode with the server-side review (the mock can't reach its server-side check; the selftest uses `CLAUDE_CODE_AUTO_MODE_SERVER=0` instead), the `Grep` matcher (Grep isn't a tool in that build), macOS and Windows, and any other Claude Code version. Starship declares a minimum Claude Code version, 2.1.317 (`minClaudeVersion`), and only warns below it, so an older one may still keep settings until restart.
+Observed on Claude Code 2.1.319, Linux, 2026-11-07, in live probes against a local mock API (isolated HOME and CLAUDE_CONFIG_DIR; headless and interactive in tmux). PreToolUse matcher entries and `permissions.allow` apply to a running session within about 2 seconds, added or removed, whether the file is renamed into place or written in place, also when `.claude` didn't exist at startup (about 2 seconds headless, under 6 interactive), and for subagents spawned afterwards. `.claude/agents/*.md` do not reach a running session: an added file, a changed `tools:`, a deleted file (it still spawned) and a folder created after startup were unchanged after 30 seconds on both routes, and an agent file written during SessionStart is not seen, on `startup` or `resume`. A settings file written during SessionStart takes the same couple of seconds: a tool call 0.26 seconds after the write missed the new matcher, and calls from about 3 seconds saw it. Matcher forms, headless the same day: the hook fired on Bash for `Bash`, `Edit|Bash`, `Edit,Bash`, `Edit, Bash`, `Edit| Bash`, `Read|sh$`, `.*`, `*`, empty, `(Bash|Read)` and `Bas.`, and not for `Bashful`, `bash`, `Ba`, `[x` and `Edit|Bash|[x`. `ensign selftest` checks the live-settings behaviour (a PreToolUse hook added to `.claude/settings.local.json` mid-session fires on a later Bash call). The selftest uses `CLAUDE_CODE_AUTO_MODE_SERVER=0` because the mock can't reach auto mode's server-side check. Starship declares a minimum Claude Code version, 2.1.317 (`minClaudeVersion`), and only warns below it, at `setup` and `init` and in `selftest`, not at SessionStart, so an older one may still keep settings until restart.
 
 ### 11.4 Portability rules
 
@@ -1480,8 +1498,11 @@ Observed on Claude Code 2.1.319, Linux, 2026-11-07, in live probes against a loc
   CRLF. A bridge gets the same file from `ensign init`, or from a SessionStart migration for an existing bridge.
 - Forward slashes in every path. Where each project's code is lives in the gitignored
   `machine.yaml` (§12.6), never in the bridge's committed files.
-- Hook commands in `settings.json` use no shell syntax — no `$VAR`, no quoting tricks —
-  because the shell that runs them differs by platform.
+- Hook commands in `settings.json` use as little shell syntax as they can, because the
+  shell that runs them differs by platform: the one piece is the quoted
+  `"$CLAUDE_PROJECT_DIR/.starship/bin/ensign"` path, with forward slashes, which the
+  harness sets and any shell expands the same way. No other variables, no pipes, no
+  further quoting.
 
 ---
 
@@ -1503,16 +1524,16 @@ spawned.
 ### 12.2 What setup does
 
 The bridge's committed `CLAUDE.md` (written by `ensign init`) carries a short setup
-section that is visible before anything else exists: if `.starship/control-plane/` is
-missing, the bridge isn't set up on this machine. Claude downloads the pinned release's
+section that is visible before anything else exists: if `.starship/bin/ensign` does not
+exist and `bridge.yaml` names a remote, the bridge isn't set up on this machine. Claude downloads the pinned release's
 `ensign` for the platform into `.starship/bin/` and runs `.starship/bin/ensign setup`,
 which fetches the control plane at the pinned tag and checks the binary against the
 release's checksums.
 
 `ensign setup`, in Go and therefore the same on both platforms:
 
-- runs `ensign link` to generate the bridge's role and skill files and its own
-  `.starship/bin/ensign`;
+- warns when Claude Code is older than the minimum (§11.3), fetches the control plane and the bridge's own `.starship/bin/ensign` (only for a bridge pinned to a remote; a `path` bridge skips both), and moves old workspace paths into `machine.yaml` (§12.6);
+- runs `ensign link` to generate the bridge's role and skill files, and ends with "bridge ready — restart claude". It accepts `--projects <folder>` and ignores it, because older bridges' `CLAUDE.md` passed it and each project's folder is now asked for when first needed;
 - leaves `machine.yaml` to be filled in as projects are first needed (§12.6). A task
   whose project has no folder recorded on this machine stops with a clear message, and
   the session asks the user.
@@ -1564,23 +1585,24 @@ only silent case, and rare enough to accept.
 So there are two defences:
 
 - **A heartbeat at session start.** SessionStart replies with JSON. Its
-  `additionalContext` holds `STARSHIP-READY ensign <version> bridge <tag>`, followed by
+  `additionalContext` holds `STARSHIP-READY ensign <version> bridge <bridge folder path>`, followed by
   the session manual, which appear in the session's context (§7.1). Claude Code cuts
   `additionalContext` over 10,000 characters to a preview, so the heading, the manual, the situational lines and any pointer share a budget of 8,000 (`manualLimit`, `cmd/ensign/selftest.go`) less 400 (`sessionStartRoom`), and a test keeps the whole context within it for any number and length of lines. The tests count UTF-16 code units, the higher reading, because the Claude Code hooks docs do not say how the limit counts characters. 8,000 is what selftest proves delivered and is also the runtime budget for the situational lines; the 10,000 is the platform's cut. Project notes reprinted after a compaction or clear can take the context past it, up to just under `sessionContextLimit` (10,000), and a test covers both sides of that edge. The runtime check on those notes compares bytes, which can never pass the limit, so notes with non-ASCII text fall back to the pointer earlier.
-  **Situational lines share one budget.** Every situational line SessionStart prints (the not-ready, restart, carry, hold, sync, migrate, split-history, broken-extension, environment, impact-use, request, inbox and notes-index lines) is collected with a priority (`sessionLines`, `session_lines.go`) and printed in priority order, so a new line needs only a priority. The allowance is computed at runtime: `manualLimit` less `sessionStartRoom` (8,000 - 400) less the UTF-16 size of the fixed text of that reply (the heading and manual, so a long bridge path or a larger manual shrinks it), and less the size of the "too long to reprint" pointer when that is printed. Printing stops at the first line that doesn't fit (`fitSessionLines`): that line and every later one collapse into one line giving the count and where to read them. Lines are never truncated. Nothing is lost: the collapsed lines are held for the session in `.starship/sessions/<session>.lines` (appended, exact duplicates dropped, carried to the new id on `clear`, removed by the session sweep) and `ensign status` prints them. The broken-extension lines are not held, because status recomputes them. If the lines can't be held, or the session id is absent or couldn't be recorded, the collapse line says they could not be held. Output order is the heading, the manual, the situational lines, then the reprinted notes or the pointer; the pointer stays outside the collector. The could-not-record, not-ready and manual-missing replies go through the same step and carry the lines collected so far. No line has a cap of its own except the notes index (`notesIndexLimit`, 120 bytes); the broken-extension lines and the rest are never cut, only collapsed. Printing stops at the first line that doesn't fit, so one oversized high-priority line collapses every line below it, even ones that would have fit. This is deliberate: a lower-priority line never prints in place of a higher one, and the collapsed lines are held and readable through `ensign status`. A test (`TestManualLeavesRoomForSessionLines`) keeps the allowance at or above 500 characters (`sessionLinesFloor`: room for the collapse line plus one of the largest realistic lines) for the checked-in manual in a worst case of a 200-character bridge path, a 20-character version, and the reprint pointer with a 30-character project and a 60-character task. It is a test, not a runtime clamp, so a manual that grows into that room fails the test and has to be trimmed.
+  **Situational lines share one budget.** Every situational line SessionStart prints (the not-ready, restart, read-only-guard, carry, hold, stranded-retire, sync, migrate, split-history, broken-extension, environment, impact-use, request, inbox and notes-index lines) is collected with a priority (`sessionLines`, `session_lines.go`) and printed in priority order, so a new line needs only a priority. The allowance is computed at runtime: `manualLimit` less `sessionStartRoom` (8,000 - 400) less the UTF-16 size of the fixed text of that reply (the heading and manual, so a long bridge path or a larger manual shrinks it), and less the size of the "too long to reprint" pointer when that is printed. Printing stops at the first line that doesn't fit (`fitSessionLines`): that line and every later one collapse into one line giving the count and where to read them. Lines are never truncated. Nothing is lost: the collapsed lines are held for the session in `.starship/sessions/<session>.lines` (appended, exact duplicates dropped, carried to the new id on `clear`, removed by the session sweep) and `ensign status` prints them. The broken-extension lines are not held, because status recomputes them. If the lines can't be held, or the session id is absent or couldn't be recorded, the collapse line says they could not be held. Output order is the heading, the manual, the situational lines, then the reprinted notes or the pointer; the pointer stays outside the collector. The could-not-record, not-ready and manual-missing replies go through the same step and carry the lines collected so far. No line has a cap of its own except the notes index (`notesIndexLimit`, 120 bytes); the broken-extension lines and the rest are never cut, only collapsed. Printing stops at the first line that doesn't fit, so one oversized high-priority line collapses every line below it, even ones that would have fit. This is deliberate: a lower-priority line never prints in place of a higher one, and the collapsed lines are held and readable through `ensign status`. A test (`TestManualLeavesRoomForSessionLines`) keeps the allowance at or above 500 characters (`sessionLinesFloor`: room for the collapse line plus one of the largest realistic lines) for the checked-in manual in a worst case of a 200-character bridge path, a 20-character version, and the reprint pointer with a 30-character project and a 60-character task. It is a test, not a runtime clamp, so a manual that grows into that room fails the test and has to be trimmed.
   The `systemMessage` sits outside this budget and has no bound of its own, including the pieces that name left-behind sessions and holds (`leftBehindShow`, `leftBehindHoldShow`). That is deliberate: they are appended at the end of the line shown to the user, and the same facts reach the model through the budgeted carry and left-behind-hold lines. As read on 2026-11-07 through a summarising fetch, the Claude Code hooks reference (https://code.claude.com/docs/en/hooks) caps `additionalContext`, `systemMessage` and plain stdout at 10,000 characters each, measured per field, so a long `systemMessage` does not take room from `additionalContext`. It does not say how an over-limit `systemMessage` appears to the user.
   Its `systemMessage` shows the user one line at startup, "Starship ready · bridge
-  <name> · <release>", without calling the model. When a sequence was left behind by a carry, or holds a code folder, the line also names the session or sessions to resume. The bridge's `CLAUDE.md`: **if that line is absent, or starship hooks report
+  <folder name>", without calling the model. Segments follow when they apply: that the role definitions changed and claude must restart, that the read-only guard is missing from `.claude/settings.json`, and the release (left out for a `dev` build). When a sequence was left behind by a carry, or holds a code folder, the line also names the session or sessions to resume, and the session-start cleanup adds its notes (it removes finished runs beyond the bridge's `keep-runs`, default 500, at most 50 per start). The bridge's `CLAUDE.md`: **if that line is absent, or starship hooks report
   errors, say so plainly and do nothing except help fix it** — no pipeline, no agent
   spawn, no workspace change, no commit. This is a model-level rule, not a guarantee; it
   turns a silent failure into a visible one.
 
-  The rule is for the session agent only. Subagents never see the `STARSHIP-READY` line, so the rule tells them to ignore it rather than conclude that starship is broken. Bridges made before the rule was scoped get the new wording at SessionStart: `updateHeartbeat` runs beside `dropSessionImport`, which removes the manual's import that older versions of `ensign init` left in `CLAUDE.md`. `updateHeartbeat` looks for the old heartbeat paragraph in the bridge's `CLAUDE.md` (also in its CRLF form, which it keeps) and replaces it with the session-only one. It commits just that file with the message "Scope the heartbeat rule to the session agent". It leaves the file alone if it lacks the old paragraph, or if git shows uncommitted edits to it. `dropSessionImport` leaves a `CLAUDE.md` with uncommitted edits alone in the same way. In a bridge that is not a git repo (no `<bridge>/.git`, `isGit`) there is no uncommitted-edits check and no commit: both rewrite `CLAUDE.md` in place.
+  The rule is for the session agent only. Subagents never see the `STARSHIP-READY` line, so the rule tells them to ignore it rather than conclude that starship is broken. Bridges made before the rule was scoped get the new wording at SessionStart: `updateHeartbeat` runs beside `dropSessionImport`, which removes the manual's import that older versions of `ensign init` left in `CLAUDE.md`. `updateHeartbeat` looks for the old heartbeat paragraph in the bridge's `CLAUDE.md` (also in its CRLF form, which it keeps) and replaces it with the session-only one. It commits just that file with the message "Scope the heartbeat rule to the session agent" (the other system commit messages are listed in §10). It leaves the file alone if it lacks the old paragraph, or if git shows uncommitted edits to it. `dropSessionImport` leaves a `CLAUDE.md` with uncommitted edits alone in the same way. In a bridge that is not a git repo (no `<bridge>/.git`, `isGit`) there is no uncommitted-edits check and no commit: both rewrite `CLAUDE.md` in place.
 - **`ensign` fails closed, and its errors end the run** (§6.1). Any internal error — a crash, a corrupt state file, an
   unreadable snapshot — exits 2 with the reason, so the action is blocked rather than let
   through. (A Go panic already exits 2.) One exception: when a stop arrives with
-  `stop_hook_active` set and the error repeats, the stop is let through, so a persistent
-  fault cannot trap an agent in a loop.
+  `stop_hook_active` set, a stop already forced to continue, an error lets it through, so a persistent
+  fault cannot trap an agent in a loop. A failure at SessionStart blocks nothing, since exit 2 does
+  nothing there: it reaches the session and the user as JSON at exit 0.
 
 ### 12.6 Machines and containers
 
@@ -1597,8 +1619,9 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
 
 - **Fetch and rebase as you work.** SessionStart fast-forwards the bridge when it has no
   local changes, and every automatic commit fetches and rebases before pushing. A
-  conflict where both sides only added lines is resolved directly; any other conflict
-  stops and asks.
+  conflict stops the push: the pull aborts its rebase and the error names the files. The
+  session merges the two versions, keeping both where each only added lines; any other
+  conflict stops and asks.
 - **Where the code is, is per machine.** `project.yaml` and `task.md` hold no paths.
   Each machine has its own `machine.yaml` at the bridge's root, gitignored, mapping a
   project (or a task with a checkout of its own, as `<project>/<task>`) to a folder:
@@ -1636,8 +1659,8 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
   outside `.starship/` because, unlike everything there, it holds answers that can't be
   regenerated. A style source in a project's code is written `$WORKSPACE/<path>`, so it
   resolves on every machine too. Bridges from before this kept a `workspace:` line in
-  their files, often under a `$PROJECTS` root; setup, update and session start move
-  those into `machine.yaml` and leave the edited files for the journal to commit. Run
+  their files, often under a `$PROJECTS` root, which an old `.starship/machine.yaml`'s `projects:` line gave; setup, update and session start move
+  those into `machine.yaml`, expanding `$PROJECTS` from that line. The edited files that were clean before are committed ("Workspace paths move to each machine's machine.yaml"), and those already modified are left for the journal to commit. Run
   state stays on the machine that ran it.
 
 ---
@@ -1655,30 +1678,25 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
 
 ## 14. Open questions
 
-None at the moment. Deferred work is in the backlog (§15.4).
+None at the moment. Deferred work is in the backlog (§15.2).
 
 ---
 
-## 15. Implementation status
-
-Everything in §§2–12 is built, with unit tests (run in CI on Linux, Windows and macOS) and live
-runs against Claude Code, except where listed below.
-
-### 15.1 Commands
+## 14a. Commands
 
 | Command | Does |
 |---|---|
-| `ensign init <dir> (--control-plane <path> \| --remote <url> --tag <tag>)` | create a bridge |
-| `ensign setup` | fetch the pinned control plane, register the bridge, link (including the bridge's own `ensign`) |
+| `ensign init <dir> [--control-plane <path> \| --remote <url> [--tag <tag>]]` | create a bridge and commit it ("New bridge"); `--control-plane` writes `path:` for a bridge that follows a local control plane, `--remote` pins that remote at the tag, and with no flags a released binary pins the release it is |
+| `ensign setup [--projects <folder>]` | fetch the pinned control plane and the bridge's own `ensign`, link, and print "bridge ready — restart claude"; a `path` bridge only links; `--projects` is accepted and ignored |
 | `ensign workspace <p>[/<t>] [<path>]` | record (or show) where a project's or task's code is on this machine |
 | `ensign workspace <p> --location <name> [<path>]` | record (or show) where one of a project's code locations is on this machine |
 | `ensign env <p> [NAME=<value> \| --path <folder> \| --drop-path <folder>]` | record (or show) a project's toolchain setup on this machine: variables, and folders put first on `PATH` |
-| `ensign update [<tag>]` | move the bridge to a newer release |
-| `ensign gc [<keep>]` | delete finished runs beyond the limit (default: the bridge's `keep-runs`) and empty the scratch folders of the rest |
-| `ensign link [--force]` | regenerate the bridge's role, skill and manual files |
+| `ensign update [<tag>]` | move the bridge to a newer release (§11.3) |
+| `ensign gc [<keep>]` | delete finished runs beyond the limit (default: the bridge's `keep-runs`, 500), run folders holding only a `pipeline.json` and session links, and empty the scratch folders of the rest |
+| `ensign link [--force] [--migrate]` | regenerate the bridge's role, skill and manual files from the clone already there; `--migrate` first moves workspace paths into `machine.yaml` (§12.6) |
 | `ensign status` | read-only; print what the `status` prompt word prints for the session in `STARSHIP_SESSION`, including session-start lines held back and the broken extensions; works during a run |
-| `ensign project new <name> --workspace <path>` / `ensign task new <p>/<t> [--workspace <path> \| --locations <a,b>]` / `ensign task open <p>/<t>` | scaffold and open; where the code is goes into this machine's `machine.yaml`, and a new task uses its project's unless given a different location. `project new` refuses a project name holding `--`, because `<project>--<task>` file names would be ambiguous (`a/b--c` and `a--b/c` share files); task and location names may still hold it, and a project that already has such a name keeps working. `project new --pipeline none` makes a project of tasks without code (workspace, locations and platforms optional); `task new --pipeline <none\|coding>` picks per task (default: the project's), and a no-code task refuses `--workspace`, `--locations` and `--branch`; `task open` also lists the task's and project's `links:` (§5.3) and the secretary items whose `tasks:` name the task; `run`, `sequence run`, publishing and landing refuse a no-code task; `project new` and `task new` refuse a Windows reserved name (`con`, `nul`, `com1` and the like) as a project, task or location name (`--locations`, or in the project.yaml `--workspace` ships), and `project new --workspace` also refuses a shipped location name that fails the name rule (lower-case letters, digits and dashes) and writes no project, but a name already in a bridge keeps loading and the other task commands still accept it |
-| `ensign run <p>/<t> [--location <name>] [--subtask <name>] [--sides <a,b>] [--dependency <location>=<branch>] [--start <stage>] [--sync] [--dry-run]` | create a run for a task; `--subtask` names the subtask of a task with subtasks (default: the first pending); `--location` names the code location it edits, when the project has several; `--sides` narrows the locations it tests; `--dependency` names an unlanded branch of a location it depends on, applied with `@apply-dependency` |
+| `ensign project new <name> --workspace <path> \| --locations <a,b> [--platforms <list>]` / `ensign task new <p>/<t> [--workspace <path> \| --locations <a,b>] [--branch <branch>] [--pipeline <none\|coding>]` / `ensign task open <p>/<t>` | scaffold and open; where the code is goes into this machine's `machine.yaml`, and a new task uses its project's unless given a different location. `project new` refuses a project name holding `--`, because `<project>--<task>` file names would be ambiguous (`a/b--c` and `a--b/c` share files); task and location names may still hold it, and a project that already has such a name keeps working. `project new --pipeline none` makes a project of tasks without code (workspace, locations and platforms optional); `task new --pipeline <none\|coding>` picks per task (default: the project's), and a no-code task refuses `--workspace`, `--locations` and `--branch`; `task open` also lists the task's and project's `links:` (§5.3) and the secretary items whose `tasks:` name the task; `run`, `sequence run`, publishing and landing refuse a no-code task; `project new` and `task new` refuse a Windows reserved name (`con`, `nul`, `com1` and the like) as a project, task or location name (`--locations`, or in the project.yaml `--workspace` ships), and `project new --workspace` also refuses a shipped location name that fails the name rule (lower-case letters, digits and dashes) and writes no project, but a name already in a bridge keeps loading and the other task commands still accept it |
+| `ensign run <p>/<t> [--location <name>] [--subtask <name>] [--sides <a,b>] [--dependency <location>=<branch>] [--start <stage>] [--sync] [--stale-branch] [--dry-run]` | create a run for a task; `--stale-branch` takes a task branch that is behind the default branch as it is (§3.2); `--subtask` names the subtask of a task with subtasks (default: the first pending); `--location` names the code location it edits, when the project has several; `--sides` narrows the locations it tests; `--dependency` names an unlanded branch of a location it depends on, applied with `@apply-dependency` |
 | `ensign dependency apply --side <location>` / `restore [--side <location>]` | for agent stages: apply a run's dependencies on a side before building and testing there, and restore the tree before finishing |
 | `ensign p4 open <path>...` | open files shell commands changed, added or deleted in a Perforce task's changelist (run agents) |
 | `ensign task close <p>/<t>` | close a task, with or without code: fire `task.close` (§4.2), set `status: closed` and `Done.` in `task.md`, remove its `.tested` and `.publish` records (kept, with a warning, while a task of the same encoded name isn't closed), and journal it, and list the secretary items that name the task in `tasks:` (asking the user whether open or waiting ones are done too); closing a closed task does nothing |
@@ -1693,58 +1711,33 @@ runs against Claude Code, except where listed below.
 | `ensign next [--run <id>]` | what to dispatch next |
 | `ensign resume --answer <text> [--budget <b>=<n>]` | continue an `ask-user` run |
 | `ensign journal commit -m <msg>` / `ensign journal push` | commit and push the bridge's records |
-| `ensign git-catalog squash <p>/<t> -m <msg>` | collapse a task's catalog into one commit |
+| `ensign git-catalog squash <p>/<t> [--location <name>] -m <msg>` | collapse a task's catalog into one commit |
 | `ensign style ingest <project> <path-or-url> --trust <t>` | add a style source |
 | `ensign selftest` | re-check the Claude Code behaviour starship depends on, in an isolated temp config against a local scripted mock of the Messages API (no account, nothing in the real `~/.claude` touched), including that MCP tool calls carry the agent's identity, that a hook deny stops them, and that an agent's `tools:` list grants the MCP tools it names |
 | `ensign hook <event>` | the hook driver |
+| `ensign version` / `--version` | print the version |
+| `ensign help [topic\|requests]` | what the `help` word prints; `requests` lists every request a pipeline or extension answers and the command that carries it out (§4.3) |
+| `ensign writes [add --tool <name> [--short] [--title <text>] [--read <file> [--read-revision <id>]] \| drop <n>... \| drop --all]` | queue, or drop, connector writes that wait for the user's `go` (§5.3); `add` takes the tool input as one JSON object on stdin |
+| `ensign direct ask <folder> "<what>"` / `ensign direct close` | record a direct-edit request, or close an open edit or drop a waiting request (§7.3) |
+| `ensign brief [--also <source>=<item>]...` | print the briefing instructions for the session (§5.3) |
+| `ensign run-stage [--bridge <dir>] [--run <id>]` | run the plain stage that is due now and print its outcome (§5.2) |
+| `ensign github-pr pull-request\|merge\|update <p>/<t> [--location <name>]` | the user's steps after a run passed: open the pull request, land on the default branch, or rebase a stale task branch (§3.2); `github-pr ci` and `branch` are the extension's binding handlers, run by pipelines |
+| `ensign skill new <name> --description <text>` / `ensign skill discard <name>` | make a held skill, or drop its held facts (§4.4) |
+| `ensign document propose <name> <text> [--evidence <text>]` | add a proposal for a declared document (§4.5) |
+| `ensign style ingest … [--note <text>] [--location <name>]` / `ensign style report <project>` | `--note` is kept with the source and `--location` names the code location it is for (§9.4); `report` compares corrections with the guide (§9.6) |
+| `ensign project reviewed <p>[/<t>] [--location <name>]` | record the code's current shipped settings as reviewed (§4.1) |
+| `ensign run retire <run>` / `ensign run stop <run>` | end a live run of another session so its code folders are free, or end the session's own run at once (§5.4) |
+| `ensign sequence release <project> <version> [--location <name>]` / `release-run <seq>.<step>` | add a release step to the open sequence, or run one |
+| `ensign sequence drop <step>... [--reason <text>]` / `discard [--reason <text>]` / `--all` | drop steps, discard the open sequence, or list every sequence in the session (§7) |
 
-### 15.2 Settled while building
+---
 
-- **Agents are given bindings as exact commands** (`cd <workspace> && ./build.sh`), and
-  each run has a scratch folder for logs and an evidence folder that outlives the run, both named in every prompt. Agent instructions avoid
-  shell variables such as `echo $?`, which Claude Code's permission checks refuse unless
-  allowed.
-- **Bridges allow `Bash(ensign:*)` by default**, and the lead calls plain `ensign next`.
-- **The session manual comes from the SessionStart hook, not `CLAUDE.md`.** Claude Code
-  gives `CLAUDE.md` and its imports to every subagent, so importing the manual put it
-  in every coder's and tester's context, telling them not to edit or run tests. The hook
-  prints `.starship/session.md` after the heartbeat; SessionStart fires only for the
-  session, and again after a compaction. It removes the old import from an existing
-  bridge's `CLAUDE.md` and commits that, unless the file has uncommitted edits.
-  `ensign selftest` checks from the session transcript that the hook's output reached the session whole, and from each agent's own transcript that it stays out of subagents. A unit test keeps the heading, the manual, the situational lines and any pointer within the budget (8,000 characters less 400, counted in UTF-16 code units), for any number and length of lines; project notes reprinted after a compaction or clear are bounded only by `sessionContextLimit` (10,000). The situational lines share the 8,000 budget (§12.5).
-- **A `claude` started from inside another Claude Code session is a child session.**
-  Its prompt reaches UserPromptSubmit with a `Claude` line in front, so `help` doesn't
-  match, and it inherits the parent's project directory. This is why `help` once went to
-  the model in testing; a user's own session isn't affected. `ensign` starts its own
-  `claude` (the selftest) without the variables a session sets
-  about itself (`cleanClaudeEnv` for `claude --version`; the selftest's probe sessions use `isolatedClaudeEnv`, which also strips them), and live tests should do the same.
-- **`ensign init` commits the new bridge** (with a `.gitattributes` for LF line endings). Before, the first session in a new bridge
-  was asked to commit the empty-folder placeholders as journal changes.
-- **Stages run in the foreground.** PreToolUse rewrites `run_in_background` to `false`
-  on every stage dispatch, and `ensign selftest` checks the rewrite works (by event
-  ordering and the leaf's report from hook data; it does not show where a foreground
-  reply lands, and the Agent result may hold only a pointer). A dispatch with no
-  `run_in_background` field is left as it is: PreToolUse only rewrites `true` to `false`,
-  so Claude Code's default decides, and no report or outcome depends on it, since both
-  come from hooks. Inside a
-  subagent, asking for the background does launch the agent in the background: a
-  control run without the rewrite failed the check. A lead that still ends up waiting
-  on a running stage is allowed to end its turn, and that isn't counted towards
-  `lead-stopped`. Blocking it would force the filler turns the waiting rules exist to
-  prevent.
-- **Facts for a skill that doesn't exist are held, not curated.** Agents are told which
-  skill names exist. A fact for any other name goes to `skills/proposed/<name>/`, and
-  `status` lists it. `ensign skill new <name> --description …` creates the skill and
-  makes its facts pending; `ensign skill discard <name>` drops them. `skill new` refuses a Windows reserved name (`con`, `nul`, `com1` and the like), and a fact line naming one is skipped as an invalid name is; `skill discard` still accepts one, so facts already held under it can be cleared. `status` offers "make a <name> skill" or "discard the <name> facts" only for a held folder whose name is usable; for one that isn't (it fails the name rule, or Windows reserves it) it shows the fact count and tells you to remove the folder by hand, with no offer. A folder in `skills/pending` with facts whose name isn't a usable skill name (it fails the name rule, or Windows reserves it) is skipped with a warning when a skill-curate run lists its items, and stays on disk; a curation report for such a name is refused before anything is written.
-- **Help entries name their command for the session.** A pipeline's or extension's help
-  entry may carry `run:`, the command that carries the request out. `help` never shows
-  it; `ensign help requests` lists every one, generated at call time, and the SessionStart hook points at it after the manual, so the session doesn't have to guess how to "squash this task's commits".
-- **The `@done` check** runs before a run may end as `success`; a failure ends it as
-  `error: done-check`.
-- **Events on stages a pipeline doesn't have are inactive for it**, so an extension or layer
-  can serve several pipelines.
+## 15. Implementation status
 
-### 15.3 Not done
+Everything in §§2–14a is built, with unit tests (run in CI on Linux, Windows and macOS) and live
+runs against Claude Code, except where listed below. This section holds only what is not done and what is deferred.
+
+### 15.1 Not done
 
 - **Five of §4.2's events are never fired.** `session.open`, `task.open`, `plan.approved`, `commit.before` and `push.before` are in the design, but only `task.close`, `run.start`, `stage.before:<id>`, `stage.after:<id>` and the three `run.finish:` events are. A project or extension that names another event is refused (`event "<name>" is not one starship fires`), and no git hook runs `commit.before` or `push.before`.
 - **A session `help <topic>` covers projects and tasks only (§7.2).** It names a project or task (`helpTopic`) and answers a kind of work with "No project or task called ...".
@@ -1756,16 +1749,17 @@ runs against Claude Code, except where listed below.
 - **`ensign run stop` takes an advisory outcome only on a `parallel` stage (§5.4).** Validation allows `advisory` on any non-lead stage, but a stop during an advisory stage that is not parallel cancels the run.
 - **Connector content through the built-in resource tools is not measured (§5.3).** Whether connectors serve content through `ListMcpResourcesTool` and `ReadMcpResourceTool` has not been tested; they are covered by the rules either way.
 - **Harness checks not made (§5.5).** Not observed: macOS, Windows, a real model, and auto mode with the server-side review. Versions below 2.1.317 were not probed for a lower floor. Interactive `/fork` and `/branch`, 2.0.x `--continue` and interactive auto-compact were not probed, and the `-p` and interactive routes were compared only on 1.0.115.
-- **No release has been cut.** The release workflow exists but has never run, so there
-  is no tag for a bridge to pin; pinning is tested against local tags.
+- **Deleting a moved note from a journal-off project is not asked for (§10.2).** Nothing names or asks for the deletion of the source of a note moved out of a `journal: off` project, so it stays uncommitted until someone commits it by name.
+- **Harness checks not made for §11.3's settings behaviour.** Auto permission mode with the server-side review, the `Grep` matcher, macOS and Windows, and any other Claude Code version than 2.1.319 are not verified.
+- **`help` does not note a newer release (§11.3).** `latestTag` and `newerTag` serve only `ensign update`.
+- **Development runs are not marked `dev` (§11.3).** Neither the run snapshot nor `help` says a run follows an untagged commit.
+- **A bridge on `remote` with a `ref` gets no `ensign` copy (§11.3).** `fetchEnsign` returns early with no tag, and only a `path` bridge gets a copy from `link`, so a `ref` bridge keeps whatever `ensign` is already in `.starship/bin/`.
+- **CI does not run `ensign.exe` from PowerShell or Git Bash (§11.2).** It runs only `go vet ./...` and `go test` on each runner.
+- **Windows hooks (§11.4, §12.5).** How Claude Code runs hook commands on Windows (Git Bash, PowerShell, or direct process launch) is unverified. `ensign hook <event>` is designed to work under all three, and the code and its tests pass on Windows in CI. The selftest's hooks check has not been run on a Windows machine.
 
-### 15.4 Backlog
+### 15.2 Backlog
 
 Deliberately deferred; not reported as open work.
 
-- **Windows hooks.** How Claude Code runs hook commands on Windows (Git Bash, PowerShell,
-  or direct process launch) is unverified. `ensign hook <event>` is designed to work under
-  all three, and the code and its tests pass on Windows in CI. Verify by running
-  `ensign selftest` on a Windows machine.
 - **Nested leads.** A pipeline can't put an orchestrator stage inside another; validation
   rejects it. Build it when a pipeline needs it.
