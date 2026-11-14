@@ -1145,12 +1145,7 @@ events:
 
 `ensign git-catalog squash` is not bound to any event by default; the extension declares no key for it.
 
-- **The driver commits, not the coder.** Messages are uniform and numbered from state:
-  `wip(c1 p1) BROKEN: <summary>` for a pass that reported `broken`, `wip(c1 p2): <summary>`,
-  `wip(c2 p1): <summary>`. The subject carries the report's summary cut to 60 characters and
-  the body carries all of it, so a broken pass's compile errors, when the coder names them in
-  its summary, are in the body. The documentation stage's changes are committed the same way, as
-  `docs: <summary>`, staging only what changed inside the @docs paths.
+- **The driver commits, not the coder.** Messages are uniform and numbered from state: `wip(c1 p1) BROKEN: <summary>` for a pass that reported `broken`, `wip(c1 p2): <summary>`, `wip(c2 p1): <summary>`. The subject carries the report's summary cut to 60 characters and the body carries all of it, so a broken pass's compile errors, when the coder names them in its summary, are in the body. The documentation stage's changes are committed the same way, as `docs: <summary>`, staging only what changed inside the @docs paths.
 - **Staging is by name.** `ensign git-catalog commit-pass` stages exactly the report's `files` (as literal paths, so glob characters or a leading `:` in a name mean themselves; an entry that resolves to the workspace root, such as `.`, `./`, `a/..` or the workspace's absolute path, is refused before anything is staged and ends the run in `error` like any other refused entry), then
   checks for any other modification; if there is one, the run ends as `error` rather than
   sweeping in or stashing someone's work.
@@ -1259,8 +1254,7 @@ every source to a generator again; the ledger must still account for every exist
 
 ### 9.5 Writing the guide
 
-The curator's rewrite is checked when it hands back (§4.5): a refused one is denied at the `SubagentHandback` call
-with the reasons, and the live curator tries again; only a curator that stops with no handback is blocked at its stop. The accepted document is written to
+The curator's rewrite is checked when it hands back (§4.5): a refused one is denied at the `SubagentHandback` call with the reasons, and the live curator tries again; only a curator that stops with no handback is blocked at its stop. The accepted document is written to
 `learned.yaml`, which the journal mechanism (§10.2) commits and pushes, so
 `git log -p` on the guide shows every change.
 
