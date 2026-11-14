@@ -724,8 +724,8 @@ The driver adds its own:
 
 **The closing gate.** In a pipeline whose stage 0 is a lead, a `finish: success` transition, whether from a stage outcome or from an `on-exhausted` budget, does not end the run. It leaves the run non-terminal at the gate (`gate` in the state file, holding why the pipeline passed), and `ensign next` tells the lead to record its judgment: `ensign run finish --bridge <dir> --run <id> --goal met`, or `--goal not-met "<why>"`. `met` finishes the run as `success`; `not-met` finishes it as `error` with the code `goal-not-met` and the why as the reason, and needs a why. `ensign run finish` is refused unless the run is at the gate. Only then do the finishing steps run: the `@done` check, the `run.finish` events, the journal line, emptying `scratch/`, and a sequence's advance and publish. A pipeline with no lead (the curation and style-generation pipelines) finishes directly. `ensign run stop` finishes the run without the gate, and so does a stop that ends an advisory stage.
 
-**An `ensign` error during pipeline work is an immediate failure:** the run ends as
-`error: ensign` with `ensign`'s message. This covers a hook that fails. It is never
+**A failing hook is an immediate failure:** the run ends as
+`error: ensign` with `ensign`'s message, and the hook's action is blocked (exit 2), except that a Stop already being forced to continue is let through. A failing `ensign` command that Claude runs from the shell, such as a refused dispatch, a refused `ensign next`, or `ensign run-stage` reporting a dead command, does not by itself end the run: it is an error the lead reads and acts on. Either way the failure is never
 retried in a loop and never worked around — no falling back to raw `git`, no dispatching
 without the driver. The fix is to `ensign` or its configuration, then a new run or
 `ensign resume`.
