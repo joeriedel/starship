@@ -1628,6 +1628,33 @@ func helpBoth(w *world) (string, string) {
 	return helpText(w.bridge, w.sid), requestCommands(w.bridge)
 }
 
+func TestHelpExtensionGroupsAreSorted(t *testing.T) {
+	w := newWorld(t)
+	names := []string{"supernova-quasar", "supernova-corona", "supernova-pulsar", "supernova-ash", "supernova-nebula"}
+	for _, n := range names {
+		write(t, filepath.Join(w.bridge, "extensions", n, "extension.yaml"), "name: "+n+"\nhelp:\n  - {say: "+n+", does: does "+n+", run: ls}\n")
+	}
+	first := helpText(w.bridge, w.sid)
+	for i := 0; i < 20; i++ {
+		if got := helpText(w.bridge, w.sid); got != first {
+			t.Fatalf("help changed between calls:\n%s\n---\n%s", first, got)
+		}
+	}
+	sorted := []string{"Supernova ash", "Supernova corona", "Supernova nebula", "Supernova pulsar", "Supernova quasar"}
+	last := fixedHelp[len(fixedHelp)-1].group
+	prev := -1
+	for _, g := range sorted {
+		i := strings.Index(first, "\n"+g+"\n")
+		if i < 0 || i < prev {
+			t.Fatalf("group %q missing or out of order:\n%s", g, first)
+		}
+		prev = i
+	}
+	if prev > strings.Index(first, "\n"+last+"\n") {
+		t.Errorf("extension groups should come before %q:\n%s", last, first)
+	}
+}
+
 func TestHelpNamesBrokenPipelineFiles(t *testing.T) {
 	w := newWorld(t)
 	bad := filepath.Join(w.bridge, "extensions", "supernova-feed", "pipelines", "supernova-bad.yaml")

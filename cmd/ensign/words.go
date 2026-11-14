@@ -275,11 +275,11 @@ func helpText(bridge, session string) string {
 		order = append(order, g.group)
 	}
 	extra, problems := extraHelp(bridge)
-	for group, entries := range extra {
+	for _, group := range sortedKeys(extra) {
 		if _, ok := groups[group]; !ok {
 			order = append(order[:len(order)-1], group, order[len(order)-1])
 		}
-		groups[group] = append(groups[group], entries...)
+		groups[group] = append(groups[group], extra[group]...)
 	}
 	for _, g := range order {
 		b.WriteString("\n" + g + "\n")
