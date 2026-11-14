@@ -146,7 +146,7 @@ const initUsage = "usage: ensign init <dir> [--control-plane <path> | --remote <
 
 // cmdInit implements `ensign init`. With neither --control-plane nor --remote, a
 // released ensign pins the release it is: the repo it was built from, at its version. A pinned bridge is also set up, as setup would, so one
-// command makes a working bridge; --projects records where this machine keeps code.
+// command makes a working bridge.
 func cmdInit(args []string, out io.Writer) error {
 	var dir, cpPath, remote, tag string
 	for i := 0; i < len(args); i++ {
