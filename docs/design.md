@@ -35,7 +35,7 @@ control plane   ~/starship            personal GitHub; public-safe
 bridge          bridges/work/         hosted wherever that context requires
    │            bridges/home/         (a work bridge never touches personal GitHub)
    │            projects, tasks, project skills, integration scripts,
-   │            platform roots, local extensions
+   │            local extensions, gitignored per-machine machine.yaml (workspaces, env)
    ▼
 project         <bridge>/projects/<project>/
    │            bindings, pipeline extensions, rules
@@ -402,7 +402,7 @@ stop with the reasons if it fails:
   source; an active entry never goes back to candidate;
 - the document fits in 150 lines.
 
-**Declared documents.** `bridge.yaml` may declare `documents:`, a map from a name (`^[a-z0-9][a-z0-9-]*$`) to `path` and, optionally, `rubric`, all relative to the bridge. A `path` ends in `.md` and lies under `notes/` or `projects/<project>/documents/`, the two places the journal commits and nothing else writes; neither path has a backslash, an empty segment, a segment starting with a dot or a `..`. A name is declared once, no two names share a path (compared without regard to case), and a rubric is another `.md` file than the document. `documents:` is parsed on its own, apart from `BridgeFile`, so a malformed key breaks nothing but the commands that use it; errors begin `bridge.yaml: documents: <name>: `.
+**Declared documents.** `bridge.yaml` may declare `documents:`, a map from a name (`^[a-z0-9][a-z0-9-]*$`) to `path` and, optionally, `rubric`, all relative to the bridge. A `path` ends in `.md` and lies under `notes/` or `projects/<project>/documents/`, the two places the journal commits and nothing else writes; neither path has a backslash, an empty segment, a segment starting with a dot or a `..`. A name is declared once, no two names share a path (compared without regard to case), and a rubric is another `.md` file than the document. `documents:` is parsed on its own, apart from `BridgeFile`, so a malformed key breaks nothing but the commands that use it; errors begin `bridge.yaml: documents: <name>: `. For a new period, a document needs no template: edit its `path`, or declare another name.
 
 A declared document is Markdown so `notes/` can carry it: a `# <name>` line, a note that the curator maintains it, and exactly one `starship-document` block holding the YAML above, with ids `D1`, `D2`, … and no authoritative sources. A missing file is an empty document, so a first curation works. A file with no block, two blocks or invalid YAML is an error and is never overwritten; a rewrite replaces only the block and keeps the rest of the file and its line endings. A block ends at the first line that is exactly three backticks, and YAML indents entry text, so text may hold such a line. The write goes through a temp file and a rename. The notes index at session start lists file names only, never contents.
 
