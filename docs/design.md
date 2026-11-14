@@ -35,7 +35,7 @@ control plane   ~/starship            personal GitHub; public-safe
 bridge          bridges/work/         hosted wherever that context requires
    │            bridges/home/         (a work bridge never touches personal GitHub)
    │            projects, tasks, project skills, integration scripts,
-   │            local extensions, gitignored per-machine machine.yaml (workspaces, env)
+   │            local extensions, gitignored per-machine machine.yaml (workspaces, locations, env)
    ▼
 project         <bridge>/projects/<project>/
    │            bindings, pipeline extensions, rules
