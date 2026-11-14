@@ -177,10 +177,7 @@ Carried over from the reference design:
   Silence means nobody decided; `not-applicable` means somebody did.
 - **A binding that contradicts the workspace is also a stop** — a path that isn't there,
   a target that doesn't exist. Never substitute an equivalent.
-- **Agents are given a binding as the exact command** (`cd <workspace> && ./build.sh`),
-  and every prompt names the run's scratch folder for logs and its evidence folder, which
-  outlives the run. Agent instructions avoid shell variables such as `echo $?`, which
-  Claude Code's permission checks refuse unless allowed.
+- **Agents are given a binding as the exact command** (`cd <workspace> && ./build.sh`), and every prompt names the run's scratch folder for logs and its evidence folder, which outlives the run. Agent instructions avoid shell variables such as `echo $?`, which Claude Code's permission checks refuse unless allowed.
 - Platform variants are declared per platform; a binding with variants but none for the
   detected platform is a stop.
 - **A repository can ship its project settings** in `.starship/project.yaml`: bindings,
@@ -263,9 +260,7 @@ Handler kinds:
 | `augment` | adds text to the next dispatched prompt | — |
 
 **All events are fired by deterministic code** (§7), never by an agent. An event an
-agent forgets to fire is a silent skip, whatever the handler kind. An event on a stage a
-pipeline doesn't have is inactive for it, so an extension or layer can serve several
-pipelines.
+agent forgets to fire is a silent skip, whatever the handler kind. An event on a stage a pipeline doesn't have is inactive for it, so an extension or layer can serve several pipelines.
 
 `task.close` is fired by `ensign task close <p>/<t>`, outside any run, for tasks with and without code. `require` handlers run first, in order; one that fails ends the close with nothing written, so it can be retried. A handler that doesn't set exactly one of `require`, `observe` and `augment` ends the close the same way, before any handler runs. Then, holding the task's publish lock, the task is marked closed (`status: closed` in its frontmatter, which makes a second close a no-op) and its `.publish` record and every `.tested` of the task, at all locations, are removed; a close is refused, leaving the task open, while a publish of the task holds the lock, and a failed removal only warns (`ensign gc` and the session-start cleanup retry it, see the run cleanup below). The records stay, with a warning, when another task of the same encoded name isn't closed, its status can't be read, or the task listing fails (`peerKeepsRecords`); gc removes them once all are closed, and a closed peer doesn't stop removal. A failed listing of the `.tested` records prints `warning: task.close could not list ...` and the `.publish` record is still removed. Then `observe` handlers run; a failing one only warns, as does a failure to journal the close. Handlers run in the bridge root with `STARSHIP_BRIDGE`, `STARSHIP_PROJECT` and `STARSHIP_TASK`, and without `STARSHIP_RUN`, `STARSHIP_RUN_DIR` or `STARSHIP_WORKSPACE`. `@binding` commands, `ensign …` handlers and generated `@name` augments need a run and are refused. The output of handlers and the text of `augment` files are printed after `Closed <p>/<t>.` for the session to act on in the same turn: this is how an extension asks the session (and through it the user) a question.
 
@@ -919,9 +914,7 @@ The guard saves the run only when it rebinds it, and a failed save warns rather 
 6. Force the stage into the foreground: `run_in_background: true` becomes `false`. A
    lead then never spends a turn waiting on a stage. Waiting turns are where agents
    poll, send filler reports, dispatch placeholder agents and write invented results.
-   Parallel branches still run together, dispatched in one message. Only `true` becomes
-   `false`: a dispatch with no `run_in_background` field is left as it is, so Claude Code's
-   default decides, and no report or outcome depends on it, since both come from hooks.
+   Parallel branches still run together, dispatched in one message. Only `true` becomes `false`: a dispatch with no `run_in_background` field is left as it is, so Claude Code's default decides, and no report or outcome depends on it, since both come from hooks.
 7. Record the dispatch.
 
 At a run's first lead dispatch the hook first clears the task's `.tested` marker (unless the run starts at `docs`), runs `@sync` when the run was started with `--sync`, runs `runP4State`, fires `run.start` and records the workspace's HEAD as `StartHead`; a failure of any of these fails the run and denies the dispatch. A stage that ensign runs itself (`plainStage`) is denied with "ensign runs this stage itself". A stage marked advisory never fails the run: a `stage.before` failure or a dispatch that cannot start takes the advisory outcome and the join goes on. A `documentation` dispatch records a baseline (`docsBaseline`) against which SubagentStop checks what it changed. When an agent's run cannot be found (the session restarted and nothing ties the agent to a live run), a spawn of a role that is some stage's role, or one that can't be ruled out because pipeline files could not be read, is denied; a read-only role is let through, with a system message, in that last case (`stageRoleAnywhere`, `readOnlyRole`).
@@ -1313,9 +1306,7 @@ Three kinds of repository, three defaults:
 
 For journals the agent writes the commit message, because it knows what the logical
 change was, and a **Stop hook enforces that it happened**: a session turn cannot end with
-uncommitted journal changes or a bridge not pushed to its remote. The hook names what is
-outstanding and blocks; the agent commits and tries again. Wording is the agent's job;
-whether it happened is not.
+uncommitted journal changes or a bridge not pushed to its remote. The hook names what is outstanding and blocks; the agent commits and tries again. Wording is the agent's job; whether it happened is not.
 
 **System commits in the bridge.** When ensign itself changes a tracked file of the bridge it commits just that file with a fixed message: "New bridge" (`init`), "Update starship to <tag>" (`update`), "Commit hand edits to the bridge's notes", "Keep the bridge's text files at LF line endings", "Load the session manual from the SessionStart hook", "Scope the heartbeat rule to the session agent", "Move each task's progress log into history.md", "Update the starship hook settings" and "Workspace paths move to each machine's machine.yaml" (§12.6).
 
@@ -1407,14 +1398,11 @@ SHA256SUMS
   runner it checks out master's head, tests, cross-compiles every target, tags that commit `v1.4.0`, and
   publishes the release with the binaries attached, as a pre-release unless
   `-f prerelease=false`. Tags are never created by hand. Free for public repos.
-- **Each binary knows its release**: the build sets its version (the tag, `-X main.version`) and the repo it
-  came from (`-X main.releaseRepo`), so `ensign init` with no flags pins exactly the release it is.
+- **Each binary knows its release**: the build sets its version (the tag, `-X main.version`) and the repo it came from (`-X main.releaseRepo`), so `ensign init` with no flags pins exactly the release it is.
 - **A bridge downloads the binary for its pin and platform** and checks it against the
   release's `SHA256SUMS` before using it (`.starship/bin/ensign`, with the tag beside it
   in `ensign.tag`). The first one is downloaded by Claude when it makes the bridge or
-  sets up a machine; after that, `ensign update` downloads the new release's. A download
-  is capped at 64 MiB and five minutes, and `STARSHIP_RELEASES`, set to a local folder of
-  `<tag>/<file>` entries, serves releases from there instead (tests, or a mirror).
+  sets up a machine; after that, `ensign update` downloads the new release's. A download is capped at 64 MiB and five minutes, and `STARSHIP_RELEASES`, set to a local folder of `<tag>/<file>` entries, serves releases from there instead (tests, or a mirror).
 - **Only CI builds released binaries.** A local build embeds local file paths; building
   on a work machine would carry them into a public release.
 - **Builds are reproducible**: `CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid="`.
@@ -1443,13 +1431,10 @@ Nothing creates `notes/` up front. The session reads its files on demand from an
 exactly that tag; a bridge needs no history. `control-plane:` holds either `path`, a local control plane used directly (`ensign init --control-plane <path>` writes it), or `remote` with a `tag` or, for trying unreleased changes, a `ref`.
 
 **`ensign update [<tag>]`** — on request only. You run it, or ask Claude to ("update
-the bridge"); no hook runs it and Claude never starts it on its own. It moves the pin to the newest
-release (the highest `vX.Y.Z` tag the remote lists) or the one named; it needs exactly one `tag:` line in `bridge.yaml`, and while any run in the bridge is active it refuses and says to wait. It fetches that tag's control plane and `ensign`, rewrites the tag, then runs `ensign link` with the new `ensign` and prints "updated <old> → <new>; restart claude to use it". The change to `bridge.yaml` is committed ("Update starship to <tag>") and pushed in the bridge's repo,
+the bridge"); no hook runs it and Claude never starts it on its own. It moves the pin to the newest release (the highest `vX.Y.Z` tag the remote lists) or the one named; it needs exactly one `tag:` line in `bridge.yaml`, and while any run in the bridge is active it refuses and says to wait. It fetches that tag's control plane and `ensign`, rewrites the tag, then runs `ensign link` with the new `ensign` and prints "updated <old> → <new>; restart claude to use it". The change to `bridge.yaml` is committed ("Update starship to <tag>") and pushed in the bridge's repo,
 so the bridge's history records every version it ran.
 
-**`ensign link`** makes the bridge match its pin: it regenerates `.claude/agents/` from the
-clone already at `.starship/control-plane/` plus the bridge's own
-extensions. The shallow fetch and checkout of the pinned tag belong to setup and update, not to link. It runs from `ensign update`, from `ensign setup` and `ensign init`, and from a SessionStart hook
+**`ensign link`** makes the bridge match its pin: it regenerates `.claude/agents/` from the clone already at `.starship/control-plane/` plus the bridge's own extensions. The shallow fetch and checkout of the pinned tag belong to setup and update, not to link. It runs from `ensign update`, from `ensign setup` and `ensign init`, and from a SessionStart hook
 that checks the generated files still match the pin (they won't after a fresh clone of
 the bridge); `ensign link --migrate` also moves workspace paths to the current layout first (§12.6). Rules:
 
@@ -1466,18 +1451,15 @@ the bridge); `ensign link --migrate` also moves workspace paths to the current l
   files by default.
 
 **Developing the control plane.** A bridge may set `remote` to the local `~/starship`
-and `ref` to any commit instead of a tag, or set `path` to a local control plane, to try changes before release. The binaries at
-an untagged commit are those of the last release.
+and `ref` to any commit instead of a tag, or set `path` to a local control plane, to try changes before release. The binaries at an untagged commit are those of the last release.
 
-**Each bridge has its own `ensign`; nothing is installed for the machine.** Setup and
-update put the pinned release's binary at `.starship/bin/ensign` (gitignored, per
+**Each bridge has its own `ensign`; nothing is installed for the machine.** Setup and update put the pinned release's binary at `.starship/bin/ensign` (gitignored, per
 machine), replacing it by rename so a running copy can be updated. Hooks call it by
 path, `"$CLAUDE_PROJECT_DIR/.starship/bin/ensign" hook <event>`, so the committed
 `settings.json` is the same on every machine and platform, and two bridges pinned to
 different releases never share a binary. The SessionStart hook puts `.starship/bin` on
 the PATH of the session's own shell (through `CLAUDE_ENV_FILE`), so the session runs
-plain `ensign …`. A bridge that follows a local control plane (`path`, for development) gets a copy
-of the `ensign` that ran `link`, made by `link` itself. Outside a bridge, hook events are no-ops.
+plain `ensign …`. A bridge that follows a local control plane (`path`, for development) gets a copy of the `ensign` that ran `link`, made by `link` itself. Outside a bridge, hook events are no-ops.
 
 **Connector settings.** `init` writes `settings.json` without connector parts: `permissions.allow` holds `Bash(ensign:*)`, so the lead calls plain `ensign next` without a prompt, and the PreToolUse and SubagentStop hooks carry `"timeout": 3600`. While `connectors:` or `connector_writes:` is declared, the PreToolUse matcher (`.*` otherwise) gains `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool|Read|Grep` (earlier ensigns wrote `|mcp__.*|ListMcpResourcesTool|ReadMcpResourceTool` or `|mcp__.*` alone; those forms are upgraded; undeclared settings carry neither `Read` nor `Grep`) and `permissions.allow` lists the declared tools, `connector_writes` included, sorted and without duplicates, after `Bash(ensign:*)`. SessionStart keeps the file in step: a file that equals a form ensign wrote once the connector parts are removed, and whose connector parts have the shape ensign writes (none, or the matcher with any `mcp__` tools sorted and deduplicated directly after `Bash(ensign:*)`), is rewritten and committed when a declaration is added, changed or removed (removing returns exactly the base form), and nothing about the settings alone is said to the session: claude applies `settings.json` edits to a running session (see the probe below), a change that arrived by the sync included. `settings.json` follows `bridge.yaml` only at a SessionStart, on every source, while the hook reads `bridge.yaml` on each call; so after `connector_writes:` is edited, the tool's allow entry arrives at the next session start (`/compact`, `/clear` or restarting claude), and the refusal texts say so. The restart note concerns role definitions only: it fires whenever the role signature changes across the sync, also after the last declaration is removed, and the signature (the set of `.claude/agents/*.md` file names and each one's frontmatter `tools:` value) is compared against what the claude process started with, so moving a tool between roles or adding `reader: []` gets the note, and other edits to a role's prompt don't. The baseline is kept in `<bridge>/.starship/sessions/<pid>.connectors` (keyed by `CLAUDE_PID`, created at the process's first SessionStart or on source `startup`, swept by the same age rule as the `.pid` record); it holds only the agents signature, keeps its old name, and an old record that also holds a settings signature still parses. The note repeats on every `/clear`, resume or compact until the process restarts, also warns a second process, and stops if the change is reverted. With `CLAUDE_PID` empty it compares before and after the sync within the one invocation. Limit: a reused pid starting with source `resume` trusts the stale record and gives a false note until the next restart. Line endings are compared as LF, so a CRLF copy is rewritten the same way. A hand-edited file, including one with `mcp__` allow entries but no matcher, is left alone; but if rules are declared and it lacks any of the first three matcher entries (`mcp__.*`, `ListMcpResourcesTool`, `ReadMcpResourceTool`) on the ensign PreToolUse hook or a declared tool in `allow`, connector calls would go unchecked, or, when `reader` is declared, lacks `Read` or `Grep`, reads of `reader/sources/` would go unchecked, so SessionStart reports starship as not ready and names what is missing. A matcher entry counts as present when some ensign PreToolUse hook matcher selects that tool as Claude Code reads it (`matcherMatches`): `.*`, `*`, an empty matcher and a regular expression or alternation that matches all count, and `mcp__.*` must cover two tool names from unrelated servers, so a matcher scoped to one server does not count. An invalid declaration is not ready either.
 
@@ -1489,11 +1471,7 @@ Observed on Claude Code 2.1.319, Linux, 2026-11-07, in live probes against a loc
   CRLF. A bridge gets the same file from `ensign init`, or from a SessionStart migration for an existing bridge.
 - Forward slashes in every path. Where each project's code is lives in the gitignored
   `machine.yaml` (§12.6), never in the bridge's committed files.
-- Hook commands in `settings.json` use as little shell syntax as they can, because the
-  shell that runs them differs by platform: the one piece is the quoted
-  `"$CLAUDE_PROJECT_DIR/.starship/bin/ensign"` path, with forward slashes, which the
-  harness sets (Claude Code sets `CLAUDE_PROJECT_DIR`) and POSIX sh and Git Bash expand when quoted. No other variables, no pipes, no
-  further quoting.
+- Hook commands in `settings.json` use as little shell syntax as they can, because the shell that runs them differs by platform: the one piece is the quoted `"$CLAUDE_PROJECT_DIR/.starship/bin/ensign"` path, with forward slashes, which the harness sets (Claude Code sets `CLAUDE_PROJECT_DIR`) and POSIX sh and Git Bash expand when quoted. No other variables, no pipes, no further quoting.
 
 ---
 
@@ -1515,8 +1493,7 @@ spawned.
 ### 12.2 What setup does
 
 The bridge's committed `CLAUDE.md` (written by `ensign init`) carries a short setup
-section that is visible before anything else exists: if `.starship/bin/ensign` does not
-exist and `bridge.yaml` names a remote, the bridge isn't set up on this machine. Claude downloads the pinned release's
+section that is visible before anything else exists: if `.starship/bin/ensign` does not exist and `bridge.yaml` names a remote, the bridge isn't set up on this machine. Claude downloads the pinned release's
 `ensign` for the platform into `.starship/bin/` and runs `.starship/bin/ensign setup`,
 which fetches the control plane at the pinned tag and checks the binary against the
 release's checksums.
@@ -1591,9 +1568,7 @@ So there are two defences:
 - **`ensign` fails closed, and its errors end the run** (§6.1). Any internal error — a crash, a corrupt state file, an
   unreadable snapshot — exits 2 with the reason, so the action is blocked rather than let
   through. (A Go panic already exits 2.) One exception: when a stop arrives with
-  `stop_hook_active` set, a stop already forced to continue, an error lets it through, so a persistent
-  fault cannot trap an agent in a loop. A failure at SessionStart blocks nothing, since exit 2 does
-  nothing there: it reaches the session and the user as JSON at exit 0.
+  `stop_hook_active` set, a stop already forced to continue, an error lets it through, so a persistent fault cannot trap an agent in a loop. A failure at SessionStart blocks nothing, since exit 2 does nothing there: it reaches the session and the user as JSON at exit 0.
 
 ### 12.6 Machines and containers
 
@@ -1649,8 +1624,7 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
   outside `.starship/` because, unlike everything there, it holds answers that can't be
   regenerated. A style source in a project's code is written `$WORKSPACE/<path>`, so it
   resolves on every machine too. Bridges from before this kept a `workspace:` line in
-  their files, often under a `$PROJECTS` root, which an old `.starship/machine.yaml`'s `projects:` line gave; setup, update and session start move
-  those into `machine.yaml`, expanding `$PROJECTS` from that line. The edited files that were clean before are committed ("Workspace paths move to each machine's machine.yaml"), and those already modified are left for the journal to commit. Run
+  their files, often under a `$PROJECTS` root, which an old `.starship/machine.yaml`'s `projects:` line gave; setup, update and session start move those into `machine.yaml`, expanding `$PROJECTS` from that line. The edited files that were clean before are committed ("Workspace paths move to each machine's machine.yaml"), and those already modified are left for the journal to commit. Run
   state stays on the machine that ran it.
 
 ---
@@ -1724,8 +1698,7 @@ None at the moment. Deferred work is in the backlog (§15.2).
 
 ## 15. Implementation status
 
-Everything in §§2–14a is built, with unit tests (run in CI on Linux, Windows and macOS) and live
-runs against Claude Code, except where listed below. This section holds only what is not done and what is deferred.
+Everything in §§2–14a is built, with unit tests (run in CI on Linux, Windows and macOS) and live runs against Claude Code, except where listed below. This section holds only what is not done and what is deferred.
 
 ### 15.1 Not done
 
