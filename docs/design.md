@@ -733,8 +733,7 @@ Handlers attach to `run.finish:error`; filtering by code is not supported until 
 case needs it.
 
 `ask-user` is resumable because a run's state lives in files, not in an agent's context:
-`ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]` dispatches a fresh lead against the same state, with the user's
-answer and any budget change recorded there. When the question came from an exhausted budget and no `--budget` is given, the resume adds 1 to that budget.
+`ensign resume --answer <text> [--budget <name>=<n>] [--run <id>]` dispatches a fresh lead against the same state, with the user's answer and any budget change recorded there. When the question came from an exhausted budget and no `--budget` is given, the resume adds 1 to that budget.
 
 ### 6.2 Stage reports
 
