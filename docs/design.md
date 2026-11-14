@@ -1107,7 +1107,7 @@ Where each part comes from:
 
 - **Pipelines and extensions** declare `help:` entries in their files: example requests in
   plain words, and one line on what happens. A bridge's own extensions appear without
-  extra work. A pipeline's entries join "Doing the work"; an extension's get a heading of their own, its name capitalized with `-` as a space. An extension marked `quiet` is left out unless `bridge.yaml` `use:` names it.
+  extra work. A pipeline's entries join "Doing the work"; an extension's get a heading of their own, its name capitalized with `-` as a space. Extension headings come after the fixed groups and before "Housekeeping", sorted by heading name in byte order, so the order is the same on every call. An extension marked `quiet` is left out unless `bridge.yaml` `use:` names it.
 - **The status lines** come from the task journal and the active run, in plain words.
   `status` prints them on their own, expanded: the task's goal, where it stands, the
   active run's stage and budgets, and what's outstanding.
