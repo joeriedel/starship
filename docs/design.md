@@ -1315,7 +1315,7 @@ Three kinds of repository, three defaults:
 |---|---|---|
 | control plane (starship's own repo) | the run that changes it commits on `task/<name>` (§3.2) | not by the run, except the task branch for CI; landing is the user's step (§3.2) |
 | task journals (`projects/`, `skills/`, `notes/`, `documents/` and a declared `reader/`, in the bridge) | automatic; a project may turn it off | automatic, with the commit |
-| workspaces (product code) | per pipeline (e.g. `git-catalog`); `github-pr` commits at the end of a run | only by the steps the user asks for or the pipeline binds: `github-pr ci` pushes the task branch for CI, `pull-request` pushes it, `merge` pushes the default branch and deletes the task branch on origin (§3.2) |
+| workspaces (product code) | per pipeline (e.g. `git-catalog`); `github-pr` commits before the test stage and again after the documentation stage (the `@docs` paths) | only by the steps the user asks for or the pipeline binds: `github-pr ci` pushes the task branch for CI, `pull-request` pushes it, `merge` pushes the default branch and deletes the task branch on origin (§3.2) |
 
 For journals the agent writes the commit message, because it knows what the logical
 change was, and a **Stop hook enforces that it happened**: a session turn cannot end with
@@ -1325,7 +1325,7 @@ whether it happened is not.
 
 **System commits in the bridge.** When ensign itself changes a tracked file of the bridge it commits just that file with a fixed message: "New bridge" (`init`), "Update starship to <tag>" (`update`), "Commit hand edits to the bridge's notes", "Keep the bridge's text files at LF line endings", "Load the session manual from the SessionStart hook", "Scope the heartbeat rule to the session agent", "Move each task's progress log into history.md", "Update the starship hook settings" and "Workspace paths move to each machine's machine.yaml" (§12.6).
 
-**Workspace commits by the driver.** The `git-catalog` pass commit is `wip(c<cycle> p<pass>)[ BROKEN]: <summary>`, the summary cut to 60 characters in the subject and given whole as the body; `squash` takes the message it is given. `github-pr`'s commit before the test stage uses the task's name as its message.
+**Workspace commits by the driver.** The `git-catalog` pass commit is `wip(c<cycle> p<pass>)[ BROKEN]: <summary>`, the summary cut to 60 characters in the subject and given whole as the body; `squash` takes the message it is given. `github-pr` commits twice, both with the task's name as the message: before the test stage, and after the documentation stage, when it commits the `@docs` paths.
 
 ### 10.1 Control plane
 
@@ -1501,7 +1501,7 @@ Observed on Claude Code 2.1.319, Linux, 2026-11-07, in live probes against a loc
 - Hook commands in `settings.json` use as little shell syntax as they can, because the
   shell that runs them differs by platform: the one piece is the quoted
   `"$CLAUDE_PROJECT_DIR/.starship/bin/ensign"` path, with forward slashes, which the
-  harness sets and any shell expands the same way. No other variables, no pipes, no
+  harness sets (Claude Code sets `CLAUDE_PROJECT_DIR`) and POSIX sh and Git Bash expand when quoted; PowerShell, cmd.exe and a direct process launch are unverified (§15.1, Windows hooks). No other variables, no pipes, no
   further quoting.
 
 ---
@@ -1619,9 +1619,8 @@ per machine would duplicate its projects, tasks and journals. Sharing needs only
 
 - **Fetch and rebase as you work.** SessionStart fast-forwards the bridge when it has no
   local changes, and every automatic commit fetches and rebases before pushing. A
-  conflict stops the push: the pull aborts its rebase and the error names the files. The
-  session merges the two versions, keeping both where each only added lines; any other
-  conflict stops and asks.
+  conflict where both sides only added lines is resolved directly; any other conflict
+  stops and asks.
 - **Where the code is, is per machine.** `project.yaml` and `task.md` hold no paths.
   Each machine has its own `machine.yaml` at the bridge's root, gitignored, mapping a
   project (or a task with a checkout of its own, as `<project>/<task>`) to a folder:
@@ -1687,7 +1686,7 @@ None at the moment. Deferred work is in the backlog (§15.2).
 | Command | Does |
 |---|---|
 | `ensign init <dir> [--control-plane <path> \| --remote <url> [--tag <tag>]]` | create a bridge and commit it ("New bridge"); `--control-plane` writes `path:` for a bridge that follows a local control plane, `--remote` pins that remote at the tag, and with no flags a released binary pins the release it is |
-| `ensign setup [--projects <folder>]` | fetch the pinned control plane and the bridge's own `ensign`, link, and print "bridge ready — restart claude"; a `path` bridge only links; `--projects` is accepted and ignored |
+| `ensign setup [--projects <folder>]` | fetch the pinned control plane and the bridge's own `ensign`, link, and print "bridge ready — restart claude"; a `path` bridge migrates its workspaces and links; `--projects` is accepted and ignored |
 | `ensign workspace <p>[/<t>] [<path>]` | record (or show) where a project's or task's code is on this machine |
 | `ensign workspace <p> --location <name> [<path>]` | record (or show) where one of a project's code locations is on this machine |
 | `ensign env <p> [NAME=<value> \| --path <folder> \| --drop-path <folder>]` | record (or show) a project's toolchain setup on this machine: variables, and folders put first on `PATH` |
@@ -1750,7 +1749,8 @@ runs against Claude Code, except where listed below. This section holds only wha
 - **Connector content through the built-in resource tools is not measured (§5.3).** Whether connectors serve content through `ListMcpResourcesTool` and `ReadMcpResourceTool` has not been tested; they are covered by the rules either way.
 - **Harness checks not made (§5.5).** Not observed: macOS, Windows, a real model, and auto mode with the server-side review. Versions below 2.1.317 were not probed for a lower floor. Interactive `/fork` and `/branch`, 2.0.x `--continue` and interactive auto-compact were not probed, and the `-p` and interactive routes were compared only on 1.0.115.
 - **Deleting a moved note from a journal-off project is not asked for (§10.2).** Nothing names or asks for the deletion of the source of a note moved out of a `journal: off` project, so it stays uncommitted until someone commits it by name.
-- **Harness checks not made for §11.3's settings behaviour.** Auto permission mode with the server-side review, the `Grep` matcher, macOS and Windows, and any other Claude Code version than 2.1.319 are not verified.
+- **Harness checks not made for §11.3's settings behaviour.** The `Grep` matcher, and any Claude Code version other than 2.1.319, are not verified.
+- **`pushBridge` stops on every conflict (§12.6).** It aborts the rebase and leaves the merge to the session, which is told to keep both versions where each only added lines; a conflict where both sides only added lines is not resolved directly.
 - **`help` does not note a newer release (§11.3).** `latestTag` and `newerTag` serve only `ensign update`.
 - **Development runs are not marked `dev` (§11.3).** Neither the run snapshot nor `help` says a run follows an untagged commit.
 - **A bridge on `remote` with a `ref` gets no `ensign` copy (§11.3).** `fetchEnsign` returns early with no tag, and only a `path` bridge gets a copy from `link`, so a `ref` bridge keeps whatever `ensign` is already in `.starship/bin/`.
