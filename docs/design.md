@@ -249,10 +249,9 @@ Reviewers see the run's change whatever the VCS (`reviewChangeLine`, added to th
 The initial set:
 
 ```
-session.open   task.open   task.close   plan.approved   run.start
+task.close   run.start
 stage.before:<id>   stage.after:<id>
 run.finish:success   run.finish:error   run.finish:ask-user
-commit.before   push.before
 ```
 
 Handler kinds:
@@ -308,7 +307,6 @@ project's rules or the task journal.
 
 | Layer | Holds | Example |
 |---|---|---|
-| control plane `skills/` | public technology knowledge | `go`, `cpp`, `proto` |
 | bridge `skills/` | technology knowledge that must stay in that context | an internal framework; engine facts learned on the job |
 | project `skills/` | rare: a technology only this project uses | a project-private DSL |
 
@@ -732,8 +730,7 @@ The driver adds its own:
 **The closing gate.** In a pipeline whose stage 0 is a lead, a `finish: success` transition, whether from a stage outcome or from an `on-exhausted` budget, does not end the run. It leaves the run non-terminal at the gate (`gate` in the state file, holding why the pipeline passed), and `ensign next` tells the lead to record its judgment: `ensign run finish --bridge <dir> --run <id> --goal met`, or `--goal not-met "<why>"`. `met` finishes the run as `success`; `not-met` finishes it as `error` with the code `goal-not-met` and the why as the reason, and needs a why. `ensign run finish` is refused unless the run is at the gate. Only then do the finishing steps run: the `@done` check, the `run.finish` events, the journal line, emptying `scratch/`, and a sequence's advance and publish. A pipeline with no lead (the curation and style-generation pipelines) finishes directly. `ensign run stop` finishes the run without the gate, and so does a stop that ends an advisory stage.
 
 **An `ensign` error during pipeline work is an immediate failure:** the run ends as
-`error: ensign` with `ensign`'s message. This covers a hook that fails and a command
-Claude runs (`ensign run`, `ensign journal commit`, …) that fails. It is never
+`error: ensign` with `ensign`'s message. This covers a hook that fails. It is never
 retried in a loop and never worked around — no falling back to raw `git`, no dispatching
 without the driver. The fix is to `ensign` or its configuration, then a new run or
 `ensign resume`.
@@ -773,8 +770,8 @@ instructions, with that stage's outcomes, to every dispatch (§7).
 1. **Merges** the pinned control plane → bridge → project → task, plus every extension they
    enable, applying each layer's ops in order and recording every field's source.
 2. **Validates**: every required binding defined for this platform (or declared
-   not-applicable), every brief, skill and dimension present, no nested lead, help text present. Any failure stops with the reason.
-3. **Writes a frozen snapshot** and an initial state, stamped with the pinned tag. Hooks
+   not-applicable), every brief, skill and dimension present, no nested lead. Any failure stops with the reason.
+3. **Writes a frozen snapshot** and an initial state. Hooks
    read only the snapshot, so editing config mid-run changes nothing for that run.
 4. **Prints a summary** — stages, budgets, bindings resolved to commands, skills per
    role, overrides — which Claude puts in the plan it shows.
@@ -825,7 +822,7 @@ rules
 
 The summary ends with the `bindings` section and, when there are any rules, a `rules` section; a rule's source is `<layer>:<path>:<line>`, or `extension:<name>:<line>` for an extension's rule (for example `extension:house:3`), and a location's is `location:<path>#<location>:<line>`.
 
-The snapshot's hash is recorded in the state file (§15.1), and the creation line prints the pipeline's sha. A config change mid-run does not
+The creation line prints the pipeline's sha. A config change mid-run does not
 affect that run.
 
 #### Sequences
@@ -994,8 +991,6 @@ calling the model (§7.2).
 
 Every lock this hook takes (the run, the sequence, the connector writes and the code folders) is waited for at most `promptLockWait` (5 seconds) instead of without limit, since another hook or command can hold one for long and Claude Code kills a prompt hook after 30 seconds, discarding what it would have added; other hooks and commands still wait without a limit. A lock still busy when the wait runs out is a `lockBusyError`. On a prompt that is not `go` the prompt goes through, and the voided-writes note and any pending sequence reports are left in place for a later prompt. On `go` nothing is approved: the context names what is busy and tells the session to ask the user to type `go` again, and a waiting direct-edit request is kept for that next `go`. On a sequence `go`, a step whose run or folders lock (or, for a publish step, whose landing location lock) is busy is left waiting rather than failed, the reply says the step can't start yet, and a later Stop starts it.
 
-**Git hooks** run `commit.before` and `push.before` through the same script.
-
 **How a lead knows what to dispatch.** Hooks can refuse a wrong spawn, but they cannot
 speak to a lead between stages. So a lead's prompt includes a command,
 `ensign next --bridge <bridge> --run <id>`, which says in words exactly what to dispatch now
@@ -1061,7 +1056,7 @@ A few exact messages are handled by the UserPromptSubmit hook rather than the mo
 |---|---|
 | `go` | approve the pending plan |
 | `help` | what you can ask for here |
-| `help <topic>` | more on one topic: a kind of work, a project, a task |
+| `help <topic>` | more on one topic: a project, a task |
 | `status` | where things stand: bridge, project, task, the active run, what's outstanding |
 
 `go` also opens a waiting direct edit (§7.3). `status` and `help` leave a waiting direct request alone; any other prompt drops it, and closes an open one.
@@ -1169,8 +1164,7 @@ events:
 - **The orchestrator learns about the catalog only through the extension's augment**, so
   its role definition never mentions git.
 - **Squashing is placed by the project.** `ensign git-catalog squash` (`git reset --soft <base>`, one
-  commit) is attached to whichever event the project chooses — `push.before`,
-  `run.finish:success`, or none, with `ensign git-catalog squash <project>/<task> [--location <name>] -m <message>` by hand. As an event handler it takes no arguments, squashes the run's own commits and uses the first line of the work item's Goal as the message. It refuses when a commit after the base is already on the remote branch (pushed history is never rewritten), when HEAD is detached, when tracked files are dirty, and, by hand, when a run on the task is still active; it checks that the squashed tree equals the original, and by hand it removes the task's recorded base afterwards.
+  commit) is attached to whichever event the project chooses — `run.finish:success` or none, with `ensign git-catalog squash <project>/<task> [--location <name>] -m <message>` by hand. As an event handler it takes no arguments, squashes the run's own commits and uses the first line of the work item's Goal as the message. It refuses when a commit after the base is already on the remote branch (pushed history is never rewritten), when HEAD is detached, when tracked files are dirty, and, by hand, when a run on the task is still active; it checks that the squashed tree equals the original, and by hand it removes the task's recorded base afterwards.
 - Commits use the workspace's configured identity, carry no agent attribution and skip the workspace's git hooks (`--no-verify`).
   Pushing is not enforced by the control plane: it rests on the session manual's instruction to ask first, and only explorers and reviewers are refused a remote change by the Bash guard (§7).
 
@@ -1425,8 +1419,7 @@ SHA256SUMS
   on a work machine would carry them into a public release.
 - **Builds are reproducible**: `CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid="`.
   Anyone can rebuild from the tagged source and compare.
-- **CI runs `go vet` and the tests on Linux, Windows and macOS runners**: paths, locking, and running `ensign.exe` from
-  PowerShell and Git Bash. The harness probe (§7.1) needs a Claude login and stays manual.
+- **CI runs `go vet` and the tests on Linux, Windows and macOS runners**: paths and locking. The harness probe (§7.1) needs a Claude login and stays manual.
 - Go is needed only on a machine where `ensign` itself is being developed.
 
 ### 11.3 Bridges, pinning and installation
@@ -1447,11 +1440,10 @@ SHA256SUMS
 Nothing creates `notes/` up front. The session reads its files on demand from an index printed at session start; run agents never see it. `init`'s `.gitignore` covers `.starship/`, `machine.yaml`, `.claude/agents/` and `.claude/settings.local.json`.
 
 **Pinning.** `bridge.yaml` names a release tag. The pinned clone is a shallow fetch of
-exactly that tag; a bridge needs no history. Every run snapshot records the tag. `control-plane:` holds either `path`, a local control plane used directly (`ensign init --control-plane <path>` writes it), or `remote` with a `tag` or, for trying unreleased changes, a `ref`.
+exactly that tag; a bridge needs no history. `control-plane:` holds either `path`, a local control plane used directly (`ensign init --control-plane <path>` writes it), or `remote` with a `tag` or, for trying unreleased changes, a `ref`.
 
 **`ensign update [<tag>]`** — on request only. You run it, or ask Claude to ("update
-the bridge"); no hook runs it and Claude never starts it on its own. `help` notes when a
-newer release exists. It moves the pin to the newest
+the bridge"); no hook runs it and Claude never starts it on its own. It moves the pin to the newest
 release (the highest `vX.Y.Z` tag the remote lists) or the one named; it needs exactly one `tag:` line in `bridge.yaml`, and while any run in the bridge is active it refuses and says to wait. It fetches that tag's control plane and `ensign`, rewrites the tag, then runs `ensign link` with the new `ensign` and prints "updated <old> → <new>; restart claude to use it". The change to `bridge.yaml` is committed ("Update starship to <tag>") and pushed in the bridge's repo,
 so the bridge's history records every version it ran.
 
@@ -1475,8 +1467,7 @@ the bridge); `ensign link --migrate` also moves workspace paths to the current l
 
 **Developing the control plane.** A bridge may set `remote` to the local `~/starship`
 and `ref` to any commit instead of a tag, or set `path` to a local control plane, to try changes before release. The binaries at
-an untagged commit are those of the last release, so such runs are marked `dev` in
-their snapshot and in `help`.
+an untagged commit are those of the last release.
 
 **Each bridge has its own `ensign`; nothing is installed for the machine.** Setup and
 update put the pinned release's binary at `.starship/bin/ensign` (gitignored, per
@@ -1501,7 +1492,7 @@ Observed on Claude Code 2.1.319, Linux, 2026-11-07, in live probes against a loc
 - Hook commands in `settings.json` use as little shell syntax as they can, because the
   shell that runs them differs by platform: the one piece is the quoted
   `"$CLAUDE_PROJECT_DIR/.starship/bin/ensign"` path, with forward slashes, which the
-  harness sets (Claude Code sets `CLAUDE_PROJECT_DIR`) and POSIX sh and Git Bash expand when quoted; PowerShell, cmd.exe and a direct process launch are unverified (§15.1, Windows hooks). No other variables, no pipes, no
+  harness sets (Claude Code sets `CLAUDE_PROJECT_DIR`) and POSIX sh and Git Bash expand when quoted. No other variables, no pipes, no
   further quoting.
 
 ---
@@ -1610,7 +1601,7 @@ Bridges may share a machine, live on separate machines, or run in containers. No
 the design assumes one bridge per machine:
 
 - Machine-specific state is per bridge (`machine.yaml`, `.starship/`), not per machine.
-- Nothing is recorded per user: each bridge carries its own ensign and settings.
+- Nothing is recorded per user: each bridge carries its own settings.
 - In a container, the container is the machine: setup runs inside it.
 
 A bridge is normally **shared by every machine working in its context** — say a Linux and
@@ -1738,24 +1729,13 @@ runs against Claude Code, except where listed below. This section holds only wha
 
 ### 15.1 Not done
 
-- **Five of §4.2's events are never fired.** `session.open`, `task.open`, `plan.approved`, `commit.before` and `push.before` are in the design, but only `task.close`, `run.start`, `stage.before:<id>`, `stage.after:<id>` and the three `run.finish:` events are. A project or extension that names another event is refused (`event "<name>" is not one starship fires`), and no git hook runs `commit.before` or `push.before`.
-- **A session `help <topic>` covers projects and tasks only (§7.2).** It names a project or task (`helpTopic`) and answers a kind of work with "No project or task called ...".
-- **Stop's `background_tasks` was observed once only (§7.1).** The field set and "empty when none" are documented, not probed, though a sequence `do` step relies on them.
-- **No generic skills ship.** The control plane's `skills/` folder is read when present, but the repository has none; the `go`, `cpp` and `proto` of §4.4 are illustrations.
-- **The snapshot is not stamped with the pinned tag, and its hash is not in the state file (§6.3).** The run creation line prints a pipeline sha, but `pipeline.json` carries no tag and `state.json` no hash.
-- **`validate` does not check that help text is present (§6.3).** Help entries are only checked when `help` or `status` reads them.
-- **A failing `ensign` command that Claude runs does not end the run (§6.1).** Only a failing hook ends it as `error: ensign`; a failing `ensign run` or `ensign journal commit` reports its error and leaves the run as it was.
 - **`ensign run stop` takes an advisory outcome only on a `parallel` stage (§5.4).** Validation allows `advisory` on any non-lead stage, but a stop during an advisory stage that is not parallel cancels the run.
 - **Connector content through the built-in resource tools is not measured (§5.3).** Whether connectors serve content through `ListMcpResourcesTool` and `ReadMcpResourceTool` has not been tested; they are covered by the rules either way.
 - **Harness checks not made (§5.5).** Not observed: macOS, Windows, a real model, and auto mode with the server-side review. Versions below 2.1.317 were not probed for a lower floor. Interactive `/fork` and `/branch`, 2.0.x `--continue` and interactive auto-compact were not probed, and the `-p` and interactive routes were compared only on 1.0.115.
 - **Deleting a moved note from a journal-off project is not asked for (§10.2).** Nothing names or asks for the deletion of the source of a note moved out of a `journal: off` project, so it stays uncommitted until someone commits it by name.
 - **Harness checks not made for §11.3's settings behaviour.** The `Grep` matcher, and any Claude Code version other than 2.1.319, are not verified.
-- **`pushBridge` never merges an added-lines-only conflict for the session (§12.6).** A conflict in the rebase is aborted, nothing is pushed, and the session is told to merge the two versions; a conflict re-applying the bridge's uncommitted changes after a successful rebase does not stop the push: files the pushed commits deleted are removed from the bridge, the other conflicted files are left as git's re-apply left them (conflict markers, or the pushed version where the local change was a deletion), the stash holds the local changes, and the conflict is reported after the push (or alongside the push error if the push fails).
-- **`help` does not note a newer release (§11.3).** `latestTag` and `newerTag` serve only `ensign update`.
-- **Development runs are not marked `dev` (§11.3).** Neither the run snapshot nor `help` says a run follows an untagged commit.
-- **A bridge on `remote` with a `ref` gets no `ensign` copy (§11.3).** `fetchEnsign` returns early with no tag, and only a `path` bridge gets a copy from `link`, so a `ref` bridge keeps whatever `ensign` is already in `.starship/bin/`.
-- **CI does not run `ensign.exe` from PowerShell or Git Bash (§11.2).** It runs only `go vet ./...` and `go test` on each runner.
-- **Windows hooks (§11.4, §12.5).** How Claude Code runs hook commands on Windows (Git Bash, PowerShell, or direct process launch) is unverified. `ensign hook <event>` is designed to work under all three, and the code and its tests pass on Windows in CI. The selftest's hooks check has not been run on a Windows machine.
+- **`pushBridge` never merges an added-lines-only conflict for the session (§12.6).** A conflict in the rebase is aborted, nothing is pushed, and the session is told to merge the two versions. A conflict re-applying the bridge's uncommitted changes after a successful rebase does not stop the push: git leaves text files with conflict markers, binary files at the pushed version without markers, and files the pushed commits deleted are removed; the stash keeps the local changes, and the conflict is reported after the push (or alongside the push error if the push fails).
+- **Windows hooks (§11.4, §12.5).** How Claude Code runs hook commands on Windows (Git Bash, PowerShell, or direct process launch) has not been run on a real Windows machine. `ensign hook <event>` is designed to work under all three, and the code and its tests pass on Windows in CI. The selftest's hooks check has not been run on a Windows machine.
 
 ### 15.2 Backlog
 
