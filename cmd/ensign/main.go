@@ -173,7 +173,7 @@ func usage() {
   ensign gc [<keep>]
   ensign link [--force] [--migrate]
   ensign selftest
-  ensign help [topic]
+  ensign help [topic|requests]
   ensign status
   ensign project new <name> --workspace <path> | --locations <a,b> [--platforms <list>]
   ensign project reviewed <project>[/<task>]

@@ -34,7 +34,7 @@ func topicNames(bridge string) ([]string, error) {
 // cmdHelp prints one help topic, or lists the topics.
 func cmdHelp(args []string, out io.Writer) error {
 	if len(args) > 1 {
-		return fmt.Errorf("usage: ensign help [topic]")
+		return fmt.Errorf("usage: ensign help [topic|requests]")
 	}
 	bridge, err := cwdBridge()
 	if err != nil {
