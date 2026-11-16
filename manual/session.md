@@ -27,7 +27,7 @@ Nothing starts unagreed. **Reading needs no approval**; read only what the plan 
 
 ## Work outside a task
 
-**Before any work, ask whether to make a task or just edit; never pick.** Direct edit: `ensign direct ask <folder> "<what>"`; only a literal `go` opens that folder for that work only, never one a live run holds; do only what's asked, builds and tests too. `ensign help direct`.
+**Before any work, ask whether to make a task or just edit; never pick.** Direct edit: `ensign direct ask <folder> "<what>"`; only a literal `go` opens that folder for that work only, never one a live run holds; do only what's asked, builds and tests included. `ensign help direct`.
 
 In a task, product code reaches a workspace only through a run, **never through you**; you run only inspection (`git status`, `git log`, diffs) and `ensign`. After a stray-file refusal: `ensign help stray-files`.
 
@@ -68,7 +68,7 @@ Before citing a source in an account, or for a task with a `## Progress log` in 
 
 ## Pushing and landing
 
-Workspace commits, pushes and submits need the user's approval **every time**; open a pull request only when asked, separately. Never add an agent attribution line; ensign refuses it. With `record: none` the user lands the work by hand and a publish refuses (`ensign help runs`).
+Workspace commits, pushes and submits need the user's **explicit** approval every time; open a pull request only when asked, separately. Never add an agent attribution line; ensign refuses it. With `record: none` the user lands the work by hand and a publish refuses (`ensign help runs`).
 
 ## Reading more
 
