@@ -314,3 +314,16 @@ func TestSessionLinesFloorHasTeeth(t *testing.T) {
 		t.Errorf("a manual of %d bytes leaves %d, which is not under the floor of %d", manualLimit, got, sessionLinesFloor)
 	}
 }
+
+func TestLeftBehindSequenceLinesOutrankTheRestartAndBashGuardNotes(t *testing.T) {
+	for _, left := range []int{linePriorityCarryErr, linePriorityLeftBehindHold} {
+		for _, note := range []int{linePriorityConnectorRestart, linePriorityBashGuard} {
+			if left >= note {
+				t.Errorf("priority %d for a left-behind sequence should rank ahead of %d", left, note)
+			}
+		}
+	}
+	if linePriorityCarryErr >= linePriorityLeftBehindHold {
+		t.Errorf("the carry error should rank ahead of the hold line")
+	}
+}

@@ -21,11 +21,12 @@ func contextChars(s string) int { return len(utf16.Encode([]rune(s))) }
 const (
 	// Nothing else matters when starship isn't working in this session.
 	linePriorityNotReady = iota
+	// A sequence left behind is the user's work at risk, so these two outrank the notes below.
+	linePriorityCarryErr
+	linePriorityLeftBehindHold
 	// A restart is the one fix the user can't miss, and until it happens the changed role definitions don't apply.
 	linePriorityConnectorRestart
 	linePriorityBashGuard
-	linePriorityCarryErr
-	linePriorityLeftBehindHold
 	linePriorityStrandedRetire
 	linePrioritySync
 	linePriorityMigrate

@@ -371,7 +371,20 @@ func (w *world) startReply(source string, prior ...string) (string, string) {
 }
 
 func TestCarryShowsTheLeftBehindSequenceToTheUser(t *testing.T) {
-	w := newWorld(t)
+	carryShowsTheLeftBehindSequence(t, newWorld(t))
+}
+
+// A macOS test temp folder puts the bridge path past 100 characters, and the path appears in several session-start lines.
+func TestCarryShowsTheLeftBehindSequenceOnALongBridgePath(t *testing.T) {
+	w := newWorldUnder(t, strings.Repeat("supernova-", 8), strings.Repeat("supernova-", 8))
+	if len(w.bridge) < 160 {
+		t.Fatalf("the bridge path should be long: %d characters", len(w.bridge))
+	}
+	carryShowsTheLeftBehindSequence(t, w)
+}
+
+func carryShowsTheLeftBehindSequence(t *testing.T, w *world) {
+	t.Helper()
 	unfinishedSeq(t, w, "pa", "pending")
 	unfinishedSeq(t, w, "s2", "done")
 	show, ctx := w.clearFrom("pa", "s2")

@@ -30,11 +30,14 @@ type world struct {
 	holdGate bool
 }
 
-func newWorld(t *testing.T) *world {
+func newWorld(t *testing.T) *world { return newWorldUnder(t) }
+
+// newWorldUnder is newWorld with the bridge nested under the given folders, for a test of what a long bridge path does.
+func newWorldUnder(t *testing.T, nest ...string) *world {
 	t.Helper()
 	root, _ := filepath.Abs("../..")
 	tmp := t.TempDir()
-	bridge := filepath.Join(tmp, "bridge")
+	bridge := filepath.Join(append(append([]string{tmp}, nest...), "bridge")...)
 	copyDir(t, filepath.Join(root, "testdata", "bridge"), bridge)
 	ws := filepath.Join(tmp, "workspace")
 	if err := os.MkdirAll(ws, 0o755); err != nil {
