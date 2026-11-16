@@ -81,6 +81,9 @@ func TestSquashAndPassCommitRefuseAttribution(t *testing.T) {
 		t.Errorf("squash: %v", err)
 	}
 	ws := newRepo(t, filepath.Join(t.TempDir(), "supernova"))
+	write(t, filepath.Join(ws, "lib.txt"), "base\n")
+	runGit(t, ws, "add", "lib.txt")
+	runGit(t, ws, "commit", "-q", "-m", "lib")
 	r := unitRun(t, ws)
 	d := &Dispatch{ID: "d1", Summary: "done\nClaude-Session: https://example.com/s", Fields: map[string][]string{"files": {"lib.txt"}}}
 	if err := catalogCommitPass(r, d); err != nil {
