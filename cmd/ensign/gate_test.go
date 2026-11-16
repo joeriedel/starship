@@ -344,3 +344,71 @@ func TestExhaustedBudgetFinishingSuccessWaitsAtTheGate(t *testing.T) {
 		t.Fatalf("an exhausted budget that finishes with success waits at the gate: %s %+v", st.Status, st)
 	}
 }
+
+// reopenStageAgent leaves the run's first non-lead dispatch bound to an agent and not done, as an agent that never stopped.
+func (w *world) reopenStageAgent(run, agent string) {
+	w.t.Helper()
+	r, err := openRun(w.bridge, run)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	defer r.close()
+	m := &machine{snap: r.Snap, st: r.State}
+	for _, d := range r.State.Dispatches {
+		if s := m.stage(d.Stage); s != nil && !s.isLead() {
+			d.AgentID, d.Done, d.Handback = agent, false, ""
+			if err := r.save(); err != nil {
+				w.t.Fatal(err)
+			}
+			return
+		}
+	}
+	w.t.Fatal("the run has no stage dispatch")
+}
+
+func TestRunFinishListsAgentsStillOpenAndTheSessionIsToldOnce(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.passPipeline(lead)
+	run := w.state().Run
+	w.reopenStageAgent(run, "agent-open")
+	out, err := w.finishGoal(run, "--goal", "met")
+	if err != nil || !strings.Contains(out, "agent-open") || !strings.Contains(out, "TaskStop") || strings.Contains(out, lead) {
+		t.Fatalf("run finish should list the open stage agent but not the lead: %v\n%s", err, out)
+	}
+	if res := w.tool(lead, "orchestrator", "TaskStop", map[string]any{"task_id": "agent-open"}); res != nil {
+		t.Fatalf("the lead's TaskStop after the finish is allowed: %v", res)
+	}
+	if res := w.tool("agent-open", "coder", "TaskStop", map[string]any{"task_id": "x"}); dig(res, "hookSpecificOutput", "permissionDecision") != "deny" {
+		t.Fatalf("a stage agent of a finished run is still denied: %v", res)
+	}
+	res, _ := w.hook("Stop", map[string]any{"agent_id": "agent-open"})
+	if res != nil {
+		t.Fatalf("a subagent's stop gets no notice: %v", res)
+	}
+	res, _ = w.hook("Stop", map[string]any{})
+	why, _ := res["reason"].(string)
+	if res["decision"] != "block" || !strings.Contains(why, "agent-open") || !strings.Contains(why, lead) || !strings.Contains(why, "TaskStop") {
+		t.Fatalf("the session should be told to stop the stage agent and the lead: %v", res)
+	}
+	if res, _ = w.hook("Stop", map[string]any{}); res != nil {
+		t.Fatalf("the notice is delivered once: %v", res)
+	}
+}
+
+func TestRunFinishWithEveryDispatchDoneListsNoAgents(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.passPipeline(lead)
+	run := w.state().Run
+	out, err := w.finishGoal(run, "--goal", "met")
+	if err != nil || strings.Contains(out, "TaskStop") || !strings.HasSuffix(strings.TrimSpace(out), "Stop and report this.") {
+		t.Fatalf("no open agents, nothing added: %v\n%s", err, out)
+	}
+	if w.handback(lead, "orchestrator", "All done.") != "" {
+		t.Fatal("the lead's handback works")
+	}
+	if res, _ := w.hook("Stop", map[string]any{}); res != nil {
+		t.Fatalf("no notice when every agent is done: %v", res)
+	}
+}

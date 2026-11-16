@@ -139,6 +139,9 @@ func hookStop(bridge string, in *HookInput) any {
 	if out := writesStop(bridge, in); out != nil {
 		return out
 	}
+	if out := agentsStop(bridge, in); out != nil {
+		return out
+	}
 	note, _ := journalStop(bridge, in).(map[string]any)
 	if note != nil && note["decision"] != nil {
 		return note // a journal block spends none of the sequence's budget
@@ -154,6 +157,36 @@ func hookStop(bridge string, in *HookInput) any {
 		m["systemMessage"] = note["systemMessage"]
 	}
 	return out
+}
+
+// agentsStop tells the main session, once per run, to stop the agents of an ended run of the session that may still be running, the lead included unless it has ended. A subagent's own stop never reaches it.
+func agentsStop(bridge string, in *HookInput) any {
+	if in.AgentID != "" || in.SessionID == "" {
+		return nil
+	}
+	ids, _ := sessionRuns(bridge, in.SessionID)
+	for _, id := range ids {
+		var st State
+		if readRunState(filepath.Join(runsDir(bridge), id), &st) != nil || !st.terminal() || st.AgentsTold {
+			continue
+		}
+		r, err := openRun(bridge, id)
+		if err != nil {
+			continue
+		}
+		open := openAgents(&machine{snap: r.Snap, st: r.State}, true)
+		status := r.State.Status
+		told := false
+		if len(open) > 0 && !r.State.AgentsTold {
+			r.State.AgentsTold = true
+			told = r.save() == nil
+		}
+		r.close()
+		if told {
+			return block(fmt.Sprintf("run %s is over (%s), but these agents it started may still be running: %s. Stop each now, in this turn, with TaskStop (the agent id is its task id), then end your turn.", id, status, strings.Join(open, ", ")))
+		}
+	}
+	return nil
 }
 
 // dirtyTracked lists the tracked files with uncommitted changes.

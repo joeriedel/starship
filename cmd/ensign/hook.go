@@ -161,12 +161,15 @@ func newDispatch(r *RunFiles, scope string, s *Stage, role string) *Dispatch {
 		Fields: map[string][]string{}, StopsLeft: &stops}
 }
 
-// finishedRunRefusal is the reason to refuse a tool call of an agent that belongs to a finished run, or "". The agent's run is the one it is bound to, among its session's runs, or else the one its transcript's tag names; the session's current run does not matter, since it may be a retry. State is read without the run lock, as runIsLive does.
+// finishedRunRefusal is the reason to refuse a tool call of an agent that belongs to a finished run, or "". The run's lead may still call TaskStop, which is how it stops the agents `ensign run finish` lists. The agent's run is the one it is bound to, among its session's runs, or else the one its transcript's tag names; the session's current run does not matter, since it may be a retry. State is read without the run lock, as runIsLive does.
 func finishedRunRefusal(bridge string, in *HookInput) string {
 	ids, _ := sessionRuns(bridge, in.SessionID)
 	for _, id := range ids {
 		var st State
 		if readRunState(filepath.Join(runsDir(bridge), id), &st) == nil && st.byAgent(in.AgentID) != nil {
+			if in.ToolName == "TaskStop" && isLeadAgent(filepath.Join(runsDir(bridge), id), &st, in.AgentID) {
+				return ""
+			}
 			return runOverReason(&st)
 		}
 	}
@@ -179,6 +182,32 @@ func finishedRunRefusal(bridge string, in *HookInput) string {
 		return runOverReason(&st)
 	}
 	return ""
+}
+
+// isLeadAgent reports whether the agent is the dispatch of the run's lead stage.
+func isLeadAgent(dir string, st *State, agentID string) bool {
+	var snap Snapshot
+	d := st.byAgent(agentID)
+	if d == nil || readJSON(filepath.Join(dir, "pipeline.json"), &snap) != nil || snap.Pipeline == nil {
+		return false
+	}
+	s := (&machine{snap: &snap, st: st}).stage(d.Stage)
+	return s != nil && s.isLead()
+}
+
+// openAgents lists the agent ids of a run's dispatches that may still be running: bound to an agent, not done and not handed back. The lead is left out unless withLead.
+func openAgents(m *machine, withLead bool) []string {
+	var ids []string
+	for _, d := range m.st.Dispatches {
+		if d.AgentID == "" || d.Done || d.Handback != "" {
+			continue
+		}
+		if s := m.stage(d.Stage); !withLead && s != nil && s.isLead() {
+			continue
+		}
+		ids = append(ids, d.AgentID)
+	}
+	return ids
 }
 
 func runOverReason(st *State) string {

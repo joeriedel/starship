@@ -132,6 +132,7 @@ type State struct {
 	Transcript string         `json:"transcript,omitempty"`   // the session's transcript; agents' sit beside it
 	Notes      []string       `json:"notes,omitempty"`        // what handlers left for the report, e.g. a pull request
 	Finished   bool           `json:"finished,omitempty"`     // the end-of-run steps have run
+	AgentsTold bool           `json:"agents_told,omitempty"`  // the session was told to stop the agents the ended run left open
 	FinishedAt int64          `json:"finished_at,omitempty"`  // unix nanoseconds when the run last ended, any outcome; check Status for a success
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
@@ -1423,6 +1424,10 @@ func cmdRunFinish(args []string, out, stderr io.Writer) error {
 	fmt.Fprintf(out, "Run %s finished: %s (%s).", r.State.Run, r.State.Status, r.State.Reason)
 	if len(r.State.Notes) > 0 {
 		fmt.Fprint(out, " "+strings.Join(r.State.Notes, " ")+".")
+	}
+	if open := openAgents(m, false); len(open) > 0 {
+		fmt.Fprintf(out, " These agents of the run may still be running: %s. Stop each with TaskStop before you hand back, then stop and report this.\n", strings.Join(open, ", "))
+		return nil
 	}
 	fmt.Fprintln(out, " Stop and report this.")
 	return nil

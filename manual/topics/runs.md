@@ -2,6 +2,10 @@
 
 `bridge.yaml` `keep-runs` (default 500) is how many finished runs the bridge keeps in all. SessionStart deletes older finished runs beyond it, 50 delete attempts at most per start, shared with folders that have `pipeline.json` and no `state.json`, which are deleted first once 5 minutes old and don't count toward `keep-runs`; `ensign gc [<keep>]` does it now. Finished runs lose their `scratch/` contents; `reports/evidence/`, where run agents leave evidence that must outlive the run, stays. Finished runs with a bad pipeline.json are deleted the same way beyond `keep-runs`, and a run ended by `ensign run clear` is held while a `.tested` marker needs it. Pending, running and ask-user runs are never deleted.
 
+## Agents left running
+
+When a run ends, ensign lists the agent ids of its dispatches that may still be running: in `run finish`'s output to the lead, and, once per run, as a Stop block to this session (the lead included, if it has not ended). When a notice lists agent ids, stop each with TaskStop in that same turn, then end the turn.
+
 ## Uncommitted edits before a run
 
 A run is refused while its work folder has uncommitted git changes (a p4 task is never refused for them), and the refusal names the paths (up to 5). Ask the user to commit, stash or discard them, then run again; a direct edit leaves such changes. This applies to `ensign run` and again at `go`, which is refused the same way and can be typed again once the folder is clean. A sequence step is not refused: it waits like a step on a busy folder (`waiting: …` in the listing and the Stop message) and starts by itself once the folder is clean. A retry is exempt: its dirty tree is the failed attempt's work, carried into the new run. A run's commit sweeps in everything dirty, which is why a run never starts on top of someone's work.
