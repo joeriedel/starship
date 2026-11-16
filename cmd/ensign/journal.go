@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -159,7 +160,7 @@ func hookStop(bridge string, in *HookInput) any {
 	return out
 }
 
-// agentsStop tells the main session, once per run, to stop the agents of an ended run of the session that may still be running, the lead included unless it has ended. A subagent's own stop never reaches it.
+// agentsStop tells the main session, once per agent id, to stop the agents of an ended run of the session that may still be running. The lead is listed only once its turn ended after the run did without a handback, since until then it may be wrapping up. A subagent's own stop never reaches it.
 func agentsStop(bridge string, in *HookInput) any {
 	if in.AgentID != "" || in.SessionID == "" {
 		return nil
@@ -167,18 +168,32 @@ func agentsStop(bridge string, in *HookInput) any {
 	ids, _ := sessionRuns(bridge, in.SessionID)
 	for _, id := range ids {
 		var st State
-		if readRunState(filepath.Join(runsDir(bridge), id), &st) != nil || !st.terminal() || st.AgentsTold {
+		if readRunState(filepath.Join(runsDir(bridge), id), &st) != nil || !st.terminal() {
 			continue
 		}
 		r, err := openRun(bridge, id)
 		if err != nil {
 			continue
 		}
-		open := openAgents(&machine{snap: r.Snap, st: r.State}, true)
+		m := &machine{snap: r.Snap, st: r.State}
+		var open []string
+		for _, d := range r.State.Dispatches {
+			if d.AgentID == "" || d.Handback != "" || slices.Contains(r.State.AgentsTold, d.AgentID) {
+				continue
+			}
+			if s := m.stage(d.Stage); s != nil && s.isLead() {
+				if !d.EndedTurnAfterEnd {
+					continue
+				}
+			} else if d.Done {
+				continue
+			}
+			open = append(open, d.AgentID)
+		}
 		status := r.State.Status
 		told := false
-		if len(open) > 0 && !r.State.AgentsTold {
-			r.State.AgentsTold = true
+		if len(open) > 0 {
+			r.State.AgentsTold = append(r.State.AgentsTold, open...)
 			told = r.save() == nil
 		}
 		r.close()

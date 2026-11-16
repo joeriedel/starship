@@ -75,7 +75,9 @@ type Dispatch struct {
 	// StopsLeft is the refusals the agent has left before the run fails; nil only in state saved before it existed.
 	StopsLeft *int   `json:"stops_left,omitempty"`
 	Handback  string `json:"handback,omitempty"` // the message of the agent's SubagentHandback call
-	Usage     *Usage `json:"usage,omitempty"`    // from the agent's transcript
+	// EndedTurnAfterEnd is set on the lead when its turn ended after the run became terminal; with no Handback, it has stopped without reporting.
+	EndedTurnAfterEnd bool   `json:"ended_turn_after_end,omitempty"`
+	Usage             *Usage `json:"usage,omitempty"` // from the agent's transcript
 	// DocsBase is a documentation dispatch's dirty paths with content hashes, taken when it was spawned; state saved before it existed reads empty.
 	DocsBase map[string]string `json:"docs_base,omitempty"`
 	// FinishedSeq is State.Clock when the dispatch's report was recorded; 0 while it runs.
@@ -132,7 +134,7 @@ type State struct {
 	Transcript string         `json:"transcript,omitempty"`   // the session's transcript; agents' sit beside it
 	Notes      []string       `json:"notes,omitempty"`        // what handlers left for the report, e.g. a pull request
 	Finished   bool           `json:"finished,omitempty"`     // the end-of-run steps have run
-	AgentsTold bool           `json:"agents_told,omitempty"`  // the session was told to stop the agents the ended run left open
+	AgentsTold []string       `json:"agents_told,omitempty"`  // the agent ids the session was told to stop after the run ended
 	FinishedAt int64          `json:"finished_at,omitempty"`  // unix nanoseconds when the run last ended, any outcome; check Status for a success
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
@@ -1692,6 +1694,7 @@ func cmdRunStop(args []string, out, stderr io.Writer) error {
 		works = nil
 	}
 	m := &machine{snap: r.Snap, st: r.State}
+	open := openAgents(m, true)
 	advisory := stopAdvisory(r, m)
 	if !advisory {
 		m.fail("cancelled", fmt.Sprintf("stopped at the user's request by session %s", session))
@@ -1719,6 +1722,9 @@ func cmdRunStop(args []string, out, stderr io.Writer) error {
 		fmt.Fprintf(out, "Stopped run %s. Its work in the code folders was left as it is.\n", id)
 	}
 	fmt.Fprint(out, notices)
+	if len(open) > 0 {
+		fmt.Fprintf(out, "These agents of the run may still be running: %s. Stop each with TaskStop this turn.\n", strings.Join(open, ", "))
+	}
 	for _, f := range works {
 		fmt.Fprintf(out, "Free now: %s\n", f)
 	}

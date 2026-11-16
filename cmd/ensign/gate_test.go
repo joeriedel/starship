@@ -388,11 +388,53 @@ func TestRunFinishListsAgentsStillOpenAndTheSessionIsToldOnce(t *testing.T) {
 	}
 	res, _ = w.hook("Stop", map[string]any{})
 	why, _ := res["reason"].(string)
-	if res["decision"] != "block" || !strings.Contains(why, "agent-open") || !strings.Contains(why, lead) || !strings.Contains(why, "TaskStop") {
-		t.Fatalf("the session should be told to stop the stage agent and the lead: %v", res)
+	if res["decision"] != "block" || !strings.Contains(why, "agent-open") || strings.Contains(why, lead) || !strings.Contains(why, "TaskStop") {
+		t.Fatalf("the session should be told to stop the stage agent but not the lead, which may still be wrapping up: %v", res)
 	}
 	if res, _ = w.hook("Stop", map[string]any{}); res != nil {
 		t.Fatalf("the notice is delivered once: %v", res)
+	}
+	w.stop(lead, "orchestrator", "done", false)
+	res, _ = w.hook("Stop", map[string]any{})
+	why, _ = res["reason"].(string)
+	if res["decision"] != "block" || !strings.Contains(why, lead) || strings.Contains(why, "agent-open") {
+		t.Fatalf("the lead is listed once it ended its turn without a handback, and the stage agent is not repeated: %v", res)
+	}
+	if res, _ = w.hook("Stop", map[string]any{}); res != nil {
+		t.Fatalf("the lead is told once: %v", res)
+	}
+}
+
+func TestLeadThatHandedBackIsNeverListedToTheSession(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.passPipeline(lead)
+	run := w.state().Run
+	if _, err := w.finishGoal(run, "--goal", "met"); err != nil {
+		t.Fatal(err)
+	}
+	if w.handback(lead, "orchestrator", "All done.") != "" {
+		t.Fatal("the lead's handback works")
+	}
+	w.stop(lead, "orchestrator", "done", false)
+	if res, _ := w.hook("Stop", map[string]any{}); res != nil {
+		t.Fatalf("a lead that handed back is not listed: %v", res)
+	}
+}
+
+func TestRunStopListsOpenAgents(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	w.leaf(lead, "coder", "compiled")
+	run := w.state().Run
+	w.reopenStageAgent(run, "agent-open")
+	t.Setenv("STARSHIP_SESSION", w.sid)
+	var out bytes.Buffer
+	if err := w.inBridge(func() error { return cmdRunStop([]string{run}, &out, &out) }); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "agent-open") || !strings.Contains(out.String(), "TaskStop") {
+		t.Fatalf("run stop should list the open stage agent: %s", out.String())
 	}
 }
 

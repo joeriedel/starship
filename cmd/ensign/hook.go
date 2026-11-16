@@ -528,6 +528,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		}
 		if r.State.terminal() {
 			d.Done = true
+			d.EndedTurnAfterEnd = true
 			return nil, nil
 		}
 		if m.runningIn(s.ID) != "" {
@@ -549,6 +550,7 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 		if d.spendStop() {
 			m.fail("lead-stopped", "the lead stopped before the pipeline finished")
 			d.Done = true
+			d.EndedTurnAfterEnd = true
 			return nil, nil
 		}
 		r.State.log("blocked", s.ID, d.ID, "lead tried to stop early")

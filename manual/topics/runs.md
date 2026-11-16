@@ -4,7 +4,7 @@
 
 ## Agents left running
 
-When a run ends, ensign lists the agent ids of its dispatches that may still be running: in `run finish`'s output to the lead, and, once per run, as a Stop block to this session (the lead included, if it has not ended). When a notice lists agent ids, stop each with TaskStop in that same turn, then end the turn.
+When a run ends, ensign lists the agent ids of its dispatches that may still be running: in `run finish`'s output to the lead, in `run stop`'s output (the lead included), and, once per agent id, as a Stop block to this session. The session's Stop block lists the lead only after its turn ended without a handback, since until then it may still be wrapping up. When a notice lists agent ids, stop each with TaskStop in that same turn, then end the turn.
 
 ## Uncommitted edits before a run
 
