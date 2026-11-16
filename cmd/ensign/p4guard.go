@@ -13,7 +13,7 @@ func p4Change(cmd string) string {
 	if !strings.Contains(strings.ToLower(cmd), "p4") {
 		return ""
 	}
-	return scanShell(cmd, 0, true)
+	return scanShell(cmd, 0, scanMode{p4: true})
 }
 
 // p4ValueOptions are the global options p4 takes a value for, as the next word or attached to the option.

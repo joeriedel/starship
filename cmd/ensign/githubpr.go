@@ -465,6 +465,9 @@ func githubCommit(r *RunFiles) error {
 		return err
 	}
 	_, name, _ := strings.Cut(r.Snap.Task, "/")
+	if line := attributionLine(name); line != "" {
+		return attributionError("commit message", line)
+	}
 	if err := git(ws, "add", "-A"); err != nil {
 		return err
 	}
@@ -1003,8 +1006,12 @@ func githubOpenPR(bridge, task, location string) (string, error) {
 	}
 	_, name, _ := strings.Cut(task, "/")
 	commits, _ := gitOut(ws, "log", "--format=- %s", "origin/"+base+".."+branch)
+	body := "Opened from a starship task.\n\n" + commits
+	if line := attributionLine(name + "\n" + body); line != "" {
+		return "", attributionError("pull request text", line)
+	}
 	if _, err := runGH(ws, "pr", "create", "--head", branch, "--base", base, "--title", name,
-		"--body", "Opened from a starship task.\n\n"+commits); err != nil {
+		"--body", body); err != nil {
 		return "", err
 	}
 	if url, err = openPR(); err != nil || url == "" {

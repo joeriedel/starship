@@ -78,7 +78,7 @@ Write task files and accounts one line per paragraph; never reflow existing text
 
 ## Pushing and landing
 
-Workspace commits, pushes, submits need the user's explicit approval **every time**. Open a pull request only when asked, separately. Never add an agent attribution line (co-author trailer, "generated with"). With `record: none` the user lands the work by hand; a publish refuses (`ensign help runs`).
+Workspace commits, pushes, submits need the user's explicit approval **every time**. Open a pull request only when asked, separately. Never add an agent attribution line (co-author trailer, "generated with"); ensign refuses a commit or pull request that carries one. With `record: none` the user lands the work by hand; a publish refuses (`ensign help runs`).
 
 ## Reading more
 

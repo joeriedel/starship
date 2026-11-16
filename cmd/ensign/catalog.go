@@ -187,6 +187,9 @@ func catalogCommitPass(r *RunFiles, d *Dispatch) error {
 		r.State.log("handler", "", d.ID, "commit-pass: no changes to commit")
 		return nil
 	}
+	if line := attributionLine(d.Summary); line != "" {
+		return attributionError("dispatch summary", line)
+	}
 	cycle, pass := r.State.Spent["test"]+1, r.State.Spent["coder-loop"]
 	subject := fmt.Sprintf("wip(c%d p%d)", cycle, pass)
 	if d.Outcome == "broken" {
@@ -207,6 +210,9 @@ func truncate(s string, n int) string {
 // squash collapses base..HEAD into one commit with message, refusing if any of those
 // commits has already reached the remote.
 func squash(ws, base, message string) (string, error) {
+	if line := attributionLine(message); line != "" {
+		return "", attributionError("squash message", line)
+	}
 	if base == "" {
 		return "", fmt.Errorf("no base commit recorded")
 	}

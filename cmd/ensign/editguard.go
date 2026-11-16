@@ -255,6 +255,11 @@ func literalPathspecs(paths []string) []string {
 
 // commitDocsPaths adds the changed @docs paths to the index and commits just them; it does nothing when none differ from HEAD.
 func commitDocsPaths(root string, paths []string, noVerify bool, args ...string) error {
+	for _, a := range args {
+		if line := attributionLine(a); line != "" {
+			return attributionError("commit message", line)
+		}
+	}
 	var present []string
 	for _, p := range paths {
 		abs := p

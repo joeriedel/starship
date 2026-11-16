@@ -231,6 +231,10 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if event == "PreToolUse" && in.ToolName == "Bash" {
 		cmd, _ := in.ToolInput["command"].(string)
+		if line := attributionChange(cmd, in.Cwd); line != "" {
+			json.NewEncoder(stdout).Encode(denial(attributionRefusal(line)))
+			return 0
+		}
 		if in.AgentID != "" && (in.AgentType == "explorer" || in.AgentType == "reviewer") {
 			if what := remoteChange(cmd); what != "" {
 				json.NewEncoder(stdout).Encode(denial("this role can't change a remote, so `" + what + "` was refused. Probe git behaviour in a scratch repository under the system temp folder, pushing to a local path; otherwise report the need to your caller."))
@@ -729,7 +733,7 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		show += " · role definitions changed: restart claude for them to apply"
 	}
 	if guardMissing {
-		show += " · read-only guard missing: see .claude/settings.json"
+		show += " · Bash guards missing: see .claude/settings.json"
 	}
 	if version != "" && version != "dev" {
 		show += " · " + version

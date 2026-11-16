@@ -247,6 +247,9 @@ func cmdJournal(args []string, out io.Writer) error {
 	if len(args) < 3 || args[0] != "commit" || args[1] != "-m" || strings.TrimSpace(args[2]) == "" {
 		return usage
 	}
+	if line := attributionLine(args[2]); line != "" {
+		return attributionError("commit message", line)
+	}
 	files := args[3:]
 	for _, f := range files {
 		if f == "" {

@@ -21,27 +21,61 @@ func remoteChange(cmd string) string {
 	if !slices.ContainsFunc(remoteTriggers, func(t string) bool { return strings.Contains(lower, t) }) {
 		return ""
 	}
-	return scanShell(cmd, 0, false)
+	return scanShell(cmd, 0, scanMode{})
 }
 
 type heredoc struct {
 	delim string
 	strip bool
+	owner int
+	body  string
+}
+
+// deferredCmd is a simple command that declared a here-document whose body is not read yet.
+type deferredCmd struct {
+	words []string
+	extra string
+	seq   int
+}
+
+// scanMode says what scanShell looks for: by default a change to a remote, with p4 a p4 command that is not read-only, with attr an attribution line in a git commit or gh pr create or edit (dir is where relative files are read from). extra is the text of the substitutions and here-documents of the command being classified, set by scanShell.
+type scanMode struct {
+	p4, attr bool
+	dir      string
+	extra    string
+}
+
+func (m scanMode) withExtra(extra string) scanMode {
+	m.extra = extra
+	return m
 }
 
 // scanShell splits s into simple commands, quote-aware, and classifies each; substitutions and subshells are scanned too. Unterminated input is classified as far as it was read.
-func scanShell(s string, depth int, p4 bool) string {
+func scanShell(s string, depth int, m scanMode) string {
 	if depth > shellDepthLimit {
 		return ""
 	}
 	var (
-		words    []string
-		cur      strings.Builder
-		inWord   bool
-		skipNext bool
-		pending  []heredoc
-		found    string
+		words     []string
+		cur       strings.Builder
+		inWord    bool
+		skipNext  bool
+		pending   []heredoc
+		extra     strings.Builder
+		found     string
+		seq       int
+		afterPipe bool
+		deferred  []deferredCmd
 	)
+	bodies := func(owner int) string {
+		var b strings.Builder
+		for _, h := range pending {
+			if h.owner == owner {
+				b.WriteString(h.body)
+			}
+		}
+		return b.String()
+	}
 	endWord := func() {
 		if !inWord {
 			return
@@ -55,17 +89,38 @@ func scanShell(s string, depth int, p4 bool) string {
 		}
 		words = append(words, w)
 	}
-	endCmd := func() {
+	endCmd := func(pipe bool) {
 		endWord()
 		if found == "" {
-			found = classifyCommand(words, depth, p4)
+			if m.attr && slices.ContainsFunc(pending, func(h heredoc) bool { return h.owner == seq }) {
+				deferred = append(deferred, deferredCmd{words, extra.String(), seq})
+			} else {
+				found = classifyCommand(words, depth, m.withExtra(extra.String()))
+			}
 		}
 		words = nil
+		extra.Reset()
+		afterPipe = pipe
+		if !pipe {
+			seq++
+		}
+	}
+	flushDeferred := func() {
+		for _, d := range deferred {
+			if found == "" {
+				found = classifyCommand(d.words, depth, m.withExtra(d.extra+bodies(d.seq)))
+			}
+		}
+		deferred = nil
 	}
 	sub := func(inner string) {
 		inWord = true
+		if m.attr {
+			extra.WriteString(inner)
+			extra.WriteByte('\n')
+		}
 		if found == "" {
-			found = scanShell(inner, depth+1, p4)
+			found = scanShell(inner, depth+1, m)
 		}
 	}
 	for i := 0; i < len(s) && found == ""; i++ {
@@ -111,17 +166,32 @@ func scanShell(s string, depth int, p4 bool) string {
 		case c == ' ' || c == '\t' || c == '\r':
 			endWord()
 		case c == '\n':
-			endCmd()
 			if len(pending) > 0 {
-				i = skipHeredocs(s, i+1, pending) - 1
+				end := skipHeredocs(s, i+1, pending)
+				flushDeferred()
+				if m.attr {
+					extra.WriteString(bodies(seq))
+				}
 				pending = nil
+				i = end - 1
+			}
+			endWord()
+			// A newline after a pipe continues the pipeline, so the next line is the next stage and receives the bodies read here.
+			if !afterPipe || len(words) > 0 {
+				endCmd(false)
 			}
 		case c == '#' && !inWord:
 			for i+1 < len(s) && s[i+1] != '\n' {
 				i++
 			}
+		case c == '|' && (i == 0 || s[i-1] != '|') && (i+1 >= len(s) || s[i+1] != '|'):
+			// A single pipe (or |&) keeps the next command in the same pipeline, so a here-document declared by one stage is also charged to the later stages, which read it on stdin.
+			if i+1 < len(s) && s[i+1] == '&' {
+				i++
+			}
+			endCmd(true)
 		case c == ';' || c == '(' || c == ')' || c == '|' || (c == '&' && !(i+1 < len(s) && s[i+1] == '>')):
-			endCmd()
+			endCmd(false)
 		case c == '<' || c == '>' || c == '&':
 			if inWord && strings.Trim(cur.String(), "0123456789") == "" {
 				cur.Reset()
@@ -149,6 +219,7 @@ func scanShell(s string, depth int, p4 bool) string {
 					}
 					j++
 				}
+				h.owner = seq
 				pending = append(pending, h)
 			} else {
 				skipNext = true
@@ -160,8 +231,9 @@ func scanShell(s string, depth int, p4 bool) string {
 		}
 	}
 	if found == "" {
-		endCmd()
+		endCmd(false)
 	}
+	flushDeferred()
 	return found
 }
 
@@ -241,7 +313,9 @@ func closeParen(s string, i int) int {
 
 // skipHeredocs returns the index after the bodies of the pending here-documents, which start at i.
 func skipHeredocs(s string, i int, pending []heredoc) int {
-	for _, h := range pending {
+	for k := range pending {
+		h := &pending[k]
+		start := i
 		for i < len(s) {
 			end := strings.IndexByte(s[i:], '\n')
 			line := s[i:]
@@ -259,6 +333,7 @@ func skipHeredocs(s string, i int, pending []heredoc) int {
 				break
 			}
 		}
+		h.body = s[start:i]
 	}
 	return i
 }
@@ -323,7 +398,7 @@ func skipOptions(args, withValue []string) []string {
 }
 
 // classifyCommand finds the real command of one simple command, through assignments, keywords and wrappers, and returns it when it changes a remote.
-func classifyCommand(ws []string, depth int, p4 bool) string {
+func classifyCommand(ws []string, depth int, m scanMode) string {
 	for len(ws) > 0 {
 		if shellKeywords[ws[0]] || assignmentRe.MatchString(ws[0]) {
 			ws = ws[1:]
@@ -340,13 +415,13 @@ func classifyCommand(ws []string, depth int, p4 bool) string {
 			}
 			continue
 		}
-		return classifyTool(name, rest, depth, p4)
+		return classifyTool(name, rest, depth, m)
 	}
 	return ""
 }
 
-// classifyTool returns the command when name with args changes a remote, or with p4 set, when it is a p4 command that is not read-only.
-func classifyTool(name string, args []string, depth int, p4 bool) string {
+// classifyTool returns the command when name with args changes a remote, or with p4 set, when it is a p4 command that is not read-only; with attr set it returns the attribution line of a git commit or gh pr create or edit instead.
+func classifyTool(name string, args []string, depth int, m scanMode) string {
 	label := func() string {
 		s := name + " " + strings.Join(args, " ")
 		if len(s) > 100 {
@@ -354,7 +429,7 @@ func classifyTool(name string, args []string, depth int, p4 bool) string {
 		}
 		return strings.TrimSpace(s)
 	}
-	if p4 && name == "p4" {
+	if m.p4 && name == "p4" {
 		if p4Refuses(args) {
 			return label()
 		}
@@ -372,7 +447,7 @@ func classifyTool(name string, args []string, depth int, p4 bool) string {
 						i++
 					}
 					if i < len(args) {
-						return scanShell(args[i], depth+1, p4)
+						return scanShell(args[i], depth+1, m)
 					}
 				}
 				break
@@ -386,17 +461,17 @@ func classifyTool(name string, args []string, depth int, p4 bool) string {
 			i += strings.Count(w, "o") + strings.Count(w, "O")
 		}
 	case "eval":
-		return scanShell(strings.Join(args, " "), depth+1, p4)
+		return scanShell(strings.Join(args, " "), depth+1, m)
 	case "cmd":
 		for i, w := range args {
 			if w = strings.ToLower(w); w == "/c" || w == "//c" || w == "/k" || w == "//k" {
-				return scanShell(strings.Join(args[i+1:], " "), depth+1, p4)
+				return scanShell(strings.Join(args[i+1:], " "), depth+1, m)
 			}
 		}
 	case "powershell", "pwsh":
 		for i, w := range args {
 			if w = strings.ToLower(w); w == "-c" || w == "-command" {
-				return scanShell(strings.Join(args[i+1:], " "), depth+1, p4)
+				return scanShell(strings.Join(args[i+1:], " "), depth+1, m)
 			}
 		}
 	case "find":
@@ -408,13 +483,19 @@ func classifyTool(name string, args []string, depth int, p4 bool) string {
 			for end < len(args) && args[end] != ";" && args[end] != "+" {
 				end++
 			}
-			if r := classifyCommand(args[i+1:end], depth, p4); r != "" {
+			if r := classifyCommand(args[i+1:end], depth, m); r != "" {
 				return r
 			}
 		}
 	case "git":
+		if m.attr {
+			return attributionCommand(name, args, m)
+		}
 		refused = !hasHelp(args) && gitChangesRemote(args)
 	case "gh":
+		if m.attr {
+			return attributionCommand(name, args, m)
+		}
 		refused = !hasHelp(args) && ghChangesRemote(args)
 	case "curl":
 		refused = curlChangesRemote(args)
@@ -438,7 +519,7 @@ func classifyTool(name string, args []string, depth int, p4 bool) string {
 				name == "docker" && len(words) > 1 && words[0] == "image" && words[1] == "push"
 		}
 	}
-	if refused && !p4 {
+	if refused && !m.p4 && !m.attr {
 		return label()
 	}
 	return ""

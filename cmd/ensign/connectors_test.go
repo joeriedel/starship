@@ -881,7 +881,7 @@ func TestSessionStartNotesMissingBashGuard(t *testing.T) {
 		if code != 0 || strings.Contains(show, "not ready") || !strings.Contains(ctx, "STARSHIP-READY") {
 			t.Fatalf("declared=%v: a bridge without the guard stays ready: %d %q %q", declared, code, show, ctx)
 		}
-		if !strings.Contains(ctx, "no Bash matcher") || !strings.Contains(show, "read-only guard missing: see .claude/settings.json") {
+		if !strings.Contains(ctx, "no Bash matcher") || !strings.Contains(show, "Bash guards missing: see .claude/settings.json") {
 			t.Errorf("declared=%v: the note is missing: %q %q", declared, show, ctx)
 		}
 		if got, _ := os.ReadFile(f); string(got) != handEdited {

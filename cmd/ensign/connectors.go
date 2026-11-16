@@ -271,7 +271,7 @@ func missingConnectorSettings(data []byte, tools []string, reader bool) ([]strin
 	return missing, nil
 }
 
-// bashGuardNote is the session line for a bridge whose settings.json does not carry the read-only guard, the Bash entry in the matcher of the ensign PreToolUse hook, or "" when it does. It reads the file as it stands, so a rewrite that failed shows. The guard stops accidents and is not a security boundary, so a missing one is a note and not a not-ready error.
+// bashGuardNote is the session line for a bridge whose settings.json does not carry the Bash guards (the read-only guard and the attribution guard), the Bash entry in the matcher of the ensign PreToolUse hook, or "" when it does. It reads the file as it stands, so a rewrite that failed shows. The guard stops accidents and is not a security boundary, so a missing one is a note and not a not-ready error.
 func bashGuardNote(bridge string) string {
 	f := filepath.Join(bridge, ".claude", "settings.json")
 	data, err := os.ReadFile(f)
@@ -289,7 +289,7 @@ func bashGuardNote(bridge string) string {
 		err = json.Unmarshal(data, &s)
 	}
 	if err != nil {
-		return fmt.Sprintf("starship: %s can't be read (%v), so explorers and reviewers aren't stopped from pushing", f, err)
+		return fmt.Sprintf("starship: %s can't be read (%v), so explorers and reviewers aren't stopped from pushing and attribution lines in commits aren't refused", f, err)
 	}
 	for _, e := range s.Hooks.PreToolUse {
 		if !matcherMatches(e.Matcher, "Bash") {
@@ -301,7 +301,7 @@ func bashGuardNote(bridge string) string {
 			}
 		}
 	}
-	return fmt.Sprintf("starship: %s has no Bash matcher on the ensign PreToolUse hook, so explorers and reviewers aren't stopped from pushing; add |Bash to that matcher", f)
+	return fmt.Sprintf("starship: %s has no Bash matcher on the ensign PreToolUse hook, so explorers and reviewers aren't stopped from pushing and attribution lines in commits aren't refused; add |Bash to that matcher", f)
 }
 
 // matcherMatches reports whether a hook matcher selects the tool as Claude Code 2.1.319 reads one: empty or * selects every tool; a matcher of only letters, digits, _, |, comma, space and - is a list of names split on | and comma, trimmed and compared exactly; anything else is an unanchored regular expression, and one that doesn't compile selects nothing. Go's regexp differs from the JavaScript engine on some syntax (a lookahead doesn't compile here), so such a matcher gets a false note. The reverse also exists: a matcher Go compiles and matches but JavaScript rejects or reads differently, such as (?i)bash or \ABash, gets no note although the hook may not fire on Bash. Both are accepted: it takes an unusual hand-edited matcher, and the guard stops accidents and isn't a security boundary.
