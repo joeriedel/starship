@@ -374,7 +374,7 @@ func TestCarryShowsTheLeftBehindSequenceToTheUser(t *testing.T) {
 	carryShowsTheLeftBehindSequence(t, newWorld(t))
 }
 
-// A macOS test temp folder puts the bridge path past 100 characters, and the path appears in several session-start lines.
+// TestCarryShowsTheLeftBehindSequenceOnALongBridgePath covers a macOS test temp folder, which puts the bridge path past 100 characters; the path appears in several session-start lines.
 func TestCarryShowsTheLeftBehindSequenceOnALongBridgePath(t *testing.T) {
 	w := newWorldUnder(t, strings.Repeat("supernova-", 8), strings.Repeat("supernova-", 8))
 	if len(w.bridge) < 160 {
