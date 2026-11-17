@@ -1695,8 +1695,8 @@ func cmdRunStop(args []string, out, stderr io.Writer) error {
 	}
 	m := &machine{snap: r.Snap, st: r.State}
 	open := openAgents(m, true)
-	advisory := stopAdvisory(r, m)
-	if !advisory {
+	stopAdvisory(r, m)
+	if !r.State.terminal() {
 		m.fail("cancelled", fmt.Sprintf("stopped at the user's request by session %s", session))
 	}
 	if err := r.save(); err != nil {
@@ -1716,7 +1716,7 @@ func cmdRunStop(args []string, out, stderr io.Writer) error {
 	if err := r.save(); err != nil {
 		return err
 	}
-	if advisory {
+	if r.State.Status == "success" {
 		fmt.Fprintf(out, "Finished run %s: %s %s.\n", id, r.State.Status, strings.Join(r.State.Notes, " "))
 	} else {
 		fmt.Fprintf(out, "Stopped run %s. Its work in the code folders was left as it is.\n", id)
@@ -2250,15 +2250,15 @@ func (st *State) canonicalizeBudgets() {
 	}
 }
 
-// stopAdvisory finishes a run stopped during an advisory stage through the stage's advisory outcome, since the work before it is done and ensign cannot tell a hung agent from a slow one. Each document with no completed dispatch is noted as missing; a stage that is not parallel notes itself. It reports false when the current stage is not advisory.
-func stopAdvisory(r *RunFiles, m *machine) bool {
+// stopAdvisory records the advisory outcome on the outstanding dispatches of a run stopped during an advisory stage, so their partial results are kept. Each document with no completed dispatch is noted as missing; a stage that is not parallel notes itself. When the outcome's transition finishes the run, the run finishes as it says; otherwise the run stays unfinished and the caller cancels it, so a stop never moves the run to another stage.
+func stopAdvisory(r *RunFiles, m *machine) {
 	sc := r.State.Scopes[leadScope(r)]
 	if sc == nil || sc.Stage == "" {
-		return false
+		return
 	}
 	s := m.stage(sc.Stage)
 	if s == nil || s.Advisory == "" {
-		return false
+		return
 	}
 	if s.Parallel == nil {
 		for _, d := range r.State.Dispatches {
@@ -2282,8 +2282,5 @@ func stopAdvisory(r *RunFiles, m *machine) bool {
 		// A stop finishes the run: it does not park at the gate.
 		r.State.log("outcome", s.ID, "", s.Advisory+" → "+t.String())
 		m.finish(t, fmt.Sprintf("%s reported %s", s.ID, s.Advisory))
-		return true
 	}
-	m.apply(leadScope(r), s, s.Advisory)
-	return true
 }

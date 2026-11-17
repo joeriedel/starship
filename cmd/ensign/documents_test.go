@@ -935,7 +935,7 @@ stages:
 	return w
 }
 
-func TestRunStopFinishesASoloAdvisoryStage(t *testing.T) {
+func TestRunStopEndsASoloAdvisoryStage(t *testing.T) {
 	note := "feedback for check is missing"
 	t.Run("finish", func(t *testing.T) {
 		w := advisorySoloWorld(t, false)
@@ -966,8 +966,13 @@ func TestRunStopFinishesASoloAdvisoryStage(t *testing.T) {
 			t.Fatal(err)
 		}
 		st := w.runState(run)
-		if st.Status == "cancelled" || st.Scopes[""] == nil || st.Scopes[""].Stage != "wrap" {
-			t.Errorf("status %s reason %s scopes %v", st.Status, st.Reason, st.Scopes)
+		if st.Status != "error" || !strings.HasPrefix(st.Reason, "cancelled: ") || !st.Finished || st.Scopes[""] != nil && st.Scopes[""].Stage != "" {
+			t.Errorf("status %s reason %s finished %v scopes %v", st.Status, st.Reason, st.Finished, st.Scopes)
+		}
+		for _, d := range st.Dispatches {
+			if !d.Done || d.Outcome != "missing" {
+				t.Errorf("dispatch %s done %v outcome %q", d.ID, d.Done, d.Outcome)
+			}
 		}
 	})
 }
