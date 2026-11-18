@@ -143,12 +143,12 @@ func TestShippedMissingPiecesAreQuiet(t *testing.T) {
 }
 
 const locShippedClient = `bindings:
-  build: { command: "./build.sh" }
+  build: { guidance: "run ./build.sh" }
   test:  { command: "./client-test.sh" }
 `
 
 const locShippedServer = `bindings:
-  build: { command: "./build.sh" }
+  build: { guidance: "run ./build.sh" }
   test:  { command: "./test.sh" }
 `
 

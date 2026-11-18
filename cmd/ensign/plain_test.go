@@ -1522,8 +1522,8 @@ func TestTesterSpawnIsRefusedBeforeTheBuildAndAllowedAfterIt(t *testing.T) {
 	if err != nil || !strings.Contains(out, "Outcome: built") || !strings.Contains(out, "@build `echo build >> order`: exit 0") {
 		t.Fatalf("%q %v", out, err)
 	}
-	if st := w.state(); st.Status != "running" || st.Spent["test"] != 1 {
-		t.Fatalf("the stage must stay open: %s, spent %v", st.Status, st.Spent)
+	if st := w.state(); st.Status != "running" || st.Spent["test"] != 0 {
+		t.Fatalf("the stage must stay open and unspent: %s, spent %v", st.Status, st.Spent)
 	}
 	if got := w.next(); !strings.Contains(got, `Dispatch stage "test": one tester agent.`) || !strings.Contains(got, "ran its build, and it passed") {
 		t.Fatalf("next should now name the tester: %s", got)
@@ -1625,15 +1625,24 @@ func TestFailingServicesUpBeforeTheBuildIsAnError(t *testing.T) {
 }
 
 func TestGuidanceBuildOrServicesKeepTheTesterInCharge(t *testing.T) {
-	guidance := prebuildWorld(t, "echo build >> order", "", "")
-	p := filepath.Join(guidance.bridge, "projects/supernova/project.yaml")
-	data, _ := os.ReadFile(p)
-	write(t, p, strings.Replace(string(data), `build: { command: "echo build >> order" }`, `build: { guidance: "build by hand" }`, 1))
-	manual := prebuildWorld(t, "echo build >> order", "echo up >> order", "echo down >> order")
-	p = filepath.Join(manual.bridge, "projects/supernova/project.yaml")
-	data, _ = os.ReadFile(p)
-	write(t, p, strings.Replace(string(data), `services-up: { command: "echo up >> order" }`, `services-up: { guidance: "start the stack by hand" }`, 1))
-	for name, w := range map[string]*world{"guidance build": guidance, "guidance services": manual} {
+	setups := map[string]func() *world{
+		"guidance build": func() *world {
+			w := prebuildWorld(t, "echo build >> order", "", "")
+			p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+			data, _ := os.ReadFile(p)
+			write(t, p, strings.Replace(string(data), `build: { command: "echo build >> order" }`, `build: { guidance: "build by hand" }`, 1))
+			return w
+		},
+		"guidance services": func() *world {
+			w := prebuildWorld(t, "echo build >> order", "echo up >> order", "echo down >> order")
+			p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
+			data, _ := os.ReadFile(p)
+			write(t, p, strings.Replace(string(data), `services-up: { command: "echo up >> order" }`, `services-up: { guidance: "start the stack by hand" }`, 1))
+			return w
+		},
+	}
+	for name, setup := range setups {
+		w := setup()
 		lead := w.startLead()
 		w.toTest(lead)
 		if got := w.next(); !strings.Contains(got, `Dispatch stage "test": one tester agent.`) {
@@ -1690,7 +1699,7 @@ func TestPrebuildBuildsEverySideAndTheTesterGetsNoBuildLines(t *testing.T) {
 		t.Fatal(why)
 	}
 	side := w.decodedPromptOf(id)
-	side = side[strings.Index(side, "## Sides"):]
+	side = side[strings.Index(side, "## Sides"):strings.Index(side, "## Already done by ensign")]
 	if strings.Contains(side, "@build") || !strings.Contains(side, "@test") {
 		t.Fatalf("the sides section should list tests only:\n%s", side)
 	}
@@ -1752,8 +1761,8 @@ func TestFailedPrebuildOfAParallelTesterStageResolvesTheStage(t *testing.T) {
 	if err != nil || !strings.Contains(out, "Outcome: fail") || !strings.Contains(out, `stage "code"`) {
 		t.Fatalf("a failing build fails the parallel stage and goes back to code: %q %v", out, err)
 	}
-	if st := w.state(); st.Status != "running" || st.Scopes[""] != nil && st.Scopes[""].Stage != "code" {
-		t.Fatalf("status %s, scopes %+v", st.Status, st.Scopes)
+	if st := w.state(); st.Status != "running" || st.Scopes["run"].Stage != "code" {
+		t.Fatalf("status %s, scope %+v", st.Status, st.Scopes["run"])
 	}
 }
 
@@ -1830,11 +1839,21 @@ func TestCompletedTesterOwnsTheServicesDowns(t *testing.T) {
 	lead := w.startLead()
 	w.toTest(lead)
 	w.builtTester(lead, "pass")
-	if _, err := w.stopRun(w.state().Run); err != nil {
-		t.Fatal(err)
-	}
 	if got := w.order(); got != "up build" {
 		t.Fatalf("a completed tester's stage leaves no downs for ensign: %q", got)
+	}
+}
+
+func TestErroredTesterOwnsTheServicesDowns(t *testing.T) {
+	w := prebuildWorld(t, "echo build >> order", "echo up >> order", "echo down >> order")
+	lead := w.startLead()
+	w.toTest(lead)
+	w.builtTester(lead, "error")
+	if got := w.state().Status; got != "error" {
+		t.Fatalf("status %q", got)
+	}
+	if got := w.order(); got != "up build" {
+		t.Fatalf("an errored tester's run leaves no downs for ensign: %q", got)
 	}
 }
 
