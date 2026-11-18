@@ -325,7 +325,7 @@ func quoteShellPath(path, goos string) string {
 func destination(obj map[string]any) string {
 	var parts []string
 	used := 0
-	add := func(k string, v string, size string) {
+	add := func(k, v, size string) {
 		part := shown(k) + "=" + v
 		if used+utf8.RuneCountInString(part) > longTextRunes {
 			part = shown(k) + "=(" + size + ", in full in the review document)"

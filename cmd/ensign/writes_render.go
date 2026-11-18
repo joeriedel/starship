@@ -145,6 +145,7 @@ func textKey(k string) bool {
 	return len(words) > 0 && textWords[words[len(words)-1]]
 }
 
+// keyHasWord reports whether one of the words of a field name, as keyWords splits it, is in set.
 func keyHasWord(k string, set map[string]bool) bool {
 	for _, w := range keyWords(k) {
 		if set[w] {
@@ -154,6 +155,7 @@ func keyHasWord(k string, set map[string]bool) bool {
 	return false
 }
 
+// keyWords splits a field name into lower-case words at separators and at lower-to-upper case changes.
 func keyWords(k string) []string {
 	var words []string
 	var cur []rune

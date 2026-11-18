@@ -58,7 +58,7 @@ func (w *world) review() string {
 	return string(data)
 }
 
-// addWrite registers a write and returns the full listing, which is the review document.
+// addWrite registers a write and returns the review document.
 func (w *world) addWrite(tool, input string) string {
 	w.t.Helper()
 	if _, err := w.runWrites(input, "add", "--tool", tool, "--summary", "Supernova test write."); err != nil {
@@ -1325,7 +1325,7 @@ func TestNestedLongTextIsSavedWithoutShort(t *testing.T) {
 	}
 }
 
-// tableBatch is a Docs batch with a table insert and one fill per cell, the shape that once put over a hundred JSON blocks in the feed.
+// tableBatch is a Docs batch with a table insert and one fill per cell.
 func tableBatch(rows, cols int) string {
 	reqs := []string{fmt.Sprintf(`{"insertTable":{"rows":%d,"columns":%d,"location":{"index":1}}}`, rows, cols)}
 	for i := 0; i < rows*cols; i++ {

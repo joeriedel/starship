@@ -265,6 +265,7 @@ func (c *writeCtx) docs(b *strings.Builder, obj map[string]any, o *writeOpts) {
 	c.fields(b, obj, skip)
 }
 
+// uncoveredRequest is a request the docs summary does not cover, with its number in the batch.
 type uncoveredRequest struct {
 	n int
 	r any
