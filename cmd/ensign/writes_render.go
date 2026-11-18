@@ -131,9 +131,14 @@ var fullWords = map[string]bool{
 	"owner": true, "assignee": true, "assignees": true, "user": true, "users": true,
 }
 
-// textWords are the words of a field name that mark running text. A field that also carries one is not a feed destination.
+// textWords are the words of a field name that mark running text. A field that carries one and no word of idWords is not a feed destination.
 var textWords = map[string]bool{
 	"text": true, "body": true, "message": true, "content": true, "html": true, "note": true, "description": true, "comment": true,
+}
+
+// idWords are the words of a field name that make it an identifier or an address even when it also carries a textWords word, as messageId does.
+var idWords = map[string]bool{
+	"id": true, "ids": true, "url": true, "uri": true, "email": true, "address": true, "recipient": true, "recipients": true, "channel": true, "thread": true, "to": true,
 }
 
 // keepFullKey reports whether a field name, split at separators and at lower-to-upper case changes, holds a word of fullWords.
@@ -141,6 +146,9 @@ func keepFullKey(k string) bool { return keyHasWord(k, fullWords) }
 
 // textKey reports whether a field name holds a word of textWords, split as keepFullKey does.
 func textKey(k string) bool { return keyHasWord(k, textWords) }
+
+// idKey reports whether a field name holds a word of idWords, split as keepFullKey does.
+func idKey(k string) bool { return keyHasWord(k, idWords) }
 
 func keyHasWord(k string, set map[string]bool) bool {
 	var words []string
@@ -203,8 +211,8 @@ func (c *writeCtx) leaves(b *strings.Builder, v any, key, path string) {
 			c.leaves(b, e, key, fmt.Sprintf("%s[%d]", path, i))
 		}
 	case string:
-		c.noteLinks(x)
 		if isLong(x) && !keepFullKey(key) {
+			c.noteLinks(x)
 			fmt.Fprintf(b, "%s: long text (%d characters, sha256 %s, also saved in %s)\n", jsonText(path), utf8.RuneCountInString(x), sha([]byte(x)), c.save(x))
 		} else {
 			fmt.Fprintf(b, "%s: %s\n", jsonText(path), jsonText(x))

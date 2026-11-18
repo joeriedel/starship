@@ -1226,8 +1226,8 @@ func TestDestinationsAndLinksAreNeverShortened(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(feed) > 1500 {
-		t.Errorf("a destination over %d characters is no feed destination, so the feed stays short:\n%s", longTextRunes, feed)
+	if len(feed) > 1500 || !strings.Contains(feed, "to=(718 characters, in full in the review document)") || !strings.Contains(feed, "threadId=(600 characters, in full in the review document)") {
+		t.Errorf("a destination over %d characters is named with a marker, so the feed stays short:\n%s", longTextRunes, feed)
 	}
 	got = w.review()
 	for _, want := range []string{to, strings.Repeat("t", 600), strings.Repeat("f", 600), "- nova@supernova.example\n", "- " + url + "\n", "shortened: first 200 of "} {
@@ -1599,7 +1599,37 @@ func TestLongReplyTextIsNoFeedDestination(t *testing.T) {
 	}
 	w.runWrites("", "drop", "--all")
 	feed, err = w.runWrites(fmt.Sprintf(`{"reply_to":%q}`, strings.Repeat("a", 700)), "add", "--tool", wikiPost, "--summary", "Replies.")
-	if err != nil || len(feed) > 1500 {
-		t.Errorf("a long string value is no feed destination: %v\n%s", err, feed)
+	if err != nil || len(feed) > 1500 || !strings.Contains(feed, "reply_to=(700 characters, in full in the review document)") {
+		t.Errorf("a long destination is a marker in the feed: %v\n%s", err, feed)
+	}
+}
+
+func TestIdentifierWithTextWordIsDestination(t *testing.T) {
+	w := writesWorld(t)
+	feed, err := w.runWrites(`{"messageId":"18c9f","comment_id":"c7","body":"Thanks"}`, "add", "--tool", wikiPost, "--summary", "Replies.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(feed, "comment_id=c7, messageId=18c9f: Replies.") {
+		t.Errorf("an ID field with a text word is a destination:\n%s", feed)
+	}
+}
+
+func TestManyDestinationValuesAreAMarker(t *testing.T) {
+	w := writesWorld(t)
+	var ids []string
+	for i := 0; i < 2000; i++ {
+		ids = append(ids, fmt.Sprintf("%016d", i))
+	}
+	input, _ := json.Marshal(map[string]any{"ids": ids, "threadId": "t1"})
+	feed, err := w.runWrites(string(input), "add", "--tool", wikiPost, "--summary", "Moves them.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feed) > 1500 || !strings.Contains(feed, "ids=(2000 values, in full in the review document)") || !strings.Contains(feed, "threadId=t1") {
+		t.Errorf("a long list is a marker in the feed:\n%s", feed)
+	}
+	if !strings.Contains(w.review(), ids[1999]) {
+		t.Error("the review document holds every ID")
 	}
 }

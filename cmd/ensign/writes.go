@@ -321,16 +321,34 @@ func quoteShellPath(path, goos string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(path) + `"`
 }
 
-// destination is the target values of a write, in full: for a Docs batch the documentId, for other tools the top-level fields keepFullKey treats as destinations, as key=value.
+// destination is the target values of a write: for a Docs batch the documentId, for other tools the top-level fields keepFullKey treats as destinations, as key=value. A value is shown in full while it and the line so far stay within longTextRunes; past that the field is still named, with a marker for its size instead of the value, which is in full in the review document.
 func destination(obj map[string]any) string {
-	if docsBatch(obj) {
-		return "documentId=" + shown(obj["documentId"].(string))
-	}
 	var parts []string
+	used := 0
+	add := func(k string, v string, size string) {
+		part := shown(k) + "=" + v
+		if used+utf8.RuneCountInString(part) > longTextRunes {
+			part = shown(k) + "=(" + size + ", in full in the review document)"
+		}
+		used += utf8.RuneCountInString(part)
+		parts = append(parts, part)
+	}
+	if docsBatch(obj) {
+		id := obj["documentId"].(string)
+		add("documentId", shown(id), fmt.Sprintf("%d characters", utf8.RuneCountInString(id)))
+		return parts[0]
+	}
 	for _, k := range sortedKeys(obj) {
-		if keepFullKey(k) && !textKey(k) {
+		if keepFullKey(k) && (!textKey(k) || idKey(k)) {
 			if v, ok := destValue(obj[k]); ok {
-				parts = append(parts, shown(k)+"="+v)
+				size := "1 value"
+				switch x := obj[k].(type) {
+				case string:
+					size = fmt.Sprintf("%d characters", utf8.RuneCountInString(x))
+				case []any:
+					size = fmt.Sprintf("%d values", len(x))
+				}
+				add(k, v, size)
 			}
 		}
 	}
@@ -340,11 +358,11 @@ func destination(obj map[string]any) string {
 	return strings.Join(parts, ", ")
 }
 
-// destValue is a destination field's value on one line: a string, a number, or a list of them. A long string is no destination.
+// destValue is a destination field's value on one line: a string, a number, or a list of them.
 func destValue(v any) (string, bool) {
 	switch x := v.(type) {
 	case string:
-		return shown(x), !isLong(x)
+		return shown(x), true
 	case json.Number:
 		return x.String(), true
 	case []any:
