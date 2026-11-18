@@ -16,7 +16,7 @@ import (
 const locationsProject = `platforms: [linux]
 
 bindings:
-  build: { command: "./build.sh" }
+  build: { guidance: "run ./build.sh" }
   test:  { command: "./test.sh" }
   lint:  { not-applicable: "no linter" }
   apply-dependency: { not-applicable: "these sides build from the sibling checkout" }
@@ -230,7 +230,7 @@ func TestRunPicksOneLocation(t *testing.T) {
 	if got := snap.Bindings["test"].Command; got != "./client-test.sh" {
 		t.Errorf("test binding = %q, want the location's", got)
 	}
-	if got := snap.Bindings["build"].Command; got != "./build.sh" {
+	if got := snap.Bindings["build"].Guidance; got != "run ./build.sh" {
 		t.Errorf("build binding = %q, want the project's", got)
 	}
 	if !strings.Contains(out.String(), "location   client") {
@@ -494,7 +494,7 @@ func TestPublishTargetsOrderThroughALocationThatIsNotATarget(t *testing.T) {
 	write(t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"), `platforms: [linux]
 
 bindings:
-  build: { command: "./build.sh" }
+  build: { guidance: "run ./build.sh" }
   test:  { command: "./test.sh" }
 
 locations:
@@ -750,7 +750,7 @@ func releaseLocationsWorld(t *testing.T, project string) *world {
 const releaseProject = `platforms: [linux]
 
 bindings:
-  build: { command: "./build.sh" }
+  build: { guidance: "run ./build.sh" }
   release: { command: "echo project $VERSION >> released.txt" }
 
 locations:

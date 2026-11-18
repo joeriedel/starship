@@ -261,11 +261,16 @@ func hookPreToolUse(in *HookInput, r *RunFiles) (any, error) {
 		return deny(r, s.ID, "ensign runs this stage itself; do not spawn an agent for it. "+m.expect(scope)), nil
 	}
 
+	if prebuildStage(r.Snap, s) && sc.Built == nil {
+		return deny(r, s.ID, "ensign builds before this stage's tester is spawned. "+m.expect(scope)), nil
+	}
+
 	d := newDispatch(r, scope, s, role)
 	if caller != nil {
 		d.CallerAgent = caller.AgentID
 	}
-	firstOfStage := m.running(scope, s.ID) == 0 && len(sc.Branches) == 0
+	// A prebuild's run-stage already reconciled and fired stage.before for this visit.
+	firstOfStage := m.running(scope, s.ID) == 0 && len(sc.Branches) == 0 && sc.Built == nil
 	beforeFailed := false
 	if s.isLead() && !r.State.Started {
 		r.State.Started = true
@@ -744,7 +749,7 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 	}
 	// joined is the stage's outcome once every branch is done, or false while one is still running.
 	joined := func() (string, bool) {
-		if s.Parallel == nil {
+		if s.Parallel == nil || d.Prebuild {
 			return d.Outcome, true
 		}
 		var got []string
@@ -764,6 +769,9 @@ func completeDispatch(r *RunFiles, m *machine, d *Dispatch, s *Stage, outcome, s
 	outcome, ready := joined()
 	if !ready {
 		return
+	}
+	if sc.Built != nil && !d.Prebuild {
+		sc.Built.Services = false // the tester's stage is complete: its downs have run
 	}
 	if d.Role == "documentation" {
 		_, _, stray, err := docsChanged(r, d.DocsBase)
@@ -1048,8 +1056,23 @@ func bindingLine(k string, bd Binding, dir string) string {
 	}
 }
 
+// builtSection tells a tester that ensign already ran the build of this visit of its stage, and the services if it started them; "" when it did not.
+func builtSection(r *RunFiles, built *Built) string {
+	if built == nil {
+		return ""
+	}
+	s := "\n## Already done by ensign\n\nensign already ran @build, in every side where it applies, and it passed; its log is " + built.Log + ". Do not run @build."
+	if built.Services {
+		s += " ensign also started the services: they are already up, so do not run @services-up. Run @services-down on every path once the suite is done."
+	}
+	if len(r.Snap.Dependencies) > 0 {
+		s += " The dependency wiring was restored after the build: apply it again before @test, as the Dependencies section says."
+	}
+	return s + "\n"
+}
+
 // sidesSection tells a tester to test every side of a run that has several, each with its own commands in its own folder.
-func sidesSection(r *RunFiles) string {
+func sidesSection(r *RunFiles, built *Built) string {
 	sides := r.Snap.sides()
 	if len(sides) < 2 {
 		return ""
@@ -1059,6 +1082,9 @@ func sidesSection(r *RunFiles) string {
 	for _, sd := range sides {
 		fmt.Fprintf(&b, "\nside %s: %s\n\n", sd.Location, sd.Workspace)
 		for _, k := range []string{servicesUp, "build", "test", servicesDown} {
+			if built != nil && (k == "build" || (k == servicesUp && built.Services)) {
+				continue
+			}
 			if bd, ok := sd.Bindings[k]; ok {
 				b.WriteString(bindingLine(k, bd, sd.Workspace))
 			}
@@ -1160,8 +1186,13 @@ func stagePrompt(r *RunFiles, d *Dispatch, s *Stage, original string, extra []st
 		b.WriteString(sk + "\n\n")
 	}
 	b.WriteString(workspaceSection(r))
+	var built *Built
+	if sc := r.State.Scopes[d.Scope]; sc != nil && s.Role == "tester" && sc.Stage == s.ID {
+		built = sc.Built
+	}
 	if s.Role == "tester" {
-		b.WriteString(sidesSection(r))
+		b.WriteString(sidesSection(r, built))
+		b.WriteString(builtSection(r, built))
 	}
 	if s.Role == "tester" || s.Role == "coder" {
 		b.WriteString(dependenciesSection(r, s.Role == "coder"))
@@ -1231,7 +1262,7 @@ func agentReportsLine(r *RunFiles, m *machine, i int) string {
 	var outcomes, paths []string
 	for j := i; j >= 0; j-- {
 		d := r.State.Dispatches[j]
-		if d.Scope != last.Scope {
+		if d.Scope != last.Scope || d.Prebuild {
 			continue
 		}
 		if d.Stage != last.Stage || seen[d.Dim] {
@@ -1279,14 +1310,16 @@ func writeNext(r *RunFiles, out io.Writer) {
 		if !d.Done {
 			continue
 		}
-		if s := m.stage(d.Stage); s != nil && plainStage(r.Snap, s) {
+		if s := m.stage(d.Stage); s != nil && (d.Prebuild || plainStage(r.Snap, s)) {
 			// A plain dispatch with no outcome was stopped with the run. If its owner was gone, cmdRunStop wrote no report and printed its notices then; if run-stage was still running, it wrote the report afterwards.
 			report := filepath.Join(r.Dir, "reports", d.ID+".md")
 			noticesNote := ""
 			if len(readNotices(r, d)) > 0 {
 				noticesNote = "; it has notices from the stage's commands, to carry into your report as written"
 			}
-			if d.Outcome != "" {
+			if d.Outcome == "built" {
+				fmt.Fprintf(out, "Stage %q: ensign ran its build, and it passed. Its report: %s%s\n", d.Stage, report, noticesNote)
+			} else if d.Outcome != "" {
 				fmt.Fprintf(out, "Stage %q (run by ensign) finished: %s. Its report: %s%s\n", d.Stage, d.Outcome, report, noticesNote)
 			} else if _, err := os.Stat(report); err == nil {
 				fmt.Fprintf(out, "Stage %q (run by ensign) was stopped with the run, and the run did not use its result. Its report: %s%s\n", d.Stage, report, noticesNote)

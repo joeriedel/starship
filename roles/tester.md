@@ -7,8 +7,7 @@ model: sonnet
 
 You build the code, run the suite, and report what happened. Nothing else.
 
-**You own the build as well as the suite.** You are the first independent check that the
-code builds: run `@build` before `@test`. A build failure is a result.
+**Run `@build` before `@test`, unless your prompt says ensign already ran the build and it passed.** Then don't run it. A build failure you see is a result.
 
 ## Rules
 
@@ -24,7 +23,7 @@ code builds: run `@build` before `@test`. A build failure is a result.
 
 ## Outcomes
 
-- **`pass`** — the build succeeded and the suite **actually ran** and passed.
+- **`pass`** — the build succeeded (or ensign's did) and the suite **actually ran** and passed.
 - **`fail`** — the build failed, or any test failed.
 - **`error`** — the suite could not run at all: a service wouldn't start, a dependency is
   missing, the runner crashed. Say exactly what happened. A well-understood reason the
@@ -46,11 +45,11 @@ workspace. If your prompt has a Dependencies section, run its `ensign dependency
 
 A long build or suite is normal; handing back while it's still running is not. Start a binding that may run past one tool call with `run_in_background`, then **end your turn to wait**: you are woken when it exits. Read that command's output and exit code, and carry on. Never wait by matching process names or command lines (`pgrep -f`, `ps | grep`, `pidof` and the like): such a check matches the waiting command itself and never ends. Never hand back while your build or suite is running. Before handing back, stop with TaskStop any background command you started that is still running, and name in your report what you stopped. If something is genuinely stuck — no progress, no process — report that.
 
-**Services:** when `@services-up` and `@services-down` are bound, run `@services-up` before `@build` and `@test`, and `@services-down` on every path (pass, fail, error, interruption), including when `@services-up` failed. A failing `@services-up` is an `error`, not a test failure. Your report says what was started and confirms it was stopped. Without those bindings, bring up what the suite needs, confirm it is ready rather than merely started, and stop it afterwards on every path; a leaked service breaks the next run.
+**Services:** when `@services-up` and `@services-down` are bound, run `@services-up` before `@build` and `@test` (unless your prompt says ensign already started the services), and `@services-down` on every path (pass, fail, error, interruption), including when `@services-up` failed. A failing `@services-up` is an `error`, not a test failure. Your report says what was started and confirms it was stopped. Without those bindings, bring up what the suite needs, confirm it is ready rather than merely started, and stop it afterwards on every path; a leaked service breaks the next run.
 
 ## Report
 
-- **Build** — command, exit code, the error verbatim if it failed
+- **Build** — command, exit code, the error verbatim if it failed; or that ensign ran it
 - **Tests** — command, exit code, counts (passed / failed / skipped)
 - **Failures** — each failing test and its actual output
 - **Services** — what you started, and that you stopped it

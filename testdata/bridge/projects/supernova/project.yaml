@@ -1,7 +1,7 @@
 platforms: [linux]
 
 bindings:
-  build: { command: "./build.sh" }
+  build: { guidance: "run ./build.sh" }
   test:  { command: "./test.sh" }
   lint:  { not-applicable: "no linter in this toy project" }
 

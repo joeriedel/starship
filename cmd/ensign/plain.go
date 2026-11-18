@@ -40,6 +40,31 @@ func plainStage(snap *Snapshot, s *Stage) bool {
 	return x.NotApplicable != "" || (x.Command == "" && x.Guidance == "") || x.Plain
 }
 
+// prebuildStage reports whether ensign runs @build itself before the stage's tester is spawned, so that no agent waits on a long build. It applies to a tester stage that is not plain when every side's @build is a command or not applicable (at least one a command), and its services, if any, are all commands. A parallel stage is only prebuilt when it has no services to start: its testers cannot share one @services-down.
+func prebuildStage(snap *Snapshot, s *Stage) bool {
+	if s.isLead() || s.Role != "tester" || plainStage(snap, s) {
+		return false
+	}
+	builds, services := 0, false
+	for _, sd := range snap.sides() {
+		switch b := sd.Bindings["build"]; {
+		case b.NotApplicable != "":
+		case b.Command != "":
+			builds++
+		default:
+			return false
+		}
+		for _, name := range []string{servicesUp, servicesDown} {
+			b := sd.Bindings[name]
+			if b.NotApplicable == "" && b.Command == "" && b.Guidance != "" {
+				return false
+			}
+			services = services || (b.NotApplicable == "" && b.Command != "")
+		}
+	}
+	return builds > 0 && !(s.Parallel != nil && services)
+}
+
 // sides is the locations the test stage covers. A run record from before sides, or a locationless run, has one: the run's own workspace and bindings.
 func (snap *Snapshot) sides() []Side {
 	if len(snap.Sides) > 0 {
@@ -95,12 +120,12 @@ func deadPlainOwner(r *RunFiles, m *machine, scope string) *Dispatch {
 	return nil
 }
 
-// plainOwnerDead says d is a running plain dispatch whose owner is gone.
+// plainOwnerDead says d is a running plain dispatch, or a prebuild, whose owner is gone.
 func plainOwnerDead(r *RunFiles, m *machine, d *Dispatch) bool {
 	if d.Done || !d.Locked {
 		return false
 	}
-	if s := m.stage(d.Stage); s == nil || !plainStage(r.Snap, s) {
+	if s := m.stage(d.Stage); s == nil || !(d.Prebuild || plainStage(r.Snap, s)) {
 		return false
 	}
 	l := dispatchLock(r, d.ID)
@@ -128,6 +153,27 @@ func stopOrphanedServices(r *RunFiles, m *machine, deadline time.Time) string {
 		notices = append(notices, readNotices(r, d)...)
 	}
 	return noticesSection(notices)
+}
+
+// stopBuiltServices runs @services-down for services that a passed build left up for a tester whose stage never completed, because the run ended first. The downs are logged with the build's log and the obligation is cleared, so they run once. The deadline caps them all.
+func stopBuiltServices(r *RunFiles, deadline time.Time) {
+	for _, sc := range r.State.Scopes {
+		if sc.Built == nil || !sc.Built.Services {
+			continue
+		}
+		sc.Built.Services = false
+		d := r.State.dispatch(sc.Built.Dispatch)
+		sides := r.Snap.sides()
+		steps, log, _ := stopServices(r, d, sides, len(sides) > 1, deadline)
+		if len(steps) == 0 {
+			continue
+		}
+		if f, err := os.OpenFile(sc.Built.Log, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644); err == nil {
+			f.WriteString("\n" + strings.Join(log, "\n"))
+			f.Close()
+		}
+		r.State.log("services", d.Stage, d.ID, "the run ended before the tester finished: "+strings.Join(steps, "; "))
+	}
 }
 
 // stopServices runs @services-down of the given sides, last side first, each in its own workspace. It returns a step and the output per command, and whether any failed. Signals do not cancel the downs, only wait for them. A command's limit is its own timeout or the time left until deadline (when set), whichever is less; a down that cannot run in that time has failed.
@@ -267,6 +313,16 @@ func reraiseHeldSignal() {
 	}
 }
 
+// hasServicesUp says a side has a @services-up that ensign runs.
+func hasServicesUp(snap *Snapshot) bool {
+	for _, sd := range snap.sides() {
+		if _, ok := serviceBinding(sd, servicesUp); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // hasServicesDown says a side has a @services-down that ensign runs.
 func hasServicesDown(snap *Snapshot) bool {
 	for _, sd := range snap.sides() {
@@ -383,8 +439,9 @@ func cmdRunStage(args []string, out io.Writer) (err error) {
 		return fmt.Errorf("nothing to run: %s", m.expect(scope))
 	}
 	s := m.stage(sc.Stage)
-	if !plainStage(r.Snap, s) {
-		return fmt.Errorf("stage %q is not a plain stage, so there is nothing for run-stage to run. %s", s.ID, m.expect(scope))
+	prebuild := prebuildStage(r.Snap, s)
+	if !prebuild && !plainStage(r.Snap, s) {
+		return fmt.Errorf("stage %q is not a plain stage, and has no build for ensign to run, so there is nothing for run-stage to run. %s", s.ID, m.expect(scope))
 	}
 	if m.running(scope, s.ID) > 0 {
 		if d := deadPlainOwner(r, m, scope); d != nil {
@@ -404,7 +461,11 @@ func cmdRunStage(args []string, out io.Writer) (err error) {
 		}
 		return fmt.Errorf("stage %q is already running. %s", s.ID, m.expect(scope))
 	}
+	if prebuild && sc.Built != nil {
+		return fmt.Errorf("the build of stage %q has already passed. %s", s.ID, m.expect(scope))
+	}
 	d := newDispatch(r, scope, s, s.Role)
+	d.Prebuild = prebuild
 	if len(sc.Branches) == 0 {
 		err := p4ReconcileBefore(r, d)
 		if err != nil {
@@ -442,7 +503,7 @@ func cmdRunStage(args []string, out io.Writer) (err error) {
 }
 
 // runPlainStage runs @build (when bound) and @test in the workspace, completes the
-// dispatch with the result, and returns what the dispatching agent is told. The commands
+// dispatch with the result, and returns what the dispatching agent is told. A prebuild dispatch runs only the builds: a pass records the build in the scope and leaves the services up for the tester, any other result completes the stage. The commands
 // run without the run lock, so other hooks are not held up for minutes; r comes back
 // locked and holding the state as it is then on disk.
 func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string) (string, error) {
@@ -451,6 +512,7 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	}
 	r.lock.Unlock()
 	nHistory, nNotes := len(r.State.History), len(r.State.Notes)
+	prebuild := d.Prebuild
 	outcome := "pass"
 	var steps, log []string
 	failed, last := "", ""
@@ -470,12 +532,15 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 			steps = append(steps, fmt.Sprintf("side %s: @%s is not applicable (%s); tested as it is", sd.Location, applyDependencyBinding, sp.na))
 		}
 		for _, name := range []string{"build", "test"} {
+			if prebuild && name == "test" {
+				continue
+			}
 			if b, ok := sd.Bindings[name]; ok && b.NotApplicable == "" && b.Command != "" {
 				plan = append(plan, planned{sideLabel(sd, multi), name, sd.Workspace, b, i, &sides[i], sp.apply})
 			}
 		}
 	}
-	if b := r.Snap.crossTest(); b.Valid() {
+	if b := r.Snap.crossTest(); b.Valid() && !prebuild {
 		edited := &r.Snap.sides()[0]
 		plan = append(plan, planned{"cross-location: ", "test", r.Snap.Workspace, b, len(sides), edited, planSide(*edited, r.Snap.Dependencies).apply})
 	}
@@ -579,11 +644,20 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 		break
 	}
 	restore()
-	downSteps, downLog, downFailed := stopServices(r, d, sides[:reached], multi, time.Time{})
-	steps, log = append(steps, downSteps...), append(log, downLog...)
-	if downFailed && outcome != "error" {
-		steps = append(steps, fmt.Sprintf("a service may still be running, so the stage is an error (the result without that was %s)", outcome))
-		outcome = "error"
+	if prebuild && outcome == "pass" {
+		if sig := caughtSignal(); sig != nil {
+			outcome = "error"
+			steps = append(steps, fmt.Sprintf("interrupted by %s", sig))
+		}
+	}
+	keepUp := prebuild && outcome == "pass"
+	if !keepUp {
+		downSteps, downLog, downFailed := stopServices(r, d, sides[:reached], multi, time.Time{})
+		steps, log = append(steps, downSteps...), append(log, downLog...)
+		if downFailed && outcome != "error" {
+			steps = append(steps, fmt.Sprintf("a service may still be running, so the stage is an error (the result without that was %s)", outcome))
+			outcome = "error"
+		}
 	}
 	if sig := caughtSignal(); sig != nil && outcome != "error" {
 		outcome = "error"
@@ -593,7 +667,11 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	os.WriteFile(logFile, []byte(strings.Join(log, "\n")), 0o644)
 
 	summary := strings.Join(steps, "; ")
-	report := "Run by ensign: this project's @test binding is plain.\n\n- " + strings.Join(steps, "\n- ") + "\n"
+	why := "this project's @test binding is plain"
+	if prebuild {
+		why = "its build runs before the tester, which then runs the suite"
+	}
+	report := "Run by ensign: " + why + ".\n\n- " + strings.Join(steps, "\n- ") + "\n"
 	if d.Reconciled != "" {
 		report += "\n" + d.Reconciled + "\n"
 	}
@@ -621,10 +699,18 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 	m = &machine{snap: snap, st: st}
 	s = m.stage(s.ID)
 
+	kept := false
 	switch cur := st.dispatch(d.ID); {
 	case cur == nil || cur.Done:
 		os.WriteFile(filepath.Join(r.Dir, "reports", d.ID+".md"), []byte(report), 0o644)
 		st.log("report", s.ID, d.ID, outcome+": "+summary+" (dispatch no longer running; not applied)")
+	case keepUp && !st.terminal() && st.Scopes[scope] != nil && st.Scopes[scope].Stage == s.ID:
+		kept = true
+		cur.Done, cur.Outcome, cur.Summary = true, "built", summary
+		cur.FinishedSeq = st.tick()
+		os.WriteFile(filepath.Join(r.Dir, "reports", d.ID+".md"), []byte(report), 0o644)
+		st.log("report", s.ID, d.ID, "built: "+summary)
+		st.Scopes[scope].Built = &Built{Dispatch: d.ID, Log: logFile, Services: hasServicesUp(r.Snap)}
 	default:
 		wasTerminal := st.terminal()
 		completeDispatch(r, m, cur, s, outcome, summary, nil, report)
@@ -633,7 +719,21 @@ func runPlainStage(r *RunFiles, m *machine, d *Dispatch, s *Stage, scope string)
 			return "", err
 		}
 	}
+	if keepUp && !kept {
+		// The build passed but no tester will follow, so nothing else would stop the services.
+		downSteps, downLog, _ := stopServices(r, d, sides[:reached], multi, time.Time{})
+		if len(downSteps) > 0 {
+			os.WriteFile(logFile, []byte(strings.Join(append(log, downLog...), "\n")), 0o644)
+			st.log("services", s.ID, d.ID, "the run no longer waits for the tester: "+strings.Join(downSteps, "; "))
+		}
+	}
 
+	if prebuild {
+		if st.Scopes[scope] != nil && st.Scopes[scope].Built != nil && st.Scopes[scope].Built.Dispatch == d.ID {
+			outcome = "built"
+		}
+		return fmt.Sprintf("ensign ran the build of stage %q itself, before its tester. Outcome: %s.\n\n%s\nNext: %s", s.ID, outcome, report, m.expect(scope)), nil
+	}
 	return fmt.Sprintf("ensign ran stage %q itself, because this project's @test binding is plain; no %s agent was started. "+
 		"Outcome: %s.\n\n%s\nNext: %s", s.ID, s.Role, outcome, report, m.expect(scope)), nil
 }

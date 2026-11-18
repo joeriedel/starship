@@ -84,11 +84,21 @@ type Dispatch struct {
 	FinishedSeq int `json:"finished_seq,omitempty"`
 	// Reconciled is what the Perforce reconcile before a test stage opened, for the lead; "" when it opened nothing.
 	Reconciled string `json:"reconciled,omitempty"`
+	// Prebuild marks a dispatch that is ensign's own build before a tester stage (see prebuildStage): it ends as pass, when it only records ScopeState.Built, or as the stage's outcome.
+	Prebuild bool `json:"prebuild,omitempty"`
 }
 
 type ScopeState struct {
 	Stage    string            `json:"stage"`              // current stage id; "" once the scope is finished
 	Branches map[string]string `json:"branches,omitempty"` // dimension -> dispatch id, for a parallel stage
+	Built    *Built            `json:"built,omitempty"`    // the passed build of this visit of a tester stage that ensign builds for; enter clears it
+}
+
+// Built is the result of ensign's build before a tester stage.
+type Built struct {
+	Dispatch string `json:"dispatch"`
+	Log      string `json:"log"`
+	Services bool   `json:"services,omitempty"` // ensign started services and left them up for the tester
 }
 
 // ResumePoint is where an ask-user run picks up again.
@@ -1630,6 +1640,7 @@ func cmdRunRetire(args []string, out io.Writer) error {
 	if !r.State.Approved {
 		works = nil
 	}
+	stopBuiltServices(r, time.Now().Add(recoveryDownLimit))
 	if err := markRetired(r, fmt.Sprintf("retired at the user's request by session %s", session)); err != nil {
 		return err
 	}

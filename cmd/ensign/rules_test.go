@@ -33,7 +33,7 @@ func (w *world) declareRules(projectExtra string) {
 	write(w.t, filepath.Join(w.bridge, "projects", "supernova", "project.yaml"), `platforms: [linux]
 
 bindings:
-  build: { command: "./build.sh" }
+  build: { guidance: "run ./build.sh" }
   test:  { command: "./test.sh" }
   lint:  { not-applicable: "no linter in this toy project" }
 `+projectExtra)

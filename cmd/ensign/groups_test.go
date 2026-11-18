@@ -393,7 +393,7 @@ func githubGroupWorld(t *testing.T, names ...string) (*world, map[string]string)
 	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
 	data, _ := os.ReadFile(p)
 	s := strings.NewReplacer(
-		`build: { command: "./build.sh" }`, `build: { not-applicable: "none here" }`,
+		`build: { guidance: "run ./build.sh" }`, `build: { not-applicable: "none here" }`,
 		`{ command: "./test.sh" }`, localTest,
 		`{ command: "./models-test.sh" }`, localTest,
 		`{ command: "./client-test.sh" }`, localTest,

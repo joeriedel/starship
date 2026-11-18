@@ -181,7 +181,7 @@ func TestBashRolesWaitByEndingTheTurn(t *testing.T) {
 	if regexp.MustCompile(`(?i)arranging to be told later|polling`).Match(data) {
 		t.Error("the tester must not be told to poll or that arranging to be told later is not finishing")
 	}
-	for _, re := range []string{`run_in_background`, `pidof`, `matches the waiting command itself`, `name in your report what you stopped`} {
+	for _, re := range []string{`run_in_background`, `pidof`, `matches the waiting command itself`, `name in your report what you stopped`, `ensign already ran the build`} {
 		if !regexp.MustCompile(re).Match(data) {
 			t.Errorf("roles/tester.md does not match %q", re)
 		}

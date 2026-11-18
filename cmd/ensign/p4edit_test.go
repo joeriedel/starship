@@ -326,7 +326,7 @@ func TestP4NoReconcileBeforePlainTest(t *testing.T) {
 	w := p4World(t, "{ kind: p4, client: supernova-ws, changelist: '101' }")
 	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
 	data, _ := os.ReadFile(p)
-	s := strings.Replace(string(data), `  build: { command: "./build.sh" }`, `  build: { command: "echo built", plain: true }`, 1)
+	s := strings.Replace(string(data), `  build: { guidance: "run ./build.sh" }`, `  build: { command: "echo built", plain: true }`, 1)
 	write(t, p, strings.Replace(s, `  test:  { command: "./test.sh" }`, `  test:  { command: "echo 3 passed", plain: true }`, 1))
 	lead, log := p4Lead(t, w)
 	write(t, filepath.Join(w.workspace(), "a.go"), "package a\n")

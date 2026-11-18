@@ -67,7 +67,7 @@ func githubWorld(t *testing.T, conclusion, test string) (*world, string, string,
 
 	p := filepath.Join(w.bridge, "projects/supernova/project.yaml")
 	data, _ := os.ReadFile(p)
-	s := strings.Replace(string(data), `  build: { command: "./build.sh" }`, `  build: { not-applicable: "none here" }`, 1)
+	s := strings.Replace(string(data), `  build: { guidance: "run ./build.sh" }`, `  build: { not-applicable: "none here" }`, 1)
 	s = strings.Replace(s, `  test:  { command: "./test.sh" }`, `  test:  `+test, 1)
 	write(t, p, "use: [github-pr]\n"+s)
 

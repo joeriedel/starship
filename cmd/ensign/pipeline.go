@@ -27,7 +27,7 @@ func (m *machine) enter(scope, id string) {
 		sc = &ScopeState{}
 		m.st.Scopes[scope] = sc
 	}
-	sc.Stage, sc.Branches = id, nil
+	sc.Stage, sc.Branches, sc.Built = id, nil, nil
 	s := m.stage(id)
 	if s.Spend != "" && !m.spend(s.Spend, scope, id, false) {
 		return
@@ -305,6 +305,13 @@ func (m *machine) expect(scope string) string {
 	}
 	s := m.stage(sc.Stage)
 	running := m.running(scope, s.ID)
+	if prebuildStage(m.snap, s) && sc.Built == nil {
+		if running > 0 {
+			return fmt.Sprintf("Wait: ensign is still running the build of stage %q.", s.ID)
+		}
+		return fmt.Sprintf("Stage %q has its build run by ensign itself, and a tester agent follows; start no agent yet. Run `ensign run-stage --bridge %s --run %s` as a background shell command (Bash with run_in_background), then end your turn to wait for it. When it completes, run `ensign next`: if the build passed it says to dispatch the tester, and a failed build is the stage's result.",
+			s.ID, shellQuote(m.snap.Bridge), m.st.Run)
+	}
 	if s.Parallel != nil {
 		left := len(s.Dimensions) - len(sc.Branches)
 		if left > 0 {

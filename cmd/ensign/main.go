@@ -1059,6 +1059,7 @@ func finishIfTerminal(r *RunFiles, wasTerminal bool, stderr io.Writer) error {
 	if wasTerminal || r.State.Finished || !r.State.terminal() {
 		return nil
 	}
+	stopBuiltServices(r, time.Now().Add(recoveryDownLimit))
 	finishRun(r)
 	if r.State.Sequence {
 		// Saved first: the next step reads this run's final state from disk.
