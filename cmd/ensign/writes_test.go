@@ -1615,6 +1615,21 @@ func TestIdentifierWithTextWordIsDestination(t *testing.T) {
 	}
 }
 
+func TestTextFieldWithDestinationWordIsNoDestination(t *testing.T) {
+	w := writesWorld(t)
+	body := strings.Repeat("message words. ", 30)
+	feed, err := w.runWrites(fmt.Sprintf(`{"to":"ana@supernova.example","email_body":%q,"threadMessage":%q}`, body, body), "add", "--tool", wikiPost, "--summary", "Mails Ana.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(feed, "to=ana@supernova.example") || strings.Contains(feed, "message words") {
+		t.Errorf("the feed names the recipient and not the body:\n%s", feed)
+	}
+	if doc := w.review(); !strings.Contains(doc, body[:200]) {
+		t.Errorf("the body is in the review document:\n%s", doc)
+	}
+}
+
 func TestManyDestinationValuesAreAMarker(t *testing.T) {
 	w := writesWorld(t)
 	var ids []string

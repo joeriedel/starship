@@ -339,7 +339,7 @@ func destination(obj map[string]any) string {
 		return parts[0]
 	}
 	for _, k := range sortedKeys(obj) {
-		if keepFullKey(k) && (!textKey(k) || idKey(k)) {
+		if keepFullKey(k) && !textKey(k) {
 			if v, ok := destValue(obj[k]); ok {
 				size := "1 value"
 				switch x := obj[k].(type) {
