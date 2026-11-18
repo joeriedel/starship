@@ -353,7 +353,7 @@ func upgradeHookSettings(bridge string, bf *BridgeFile) error {
 	base := withoutConnectors(text)
 	known := false
 	for _, form := range []string{hookSettings(), hookSettingsWith(0, 0), hookSettingsWith(hookTimeout, 0)} {
-		for _, f := range []string{form, beforeEditPost(form)} {
+		for _, f := range []string{form, beforeTaskStopPost(form), beforeEditPost(form)} {
 			known = known || base == f || base == narrowMatcher(f) || base == beforeHandback(f) || base == withoutBash(f) || base == beforeHandback(withoutBash(f))
 		}
 	}

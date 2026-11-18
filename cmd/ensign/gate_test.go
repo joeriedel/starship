@@ -379,8 +379,8 @@ func TestRunFinishListsAgentsStillOpenAndTheSessionIsToldOnce(t *testing.T) {
 	if res := w.tool(lead, "orchestrator", "TaskStop", map[string]any{"task_id": "agent-open"}); res != nil {
 		t.Fatalf("the lead's TaskStop after the finish is allowed: %v", res)
 	}
-	if res := w.tool("agent-open", "coder", "TaskStop", map[string]any{"task_id": "x"}); dig(res, "hookSpecificOutput", "permissionDecision") != "deny" {
-		t.Fatalf("a stage agent of a finished run is still denied: %v", res)
+	if res := w.tool("agent-open", "coder", "TaskStop", map[string]any{"task_id": "x"}); dig(res, "hookSpecificOutput", "permissionDecision") == "deny" {
+		t.Fatalf("a stage agent of a finished run may stop its own background task: %v", res)
 	}
 	res, _ := w.hook("Stop", map[string]any{"agent_id": "agent-open"})
 	if res != nil {

@@ -139,7 +139,8 @@ type State struct {
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 
-	Tasks map[string]string `json:"tasks,omitempty"` // background task id -> id of the agent that launched it
+	Tasks     map[string]string `json:"tasks,omitempty"`      // background task id -> id of the agent that launched it
+	TaskFiles map[string]string `json:"task_files,omitempty"` // background Bash task id -> its output file, while it may still be running
 
 	Sequence bool `json:"sequence,omitempty"` // the run is a step of its session's sequence
 

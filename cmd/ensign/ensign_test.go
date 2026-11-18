@@ -2100,3 +2100,363 @@ func TestResumeWaitsForABusyFolder(t *testing.T) {
 		t.Fatalf("resumed run is %s", st.Status)
 	}
 }
+
+// fakeTaskFile writes a background command's output file where Claude Code does, under a temp folder the test owns, and returns its path.
+func fakeTaskFile(t *testing.T, tmp, session, id, content string) string {
+	t.Helper()
+	dir := filepath.Join(tmp, "claude-1000", "-work-supernova-app", session, "tasks")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, id+".output")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// useTempDir points the system temp folder at a fresh one.
+func useTempDir(t *testing.T) string {
+	tmp := t.TempDir()
+	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(k, tmp)
+	}
+	return tmp
+}
+
+func TestHandbackWaitsForOwnRunningBackgroundTask(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	lead := w.startLead()
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	out := fakeTaskFile(t, tmp, "sess-1", "bash1", "building\n")
+	fakeTaskFile(t, tmp, "sess-1", "bash2", "building\n")
+	w.launched(coder, "coder", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	w.launched(lead, "orchestrator", "Bash", map[string]any{"backgroundTaskId": "bash2"})
+	if st := w.state(); st.TaskFiles["bash1"] != out {
+		t.Fatalf("the output file was not recorded: %v", st.TaskFiles)
+	}
+
+	if r := w.handback(coder, "coder", report("compiled")); !strings.Contains(r, "bash1") || !strings.Contains(r, "TaskStop") {
+		t.Fatalf("a running task should refuse the handback and name it: %q", r)
+	}
+	if st := w.state(); *st.byAgent(coder).StopsLeft != stopBudget-1 || st.byAgent(coder).Handback != "" {
+		t.Fatalf("a refusal spends the budget and records nothing: %+v", st.byAgent(coder))
+	}
+
+	// A CRLF file that ends with an exit line is finished.
+	os.WriteFile(out, []byte("building\r\nok\r\n[exited with code 1]\r\n"), 0o644)
+	if r := w.handback(coder, "coder", report("compiled")); r != "" {
+		t.Fatalf("a finished task should let the handback through: %s", r)
+	}
+}
+
+func TestHandbackAllowedWhenTheTaskWasKilled(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	lead := w.startLead()
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	out := fakeTaskFile(t, tmp, "sess-1", "bash1", "building\n")
+	w.launched(coder, "coder", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	os.WriteFile(out, []byte("building\n[killed]\n"), 0o644)
+	if r := w.handback(coder, "coder", report("compiled")); r != "" {
+		t.Fatalf("a killed task should let the handback through: %s", r)
+	}
+}
+
+func TestHandbackGuardNeverBlocksOnAGuess(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	lead := w.startLead()
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	// No file, then several files for one id, then someone else's running task.
+	w.launched(coder, "coder", "Bash", map[string]any{"backgroundTaskId": "bash0"})
+	fakeTaskFile(t, tmp, "sess-1", "bash1", "working\n")
+	fakeTaskFile(t, tmp, "sess-2", "bash1", "working\n")
+	w.launched(coder, "coder", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	fakeTaskFile(t, tmp, "sess-1", "bash2", "working\n")
+	w.launched(lead, "orchestrator", "Bash", map[string]any{"backgroundTaskId": "bash2"})
+	if st := w.state(); len(st.TaskFiles) != 1 || st.TaskFiles["bash2"] == "" {
+		t.Fatalf("only the one unambiguous file is recorded: %v", st.TaskFiles)
+	}
+	if r := w.handback(coder, "coder", report("compiled")); r != "" {
+		t.Fatalf("an unknown or another agent's task must not block: %s", r)
+	}
+}
+
+func TestTaskStopClearsTheHandbackGuard(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	lead := w.startLead()
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	fakeTaskFile(t, tmp, "sess-1", "bash1", "building\n")
+	w.launched(coder, "coder", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	// Another agent's TaskStop does not clear it; the owner's does.
+	if res, code := w.hook("PostToolUse", map[string]any{"agent_id": lead, "agent_type": "orchestrator", "tool_name": "TaskStop", "tool_input": map[string]any{"task_id": "bash1"}}); code != 0 || res != nil {
+		t.Fatalf("PostToolUse should be silent, got %d: %v", code, res)
+	}
+	if r := w.handback(coder, "coder", report("compiled")); !strings.Contains(r, "bash1") {
+		t.Fatalf("another agent's TaskStop must not clear the task: %q", r)
+	}
+	if res, code := w.hook("PostToolUse", map[string]any{"agent_id": coder, "agent_type": "coder", "tool_name": "TaskStop", "tool_input": map[string]any{"shell_id": "bash1"}}); code != 0 || res != nil {
+		t.Fatalf("PostToolUse should be silent, got %d: %v", code, res)
+	}
+	if r := w.handback(coder, "coder", report("compiled")); r != "" {
+		t.Fatalf("a stopped task should not block: %s", r)
+	}
+}
+
+func TestLeadHandbackWaitsForItsRunningBackgroundTask(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	lead := w.startLead()
+	w.leaf(lead, "coder", "compiled")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+	out := fakeTaskFile(t, tmp, "sess-1", "bash1", "working\n")
+	w.launched(lead, "orchestrator", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	// The first handback reads the last stage's result for free.
+	w.handback(lead, "orchestrator", "reading")
+	if r := w.handback(lead, "orchestrator", "All done."); !strings.Contains(r, "bash1") {
+		t.Fatalf("the lead's running task should refuse its handback: %q", r)
+	}
+	os.WriteFile(out, []byte("working\n[exited with code 0]\n"), 0o644)
+	if r := w.handback(lead, "orchestrator", "All done."); strings.Contains(r, "bash1") {
+		t.Fatalf("a finished task should not hold the lead: %s", r)
+	}
+}
+
+func TestStageHandbackAtATerminalRunDeniesWithoutFailingTheRun(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	lead := w.startLead()
+	w.passPipeline(lead)
+	run := w.state().Run
+	if _, err := w.finishGoal(run, "--goal", "met"); err != nil {
+		t.Fatal(err)
+	}
+	w.reopenStageAgent(run, "agent-open")
+	fakeTaskFile(t, tmp, "sess-1", "bash1", "working\n")
+	w.launched("agent-open", "coder", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	before := w.runState(run).Status
+	if before == "failed" {
+		t.Fatal("the run should not have failed yet")
+	}
+	if res := w.tool("agent-open", "coder", "TaskStop", map[string]any{"task_id": "bash1"}); res != nil {
+		t.Fatalf("a stage agent of a finished run may stop its own task: %v", res)
+	}
+	denied := 0
+	for ; denied <= stopBudget; denied++ {
+		r := w.handback("agent-open", "coder", report("compiled"))
+		if r == "" {
+			break
+		}
+		if !strings.Contains(r, "bash1") {
+			t.Fatalf("the denial should name the task: %q", r)
+		}
+		if st := w.runState(run); st.Status != before {
+			t.Fatalf("a denied handback changed the run from %s to %s", before, st.Status)
+		}
+	}
+	if denied == 0 || denied > stopBudget {
+		t.Fatalf("expected the budget to be spent and the handback let through, denied %d times", denied)
+	}
+	if st := w.runState(run); st.Status != before {
+		t.Fatalf("the let-through handback changed the run from %s to %s", before, st.Status)
+	}
+}
+
+func TestTaskOutputFileIsFoundByIDAlone(t *testing.T) {
+	tmp := useTempDir(t)
+	if p := taskOutputFile("bash1"); p != "" {
+		t.Fatalf("a file that does not exist must not be recorded: %q", p)
+	}
+	want := fakeTaskFile(t, tmp, "first-session", "bash1", "x\n")
+	if p := taskOutputFile("bash1"); p != want {
+		t.Fatalf("got %q, want %q", p, want)
+	}
+	fakeTaskFile(t, tmp, "other-session", "bash1", "x\n")
+	if p := taskOutputFile("bash1"); p != "" {
+		t.Fatalf("several matches are unknown: %q", p)
+	}
+	if p := taskOutputFile("*"); p != "" {
+		t.Fatalf("an id with a glob character is not looked up: %q", p)
+	}
+}
+
+func TestFreeRoleHandbackWaitsForItsRunningBackgroundTask(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	w.startLead()
+	// A free role is never dispatched, so no spawn records it.
+	out := fakeTaskFile(t, tmp, "sess-1", "bash1", "testing\n")
+	w.launched("explorer1", "explorer", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	if st := w.state(); len(st.TaskFiles) != 0 {
+		t.Fatalf("a free agent's task belongs in the session record, not the run's state: %v", st.TaskFiles)
+	}
+	if data, _ := os.ReadFile(bgTasksPath(w.bridge, w.sid)); !strings.Contains(string(data), "launch\texplorer1\tbash1\t"+out) {
+		t.Fatalf("the free agent's task was not recorded: %q", data)
+	}
+	before := w.state()
+	for i := 0; i < stopBudget+2; i++ {
+		if r := w.handback("explorer1", "explorer", "found it"); !strings.Contains(r, "bash1") {
+			t.Fatalf("a running task should refuse a free role's handback every time: %q", r)
+		}
+	}
+	if st := w.state(); st.Status != before.Status || len(st.Dispatches) != len(before.Dispatches) {
+		t.Fatalf("a free role's refusal changed the run: %s", st.Status)
+	}
+	os.WriteFile(out, []byte("testing\n[exited with code 0]\n"), 0o644)
+	if r := w.handback("explorer1", "explorer", "found it"); r != "" {
+		t.Fatalf("a finished task should let the free role through: %s", r)
+	}
+}
+
+func TestFreeRoleHandbackWaitsAcrossTheLiveRunCountChanging(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	w.startLead()
+	out := fakeTaskFile(t, tmp, "sess-1", "bash1", "testing\n")
+	// Launched with one live run, handed back with two.
+	w.launched("explorer1", "explorer", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	w.liveStepRun(filepath.Join(tmp, "other-folder"), "")
+	if n := len(mustLive(t, w.bridge, w.sid)); n < 2 {
+		t.Fatalf("want two live runs, got %d", n)
+	}
+	if r := w.handback("explorer1", "explorer", "found it"); !strings.Contains(r, "bash1") {
+		t.Fatalf("a running task should refuse the handback after a second run starts: %q", r)
+	}
+	// Launched with two live runs, and the second run stays live: the first task's exit does not clear this one.
+	out2 := fakeTaskFile(t, tmp, "sess-1", "bash2", "testing\n")
+	w.launched("explorer1", "explorer", "Bash", map[string]any{"backgroundTaskId": "bash2"})
+	os.WriteFile(out, []byte("testing\n[exited with code 0]\n"), 0o644)
+	if r := w.handback("explorer1", "explorer", "found it"); !strings.Contains(r, "bash2") {
+		t.Fatalf("the task launched with two live runs should refuse the handback: %q", r)
+	}
+	os.WriteFile(out2, []byte("[killed]\n"), 0o644)
+	if r := w.handback("explorer1", "explorer", "found it"); r != "" {
+		t.Fatalf("finished tasks should let the free role through: %q", r)
+	}
+}
+
+func TestRunlessFreeAgentStillCannotDispatchStages(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	w.startLead()
+	w.liveStepRun(filepath.Join(tmp, "other-folder"), "")
+	if _, why := w.spawn("explorer1", "explorer", "coder"); !strings.Contains(why, "can't dispatch stages") {
+		t.Fatalf("a run-less free agent must not spawn a stage: %q", why)
+	}
+}
+
+func TestFreeRoleGuardLeavesOtherAgentsAlone(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	w.startLead()
+	fakeTaskFile(t, tmp, "sess-1", "bash1", "testing\n")
+	// A role that is neither a stage nor a free role of the run is not tracked.
+	w.launched("supernova1", "supernova-agent", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	if st := w.state(); len(st.TaskFiles) != 0 {
+		t.Fatalf("an agent outside the run's roles was recorded: %v", st.TaskFiles)
+	}
+	if r := w.handback("supernova1", "supernova-agent", "done"); r != "" {
+		t.Fatalf("an agent outside the run must be left alone: %s", r)
+	}
+}
+
+func TestLeadReadingAResultIsNotChargedForItsBackgroundTask(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	lead := w.startLead()
+	w.leaf(lead, "coder", "compiled")
+	fakeTaskFile(t, tmp, "sess-1", "bash1", "working\n")
+	w.launched(lead, "orchestrator", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	spent := *w.state().byAgent(lead).StopsLeft
+	r := w.handback(lead, "orchestrator", "reading")
+	if !strings.Contains(r, "the pipeline is not finished") {
+		t.Fatalf("the lead should get its next-step text: %q", r)
+	}
+	if st := w.state(); *st.byAgent(lead).StopsLeft != spent {
+		t.Fatalf("reading a result spent a stop: %d -> %d", spent, *st.byAgent(lead).StopsLeft)
+	}
+}
+
+func TestAdvisoryStageHandbackWithARunningTaskNeverFailsTheRun(t *testing.T) {
+	tmp := useTempDir(t)
+	w := advisorySoloWorld(t, false)
+	agent, why := w.spawn("", "", "curator")
+	if agent == "" {
+		t.Fatal(why)
+	}
+	run := w.state().Run
+	fakeTaskFile(t, tmp, "sess-1", "bash1", "working\n")
+	w.launched(agent, "curator", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	for i := 0; i < stopBudget-1; i++ {
+		if r := w.handback(agent, "curator", "nothing to report"); !strings.Contains(r, "bash1") {
+			t.Fatalf("refusal %d should name the task: %q", i, r)
+		}
+		if st := w.runState(run); st.Status == "failed" || st.Status == "error" || st.Finished {
+			t.Fatalf("a refusal changed the run: %s", st.Status)
+		}
+	}
+	// The refusal that spends the budget is let through while the task still runs: the advisory handling takes over.
+	if r := w.handback(agent, "curator", "nothing to report"); r != "" {
+		t.Fatalf("the spent budget should let the handback through: %s", r)
+	}
+	if st := w.runState(run); st.Status != "success" || !st.Dispatches[0].Done || st.Dispatches[0].Outcome != "missing" {
+		t.Fatalf("the advisory outcome should be taken: %s %+v", st.Status, st.Dispatches[0])
+	}
+}
+
+func TestFreeRoleGuardInASessionWithSeveralLiveRuns(t *testing.T) {
+	tmp := useTempDir(t)
+	w := newWorld(t)
+	w.liveStepRun(t.TempDir(), "agentA")
+	w.liveStepRun(t.TempDir(), "agentB")
+	out := fakeTaskFile(t, tmp, "sess-1", "bash1", "testing\n")
+	w.launched("explorer1", "explorer", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	for i := 0; i < stopBudget+2; i++ {
+		if r := w.handback("explorer1", "explorer", "found it"); !strings.Contains(r, "bash1") {
+			t.Fatalf("a running task should refuse a free role's handback every time: %q", r)
+		}
+	}
+	os.WriteFile(out, []byte("testing\n[exited with code 0]\n"), 0o644)
+	if r := w.handback("explorer1", "explorer", "found it"); r != "" {
+		t.Fatalf("a finished task should let the free role through: %s", r)
+	}
+	// A stopped task does not block, and another agent's task is not this agent's.
+	fakeTaskFile(t, tmp, "sess-1", "bash2", "testing\n")
+	w.launched("explorer2", "explorer", "Bash", map[string]any{"backgroundTaskId": "bash2"})
+	if res := w.hookPost("explorer2", "explorer", "TaskStop", map[string]any{"task_id": "bash2"}); res != nil {
+		t.Fatalf("TaskStop should be silent: %v", res)
+	}
+	if r := w.handback("explorer2", "explorer", "found it"); r != "" {
+		t.Fatalf("a stopped task should not block: %s", r)
+	}
+	if r := w.handback("explorer3", "explorer", "found it"); r != "" {
+		t.Fatalf("an agent with no task must not block: %s", r)
+	}
+}
+
+// hookPost sends a PostToolUse for a tool with the given input and returns the output.
+func (w *world) hookPost(agent, agentType, tool string, input map[string]any) map[string]any {
+	w.t.Helper()
+	res, code := w.hook("PostToolUse", map[string]any{"agent_id": agent, "agent_type": agentType, "tool_name": tool, "tool_input": input})
+	if code != 0 {
+		w.t.Fatalf("PostToolUse exited %d: %v", code, res)
+	}
+	return res
+}

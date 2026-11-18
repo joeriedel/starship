@@ -387,7 +387,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 0
 		}
 	case "PostToolUse":
-		// Only a background launch is recorded; taking the run lock for any other call
+		// Only a background launch and a TaskStop are recorded; taking the run lock for any other call
 		// would make every agent's Bash wait on whichever hook holds it. An edit is
 		// checked without the lock too.
 		if isEditTool(in.ToolName) {
@@ -397,7 +397,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			}
 			return 0
 		}
-		if backgroundLaunch(&in) == "" {
+		if backgroundLaunch(&in) == "" && in.ToolName != "TaskStop" {
 			return 0
 		}
 	case "Stop":
@@ -420,6 +420,11 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		} else if err != nil {
 			return failHook(&in, nil, err, stderr)
 		}
+	} else if r == nil && (event == "PostToolUse" || event == "PreToolUse" && in.ToolName == "SubagentHandback") && isRunlessFreeAgent(bridge, &in) {
+		if out := hookRunlessAgent(bridge, event, &in); out != nil {
+			json.NewEncoder(stdout).Encode(out)
+		}
+		return 0
 	} else if r == nil {
 		role, _ := in.ToolInput["subagent_type"].(string)
 		if event == "PreToolUse" && in.AgentID != "" {
@@ -449,9 +454,17 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var out any
 	switch event {
 	case "PreToolUse":
-		out, err = hookPreToolUse(&in, r)
+		if in.ToolName == "SubagentHandback" && isFreeAgent(r, &in) {
+			out = hookRunlessAgent(bridge, event, &in)
+		} else {
+			out, err = hookPreToolUse(&in, r)
+		}
 	case "PostToolUse":
-		out, err = hookPostToolUse(&in, r)
+		if isFreeAgent(r, &in) {
+			out = hookRunlessAgent(bridge, event, &in)
+		} else {
+			out, err = hookPostToolUse(&in, r)
+		}
 	case "SubagentStop":
 		out, err = hookSubagentStop(&in, r)
 	case "UserPromptSubmit":
@@ -794,9 +807,14 @@ func beforeHandback(settings string) string {
 	return strings.Replace(settings, "|SubagentHandback", "", 1)
 }
 
+// beforeTaskStopPost is settings as ensign wrote them before PostToolUse matched TaskStop.
+func beforeTaskStopPost(settings string) string {
+	return strings.Replace(settings, `"matcher": "Agent|Task|Bash|Edit|Write|NotebookEdit|TaskStop"`, `"matcher": "Agent|Task|Bash|Edit|Write|NotebookEdit"`, 1)
+}
+
 // beforeEditPost is settings as ensign wrote them before PostToolUse matched Edit, Write and NotebookEdit.
 func beforeEditPost(settings string) string {
-	return strings.Replace(settings, `"matcher": "Agent|Task|Bash|Edit|Write|NotebookEdit"`, `"matcher": "Agent|Task|Bash"`, 1)
+	return strings.Replace(beforeTaskStopPost(settings), `"matcher": "Agent|Task|Bash|Edit|Write|NotebookEdit"`, `"matcher": "Agent|Task|Bash"`, 1)
 }
 
 // narrowMatcher is settings as ensign wrote them before PreToolUse matched every tool.

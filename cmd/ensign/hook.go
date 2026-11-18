@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -161,13 +162,13 @@ func newDispatch(r *RunFiles, scope string, s *Stage, role string) *Dispatch {
 		Fields: map[string][]string{}, StopsLeft: &stops}
 }
 
-// finishedRunRefusal is the reason to refuse a tool call of an agent that belongs to a finished run, or "". The run's lead may still call TaskStop, which is how it stops the agents `ensign run finish` lists. The agent's run is the one it is bound to, among its session's runs, or else the one its transcript's tag names; the session's current run does not matter, since it may be a retry. State is read without the run lock, as runIsLive does.
+// finishedRunRefusal is the reason to refuse a tool call of an agent that belongs to a finished run, or "". Any agent of the run may still call TaskStop: the lead stops the agents `ensign run finish` lists, and the others stop their own background commands before handing back. The agent's run is the one it is bound to, among its session's runs, or else the one its transcript's tag names; the session's current run does not matter, since it may be a retry. State is read without the run lock, as runIsLive does.
 func finishedRunRefusal(bridge string, in *HookInput) string {
 	ids, _ := sessionRuns(bridge, in.SessionID)
 	for _, id := range ids {
 		var st State
 		if readRunState(filepath.Join(runsDir(bridge), id), &st) == nil && st.byAgent(in.AgentID) != nil {
-			if in.ToolName == "TaskStop" && isLeadAgent(filepath.Join(runsDir(bridge), id), &st, in.AgentID) {
+			if in.ToolName == "TaskStop" {
 				return ""
 			}
 			return runOverReason(&st)
@@ -178,21 +179,10 @@ func finishedRunRefusal(bridge string, in *HookInput) string {
 		return ""
 	}
 	var st State
-	if readRunState(filepath.Join(runsDir(bridge), run), &st) == nil && st.terminal() {
+	if readRunState(filepath.Join(runsDir(bridge), run), &st) == nil && st.terminal() && in.ToolName != "TaskStop" {
 		return runOverReason(&st)
 	}
 	return ""
-}
-
-// isLeadAgent reports whether the agent is the dispatch of the run's lead stage.
-func isLeadAgent(dir string, st *State, agentID string) bool {
-	var snap Snapshot
-	d := st.byAgent(agentID)
-	if d == nil || readJSON(filepath.Join(dir, "pipeline.json"), &snap) != nil || snap.Pipeline == nil {
-		return false
-	}
-	s := (&machine{snap: &snap, st: st}).stage(d.Stage)
-	return s != nil && s.isLead()
 }
 
 // openAgents lists the agent ids of a run's dispatches that may still be running: bound to an agent, not done and not handed back. The lead is left out unless withLead.
@@ -426,6 +416,30 @@ func hookHandback(in *HookInput, r *RunFiles) any {
 		r.State.log("denied", s.ID, d.ID, reason)
 		return denial(reason)
 	}
+	// A handback ends the agent, and a background command it started would stay registered to it with nobody left to stop it. A lead that has not read a stage's result yet gets the free read-the-result denial below instead, which keeps its next-step text and costs no stop.
+	leadReading := s != nil && s.isLead() && !r.State.terminal() && r.State.reportedSinceLeadCall(s.ID)
+	if running := runningTasks(r, in.AgentID); len(running) > 0 && s != nil && !leadReading {
+		reason := backgroundRefusal(running)
+		switch {
+		case r.State.terminal():
+			// The run is over, so there is nothing to fail: a spent budget just lets the handback through.
+			if d.spendStop() {
+				return nil
+			}
+			r.State.log("denied", s.ID, d.ID, reason)
+			return denial(reason)
+		case s.isLead():
+			return refuse(reason, "lead-stopped", "the lead stopped before the pipeline finished")
+		case s.Advisory != "":
+			// Nothing on an advisory stage fails the run: the refusal lasts while the budget does, then the handback goes on to the advisory handling below.
+			if !d.spendStop() {
+				r.State.log("denied", s.ID, d.ID, reason)
+				return denial(reason)
+			}
+		default:
+			return refuse(reason, "bad-report", fmt.Sprintf("%s (%s) handed back with a background command still running", s.ID, d.ID))
+		}
+	}
 	if s != nil && s.isLead() && !r.State.terminal() {
 		var next strings.Builder
 		writeNext(r, &next)
@@ -458,6 +472,19 @@ func hookHandback(in *HookInput, r *RunFiles) any {
 	return nil
 }
 
+func backgroundRefusal(running []string) string {
+	return fmt.Sprintf("you still have a background command running (task %s). Wait for it by ending your turn: you are woken when it exits. Or stop it with TaskStop, then hand back.", strings.Join(running, ", "))
+}
+
+// isFreeAgent reports whether the calling agent is a free role of the run: its type is a free role, it is bound to no dispatch and its transcript's tag names no run. Free roles are not tagged, so the run is the one the session is bound to.
+func isFreeAgent(r *RunFiles, in *HookInput) bool {
+	if in.AgentID == "" || r.Snap == nil || r.Snap.Pipeline == nil || !slices.Contains(r.Snap.Pipeline.FreeRoles, in.AgentType) || r.State.byAgent(in.AgentID) != nil {
+		return false
+	}
+	run, _ := agentTag(in)
+	return run == ""
+}
+
 // backgroundLaunch returns the id of the background task an agent's tool call started,
 // or "" when the call started none or was not made by an agent.
 func backgroundLaunch(in *HookInput) string {
@@ -475,17 +502,102 @@ func backgroundLaunch(in *HookInput) string {
 }
 
 // hookPostToolUse records which run agent launched a background task, so a later
-// SubagentStop can tell a wait on that task from an early stop.
+// SubagentStop can tell a wait on that task from an early stop, and where a background
+// command's output file is, so a handback can tell whether it is still running. A TaskStop
+// by the owner forgets the file: a stopped task no longer blocks a handback.
 func hookPostToolUse(in *HookInput, r *RunFiles) (any, error) {
+	if callerDispatch(r, in) == nil {
+		return nil, nil
+	}
+	if in.ToolName == "TaskStop" {
+		id, _ := in.ToolInput["task_id"].(string)
+		if id == "" {
+			id, _ = in.ToolInput["shell_id"].(string)
+		}
+		if id != "" && r.State.Tasks[id] == in.AgentID {
+			delete(r.State.TaskFiles, id)
+		}
+		return nil, nil
+	}
 	task := backgroundLaunch(in)
-	if task == "" || callerDispatch(r, in) == nil {
+	if task == "" {
 		return nil, nil
 	}
 	if r.State.Tasks == nil {
 		r.State.Tasks = map[string]string{}
 	}
 	r.State.Tasks[task] = in.AgentID
+	if in.ToolName == "Bash" {
+		if path := taskOutputFile(task); path != "" {
+			if r.State.TaskFiles == nil {
+				r.State.TaskFiles = map[string]string{}
+			}
+			r.State.TaskFiles[task] = path
+		}
+	}
 	return nil, nil
+}
+
+var taskIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// taskOutputFile is the output file of the background Bash command, or "" when it can't be told. Claude Code writes it under <tmp>/claude-<uid>/<cwd slug>/<first session id>/tasks/<task>.output, and the session id and uid are not reliably known here, so it is found by task id alone and counts only when exactly one file matches.
+func taskOutputFile(task string) string {
+	if !taskIDRe.MatchString(task) {
+		return ""
+	}
+	tmps := []string{os.TempDir()}
+	if runtime.GOOS != "windows" && tmps[0] != "/tmp" {
+		tmps = append(tmps, "/tmp")
+	}
+	var found []string
+	for _, tmp := range tmps {
+		matches, _ := filepath.Glob(filepath.Join(tmp, "claude*", "*", "*", "tasks", task+".output"))
+		for _, p := range matches {
+			if !slices.Contains(found, p) {
+				found = append(found, p)
+			}
+		}
+	}
+	if len(found) != 1 {
+		return ""
+	}
+	return found[0]
+}
+
+var exitLineRe = regexp.MustCompile(`^\[(exited with code -?\d+|killed)\]$`)
+
+// outputShowsRunning reports whether a background command's output file shows it still running: the file exists and does not end with an exit or killed line. A file that can't be read says nothing, so it is not running.
+func outputShowsRunning(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	const tailSize = 512
+	off := max(fi.Size()-tailSize, 0)
+	buf := make([]byte, fi.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return false
+	}
+	text := strings.TrimRight(string(buf), " \t\r\n")
+	line := text[strings.LastIndexByte(text, '\n')+1:]
+	return !exitLineRe.MatchString(line)
+}
+
+// runningTasks lists the background commands the agent launched whose output file shows them still running.
+func runningTasks(r *RunFiles, agent string) []string {
+	var ids []string
+	for id, path := range r.State.TaskFiles {
+		if r.State.Tasks[id] == agent && outputShowsRunning(path) {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // ownsInFlight reports whether the agent launched a task that is still in flight.
@@ -1511,4 +1623,86 @@ func readOnlyRole(bridge, role string) bool {
 		}
 	}
 	return true
+}
+
+// bgTasksPath is the session's record of the background commands its run-less free agents launched, one line each: "launch <agent> <task> <output file>" or "stop <agent> <task>". It is only appended to, so it needs no lock.
+func bgTasksPath(bridge, session string) string { return sessionFile(bridge, session) + ".bgtasks" }
+
+// isRunlessFreeAgent reports whether the calling agent is a free role that no run can be chosen for: the session has several live runs, the agent's transcript tag names no run and its type is a free role of one of them. Its background commands are kept in the session record, as are a free agent's inside a run, so a run starting or ending does not lose them.
+func isRunlessFreeAgent(bridge string, in *HookInput) bool {
+	if in.AgentID == "" || in.SessionID == "" {
+		return false
+	}
+	if run, _ := agentTag(in); run != "" {
+		return false
+	}
+	live, err := liveSessionRuns(bridge, in.SessionID)
+	if err != nil || len(live) < 2 {
+		return false
+	}
+	for _, id := range live {
+		var snap Snapshot
+		if readJSON(filepath.Join(runsDir(bridge), id, "pipeline.json"), &snap) == nil && snap.Pipeline != nil && slices.Contains(snap.Pipeline.FreeRoles, in.AgentType) {
+			return true
+		}
+	}
+	return false
+}
+
+// hookRunlessAgent handles a hook call of a run-less free agent: it records the agent's background launches and TaskStops in the session's record, and refuses its handback while one of its commands is still running. It returns the reply to print, if any. A record that can't be read or written blocks nothing.
+func hookRunlessAgent(bridge, event string, in *HookInput) any {
+	path := bgTasksPath(bridge, in.SessionID)
+	switch {
+	case event == "PostToolUse" && in.ToolName == "TaskStop":
+		id, _ := in.ToolInput["task_id"].(string)
+		if id == "" {
+			id, _ = in.ToolInput["shell_id"].(string)
+		}
+		if id != "" {
+			appendBgTasks(path, "stop\t"+in.AgentID+"\t"+id)
+		}
+	case event == "PostToolUse":
+		if task := backgroundLaunch(in); task != "" && in.ToolName == "Bash" {
+			if file := taskOutputFile(task); file != "" {
+				appendBgTasks(path, "launch\t"+in.AgentID+"\t"+task+"\t"+file)
+			}
+		}
+	case event == "PreToolUse" && in.ToolName == "SubagentHandback":
+		data, _ := os.ReadFile(path)
+		files := map[string]string{}
+		for _, line := range strings.Split(string(data), "\n") {
+			f := strings.Split(line, "\t")
+			if len(f) < 3 || f[1] != in.AgentID {
+				continue
+			}
+			if f[0] == "launch" && len(f) == 4 {
+				files[f[2]] = f[3]
+			} else if f[0] == "stop" {
+				delete(files, f[2])
+			}
+		}
+		var running []string
+		for id, file := range files {
+			if outputShowsRunning(file) {
+				running = append(running, id)
+			}
+		}
+		slices.Sort(running)
+		if len(running) > 0 {
+			return denial(backgroundRefusal(running))
+		}
+	}
+	return nil
+}
+
+func appendBgTasks(path, line string) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.WriteString(line + "\n")
 }

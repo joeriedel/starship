@@ -160,3 +160,30 @@ func TestReadOnlyRolesNeverChangeARemote(t *testing.T) {
 		}
 	}
 }
+
+func TestBashRolesWaitByEndingTheTurn(t *testing.T) {
+	root := repoRoot(t)
+	for _, role := range []string{"coder", "documentation", "explorer", "reviewer", "style-reviewer", "tester", "orchestrator"} {
+		data, err := os.ReadFile(filepath.Join(root, "roles", role+".md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range []string{`(?m)^tools: .*\bBash\b.*\bTaskStop\b|(?m)^tools: .*\bTaskStop\b.*\bBash\b`, `pgrep -f`, `end (your|the) turn`} {
+			if !regexp.MustCompile(re).Match(data) {
+				t.Errorf("roles/%s.md does not match %q", role, re)
+			}
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(root, "roles", "tester.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if regexp.MustCompile(`(?i)arranging to be told later|polling`).Match(data) {
+		t.Error("the tester must not be told to poll or that arranging to be told later is not finishing")
+	}
+	for _, re := range []string{`run_in_background`, `pidof`, `matches the waiting command itself`, `name in your report what you stopped`} {
+		if !regexp.MustCompile(re).Match(data) {
+			t.Errorf("roles/tester.md does not match %q", re)
+		}
+	}
+}

@@ -114,13 +114,13 @@ coder to report `blocked`, and explain in your report what scope change it needs
 You are re-invoked automatically when a dispatched agent finishes.
 
 - **To wait, write one sentence naming the stage you're waiting on, and end the turn.**
-  No polling, no `sleep`, never read an agent's output file.
+  No polling, no `sleep`, never read an agent's output file, and never wait by matching process names or command lines (`pgrep -f`, `ps | grep`).
 - **Wait only for a stage that is running.** A stage that has reported needs `next`, not a wait.
 - **A stage has finished only when its completion arrives.** Never brief from what you
   expect it to find.
 - **Your report is sent once,** after the run is finished — never to wait.
 - You cannot correct a running agent. Get each brief right before sending it.
-- **Before `run finish`, stop with TaskStop every agent you started that is still running,** free-role agents (explorers and the like) included. Ensign has no id for those, so they are yours alone. After `run finish`, stop each agent id it lists with TaskStop, then hand back.
+- **Before `run finish`, stop with TaskStop every agent and background shell command you started that is still running,** free-role agents (explorers and the like) included. Ensign has no id for those, so they are yours alone. After `run finish`, stop each agent id it lists with TaskStop, then hand back.
 
 ## Report
 
