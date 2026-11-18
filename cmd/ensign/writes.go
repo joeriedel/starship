@@ -328,7 +328,7 @@ func destination(obj map[string]any) string {
 	}
 	var parts []string
 	for _, k := range sortedKeys(obj) {
-		if keepFullKey(k) {
+		if keepFullKey(k) && !textKey(k) {
 			if v, ok := destValue(obj[k]); ok {
 				parts = append(parts, shown(k)+"="+v)
 			}
@@ -340,11 +340,11 @@ func destination(obj map[string]any) string {
 	return strings.Join(parts, ", ")
 }
 
-// destValue is a destination field's value on one line: a string, a number, or a list of them.
+// destValue is a destination field's value on one line: a string, a number, or a list of them. A long string is no destination.
 func destValue(v any) (string, bool) {
 	switch x := v.(type) {
 	case string:
-		return shown(x), true
+		return shown(x), !isLong(x)
 	case json.Number:
 		return x.String(), true
 	case []any:
@@ -675,8 +675,8 @@ func parseAddArgs(args []string) (tool string, o *writeOpts, err error) {
 	switch {
 	case o.summary == "":
 		return "", nil, errors.New("--summary is empty")
-	case strings.ContainsAny(o.summary, "\r\n"):
-		return "", nil, errors.New("--summary must be one line, without a line break")
+	case strings.ContainsFunc(o.summary, func(r rune) bool { return unicode.IsControl(r) || r == '\u2028' || r == '\u2029' }):
+		return "", nil, errors.New("--summary must be one line of plain text, without a line break, tab or other control character")
 	case utf8.RuneCountInString(o.summary) > maxSummaryRunes:
 		return "", nil, fmt.Errorf("--summary is longer than %d characters; the detail belongs in the review document, which ensign writes", maxSummaryRunes)
 	}

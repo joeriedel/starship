@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -132,8 +131,18 @@ var fullWords = map[string]bool{
 	"owner": true, "assignee": true, "assignees": true, "user": true, "users": true,
 }
 
+// textWords are the words of a field name that mark running text. A field that also carries one is not a feed destination.
+var textWords = map[string]bool{
+	"text": true, "body": true, "message": true, "content": true, "html": true, "note": true, "description": true, "comment": true,
+}
+
 // keepFullKey reports whether a field name, split at separators and at lower-to-upper case changes, holds a word of fullWords.
-func keepFullKey(k string) bool {
+func keepFullKey(k string) bool { return keyHasWord(k, fullWords) }
+
+// textKey reports whether a field name holds a word of textWords, split as keepFullKey does.
+func textKey(k string) bool { return keyHasWord(k, textWords) }
+
+func keyHasWord(k string, set map[string]bool) bool {
 	var words []string
 	var cur []rune
 	flush := func() {
@@ -157,29 +166,11 @@ func keepFullKey(k string) bool {
 	}
 	flush()
 	for _, w := range words {
-		if fullWords[w] {
+		if set[w] {
 			return true
 		}
 	}
 	return false
-}
-
-// saveTree saves every long string in v that is not under a destination-like field name as a plain-text file, and lists each file with the path of its field.
-func (c *writeCtx) saveTree(b *strings.Builder, v any, key, path string) {
-	switch x := v.(type) {
-	case map[string]any:
-		for _, k := range sortedKeys(x) {
-			c.saveTree(b, x[k], k, path+"."+k)
-		}
-	case []any:
-		for i, e := range x {
-			c.saveTree(b, e, key, fmt.Sprintf("%s[%d]", path, i))
-		}
-	case string:
-		if isLong(x) && !keepFullKey(key) {
-			fmt.Fprintf(b, "Long text at %s (%d characters, sha256 %s, also saved in %s)\n", jsonText(path), utf8.RuneCountInString(x), sha([]byte(x)), c.save(x))
-		}
-	}
 }
 
 // excerptRunes is how much of a text or value a one-line digest shows.
@@ -194,67 +185,40 @@ func excerpt(s string) string {
 	return shown(string(r[:excerptRunes])) + "…"
 }
 
-// destinationsIn writes, in full, every string or number under a destination-like field name in v, one line each with its path, and notes the links in the other strings.
-func (c *writeCtx) destinationsIn(b *strings.Builder, v any, key, path string) {
+// leaves writes every scalar under v as one line, its path and its value in full. A long text outside a destination-like field is saved as a plain-text file and named instead, and an empty object or list says so.
+func (c *writeCtx) leaves(b *strings.Builder, v any, key, path string) {
 	switch x := v.(type) {
 	case map[string]any:
+		if len(x) == 0 {
+			fmt.Fprintf(b, "%s: empty object\n", jsonText(path))
+		}
 		for _, k := range sortedKeys(x) {
-			c.destinationsIn(b, x[k], k, path+"."+k)
+			c.leaves(b, x[k], k, path+"."+k)
 		}
 	case []any:
+		if len(x) == 0 {
+			fmt.Fprintf(b, "%s: empty list\n", jsonText(path))
+		}
 		for i, e := range x {
-			c.destinationsIn(b, e, key, fmt.Sprintf("%s[%d]", path, i))
+			c.leaves(b, e, key, fmt.Sprintf("%s[%d]", path, i))
 		}
 	case string:
-		if keepFullKey(key) {
-			fmt.Fprintf(b, "  %s: %s\n", jsonText(path), shown(x))
+		c.noteLinks(x)
+		if isLong(x) && !keepFullKey(key) {
+			fmt.Fprintf(b, "%s: long text (%d characters, sha256 %s, also saved in %s)\n", jsonText(path), utf8.RuneCountInString(x), sha([]byte(x)), c.save(x))
 		} else {
-			c.noteLinks(x)
+			fmt.Fprintf(b, "%s: %s\n", jsonText(path), jsonText(x))
 		}
 	case json.Number:
-		if keepFullKey(key) {
-			fmt.Fprintf(b, "  %s: %s\n", jsonText(path), x)
-		}
-	}
-}
-
-// compactField writes a field that is not a string as one line: its kind and size and the start of its JSON. Destinations, IDs, URLs and addresses inside it follow in full, and so does each long text's saved file.
-func (c *writeCtx) compactField(b *strings.Builder, key string, v any) {
-	label := jsonText(key)
-	switch x := v.(type) {
-	case json.Number:
-		fmt.Fprintf(b, "%s: number %s\n", label, x)
-		return
+		fmt.Fprintf(b, "%s: %s\n", jsonText(path), x)
 	case bool:
-		fmt.Fprintf(b, "%s: %v\n", label, x)
-		return
+		fmt.Fprintf(b, "%s: %v\n", jsonText(path), x)
 	case nil:
-		fmt.Fprintf(b, "%s: null\n", label)
-		return
+		fmt.Fprintf(b, "%s: null\n", jsonText(path))
 	}
-	var kind string
-	switch x := v.(type) {
-	case map[string]any:
-		kind = fmt.Sprintf("object with %s", countOf(len(x), "field"))
-	case []any:
-		kind = fmt.Sprintf("list of %s", countOf(len(x), "item"))
-	}
-	var raw bytes.Buffer
-	enc := json.NewEncoder(&raw)
-	enc.SetEscapeHTML(false)
-	enc.Encode(v) // cannot fail: v is a decodeNumbers value, and raw is an in-memory buffer
-	c.brief = true
-	fmt.Fprintf(b, "%s: %s, starts %s\n", label, kind, excerpt(strings.TrimRight(raw.String(), "\n")))
-	var dests strings.Builder
-	c.destinationsIn(&dests, v, key, key)
-	if dests.Len() > 0 {
-		b.WriteString("Destinations, IDs, URLs and addresses in it, in full:\n" + dests.String())
-	}
-	b.WriteString(c.links())
-	c.saveTree(b, v, key, key)
 }
 
-// fields writes the input fields in key order, skipping those in skip: a string as a text block, anything else as one line.
+// fields writes the input fields in key order, skipping those in skip: a string as a text block, anything else as one line per scalar in it.
 func (c *writeCtx) fields(b *strings.Builder, obj map[string]any, skip map[string]bool) {
 	for _, k := range sortedKeys(obj) {
 		if skip[k] {
@@ -264,7 +228,8 @@ func (c *writeCtx) fields(b *strings.Builder, obj map[string]any, skip map[strin
 			c.text(b, jsonText(k), s, keepFullKey(k))
 			continue
 		}
-		c.compactField(b, k, obj[k])
+		c.leaves(b, obj[k], k, k)
+		b.WriteString(c.links())
 	}
 }
 

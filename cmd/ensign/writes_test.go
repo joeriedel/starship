@@ -688,8 +688,8 @@ func TestWritesListing(t *testing.T) {
 		"\"z\":\n````\n```fence``` inside\n````\n",
 		`"hidden":` + "\n```json\n\"x\\u202ey\"\n```\n",
 		`"trail":` + "\n```json\n\"x\\n\"\n```\n",
-		"\"num\": number 12345678901234567890\n",
-		"\"list\": list of 2 items, starts [1,\"b\"]\n",
+		"\"num\": 12345678901234567890\n",
+		"\"list[0]\": 1\n\"list[1]\": \"b\"\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("listing lacks %q:\n%s", want, got)
@@ -704,9 +704,6 @@ func TestWritesListing(t *testing.T) {
 	}
 	if strings.Contains(got, "```json\n[") {
 		t.Errorf("a list is summarised on a line, not dumped as JSON:\n%s", got)
-	}
-	if !strings.Contains(got, "its exact JSON is in "+e.File) {
-		t.Errorf("the document points at the input file for the exact JSON:\n%s", got)
 	}
 	feed, _ := w.runWrites("")
 	if again, _ := w.runWrites(""); again != feed {
@@ -1193,9 +1190,9 @@ func TestDocsUnknownRequestsAreListedByKind(t *testing.T) {
 		"- updateTextStyle, 2 requests:\n  Request 4: range 1–3\n  Request 7: range 1–3\n",
 		"Request 5: range 1–3; range.tabId=t.1\n",
 		"- deleteParagraphBullets, 1 request:\n  Request 6: range 1–3\n",
-		`"mystery": object with 1 field, starts {"k":"v"}` + "\n",
-		`"writeControl": object with 2 fields, starts {"other":"x","requiredRevisionId":"r"}` + "\n",
-		"  \"writeControl.requiredRevisionId\": r\n",
+		`"mystery.k": "v"` + "\n",
+		`"writeControl.other": "x"` + "\n",
+		`"writeControl.requiredRevisionId": "r"` + "\n",
 		"its exact JSON is in ",
 	} {
 		if !strings.Contains(got, want) {
@@ -1229,10 +1226,8 @@ func TestDestinationsAndLinksAreNeverShortened(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{to, "threadId=" + strings.Repeat("t", 600)} {
-		if !strings.Contains(feed, want) {
-			t.Errorf("the feed form shows a destination whole: lacks %q", want[:min(len(want), 60)])
-		}
+	if len(feed) > 1500 {
+		t.Errorf("a destination over %d characters is no feed destination, so the feed stays short:\n%s", longTextRunes, feed)
 	}
 	got = w.review()
 	for _, want := range []string{to, strings.Repeat("t", 600), strings.Repeat("f", 600), "- nova@supernova.example\n", "- " + url + "\n", "shortened: first 200 of "} {
@@ -1319,10 +1314,10 @@ func TestNestedLongTextIsSavedWithoutShort(t *testing.T) {
 	w := writesWorld(t)
 	body := strings.Repeat("hello nova ", 200)
 	got := w.addWrite(wikiPost, fmt.Sprintf(`{"message":{"to":"a@b.c","body":%q}}`, body))
-	if !strings.Contains(got, `Long text at "message.body"`) || !strings.Contains(got, "also saved in ") {
+	if !strings.Contains(got, `"message.body": long text (`) || !strings.Contains(got, "also saved in ") {
 		t.Errorf("the listing should name the file of the nested long text:\n%s", got)
 	}
-	if strings.Contains(got, `Long text at "message.to"`) {
+	if strings.Contains(got, `"message.to": long text`) {
 		t.Error("a short destination has no file")
 	}
 	if n := len(w.writesState().Entries[0].Files); n != 2 {
@@ -1402,6 +1397,11 @@ func TestSummaryIsChecked(t *testing.T) {
 		"blank":    {"--tool", wikiPost, "--summary", "  \t "},
 		"newline":  {"--tool", wikiPost, "--summary", "one\ntwo"},
 		"return":   {"--tool", wikiPost, "--summary", "one\rtwo"},
+		"tab":      {"--tool", wikiPost, "--summary", "one\ttwo"},
+		"escape":   {"--tool", wikiPost, "--summary", "one\x1btwo"},
+		"nel":      {"--tool", wikiPost, "--summary", "one\u0085two"},
+		"line sep": {"--tool", wikiPost, "--summary", "one\u2028two"},
+		"par sep":  {"--tool", wikiPost, "--summary", "one\u2029two"},
 		"too long": {"--tool", wikiPost, "--summary", strings.Repeat("é", maxSummaryRunes+1)},
 		"twice":    {"--tool", wikiPost, "--summary", "a", "--summary", "b"},
 		"no value": {"--tool", wikiPost, "--summary"},
@@ -1561,5 +1561,45 @@ func TestReviewDocumentIsNotEditableAndIsSwept(t *testing.T) {
 	}
 	if !exists(youngDoc) {
 		t.Error("a young session's review document must stay")
+	}
+}
+
+func TestNestedValuesAreListedPerLeaf(t *testing.T) {
+	w := writesWorld(t)
+	got := w.addWrite(wikiPost, `{"channel":"C1","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"Approve payroll of $50,000 to account 1234-5678, effective today"}}],"empty":{},"none":[],"flag":true}`)
+	for _, want := range []string{
+		`"blocks[0].text.text": "Approve payroll of $50,000 to account 1234-5678, effective today"` + "\n",
+		`"blocks[0].text.type": "mrkdwn"` + "\n",
+		`"blocks[0].type": "section"` + "\n",
+		`"empty": empty object` + "\n",
+		`"none": empty list` + "\n",
+		`"flag": true` + "\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("listing lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "```json") {
+		t.Errorf("no JSON fence for nested fields:\n%s", got)
+	}
+}
+
+func TestLongReplyTextIsNoFeedDestination(t *testing.T) {
+	w := writesWorld(t)
+	reply := strings.Repeat("reply words. ", 250)
+	feed, err := w.runWrites(fmt.Sprintf(`{"thread_id":"t1","reply_text":%q}`, reply), "add", "--tool", wikiPost, "--summary", "Replies.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feed) > 1500 || !strings.Contains(feed, "thread_id=t1") || strings.Contains(feed, "reply words") {
+		t.Errorf("the feed stays short and names only the real destination:\n%s", feed)
+	}
+	if doc := w.review(); !strings.Contains(doc, reply[:200]) {
+		t.Errorf("the reply is in the review document:\n%s", doc)
+	}
+	w.runWrites("", "drop", "--all")
+	feed, err = w.runWrites(fmt.Sprintf(`{"reply_to":%q}`, strings.Repeat("a", 700)), "add", "--tool", wikiPost, "--summary", "Replies.")
+	if err != nil || len(feed) > 1500 {
+		t.Errorf("a long string value is no feed destination: %v\n%s", err, feed)
 	}
 }
