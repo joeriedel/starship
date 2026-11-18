@@ -1351,7 +1351,7 @@ func TestLargeTableInsertFeedIsShort(t *testing.T) {
 	if want := "Review document sha256: " + sha([]byte(doc)); lines[2] != want {
 		t.Errorf("hash line %q, want %q", lines[2], want)
 	}
-	if lines[3] != reviewPath(w.bridge, w.sid) || !filepath.IsAbs(lines[3]) {
+	if lines[3] != quoteShellPath(reviewPath(w.bridge, w.sid), runtime.GOOS) || !filepath.IsAbs(reviewPath(w.bridge, w.sid)) {
 		t.Errorf("last line is the absolute path of the review document: %q", lines[3])
 	}
 	for _, want := range []string{"cell 0 of the supernova table", "cell 119 of the supernova table", "- insertTable, 1 request:\n  Request 1: location.index=1\n", "Full input: "} {
@@ -1442,7 +1442,7 @@ func TestReviewOpenerSettingAndQuoting(t *testing.T) {
 		lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 		return lines[len(lines)-1]
 	}
-	if got, want := last(feed), reviewPath(w.bridge, w.sid); got != want && got != `"`+want+`"` {
+	if got, want := last(feed), quoteShellPath(reviewPath(w.bridge, w.sid), runtime.GOOS); got != want {
 		t.Errorf("without review-opener the last line is the bare path: %q", got)
 	}
 	opened := connWorld(t, writesYAML+"review-opener: nvim\n")
