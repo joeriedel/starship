@@ -784,6 +784,7 @@ The run then waits for `go`. Until then the hooks refuse its lead dispatch.
   sessions/<session-id>      the run that session owns
   sessions/<pid>.pid         the id of the session last started under that CLAUDE_PID
   sessions/<pid>.connectors  the connector parts of the settings and roles that claude process started with
+  sessions/<session-id>.bgtasks  the background commands free-role agents launched or stopped (§7, PostToolUse)
   runs/<run-id>/             <yyyymmdd-hhmmss>-<project>-<task>, allocated exclusively
     pipeline.json            the snapshot: resolved pipeline with sources, bindings,
                              workspace, work item, and every brief the run can use
@@ -848,6 +849,7 @@ A step names a task, never a subtask (`ensign sequence run` refuses `--subtask`)
   "status": "running",
   "approved": true,
   "tasks": { "bq81f3": "a5ba254c…" },
+  "task_files": { "bq81f3": "/tmp/claude-1000/…/tasks/bq81f3.output" },
   "spent": { "coder-loop": 1, "test": 1 },
   "scopes": {
     "":    { "stage": "run" },
@@ -881,7 +883,7 @@ One binary, `ensign hook <event>`, called from harness hooks and git hooks. Outs
 
 **PreToolUse (every tool)**
 
-The matcher is `.*`, so the hook fires for every tool call (SessionStart upgrades a settings file that carries the older narrow list, `Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|Bash`, to it). For a call with a non-empty `agent_id`, a lead or a stage agent, other than `SubagentHandback`, `cmdHook` first checks whether the agent belongs to a finished run (`finishedRunRefusal`): the run the agent is bound to among its session's runs, else the run its transcript's tag names. If that run is over, the call is denied with a text naming the run and its status and telling the agent to stop and end its turn with a short message. The session's current run does not matter, so a stale agent is stopped even after the session has moved on to a retry. The state is read without the run lock. The lead's `SubagentHandback` is exempt, so it can end, and so is a `TaskStop` call by the run's own lead, which is how it stops the agents `ensign run finish` lists; the main session (no `agent_id`) is unaffected.
+The matcher is `.*`, so the hook fires for every tool call (SessionStart upgrades a settings file that carries the older narrow list, `Agent|Task|Edit|Write|NotebookEdit|SubagentHandback|Bash`, to it). For a call with a non-empty `agent_id`, a lead or a stage agent, other than `SubagentHandback`, `cmdHook` first checks whether the agent belongs to a finished run (`finishedRunRefusal`): the run the agent is bound to among its session's runs, else the run its transcript's tag names. If that run is over, the call is denied with a text naming the run and its status and telling the agent to stop and end its turn with a short message. The session's current run does not matter, so a stale agent is stopped even after the session has moved on to a retry. The state is read without the run lock. The lead's `SubagentHandback` is exempt, so it can end, and so is a `TaskStop` call by any agent of the run (`finishedRunRefusal` lets it through), which is how the lead stops the agents `ensign run finish` lists and how the others stop their own background commands before handing back; the main session (no `agent_id`) is unaffected.
 
 **PreToolUse (Bash)**
 
@@ -934,7 +936,8 @@ At a run's first lead dispatch the hook first clears the task's `.tested` marker
 1. Read the dispatch tag from the first user message in `agent_transcript_path`.
 2. If the agent has not handed back and owns a task still listed in `background_tasks`,
    the stop is a wait: allow it, count nothing, parse nothing. An agent that has handed
-   back is finished.
+   back is finished. Ending the turn this way is how every role waits for a command that
+   may outlive a tool call: it runs the command with `run_in_background` and ends its turn.
 3. The report is the agent's handback message, which PreToolUse already checked (see
    below). With no handback it is `last_assistant_message`, which is the case outside auto
    mode. If it is invalid, block with the valid outcomes.
@@ -962,12 +965,16 @@ hand back again; a block at SubagentStop after a handback would reach nobody. Th
 PreToolUse because the call ends the agent's run. `SubagentHandback` is how an agent
 finishes; a stop with no handback is judged on the agent's last message (SubagentStop, step 3), or is a wait when the agent owns a background task in flight.
 
-**PostToolUse (Agent, Task, Bash, Edit, Write, NotebookEdit)**
+A handback also ends the agent, and a background Bash command it started would stay registered with nobody left to stop it, so the handback of a lead or stage agent is refused while the agent owns a recorded background Bash task (`runningTasks`) whose output file exists and does not end with an `[exited with code N]` or `[killed]` line (`outputShowsRunning`). The denial names the task ids and tells the agent to end its turn to wait for the command or stop it with `TaskStop`, then hand back (`backgroundRefusal`). Anything unknown never blocks: a task with no recorded file, or a file that is missing or unreadable, counts as not running. A stage's refusal is charged to the stop budget like any other refused handback, and the spent budget fails the run as `bad-report`. An advisory stage's refusal fails nothing: it is denied while the budget lasts, then the handback goes on to the advisory handling. A stage of a terminal run, and the lead of a terminal run, are likewise denied while the budget lasts and then let through, with no run to fail. A lead's free read-the-result handback (a stage finished after its last `ensign` call, run not terminal) is not charged for its background task. The lead's refusal otherwise counts as `lead-stopped`.
+
+A free-role agent (its type is one of the pipeline's free roles, it is bound to no dispatch and its transcript carries no run tag) has no run to charge, so it takes a plainer path: its background launches, `TaskStop` calls and handback check use the session record `<bridge>/.starship/sessions/<session-id>.bgtasks` whatever the number of live runs (`isFreeAgent`, `hookRunlessAgent`), and its refusal is the same text, uncounted. With no run resolvable at all, only PostToolUse and the SubagentHandback PreToolUse take this path (`isRunlessFreeAgent`, which needs two or more live session runs and a free role of one of them); other events keep their existing handling.
+
+**PostToolUse (Agent, Task, Bash, Edit, Write, NotebookEdit, TaskStop)**
 
 When an agent in the run launches a background task, `tasks` records the task's id against
 the caller's `agent_id`: `tool_response.agentId` for an Agent call whose result is
 `async_launched`, `tool_response.backgroundTaskId` for a Bash call. Foreground calls and
-agents outside the run are ignored, and a launch prints nothing. After an edit, which does not take the run lock, a Perforce task's `p4AfterEdit` may add context (`additionalContext`) for the agent. `SubagentStop`'s
+agents outside the run are ignored, and a launch prints nothing. For a Bash launch it also records the command's output file in `task_files` (task id to path), beside `tasks`. The file is found by task id alone, by globbing `<TempDir>/claude*/*/*/tasks/<id>.output` (and `/tmp` too off Windows), because the tool response carries no output path; it is recorded only when exactly one file matches and the id is made of `[A-Za-z0-9_-]`. A `TaskStop` by the task's owner (`task_id`, or the deprecated `shell_id`) drops the task's file, so a stopped task no longer blocks a handback. A free-role agent's launches and stops are appended instead to `sessions/<session-id>.bgtasks`, one tab-separated line each, `launch <agent> <task> <file>` or `stop <agent> <task>`; `ensign gc` sweeps it with the other session files. SessionStart upgrades a settings file whose PostToolUse matcher lacks `TaskStop`. After an edit, which does not take the run lock, a Perforce task's `p4AfterEdit` may add context (`additionalContext`) for the agent. `SubagentStop`'s
 `background_tasks` names no owner, so this record is how a stop is told to be a wait.
 
 **Stop**
@@ -1027,6 +1034,7 @@ What the driver needs from Claude Code, as seen with a three-level spawn (sessio
 | The project `CLAUDE.md`, with its imports, reaches subagents | yes; every agent in a live run carried the session manual while it was imported there |
 | `SubagentHandback` reaches PreToolUse with the report as `tool_input.message`; the later SubagentStop's `last_assistant_message` is only closing text | yes |
 | SubagentStop's `background_tasks` lists in-flight tasks (`id`, `type`, `status`, `command`, `agent_type`; the hooks docs also list `description`, `server`/`tool` (only on `monitor` and MCP tasks) and `name` (only on `workflow` tasks), and ensign reads only the five in `BackgroundTask`), scoped to the parent session with no owner | yes; a background Bash id comes from PostToolUse `tool_response.backgroundTaskId`, a background agent's from `tool_response.agentId` |
+| A background Bash command's output file is `<TempDir>/claude-<uid>/<cwd slug>/<session id>/tasks/<task id>.output`; it ends with `[exited with code N]` or `[killed]` once the command is done, and has no such line while it runs | yes; seen on Linux on 2026-11-18 in this bridge's session output files (263 ending `[exited with code N]`, 10 ending `[killed]`, no other end marker); the Bash PostToolUse `tool_response` carries no output path, so ensign finds the file by task id alone |
 | Stop carries `background_tasks` too, one entry per in-flight task (same fields); empty when none | yes; a background Bash id from PostToolUse `tool_response.backgroundTaskId` is listed in a Stop that fires while the command runs |
 | A missing hook command blocks anything | no; non-blocking error, tool calls proceed |
 | PreToolUse `allow` lifts a permission `ask` rule | no (tested headless); the ask still applies |
@@ -1201,6 +1209,8 @@ contradicts `@style`.
 | `curator` (§4.5) | the only writer of the guide (and of skills' learned entries and declared documents) | the guide, this run's proposals, sources' trust, `@style` |
 | `coder` | — | the guide's active entries |
 | `documentation` | checks the project's `@docs` paths against what the run changed and updates them; reads the code behind each claim before writing it (the code wins over the brief; text it can't confirm is left out and reported); changes only those paths | the task's record and the changed files |
+
+Every role with Bash (`coder`, `documentation`, `explorer`, `reviewer`, `style-reviewer`, `tester`) has `TaskStop` in its tools, as the orchestrator already had. Each waits for a command that may outlive a tool call by running it with `run_in_background` and ending its turn (§7, SubagentStop); none waits by matching process names or command lines (`pgrep -f`, `ps | grep`, `pidof`), and each stops any background command it started that is still running before it hands back. The tester names in its report what it stopped, and the orchestrator also stops its own leftover shell jobs and agents before `ensign run finish`.
 
 ### 9.3 Learning from the style pass
 
