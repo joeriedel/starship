@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf16"
 
 	"gopkg.in/yaml.v3"
@@ -411,6 +412,8 @@ type BridgeFile struct {
 	Connectors map[string][]string `yaml:"connectors"`
 	// ConnectorWrites lists the exact connector tools the session may call once the user has approved the call with go. Its presence, even as an empty list, turns approved connector writes on; connectorWrites reads it.
 	ConnectorWrites yaml.Node `yaml:"connector_writes"`
+	// ReviewOpener is the command put before the path of a review document in what the session shows the user, e.g. nvim; unset, the path stands alone.
+	ReviewOpener string `yaml:"review-opener"`
 	// Sources, Documents and Focal are read from bridge.yaml by loadDeclaredSources, loadDeclaredDocuments and loadFocal; they are here so strict decoding accepts them.
 	Sources   yaml.Node `yaml:"sources"`
 	Documents yaml.Node `yaml:"documents"`
@@ -432,6 +435,9 @@ func loadBridgeFile(bridge string) (*BridgeFile, error) {
 	})
 	if err = correctParserLine(err, data); err != nil && err != io.EOF {
 		return nil, fmt.Errorf("%s: %v", path, err)
+	}
+	if strings.ContainsFunc(bf.ReviewOpener, unicode.IsControl) {
+		return nil, fmt.Errorf("%s: review-opener must be one line of text, such as nvim", path)
 	}
 	return &bf, nil
 }

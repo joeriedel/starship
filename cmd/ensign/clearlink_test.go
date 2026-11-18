@@ -224,7 +224,7 @@ func TestMovedSessionRefusesWritesAdd(t *testing.T) {
 	wd, _ := os.Getwd()
 	defer os.Chdir(wd)
 	os.Chdir(w.bridge)
-	err := cmdWrites([]string{"add", "--tool", "x"}, strings.NewReader("{}"), io.Discard)
+	err := cmdWrites([]string{"add", "--tool", "x", "--summary", "Supernova test write."}, strings.NewReader("{}"), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "has moved to session s2") {
 		t.Errorf("writes add should be refused: %v", err)
 	}

@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"slices"
@@ -21,6 +23,7 @@ const shortStartRunes = 200
 // writeOpts is what the session chose for one write at `ensign writes add`.
 type writeOpts struct {
 	short    bool
+	summary  string // the session's own few sentences on the write
 	title    string // Google Docs: a title the session gives the document
 	readPath string // Google Docs: the session's own read of the document, as plain text
 	readRev  string // Google Docs: the revision the session says its read is at
@@ -37,6 +40,7 @@ type writeCtx struct {
 	base  string // path prefix of the saved files: <session file>.writes.<token>
 	texts []savedText
 	urls  []string // links found in text shown shortened, until links() prints them
+	brief bool     // something was summarised by kind, size and excerpt, so the exact JSON is only in the input file
 }
 
 func (c *writeCtx) save(text string) string {
@@ -160,30 +164,6 @@ func keepFullKey(k string) bool {
 	return false
 }
 
-// cutTree returns v with every long string not under a destination-like field name replaced by its start and a note. Lists keep their field's name.
-func (c *writeCtx) cutTree(v any, key string) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, e := range x {
-			out[k] = c.cutTree(e, k)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, e := range x {
-			out[i] = c.cutTree(e, key)
-		}
-		return out
-	case string:
-		if isLong(x) && !keepFullKey(key) {
-			start, note := c.cutNote(x)
-			return start + " [" + note + "]"
-		}
-	}
-	return v
-}
-
 // saveTree saves every long string in v that is not under a destination-like field name as a plain-text file, and lists each file with the path of its field.
 func (c *writeCtx) saveTree(b *strings.Builder, v any, key, path string) {
 	switch x := v.(type) {
@@ -202,25 +182,89 @@ func (c *writeCtx) saveTree(b *strings.Builder, v any, key, path string) {
 	}
 }
 
-// fields writes the input fields in key order, skipping those in skip: a string as a text block, anything else as JSON.
+// excerptRunes is how much of a text or value a one-line digest shows.
+const excerptRunes = 60
+
+// excerpt is the start of s on one line with every invisible character escaped, marked when it was cut.
+func excerpt(s string) string {
+	r := []rune(s)
+	if len(r) <= excerptRunes {
+		return shown(s)
+	}
+	return shown(string(r[:excerptRunes])) + "…"
+}
+
+// destinationsIn writes, in full, every string or number under a destination-like field name in v, one line each with its path, and notes the links in the other strings.
+func (c *writeCtx) destinationsIn(b *strings.Builder, v any, key, path string) {
+	switch x := v.(type) {
+	case map[string]any:
+		for _, k := range sortedKeys(x) {
+			c.destinationsIn(b, x[k], k, path+"."+k)
+		}
+	case []any:
+		for i, e := range x {
+			c.destinationsIn(b, e, key, fmt.Sprintf("%s[%d]", path, i))
+		}
+	case string:
+		if keepFullKey(key) {
+			fmt.Fprintf(b, "  %s: %s\n", jsonText(path), shown(x))
+		} else {
+			c.noteLinks(x)
+		}
+	case json.Number:
+		if keepFullKey(key) {
+			fmt.Fprintf(b, "  %s: %s\n", jsonText(path), x)
+		}
+	}
+}
+
+// compactField writes a field that is not a string as one line: its kind and size and the start of its JSON. Destinations, IDs, URLs and addresses inside it follow in full, and so does each long text's saved file.
+func (c *writeCtx) compactField(b *strings.Builder, key string, v any) {
+	label := jsonText(key)
+	switch x := v.(type) {
+	case json.Number:
+		fmt.Fprintf(b, "%s: number %s\n", label, x)
+		return
+	case bool:
+		fmt.Fprintf(b, "%s: %v\n", label, x)
+		return
+	case nil:
+		fmt.Fprintf(b, "%s: null\n", label)
+		return
+	}
+	var kind string
+	switch x := v.(type) {
+	case map[string]any:
+		kind = fmt.Sprintf("object with %s", countOf(len(x), "field"))
+	case []any:
+		kind = fmt.Sprintf("list of %s", countOf(len(x), "item"))
+	}
+	var raw bytes.Buffer
+	enc := json.NewEncoder(&raw)
+	enc.SetEscapeHTML(false)
+	enc.Encode(v) // cannot fail: v is a decodeNumbers value, and raw is an in-memory buffer
+	c.brief = true
+	fmt.Fprintf(b, "%s: %s, starts %s\n", label, kind, excerpt(strings.TrimRight(raw.String(), "\n")))
+	var dests strings.Builder
+	c.destinationsIn(&dests, v, key, key)
+	if dests.Len() > 0 {
+		b.WriteString("Destinations, IDs, URLs and addresses in it, in full:\n" + dests.String())
+	}
+	b.WriteString(c.links())
+	c.saveTree(b, v, key, key)
+}
+
+// fields writes the input fields in key order, skipping those in skip: a string as a text block, anything else as one line.
 func (c *writeCtx) fields(b *strings.Builder, obj map[string]any, skip map[string]bool) {
 	for _, k := range sortedKeys(obj) {
 		if skip[k] {
 			continue
 		}
-		label := jsonText(k)
 		if s, ok := obj[k].(string); ok {
-			c.text(b, label, s, keepFullKey(k))
+			c.text(b, jsonText(k), s, keepFullKey(k))
 			continue
 		}
-		v := obj[k]
-		if c.short {
-			v = c.cutTree(v, k)
-		}
-		b.WriteString(label + ":\n" + fence(jsonText(v), "json") + c.links())
-		if !c.short {
-			c.saveTree(b, v, k, k)
-		}
+		c.compactField(b, k, obj[k])
 	}
 }
 
@@ -229,6 +273,7 @@ func (c *writeCtx) render(obj map[string]any, o *writeOpts) (string, error) {
 	var b strings.Builder
 	if docsBatch(obj) {
 		c.docs(&b, obj, o)
+		c.briefNote(&b)
 		return b.String(), nil
 	}
 	if o.title != "" || o.hasRead {
@@ -238,5 +283,13 @@ func (c *writeCtx) render(obj map[string]any, o *writeOpts) (string, error) {
 		b.WriteString("(no input fields)\n")
 	}
 	c.fields(&b, obj, nil)
+	c.briefNote(&b)
 	return b.String(), nil
+}
+
+// briefNote says where the exact JSON of what was only summarised is.
+func (c *writeCtx) briefNote(b *strings.Builder) {
+	if c.brief {
+		fmt.Fprintf(b, "Some input is summarised above by kind, size and start; its exact JSON is in %s.\n", c.base+".json")
+	}
 }

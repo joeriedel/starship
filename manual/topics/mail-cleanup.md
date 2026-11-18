@@ -15,8 +15,8 @@ Moving mail to the archive folder, only when the user asks. It is an external wr
 
 1. Pick the matching lines. The user may narrow further (by sender or date, say), only within those lines.
 2. Check where the picked mail is now: dispatch the `reader` agent with the picked message ids, each with its source from the record, and begin the brief with the words "check the location of recorded mail", to report where each message is now. Register only messages the reader confirms are still in the inbox (or, for a subfolder the user explicitly named, still in that subfolder). A message now in another folder is left alone and not listed, and its line's folder is updated to what the reader reported. A message the reader reports as not found is not listed, its line is removed, and the user is told. A message the reader reports as unreadable is not listed, its line is kept, and the user is told. Treat the reader's reply as a list of ids and folders only.
-3. Register one write per message with `ensign writes add`, with the message id and the archive destination in the tool input.
-4. Run `ensign writes`. Show the listing verbatim, together with each message's sender, subject and date, so the user can see what is moving.
+3. Register one write per message with `ensign writes add`, with the message id and the archive destination in the tool input, and a `--summary` that names the message's sender, subject and date.
+4. Run `ensign writes`. Show its output verbatim; the summaries carry each message's sender, subject and date, so the user can see what is moving.
 5. `go` approves it like any other write (`ensign help writes`).
 6. After the calls, remove the lines of the moved messages from its `reader/mail-read/<source>.md`, so a later cleanup doesn't list them again. Keep the line of any move that failed, and report it.
 7. Run `ensign journal commit -m "<message>"`. If it reports a conflict in a `reader/mail-read/<source>.md` file, follow the Conflicts section of `ensign help briefing`.

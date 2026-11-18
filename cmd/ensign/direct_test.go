@@ -229,7 +229,7 @@ func TestDirectBlocksWritesAdd(t *testing.T) {
 	w := writesWorld(t)
 	code := w.codeFolder("code")
 	w.direct("ask", code, "x")
-	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost); err == nil || !strings.Contains(err.Error(), "direct edit") {
+	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--summary", "Supernova test write."); err == nil || !strings.Contains(err.Error(), "direct edit") {
 		t.Errorf("add while a direct request waits: %v", err)
 	}
 }

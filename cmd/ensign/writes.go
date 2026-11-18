@@ -15,33 +15,62 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/gofrs/flock"
 )
 
-// writeEntry is one connector write the session registered: the tool, its complete input saved as compact JSON in File (sha256 FileSHA), and the part of the listing that describes it. Files is every file saved for the write, the input file and the plain-text files of its long texts. Approved means the user's go covered it and one matching call may still be made, with the input file still hashing to ApprovedSHA.
+// maxSummaryRunes is the longest --summary `ensign writes add` takes.
+const maxSummaryRunes = 600
+
+// writeEntry is one connector write the session registered: the tool, its complete input saved as compact JSON in File (sha256 FileSHA), the part of the review document that describes it (Summary), its destination as the feed form shows it (Dest) and the session's own few sentences on it (Brief). Files is every file saved for the write, the input file and the plain-text files of its long texts. Approved means the user's go covered it and one matching call may still be made, with the input file still hashing to ApprovedSHA.
 type writeEntry struct {
 	Tool        string   `json:"tool"`
 	File        string   `json:"file"`
 	FileSHA     string   `json:"file_sha"`
 	Files       []string `json:"files"`
 	Summary     string   `json:"summary"`
+	Dest        string   `json:"dest,omitempty"`
+	Brief       string   `json:"brief,omitempty"`
 	Approved    bool     `json:"approved,omitempty"`
 	ApprovedSHA string   `json:"approved_sha,omitempty"`
 }
 
-// writesFile is a session's connector writes. ShownDigest is the digest of the pending listing the Stop hook saw in the session's reply.
+// writesFile is a session's connector writes. ShownDigest is the digest of the pending feed form the Stop hook saw in the session's reply.
 type writesFile struct {
 	Entries     []*writeEntry `json:"entries"`
 	ShownDigest string        `json:"shown_digest,omitempty"`
 }
 
 func writesPath(bridge, session string) string { return sessionFile(bridge, session) + ".writes" }
+
+// reviewPath is the absolute path of the session's review document, the full detail of its pending writes.
+func reviewPath(bridge, session string) string {
+	p := filepath.Join(bridge, ".starship", "review", session+"-writes.md")
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
+// syncReview makes the review document match the pending writes: rewritten when there are some, removed when there are none.
+func (wf *writesFile) syncReview(bridge, session string) error {
+	path := reviewPath(bridge, session)
+	if len(wf.pending()) == 0 {
+		err := retry(retryWindow, isTransientFileError, func() error { return os.Remove(path) })
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return writeFileAtomic(bridge, path, []byte(wf.review()))
+}
 
 // writesFileSession returns the session id of a file saved for a write, <id>.writes.<token>.json (the input) or <id>.writes.<token>.<n>.txt (a long text), the files the gc sweep and the session edit guard treat as writes state.
 func writesFileSession(name string) (string, bool) {
@@ -92,7 +121,10 @@ func withWrites(bridge, session string, fn func(wf *writesFile) (changed bool, e
 	if err != nil || !changed {
 		return err
 	}
-	return writeJSON(path, wf)
+	if err := writeJSON(path, wf); err != nil {
+		return err
+	}
+	return wf.syncReview(bridge, session)
 }
 
 func (wf *writesFile) pending() []*writeEntry {
@@ -226,12 +258,9 @@ func fence(text, info string) string {
 	return f + info + "\n" + text + "\n" + f + "\n"
 }
 
-// listing renders the pending writes: a number and the tool, then each write's summary, which names the file holding its full input and that file's sha256. The digest of the listing therefore binds the input the user approves.
-func (wf *writesFile) listing() string {
+// review renders the pending writes for the review document: a number and the tool, then each write's summary, which names the file holding its full input and that file's sha256. The review document's hash therefore binds the input the user approves.
+func (wf *writesFile) review() string {
 	pend := wf.pending()
-	if len(pend) == 0 {
-		return "No connector writes are pending.\n"
-	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Connector writes waiting for go (%d):\n", len(pend))
 	for i, e := range pend {
@@ -240,7 +269,97 @@ func (wf *writesFile) listing() string {
 	return b.String()
 }
 
-func (wf *writesFile) digest() string { return sha([]byte(wf.listing())) }
+// feed renders what the session shows the user: a header, one line per pending write (number, tool, destination, the session's summary), the review document's sha256 and last the line that opens the document. It stays a few lines whatever the inputs hold.
+func (wf *writesFile) feed(bridge, session string) string {
+	pend := wf.pending()
+	if len(pend) == 0 {
+		return "No connector writes are pending.\n"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Connector writes waiting for go (%d):\n", len(pend))
+	for i, e := range pend {
+		fmt.Fprintf(&b, "%d. %s, %s: %s\n", i+1, e.Tool, e.Dest, e.Brief)
+	}
+	fmt.Fprintf(&b, "Review document sha256: %s\n", sha([]byte(wf.review())))
+	b.WriteString(openerLine(reviewOpener(bridge), reviewPath(bridge, session), runtime.GOOS) + "\n")
+	return b.String()
+}
+
+func (wf *writesFile) digest(bridge, session string) string {
+	return sha([]byte(wf.feed(bridge, session)))
+}
+
+// reviewOpener is bridge.yaml's review-opener, empty when it is unset or bridge.yaml can't be read.
+func reviewOpener(bridge string) string {
+	bf, err := loadBridgeFile(bridge)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(bf.ReviewOpener)
+}
+
+// openerLine is the opener and the path, which is quoted when a shell would not take it as one word.
+func openerLine(opener, path, goos string) string {
+	q := quoteShellPath(path, goos)
+	if opener == "" {
+		return q
+	}
+	return opener + " " + q
+}
+
+// quoteShellPath wraps a path in double quotes when it holds white space or a character a shell treats specially. Windows paths keep their backslashes, which PowerShell and cmd take literally inside double quotes; elsewhere the characters special inside double quotes are escaped.
+func quoteShellPath(path, goos string) string {
+	safe := func(r rune) bool {
+		return r < unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("_-.:/+=", r) || (goos == "windows" && r == '\\'))
+	}
+	if path != "" && strings.IndexFunc(path, func(r rune) bool { return !safe(r) }) < 0 {
+		return path
+	}
+	if goos == "windows" {
+		return `"` + path + `"`
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(path) + `"`
+}
+
+// destination is the target values of a write, in full: for a Docs batch the documentId, for other tools the top-level fields keepFullKey treats as destinations, as key=value.
+func destination(obj map[string]any) string {
+	if docsBatch(obj) {
+		return "documentId=" + shown(obj["documentId"].(string))
+	}
+	var parts []string
+	for _, k := range sortedKeys(obj) {
+		if keepFullKey(k) {
+			if v, ok := destValue(obj[k]); ok {
+				parts = append(parts, shown(k)+"="+v)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return "no destination field"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// destValue is a destination field's value on one line: a string, a number, or a list of them.
+func destValue(v any) (string, bool) {
+	switch x := v.(type) {
+	case string:
+		return shown(x), true
+	case json.Number:
+		return x.String(), true
+	case []any:
+		var parts []string
+		for _, e := range x {
+			s, ok := destValue(e)
+			if !ok {
+				return "", false
+			}
+			parts = append(parts, s)
+		}
+		return "[" + strings.Join(parts, ",") + "]", true
+	}
+	return "", false
+}
 
 // goWaiting reports whether a run or sequence waits for the user's go in this session, an unclaimed run included.
 func goWaiting(bridge, session string) (bool, error) {
@@ -352,7 +471,7 @@ func writeDecision(bridge string, in *HookInput, rules map[string][]string, writ
 	if matched {
 		return nil
 	}
-	reason := fmt.Sprintf("%s is a connector write and nothing is sent until the user approves this exact call: register it with `ensign writes add --tool %s` (the complete tool input as one JSON object on stdin), show the user the listing it prints, wait for the user to type go, then repeat this call unchanged. Details: ensign help writes.", tool, tool)
+	reason := fmt.Sprintf("%s is a connector write and nothing is sent until the user approves this exact call: register it with `ensign writes add --tool %s --summary \"<a few sentences on what it does>\"` (the complete tool input as one JSON object on stdin), show the user the short form it prints, verbatim, wait for the user to type go, then repeat this call unchanged. Details: ensign help writes.", tool, tool)
 	if voided > 0 {
 		reason += fmt.Sprintf(" This call matched no approved write, so the %d approved write(s) not yet used are voided; register them again.", voided)
 	}
@@ -382,7 +501,7 @@ func promptReply(voided, text string) any {
 	return out
 }
 
-// promptWrites runs first at every UserPromptSubmit while connector writes are on, before promptDirect, so a go that opens a direct edit still voids them. Approvals never outlive the turn they were given for, so any unused one is voided and reported in voided. On go with writes pending it approves them all, if the user was shown exactly the pending listing and no run or sequence also waits for go; handled is then true and text says what happened, and the run and sequence paths must not see this go.
+// promptWrites runs first at every UserPromptSubmit while connector writes are on, before promptDirect, so a go that opens a direct edit still voids them. Approvals never outlive the turn they were given for, so any unused one is voided and reported in voided. On go with writes pending it approves them all, if the user was shown exactly the pending feed form and review document and no run or sequence also waits for go; handled is then true and text says what happened, and the run and sequence paths must not see this go.
 func promptWrites(bridge string, in *HookInput) (voided, text string, handled bool, err error) {
 	if in.SessionID == "" {
 		return
@@ -411,8 +530,10 @@ func promptWrites(bridge string, in *HookInput) (voided, text string, handled bo
 		switch {
 		case waiting:
 			text = "connector writes are pending and a run or sequence also waits for go, so this go approved nothing. Tell the user; drop the writes (ensign writes drop --all) or discard the run or sequence, then ask for go again."
-		case wf.ShownDigest != wf.digest():
+		case wf.ShownDigest != wf.digest(bridge, in.SessionID):
 			text = "this go approved no connector write: the pending writes were not shown to the user. Run `ensign writes`, reproduce its output verbatim in your reply, and ask the user for go again."
+		case reviewChanged(bridge, in.SessionID, wf):
+			text = "this go approved no connector write: the review document is missing or was changed since it was shown. Drop the writes (ensign writes drop --all) and register them again."
 		default:
 			for i, e := range pend {
 				data, rerr := readFileRetry(e.File)
@@ -436,7 +557,13 @@ func promptWrites(bridge string, in *HookInput) (voided, text string, handled bo
 	return
 }
 
-// writesStop blocks a turn from ending while pending writes have not been shown to the user: the session's last message must contain the listing verbatim, and then its digest is recorded for go to check. A stop already forced to continue is let through without recording.
+// reviewChanged reports whether the review document on disk no longer hashes to the sha256 the shown feed form states.
+func reviewChanged(bridge, session string, wf *writesFile) bool {
+	data, err := readFileRetry(reviewPath(bridge, session))
+	return err != nil || sha(data) != sha([]byte(wf.review()))
+}
+
+// writesStop blocks a turn from ending while pending writes have not been shown to the user: the session's last message must contain the feed form verbatim, and then its digest is recorded for go to check. A stop already forced to continue is let through without recording.
 func writesStop(bridge string, in *HookInput) any {
 	if in.SessionID == "" {
 		return nil
@@ -446,16 +573,17 @@ func writesStop(bridge string, in *HookInput) any {
 	}
 	var out any
 	err := withWrites(bridge, in.SessionID, func(wf *writesFile) (bool, error) {
-		if len(wf.pending()) == 0 || wf.ShownDigest == wf.digest() {
+		digest := wf.digest(bridge, in.SessionID)
+		if len(wf.pending()) == 0 || wf.ShownDigest == digest {
 			return false, nil
 		}
 		msg := strings.ReplaceAll(in.LastMessage, "\r\n", "\n")
-		if strings.Contains(msg, strings.TrimRight(wf.listing(), "\n")) {
-			wf.ShownDigest = wf.digest()
+		if strings.Contains(msg, strings.TrimRight(wf.feed(bridge, in.SessionID), "\n")) {
+			wf.ShownDigest = digest
 			return true, nil
 		}
 		if !in.StopHookActive {
-			out = block("connector writes are pending and the user has not been shown them. Run `ensign writes` and reproduce its output verbatim in your reply, then ask the user to type go to approve them or to say what to change.")
+			out = block("connector writes are pending and the user has not been shown them. Run `ensign writes` and reproduce its output verbatim in your reply (it is a few lines; the detail is in the review document it names), then ask the user to type go to approve them or to say what to change.")
 		}
 		return false, nil
 	})
@@ -466,9 +594,9 @@ func writesStop(bridge string, in *HookInput) any {
 }
 
 // writesUsage is the usage line of `ensign writes`.
-const writesUsage = "usage: ensign writes [add --tool <name> [--short] [--title <text>] [--read <file> [--read-revision <id>]] (the tool input as one JSON object on stdin) | drop <n>... | drop --all]"
+const writesUsage = "usage: ensign writes [add --tool <name> --summary <one line, at most 600 characters> [--short] [--title <text>] [--read <file> [--read-revision <id>]] (the tool input as one JSON object on stdin) | drop <n>... | drop --all]"
 
-// cmdWrites implements `ensign writes [add --tool <name> [--short] [--title <text>] [--read <file> [--read-revision <id>]] | drop <n>... | drop --all]`.
+// cmdWrites implements `ensign writes [add --tool <name> --summary <text> [--short] [--title <text>] [--read <file> [--read-revision <id>]] | drop <n>... | drop --all]`.
 func cmdWrites(args []string, stdin io.Reader, out io.Writer) error {
 	usage := errors.New(writesUsage)
 	session := os.Getenv("STARSHIP_SESSION")
@@ -479,7 +607,7 @@ func cmdWrites(args []string, stdin io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	show := func(wf *writesFile) { io.WriteString(out, wf.listing()) }
+	show := func(wf *writesFile) { io.WriteString(out, wf.feed(bridge, session)) }
 	switch {
 	case len(args) == 0:
 		wf := &writesFile{}
@@ -517,7 +645,7 @@ func parseAddArgs(args []string) (tool string, o *writeOpts, err error) {
 			o.short = true
 			continue
 		}
-		if a != "--tool" && a != "--title" && a != "--read" && a != "--read-revision" {
+		if a != "--tool" && a != "--summary" && a != "--title" && a != "--read" && a != "--read-revision" {
 			return "", nil, fmt.Errorf("unknown argument %q", a)
 		}
 		if i+1 >= len(args) {
@@ -527,6 +655,8 @@ func parseAddArgs(args []string) (tool string, o *writeOpts, err error) {
 		switch a {
 		case "--tool":
 			tool = args[i]
+		case "--summary":
+			o.summary = args[i]
 		case "--title":
 			o.title = args[i]
 		case "--read":
@@ -538,6 +668,19 @@ func parseAddArgs(args []string) (tool string, o *writeOpts, err error) {
 	switch {
 	case tool == "":
 		return "", nil, errors.New("--tool is required")
+	case !seen["--summary"]:
+		return "", nil, errors.New("--summary is required: a few sentences of your own on what the write does, on one line")
+	}
+	o.summary = strings.TrimSpace(o.summary)
+	switch {
+	case o.summary == "":
+		return "", nil, errors.New("--summary is empty")
+	case strings.ContainsAny(o.summary, "\r\n"):
+		return "", nil, errors.New("--summary must be one line, without a line break")
+	case utf8.RuneCountInString(o.summary) > maxSummaryRunes:
+		return "", nil, fmt.Errorf("--summary is longer than %d characters; the detail belongs in the review document, which ensign writes", maxSummaryRunes)
+	}
+	switch {
 	case o.readRev != "" && o.readPath == "":
 		return "", nil, errors.New("--read-revision goes with --read")
 	}
@@ -607,7 +750,7 @@ func writesAdd(bridge, session, tool string, o *writeOpts, stdin io.Reader, show
 		if err != nil {
 			return false, err
 		}
-		e := &writeEntry{Tool: tool, File: base + ".json", FileSHA: sha(compact.Bytes())}
+		e := &writeEntry{Tool: tool, File: base + ".json", FileSHA: sha(compact.Bytes()), Dest: destination(obj), Brief: o.summary}
 		e.Summary = body + fmt.Sprintf("Full input: %s (sha256 %s)\n", e.File, e.FileSHA)
 		files := map[string][]byte{e.File: compact.Bytes()}
 		e.Files = []string{e.File}

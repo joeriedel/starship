@@ -14,22 +14,25 @@ A tool in neither list is refused as a write. When the user asks, you add it to 
 
 ## Flow
 
-1. Register each call: `ensign writes add --tool <name>`, with the complete tool input as one JSON object on stdin. Each add prints the listing of everything pending; several adds build one listing. When the shell is PowerShell, send non-ASCII characters in the input as `\uXXXX` JSON escapes: piped text is ASCII there and would turn into `?`. They decode to the same value, so the listing and the comparison stay right. Unverified: whether PowerShell 5.1 garbles non-ASCII in the output of `ensign writes` (Linux can't check it; the input rule above covers input only). If it does, the listing you reproduce won't match, so such a write can't be approved in that session: safe, but a dead end whose only sign is the "not shown" reply. If that reply persists for such a write, tell the user instead of retrying.
-2. Reproduce the output of `ensign writes` verbatim in your reply. The turn can't end until the listing is in your last message.
-3. The user types `go`. It approves exactly the listing they were shown; a change since (an add or drop) approves nothing, so show it again.
+1. Register each call: `ensign writes add --tool <name> --summary "<a few sentences>"`, with the complete tool input as one JSON object on stdin. `--summary` is required: your own words on what the write does, on one line, at most 600 characters. Each add prints the short form of everything pending; several adds build one form. When the shell is PowerShell, send non-ASCII characters in the input as `\uXXXX` JSON escapes: piped text is ASCII there and would turn into `?`. They decode to the same value, so the review document and the comparison stay right. Unverified: whether PowerShell 5.1 garbles non-ASCII in the output of `ensign writes` (Linux can't check it; the input rule above covers input only). If it does, the form you reproduce won't match, so such a write can't be approved in that session: safe, but a dead end whose only sign is the "not shown" reply. If that reply persists for such a write, tell the user instead of retrying.
+2. Reproduce the output of `ensign writes` verbatim in your reply and add nothing long: it is a header, one line per write (number, tool, destination, your summary), the sha256 of the review document, and last a line `<opener> <absolute path>` the user can paste to open the review document. The turn can't end until that text is in your last message.
+3. The user types `go`. It approves exactly what they were shown; a change since (an add or drop) approves nothing, so show it again. It also approves nothing if the review document was edited or removed after it was shown.
 4. Make each call now, with exactly the registered input. One approval covers one call. A call that differs in any field, or whose saved input file was edited or removed, is refused and voids the approvals not yet used.
 
-`ensign writes` shows the listing. `ensign writes drop <n>...` or `drop --all` removes pending writes.
+`ensign writes` shows the short form. `ensign writes drop <n>...` or `drop --all` removes pending writes.
 
-## The listing and the saved files
+## The review document and the saved files
 
-Every write is saved whole as `<session>.writes.<token>.json` under the bridge's `.starship/sessions/`; the listing names that file and its sha256, and the approval is tied to that hash. Do not edit or move it. A text longer than about 500 characters is also saved as plain text (`.txt`) and named in the listing. The files go when the write is dropped, used or voided.
+The detail is in the review document, `<bridge>/.starship/review/<session>-writes.md`: for each pending write its texts, requests, before and after, and the saved files. It is rewritten whenever the pending writes change and removed when none are left. Do not edit it; edits to `.starship/review/` are refused. The user opens it with the line you showed; `review-opener:` in `bridge.yaml` (for example `nvim`) is the command put before the path, and without it the line is the bare path. The short form states the document's sha256, and `go` checks it.
 
-- Default: texts are shown in full. `--short` shows only the start of each long text, with its length, sha256 and file; the user can open the file. Pick `--short` when the text is long and the user does not need all of it to decide. Short texts are always shown in full.
+Every write is saved whole as `<session>.writes.<token>.json` under the bridge's `.starship/sessions/`; the document names that file and its sha256, and the approval is tied to that hash. Do not edit or move it. A text longer than about 500 characters is also saved as plain text (`.txt`) and named in the document. The files go when the write is dropped, used or voided.
+
+- The destination in each line is the write's target in full: the `documentId` of a Docs batch; for other tools the top-level fields that name a destination (IDs, addresses, URLs) as `key=value`.
+- Default: texts are shown in full in the document. `--short` shows only the start of each long text, with its length, sha256 and file; the user can open the file. Pick `--short` when the text is long and the user does not need all of it to decide. Short texts are always shown in full.
 - Never shortened, whatever you choose: destinations, recipients, IDs, and every URL or email address (listed in full under a shortened text).
 - Input with a string `documentId` and a `requests` list (a Google Docs batch update, e.g. `mcp__<server>__update_doc`) gets a summary: the document, the inserted text as plain text, one line per kind of formatting (paragraph styles, links with each URL, bullets), the revision guard. Add `--title <text>` to name the document (shown as given by you, unchecked).
 - Every deletion and replacement is stated. For the text that goes, read the document first (a reader), save its body as plain text and add `--read <file>`; add `--read-revision <id>` with the revision you read. Ensign applies the requests in order to that text (positions are UTF-16 units; the body starts at index 1) and shows what each delete removes and each replace matches. It is labelled exact only when the batch requires that same revision (`writeControl.requiredRevisionId`); otherwise it is your read, unverified. Without `--read`, each deletion shows its range and length only.
-- A request kind or field the summary does not know is shown in full as JSON, never dropped. Other tools list their fields as is.
+- A request kind or field the summary does not know is never dropped, and never dumped as JSON: requests are grouped by kind with a count and one line each (its number, positions, the start and length of its texts); other fields get one line of kind, size and start. The exact JSON is in the saved input file the document names.
 
 ## `go` scope
 
@@ -41,4 +44,4 @@ Writes, a direct edit request and a run or sequence step waiting for go never wa
 
 ## After a denial
 
-The reason says what is missing. Register the call, show the listing, wait for `go`, repeat the call unchanged. Never retry with other input to get past a refusal.
+The reason says what is missing. Register the call, show the short form, wait for `go`, repeat the call unchanged. Never retry with other input to get past a refusal.

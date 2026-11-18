@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // docsBatch reports whether a write's input has the shape of a Google Docs documents.batchUpdate: a string documentId and a requests list. The shape, not the tool name, selects the summary, so it covers the tool of any server (mcp__<server>__update_doc and the like).
@@ -180,7 +181,7 @@ type docsStructure struct {
 	links                       []string
 }
 
-// docs summarizes a Google Docs batch update: the destination, the guard, each text change in request order (inserted text as plain text, every deletion and replacement with what goes) and one line per kind of formatting. A request of a kind the summary does not know, or carrying anything it does not account for, is shown in full as JSON, and so is any other input field.
+// docs summarizes a Google Docs batch update: the destination, the guard, each text change in request order (inserted text as plain text, every deletion and replacement with what goes) and one line per kind of formatting. A request of a kind the summary does not know, or carrying anything it does not account for, is listed by kind with where it acts and a start of its texts, and any other input field is summarised on a line.
 func (c *writeCtx) docs(b *strings.Builder, obj map[string]any, o *writeOpts) {
 	fmt.Fprintf(b, "Destination: Google Doc %s\n", shown(obj["documentId"].(string)))
 	if o.title != "" {
@@ -216,6 +217,7 @@ func (c *writeCtx) docs(b *strings.Builder, obj map[string]any, o *writeOpts) {
 	}
 	var st docsStructure
 	reqs := obj["requests"].([]any)
+	var uncovered []uncoveredRequest
 	if len(reqs) == 0 {
 		b.WriteString("No requests.\n")
 	}
@@ -229,9 +231,10 @@ func (c *writeCtx) docs(b *strings.Builder, obj map[string]any, o *writeOpts) {
 			if rd != nil {
 				rd.fail("request %d is not a kind the summary applies", i+1)
 			}
-			fmt.Fprintf(b, "Request %d, a kind or shape this summary does not cover, in full:\n%s", i+1, fence(jsonText(r), "json"))
+			uncovered = append(uncovered, uncoveredRequest{i + 1, r})
 		}
 	}
+	c.uncovered(b, uncovered)
 	var lines []string
 	if st.paragraphs.all > 0 {
 		lines = append(lines, countOf(st.paragraphs.all, "paragraph style")+st.paragraphs.kinds())
@@ -260,6 +263,104 @@ func (c *writeCtx) docs(b *strings.Builder, obj map[string]any, o *writeOpts) {
 		fmt.Fprintf(b, "The read could not be applied past this point: %s. Later changes above give ranges only.\n", rd.err)
 	}
 	c.fields(b, obj, skip)
+}
+
+type uncoveredRequest struct {
+	n int
+	r any
+}
+
+// requestKind is the single top-level key of a request, which names its kind.
+func requestKind(r any) string {
+	m, ok := r.(map[string]any)
+	switch {
+	case !ok:
+		return "(not an object)"
+	case len(m) == 1:
+		for k := range m {
+			return shown(k)
+		}
+	}
+	return fmt.Sprintf("(an object with %s)", countOf(len(m), "key"))
+}
+
+// uncovered lists the requests the summary does not cover grouped by kind, one line each: the request number, its positions and a start of each text it carries. IDs, URLs and addresses are in full; the exact JSON is in the input file.
+func (c *writeCtx) uncovered(b *strings.Builder, reqs []uncoveredRequest) {
+	if len(reqs) == 0 {
+		return
+	}
+	var kinds []string
+	byKind := map[string][]uncoveredRequest{}
+	for _, u := range reqs {
+		k := requestKind(u.r)
+		if byKind[k] == nil {
+			kinds = append(kinds, k)
+		}
+		byKind[k] = append(byKind[k], u)
+	}
+	c.brief = true
+	fmt.Fprintf(b, "%s of a kind or shape this summary does not cover, by kind:\n", countOf(len(reqs), "request"))
+	for _, k := range kinds {
+		fmt.Fprintf(b, "- %s, %s:\n", k, countOf(len(byKind[k]), "request"))
+		for _, u := range byKind[k] {
+			var parts []string
+			if m, ok := u.r.(map[string]any); ok && len(m) == 1 {
+				for _, v := range m {
+					c.requestDigest(&parts, v, "", "")
+				}
+			} else {
+				c.requestDigest(&parts, u.r, "", "")
+			}
+			if len(parts) == 0 {
+				parts = []string{"no position or text"}
+			}
+			fmt.Fprintf(b, "  Request %d: %s\n", u.n, strings.Join(parts, "; "))
+			b.WriteString(c.links())
+		}
+	}
+}
+
+// requestDigest adds to parts what a request says of where it acts and what text it carries: index and range fields with their paths, the start and length of each text, and IDs and destinations in full.
+func (c *writeCtx) requestDigest(parts *[]string, v any, key, path string) {
+	switch x := v.(type) {
+	case map[string]any:
+		si, sok := num(x["startIndex"])
+		ei, eok := num(x["endIndex"])
+		if sok && eok {
+			label := strings.TrimPrefix(path, ".")
+			if label == "" {
+				label = "range"
+			}
+			*parts = append(*parts, fmt.Sprintf("%s %d–%d", label, si, ei))
+		}
+		for _, k := range sortedKeys(x) {
+			if sok && eok && (k == "startIndex" || k == "endIndex") {
+				continue
+			}
+			c.requestDigest(parts, x[k], k, path+"."+k)
+		}
+	case []any:
+		for i, e := range x {
+			c.requestDigest(parts, e, key, fmt.Sprintf("%s[%d]", path, i))
+		}
+	case json.Number:
+		if strings.HasSuffix(strings.ToLower(key), "index") || keepFullKey(key) {
+			*parts = append(*parts, fmt.Sprintf("%s=%s", strings.TrimPrefix(path, "."), x))
+		}
+	case string:
+		lk := strings.ToLower(key)
+		switch {
+		case keepFullKey(key) || strings.HasSuffix(lk, "id") || strings.HasSuffix(lk, "url"):
+			*parts = append(*parts, fmt.Sprintf("%s=%s", strings.TrimPrefix(path, "."), shown(x)))
+		case strings.Contains(lk, "text"):
+			if utf8.RuneCountInString(x) > excerptRunes {
+				c.noteLinks(x)
+			}
+			*parts = append(*parts, fmt.Sprintf("%s: %s (%d characters)", strings.TrimPrefix(path, "."), excerpt(x), utf8.RuneCountInString(x)))
+		default:
+			c.noteLinks(x)
+		}
+	}
 }
 
 // docsRequest summarizes one request and reports whether it is covered; a request that is not has written nothing. rd may be nil.

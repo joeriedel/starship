@@ -323,7 +323,7 @@ const staleGCAge = 5 * time.Minute
 // pidRecordAge is how old a <pid>.pid record must be before a sweep removes it. Age, not liveness, because a session idle past it loses only the link to its earlier id, which is how /clear behaved before the record existed.
 const pidRecordAge = 30 * 24 * time.Hour
 
-// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .sequence.corrupt, .writes, the input and text files saved for its writes (<id>.writes.<token>.json and <id>.writes.<token>.<n>.txt), .direct, .moved, .topic-*, .lock, .sequence.lock, .writes.lock, .sequence.tmp, .writes.tmp and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
+// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .sequence.corrupt, .writes, the input and text files saved for its writes (<id>.writes.<token>.json and <id>.writes.<token>.<n>.txt), the review document of its writes (.starship/review/<id>-writes.md), .direct, .moved, .topic-*, .lock, .sequence.lock, .writes.lock, .sequence.tmp, .writes.tmp and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
 const sessionFileAge = 30 * 24 * time.Hour
 
 // deadLink reports whether a session link names at least one run, none of the names is a path, and every named run's folder is gone. A link that is empty, unreadable or names a path is not dead. Links hold one run id per line.
@@ -870,6 +870,7 @@ func sweepSession(bridge, id string, g *sweptSession, runs []runInfo, s *session
 	}
 	dir := filepath.Join(bridge, ".starship", "sessions")
 	reapSession(dir, id, g.files, s)
+	s.remove(reviewPath(bridge, id))
 }
 
 // sessionBusy reports whether a session has an open sequence or a run that has not finished, found through its link or through the run's owner. Anything unreadable counts as busy.

@@ -48,13 +48,23 @@ func (w *world) runWrites(stdin string, args ...string) (string, error) {
 	return out.String(), err
 }
 
+// review is the review document of the session's pending writes.
+func (w *world) review() string {
+	w.t.Helper()
+	data, err := os.ReadFile(reviewPath(w.bridge, w.sid))
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return string(data)
+}
+
+// addWrite registers a write and returns the full listing, which is the review document.
 func (w *world) addWrite(tool, input string) string {
 	w.t.Helper()
-	out, err := w.runWrites(input, "add", "--tool", tool)
-	if err != nil {
+	if _, err := w.runWrites(input, "add", "--tool", tool, "--summary", "Supernova test write."); err != nil {
 		w.t.Fatalf("writes add: %v", err)
 	}
-	return out
+	return w.review()
 }
 
 // callTool sends a connector call whose tool_input is the given JSON text, as the hook receives it.
@@ -146,7 +156,7 @@ func TestConnectorWritesOffChangesNothing(t *testing.T) {
 	if denied, reason := w.callTool("", "", wikiPost, postA); !denied || !strings.Contains(reason, "may not call") || strings.Contains(reason, "writes") {
 		t.Fatalf("with the key absent the session is denied as before: %v %q", denied, reason)
 	}
-	if _, err := w.runWrites(postA, "add", "--tool", wikiPost); err == nil || !strings.Contains(err.Error(), "off") {
+	if _, err := w.runWrites(postA, "add", "--tool", wikiPost, "--summary", "Supernova test write."); err == nil || !strings.Contains(err.Error(), "off") {
 		t.Fatalf("add must be refused while the feature is off: %v", err)
 	}
 	w.run("supernova/auth-refactor")
@@ -395,7 +405,7 @@ func TestGoNeedsTheShownListing(t *testing.T) {
 	list, _ = w.runWrites("")
 	w.replyStop(list, false)
 	w.runWrites("", "drop", "1")
-	if w.writesState().ShownDigest == (&writesFile{Entries: w.writesState().Entries}).digest() {
+	if w.writesState().ShownDigest == (&writesFile{Entries: w.writesState().Entries}).digest(w.bridge, w.sid) {
 		t.Fatal("a drop must leave the recorded digest stale")
 	}
 }
@@ -449,12 +459,12 @@ func TestRunsAndWritesNeverWaitTogether(t *testing.T) {
 
 	w = writesWorld(t)
 	w.run("supernova/auth-refactor")
-	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost); err == nil || !strings.Contains(err.Error(), "waiting for go") {
+	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--summary", "Supernova test write."); err == nil || !strings.Contains(err.Error(), "waiting for go") {
 		t.Fatalf("add is refused while a run waits for go: %v", err)
 	}
 	w = writesWorld(t)
 	w.mustSeq("do", "something")
-	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost); err == nil || !strings.Contains(err.Error(), "waiting for go") {
+	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--summary", "Supernova test write."); err == nil || !strings.Contains(err.Error(), "waiting for go") {
 		t.Fatalf("add is refused while a sequence waits for go: %v", err)
 	}
 }
@@ -491,12 +501,12 @@ func TestWritesAddAndDrop(t *testing.T) {
 		"trailing data": {wikiPost, `{} {}`, "JSON object"},
 		"empty":         {wikiPost, ``, "JSON object"},
 	} {
-		if _, err := w.runWrites(c.stdin, "add", "--tool", c.tool); err == nil || !strings.Contains(err.Error(), c.want) {
+		if _, err := w.runWrites(c.stdin, "add", "--tool", c.tool, "--summary", "Supernova test write."); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want %q", name, err, c.want)
 		}
 	}
 	t.Setenv("STARSHIP_SESSION", "")
-	if _, err := w.runWrites(`{}`, "add", "--tool", wikiPost); err == nil || !strings.Contains(err.Error(), "STARSHIP_SESSION") {
+	if _, err := w.runWrites(`{}`, "add", "--tool", wikiPost, "--summary", "Supernova test write."); err == nil || !strings.Contains(err.Error(), "STARSHIP_SESSION") {
 		t.Errorf("no session: %v", err)
 	}
 	t.Setenv("STARSHIP_SESSION", w.sid)
@@ -678,8 +688,8 @@ func TestWritesListing(t *testing.T) {
 		"\"z\":\n````\n```fence``` inside\n````\n",
 		`"hidden":` + "\n```json\n\"x\\u202ey\"\n```\n",
 		`"trail":` + "\n```json\n\"x\\n\"\n```\n",
-		"12345678901234567890\n```\n",
-		"\"list\":\n```json\n[\n  1,\n  \"b\"\n]\n```\n",
+		"\"num\": number 12345678901234567890\n",
+		"\"list\": list of 2 items, starts [1,\"b\"]\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("listing lacks %q:\n%s", want, got)
@@ -692,8 +702,15 @@ func TestWritesListing(t *testing.T) {
 	if !strings.Contains(got, "Full input: "+e.File+" (sha256 "+e.FileSHA+")\n") || !filepath.IsAbs(e.File) {
 		t.Errorf("the listing names the input file and its hash:\n%s", got)
 	}
-	if list, _ := w.runWrites(""); list != got {
-		t.Error("the listing is deterministic")
+	if strings.Contains(got, "```json\n[") {
+		t.Errorf("a list is summarised on a line, not dumped as JSON:\n%s", got)
+	}
+	if !strings.Contains(got, "its exact JSON is in "+e.File) {
+		t.Errorf("the document points at the input file for the exact JSON:\n%s", got)
+	}
+	feed, _ := w.runWrites("")
+	if again, _ := w.runWrites(""); again != feed {
+		t.Error("the feed form is deterministic")
 	}
 }
 
@@ -866,7 +883,9 @@ func TestWritesStateEditTrailingDotsAndSpaces(t *testing.T) {
 func TestGarbledListingIsNotShown(t *testing.T) {
 	for _, garbled := range []string{"caf?", "cafÃ©"} {
 		w := writesWorld(t)
-		w.addWrite(wikiPost, `{"body":"café"}`)
+		if _, err := w.runWrites(`{"body":"x"}`, "add", "--tool", wikiPost, "--summary", "Posts café notes."); err != nil {
+			t.Fatal(err)
+		}
 		list, _ := w.runWrites("")
 		bad := strings.Replace(list, "café", garbled, 1)
 		if bad == list {
@@ -906,7 +925,7 @@ func TestJSONText(t *testing.T) {
 func TestWritesAddFailsWhenGoWaitingCannotBeJudged(t *testing.T) {
 	w := writesWorld(t)
 	write(t, seqPath(w.bridge, w.sid), "{not json")
-	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost); err == nil || !strings.Contains(err.Error(), "sequence") {
+	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--summary", "Supernova test write."); err == nil || !strings.Contains(err.Error(), "sequence") {
 		t.Errorf("a corrupt sequence file: %v", err)
 	}
 	if _, err := os.Stat(writesPath(w.bridge, w.sid)); err == nil {
@@ -916,7 +935,7 @@ func TestWritesAddFailsWhenGoWaitingCannotBeJudged(t *testing.T) {
 	w = writesWorld(t)
 	dir := plantRun(t, w.bridge, "20240101-000001-supernova", "running")
 	write(t, filepath.Join(dir, "state.json"), "{not json")
-	_, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost)
+	_, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--summary", "Supernova test write.")
 	wantListErr(t, "writes add", err)
 	if _, err := os.Stat(writesPath(w.bridge, w.sid)); err == nil {
 		t.Error("nothing should have been added")
@@ -966,11 +985,10 @@ const docsUpdate = "mcp__supernova_docs__update_doc"
 
 func (w *world) addDocs(input string, args ...string) string {
 	w.t.Helper()
-	out, err := w.runWrites(input, append([]string{"add", "--tool", docsUpdate}, args...)...)
-	if err != nil {
+	if _, err := w.runWrites(input, append([]string{"add", "--tool", docsUpdate, "--summary", "Supernova test write."}, args...)...); err != nil {
 		w.t.Fatalf("writes add: %v", err)
 	}
-	return out
+	return w.review()
 }
 
 func TestLargeDocsBatchHasAShortListing(t *testing.T) {
@@ -1157,7 +1175,7 @@ func TestDocsReadCountsUTF16AndShiftsPositions(t *testing.T) {
 	}
 }
 
-func TestDocsUnknownRequestsAreShownInFull(t *testing.T) {
+func TestDocsUnknownRequestsAreListedByKind(t *testing.T) {
 	w := docsWorld(t)
 	got := w.addDocs(`{"documentId":"` + docsID + `","requests":[` +
 		`{"insertInlineImage":{"uri":"https://supernova.example/img.png","location":{"index":1}}},` +
@@ -1169,15 +1187,23 @@ func TestDocsUnknownRequestsAreShownInFull(t *testing.T) {
 		`{"updateTextStyle":{"range":{"startIndex":1,"endIndex":3},"textStyle":{},"fields":"link"}}` +
 		`],"writeControl":{"requiredRevisionId":"r","other":"x"},"mystery":{"k":"v"}}`)
 	for _, want := range []string{
-		`"insertInlineImage"`, `"uri": "https://supernova.example/img.png"`,
-		`"segmentId": "kix.abc"`, `"alignment": "CENTER"`, `"extra": 1`, `"tabId": "t.1"`, `"deleteParagraphBullets"`, `"fields": "link"`,
-		"Request 7, a kind or shape this summary does not cover, in full:",
-		`"writeControl":` + "\n```json\n{\n  \"other\": \"x\",\n  \"requiredRevisionId\": \"r\"\n}\n```\n",
-		`"mystery":` + "\n```json\n{\n  \"k\": \"v\"\n}\n```\n",
+		"7 requests of a kind or shape this summary does not cover, by kind:\n",
+		"- insertInlineImage, 1 request:\n  Request 1: location.index=1; uri=https://supernova.example/img.png\n",
+		"- insertText, 1 request:\n  Request 2: location.index=1; location.segmentId=kix.abc; text: hi (2 characters)\n",
+		"- updateTextStyle, 2 requests:\n  Request 4: range 1–3\n  Request 7: range 1–3\n",
+		"Request 5: range 1–3; range.tabId=t.1\n",
+		"- deleteParagraphBullets, 1 request:\n  Request 6: range 1–3\n",
+		`"mystery": object with 1 field, starts {"k":"v"}` + "\n",
+		`"writeControl": object with 2 fields, starts {"other":"x","requiredRevisionId":"r"}` + "\n",
+		"  \"writeControl.requiredRevisionId\": r\n",
+		"its exact JSON is in ",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("listing lacks %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "```") {
+		t.Errorf("no raw JSON block in the document:\n%s", got)
 	}
 	if strings.Contains(got, "paragraph style") || strings.Contains(got, "text style run") || strings.Contains(got, "Formatting and guards") {
 		t.Errorf("a request with anything unaccounted for is not summarised:\n%s", got)
@@ -1199,10 +1225,16 @@ func TestDestinationsAndLinksAreNeverShortened(t *testing.T) {
 	input := fmt.Sprintf(`{"to":%q,"threadId":%q,"body":%q,"nested":{"items":["%s",%q],"parentFolder":%q}}`,
 		to, strings.Repeat("t", 600), long+"mail nova@supernova.example or see "+url+" now. "+long,
 		long, long, strings.Repeat("f", 600))
-	got, err := w.runWrites(input, "add", "--tool", wikiPost, "--short")
+	feed, err := w.runWrites(input, "add", "--tool", wikiPost, "--summary", "Supernova test write.", "--short")
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, want := range []string{to, "threadId=" + strings.Repeat("t", 600)} {
+		if !strings.Contains(feed, want) {
+			t.Errorf("the feed form shows a destination whole: lacks %q", want[:min(len(want), 60)])
+		}
+	}
+	got = w.review()
 	for _, want := range []string{to, strings.Repeat("t", 600), strings.Repeat("f", 600), "- nova@supernova.example\n", "- " + url + "\n", "shortened: first 200 of "} {
 		if !strings.Contains(got, want) {
 			t.Errorf("under --short the listing lacks %q:\n%s", want[:min(len(want), 60)], got)
@@ -1219,7 +1251,8 @@ func TestDestinationsAndLinksAreNeverShortened(t *testing.T) {
 func TestShortTextIsAlwaysShownWhole(t *testing.T) {
 	w := writesWorld(t)
 	got := w.addWrite(wikiPost, `{"body":"a short note"}`)
-	got2, _ := w.runWrites(`{"body":"a short note"}`, "add", "--tool", wikiPost, "--short")
+	w.runWrites(`{"body":"a short note"}`, "add", "--tool", wikiPost, "--summary", "Supernova test write.", "--short")
+	got2 := w.review()
 	if !strings.Contains(got, "a short note") || !strings.Contains(got2, "a short note") || strings.Contains(got2, "shortened") {
 		t.Errorf("short text stays whole:\n%s\n%s", got, got2)
 	}
@@ -1259,7 +1292,7 @@ func TestWritesFilesAreRemovedOnDropAndVoid(t *testing.T) {
 	}
 	read := filepath.Join(t.TempDir(), "read.txt")
 	write(t, read, "text")
-	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--read", read); err == nil || !strings.Contains(err.Error(), "apply only to a Google Docs") {
+	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--summary", "Supernova test write.", "--read", read); err == nil || !strings.Contains(err.Error(), "apply only to a Google Docs") {
 		t.Errorf("--read on a write that is not a Docs batch is refused: %v", err)
 	}
 }
@@ -1277,7 +1310,7 @@ func TestWritesAddOptions(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := w.runWrites(`{"documentId":"d","requests":[]}`, "add", "--tool", docsUpdate, "--read", filepath.Join(t.TempDir(), "missing")); err == nil || !strings.Contains(err.Error(), "--read") {
+	if _, err := w.runWrites(`{"documentId":"d","requests":[]}`, "add", "--tool", docsUpdate, "--summary", "Supernova test write.", "--read", filepath.Join(t.TempDir(), "missing")); err == nil || !strings.Contains(err.Error(), "--read") {
 		t.Errorf("an unreadable read file: %v", err)
 	}
 }
@@ -1289,10 +1322,244 @@ func TestNestedLongTextIsSavedWithoutShort(t *testing.T) {
 	if !strings.Contains(got, `Long text at "message.body"`) || !strings.Contains(got, "also saved in ") {
 		t.Errorf("the listing should name the file of the nested long text:\n%s", got)
 	}
-	if strings.Contains(got, `"message.to"`) {
+	if strings.Contains(got, `Long text at "message.to"`) {
 		t.Error("a short destination has no file")
 	}
 	if n := len(w.writesState().Entries[0].Files); n != 2 {
 		t.Errorf("want the input file and one text file, got %d", n)
+	}
+}
+
+// tableBatch is a Docs batch with a table insert and one fill per cell, the shape that once put over a hundred JSON blocks in the feed.
+func tableBatch(rows, cols int) string {
+	reqs := []string{fmt.Sprintf(`{"insertTable":{"rows":%d,"columns":%d,"location":{"index":1}}}`, rows, cols)}
+	for i := 0; i < rows*cols; i++ {
+		reqs = append(reqs, fmt.Sprintf(`{"insertText":{"text":"cell %d of the supernova table","location":{"index":%d}}}`, i, 5+i*2))
+	}
+	return `{"documentId":"` + docsID + `","requests":[` + strings.Join(reqs, ",") + `]}`
+}
+
+func TestLargeTableInsertFeedIsShort(t *testing.T) {
+	w := docsWorld(t)
+	feed, err := w.runWrites(tableBatch(12, 10), "add", "--tool", docsUpdate, "--summary", "Adds the supernova table to the notes.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(feed, "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("the feed form is a header, a line per write, the hash and the opener line:\n%s", feed)
+	}
+	if lines[1] != "1. "+docsUpdate+", documentId="+docsID+": Adds the supernova table to the notes." {
+		t.Errorf("write line: %q", lines[1])
+	}
+	doc := w.review()
+	if want := "Review document sha256: " + sha([]byte(doc)); lines[2] != want {
+		t.Errorf("hash line %q, want %q", lines[2], want)
+	}
+	if lines[3] != reviewPath(w.bridge, w.sid) || !filepath.IsAbs(lines[3]) {
+		t.Errorf("last line is the absolute path of the review document: %q", lines[3])
+	}
+	for _, want := range []string{"cell 0 of the supernova table", "cell 119 of the supernova table", "- insertTable, 1 request:\n  Request 1: location.index=1\n", "Full input: "} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("the review document lacks %q", want)
+		}
+	}
+	if strings.Contains(doc, "```json") {
+		t.Errorf("no raw JSON block in the review document:\n%s", doc)
+	}
+	if stop := w.replyStop("Pending:\n"+feed, false); stop != nil {
+		t.Errorf("the feed form alone satisfies the Stop hook: %v", stop)
+	}
+}
+
+func TestUncoveredRequestsAreDigestsByKind(t *testing.T) {
+	w := docsWorld(t)
+	long := strings.Repeat("nova,", 40)
+	doc := w.addDocs(`{"documentId":"` + docsID + `","requests":[` +
+		`{"insertTable":{"rows":2,"columns":3,"location":{"index":7}}},` +
+		`{"insertTable":{"rows":1,"columns":1,"endOfSegmentLocation":{"segmentId":"kix.s1"}}},` +
+		`{"replaceNamedRangeContent":{"text":"` + long + `see https://supernova.example/x","namedRangeId":"nr.1"}}]}`)
+	for _, want := range []string{
+		"3 requests of a kind or shape this summary does not cover, by kind:\n",
+		"- insertTable, 2 requests:\n  Request 1: location.index=7\n  Request 2: endOfSegmentLocation.segmentId=kix.s1\n",
+		"- replaceNamedRangeContent, 1 request:\n  Request 3: namedRangeId=nr.1; text: " + strings.Repeat("nova,", 12) + "… (",
+		"URLs and addresses in the shortened text, in full:\n- https://supernova.example/x\n",
+	} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("the review document lacks %q:\n%s", want, doc)
+		}
+	}
+	if strings.Contains(doc, "```") {
+		t.Errorf("no fenced block:\n%s", doc)
+	}
+}
+
+func TestSummaryIsChecked(t *testing.T) {
+	w := writesWorld(t)
+	for name, args := range map[string][]string{
+		"missing":  {"--tool", wikiPost},
+		"empty":    {"--tool", wikiPost, "--summary", ""},
+		"blank":    {"--tool", wikiPost, "--summary", "  \t "},
+		"newline":  {"--tool", wikiPost, "--summary", "one\ntwo"},
+		"return":   {"--tool", wikiPost, "--summary", "one\rtwo"},
+		"too long": {"--tool", wikiPost, "--summary", strings.Repeat("é", maxSummaryRunes+1)},
+		"twice":    {"--tool", wikiPost, "--summary", "a", "--summary", "b"},
+		"no value": {"--tool", wikiPost, "--summary"},
+	} {
+		if _, err := w.runWrites(`{"n":1}`, append([]string{"add"}, args...)...); err == nil || !strings.Contains(err.Error(), "usage: ensign writes") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--summary", strings.Repeat("é", maxSummaryRunes)); err != nil {
+		t.Errorf("a summary at the limit is taken, counted in characters: %v", err)
+	}
+	if !strings.Contains(writesUsage, "600") {
+		t.Error("the usage names the limit")
+	}
+}
+
+func TestFeedDestinations(t *testing.T) {
+	w := writesWorld(t)
+	to := strings.Repeat("a", 300) + "@supernova.example"
+	feed, err := w.runWrites(fmt.Sprintf(`{"to":[%q,"b@supernova.example"],"threadId":"t1","body":"hello","n":3}`, to), "add", "--tool", mailSend, "--summary", "Mails the crew.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "1. " + mailSend + ", threadId=t1, to=[" + to + ",b@supernova.example]: Mails the crew.\n"; !strings.Contains(feed, want) {
+		t.Errorf("destinations are shown whole as key=value:\n%s", feed)
+	}
+	w.runWrites("", "drop", "--all")
+	feed, _ = w.runWrites(`{"body":"hello"}`, "add", "--tool", mailSend, "--summary", "Says hello.")
+	if !strings.Contains(feed, ", no destination field: Says hello.\n") {
+		t.Errorf("a write with no destination says so:\n%s", feed)
+	}
+}
+
+func TestReviewOpenerSettingAndQuoting(t *testing.T) {
+	w := writesWorld(t)
+	feed, _ := w.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--summary", "Posts.")
+	last := func(s string) string {
+		lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+		return lines[len(lines)-1]
+	}
+	if got, want := last(feed), reviewPath(w.bridge, w.sid); got != want && got != `"`+want+`"` {
+		t.Errorf("without review-opener the last line is the bare path: %q", got)
+	}
+	opened := connWorld(t, writesYAML+"review-opener: nvim\n")
+	feed, _ = opened.runWrites(`{"n":1}`, "add", "--tool", wikiPost, "--summary", "Posts.")
+	if got, want := last(feed), "nvim "+quoteShellPath(reviewPath(opened.bridge, opened.sid), runtime.GOOS); got != want {
+		t.Errorf("the opener goes before the path: %q, want %q", got, want)
+	}
+	if res := opened.replyStop("Pending:\n"+feed, false); res != nil {
+		t.Errorf("the feed form with the opener satisfies the Stop hook: %v", res)
+	}
+	for _, c := range []struct{ opener, path, goos, want string }{
+		{"", "/home/nova/b/.starship/review/s1-writes.md", "linux", "/home/nova/b/.starship/review/s1-writes.md"},
+		{"nvim", "/home/nova/b/r.md", "darwin", "nvim /home/nova/b/r.md"},
+		{"nvim", "/home/nova user/b/r.md", "linux", `nvim "/home/nova user/b/r.md"`},
+		{"code -r", "/home/n$va/`b`/\"r\".md", "darwin", "code -r \"/home/n\\$va/\\`b\\`/\\\"r\\\".md\""},
+		{"nvim", `C:\Users\nova\b\r.md`, "windows", `nvim C:\Users\nova\b\r.md`},
+		{"nvim", `C:\Users\Nova Crew\b\r.md`, "windows", `nvim "C:\Users\Nova Crew\b\r.md"`},
+		{"", `C:\Users\nova&crew\r.md`, "windows", `"C:\Users\nova&crew\r.md"`},
+	} {
+		if got := openerLine(c.opener, c.path, c.goos); got != c.want {
+			t.Errorf("%s %q: %q, want %q", c.goos, c.path, got, c.want)
+		}
+	}
+	for _, bad := range []string{"review-opener: [nvim]\n", "review-opener: \"a\\nb\"\n"} {
+		bw := connWorld(t, writesYAML+bad)
+		if _, err := loadBridgeFile(bw.bridge); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+}
+
+func TestReviewDocumentFollowsThePendingWrites(t *testing.T) {
+	w := writesWorld(t)
+	path := reviewPath(w.bridge, w.sid)
+	w.addWrite(wikiPost, `{"n":1}`)
+	w.addWrite(wikiPost, `{"n":2}`)
+	if doc := w.review(); !strings.Contains(doc, "waiting for go (2)") {
+		t.Errorf("an add rewrites the document:\n%s", doc)
+	}
+	w.runWrites("", "drop", "1")
+	if doc := w.review(); !strings.Contains(doc, "waiting for go (1)") {
+		t.Errorf("a drop rewrites the document:\n%s", doc)
+	}
+	w.approveWrites()
+	if exists(path) {
+		t.Error("approval leaves no pending writes, so the document goes")
+	}
+	w.addWrite(wikiPost, `{"n":3}`)
+	w.runWrites("", "drop", "--all")
+	if exists(path) {
+		t.Error("the document goes when the last pending write is dropped")
+	}
+	if out, _ := w.runWrites(""); out != "No connector writes are pending.\n" {
+		t.Errorf("nothing pending: %q", out)
+	}
+}
+
+func TestGoBindsThroughTheReviewDocument(t *testing.T) {
+	w := writesWorld(t)
+	w.addWrite(wikiPost, `{"n":1}`)
+	feed, _ := w.runWrites("")
+	if res := w.replyStop(feed, false); res != nil {
+		t.Fatal(res)
+	}
+	doc := reviewPath(w.bridge, w.sid)
+	orig, _ := os.ReadFile(doc)
+	write(t, doc, string(orig)+"\nNothing to see here.\n")
+	if ctx := w.say("go"); !strings.Contains(ctx, "review document") || w.writesState().Entries[0].Approved {
+		t.Errorf("an edited review document approves nothing: %q", ctx)
+	}
+	write(t, doc, string(orig))
+	if ctx := w.say("go"); !strings.Contains(ctx, "approved") {
+		t.Errorf("the restored document is accepted: %q", ctx)
+	}
+
+	w2 := writesWorld(t)
+	w2.addWrite(wikiPost, `{"n":1}`)
+	feed, _ = w2.runWrites("")
+	w2.replyStop(feed, false)
+	os.Remove(reviewPath(w2.bridge, w2.sid))
+	if ctx := w2.say("go"); !strings.Contains(ctx, "review document") {
+		t.Errorf("a missing review document approves nothing: %q", ctx)
+	}
+	w3 := writesWorld(t)
+	w3.addWrite(wikiPost, `{"n":1}`)
+	feed, _ = w3.runWrites("")
+	w3.replyStop(feed, false)
+	write(t, w3.writesState().Entries[0].File, `{"n":2}`)
+	if ctx := w3.say("go"); !strings.Contains(ctx, "input file of write 1") || w3.writesState().Entries[0].Approved {
+		t.Errorf("a changed saved input still refuses: %q", ctx)
+	}
+}
+
+func TestReviewDocumentIsNotEditableAndIsSwept(t *testing.T) {
+	w := writesWorld(t)
+	for _, p := range []string{reviewPath(w.bridge, w.sid), filepath.Join(w.bridge, ".starship", "review", "other-writes.md"), filepath.Join(w.bridge, ".starship", "review", "x.md")} {
+		in := &HookInput{Cwd: w.bridge, ToolInput: map[string]any{"file_path": p}}
+		if writesStateEdit(w.bridge, in, runtime.GOOS) == "" {
+			t.Errorf("an edit of %s must be refused", p)
+		}
+	}
+	in := &HookInput{Cwd: w.bridge, ToolInput: map[string]any{"file_path": filepath.Join(w.bridge, ".starship", "reviewed.md")}}
+	if writesStateEdit(w.bridge, in, runtime.GOOS) != "" {
+		t.Error("a sibling of the review folder stays allowed")
+	}
+	dir := filepath.Join(w.bridge, ".starship", "sessions")
+	oldFile(t, filepath.Join(dir, "old.id.writes"), oldAge)
+	oldDoc := reviewPath(w.bridge, "old.id")
+	youngDoc := reviewPath(w.bridge, "young")
+	write(t, oldDoc, "x")
+	write(t, youngDoc, "x")
+	write(t, filepath.Join(dir, "young.writes"), "{}")
+	dropDeadLinks(w.bridge)
+	if exists(oldDoc) {
+		t.Error("an old session's review document must be swept")
+	}
+	if !exists(youngDoc) {
+		t.Error("a young session's review document must stay")
 	}
 }

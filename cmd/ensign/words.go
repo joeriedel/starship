@@ -546,7 +546,9 @@ func controlPlaneEdit(bridge string, in *HookInput, goos string) string {
 	return ""
 }
 
-// writesStateEdit refuses file-tool edits to a session's connector writes file, its lock and temp companions and the input and text files saved for its writes, so the session can't approve a write itself.
+const reviewEditMessage = "this is in the review folder, where ensign puts the documents the user is shown; they are changed only through `ensign writes` and the user's go."
+
+// writesStateEdit refuses file-tool edits to the review folder and to a session's connector writes file, its lock and temp companions and the input and text files saved for its writes, so the session can't approve a write itself.
 func writesStateEdit(bridge string, in *HookInput, goos string) string {
 	p, _ := in.ToolInput["file_path"].(string)
 	if p == "" {
@@ -565,6 +567,11 @@ func writesStateEdit(bridge string, in *HookInput, goos string) string {
 		unc = isUNCPath(expanded)
 	}
 	target := foldPath(resolveEditTarget(expanded, in.Cwd, goos), goos)
+	review := foldPath(resolveEditFolder(filepath.Join(bridge, ".starship", "review"), goos), goos)
+	// A UNC path is decided by its name alone, as below.
+	if (unc && strings.Contains(target, "/.starship/review/")) || (!unc && strings.HasPrefix(target, review+"/")) {
+		return reviewEditMessage
+	}
 	dir := foldPath(resolveEditFolder(filepath.Join(bridge, ".starship", "sessions"), goos), goos)
 	// A share can name the sessions folder in ways that can't be listed (host, address, share), so a UNC path is decided by its name alone.
 	if !unc && path.Dir(target) != dir {
