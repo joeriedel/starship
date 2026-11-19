@@ -1912,7 +1912,7 @@ func TestParallelTesterStageWithServicesIsNotPrebuilt(t *testing.T) {
 	if id == "" {
 		t.Fatalf("the tester should be allowed with no prebuild: %s", why)
 	}
-	if p := w.decodedPromptOf(id); strings.Contains(p, "Already done by ensign") || !strings.Contains(p, "@services-up`") {
+	if p := w.decodedPromptOf(id); strings.Contains(p, "Already done by ensign") || !strings.Contains(p, "- @build: `") || !strings.Contains(p, "- @services-up: `") {
 		t.Fatalf("the tester should run the build and services itself:\n%s", p)
 	}
 }
