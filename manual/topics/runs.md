@@ -6,6 +6,8 @@
 
 When a run ends, ensign lists the agent ids of its dispatches that may still be running: in `run finish`'s output to the lead, in `run stop`'s output (the lead included), and, once per agent id, as a Stop block to this session. The session's Stop block lists the lead only after its turn ended without a handback, since until then it may still be wrapping up. When a notice lists agent ids, stop each with TaskStop in that same turn, then end the turn.
 
+The session's Stop block also lists, once per task id, the background shell jobs (Bash `run_in_background`) that a dispatched agent of the ended run started and that Claude Code still reports as running, with task id, owning agent and role, run id and the command on one line. Only the owning agent can stop such a job, so the session cannot, and it ends when its command exits. Do not TaskStop it; tell the user which jobs are still running.
+
 ## Uncommitted edits before a run
 
 A run is refused while its work folder has uncommitted git changes (a p4 task is never refused for them), and the refusal names the paths (up to 5). Ask the user to commit, stash or discard them, then run again; a direct edit leaves such changes. This applies to `ensign run` and again at `go`, which is refused the same way and can be typed again once the folder is clean. A sequence step is not refused: it waits like a step on a busy folder (`waiting: …` in the listing and the Stop message) and starts by itself once the folder is clean. A retry is exempt: its dirty tree is the failed attempt's work, carried into the new run. A run's commit sweeps in everything dirty, which is why a run never starts on top of someone's work.

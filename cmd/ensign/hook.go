@@ -508,7 +508,9 @@ func backgroundLaunch(in *HookInput) string {
 
 // hookPostToolUse records which run agent launched a background task, so a later
 // SubagentStop can tell a wait on that task from an early stop, and where a background
-// command's output file is, so a handback can tell whether it is still running. A TaskStop
+// command's output file is, so a handback can tell whether it is still running.
+// It also records which tasks are Bash commands, so the session can be told of one left running.
+// A TaskStop
 // by the owner forgets the file: a stopped task no longer blocks a handback.
 func hookPostToolUse(in *HookInput, r *RunFiles) (any, error) {
 	if callerDispatch(r, in) == nil {
@@ -533,6 +535,10 @@ func hookPostToolUse(in *HookInput, r *RunFiles) (any, error) {
 	}
 	r.State.Tasks[task] = in.AgentID
 	if in.ToolName == "Bash" {
+		if r.State.Shells == nil {
+			r.State.Shells = map[string]bool{}
+		}
+		r.State.Shells[task] = true
 		if path := taskOutputFile(task); path != "" {
 			if r.State.TaskFiles == nil {
 				r.State.TaskFiles = map[string]string{}

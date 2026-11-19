@@ -145,12 +145,14 @@ type State struct {
 	Notes      []string       `json:"notes,omitempty"`        // what handlers left for the report, e.g. a pull request
 	Finished   bool           `json:"finished,omitempty"`     // the end-of-run steps have run
 	AgentsTold []string       `json:"agents_told,omitempty"`  // the agent ids the session was told to stop after the run ended
+	TasksTold  []string       `json:"tasks_told,omitempty"`   // the shell task ids the session was told still ran after the run ended
 	FinishedAt int64          `json:"finished_at,omitempty"`  // unix nanoseconds when the run last ended, any outcome; check Status for a success
 	Dispatches []*Dispatch    `json:"dispatches"`
 	History    []HistoryEntry `json:"history"`
 
 	Tasks     map[string]string `json:"tasks,omitempty"`      // background task id -> id of the agent that launched it
 	TaskFiles map[string]string `json:"task_files,omitempty"` // background Bash task id -> its output file, while it may still be running
+	Shells    map[string]bool   `json:"shells,omitempty"`     // the ids in Tasks that are background Bash commands, not background agents
 
 	Sequence bool `json:"sequence,omitempty"` // the run is a step of its session's sequence
 

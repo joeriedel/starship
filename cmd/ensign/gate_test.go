@@ -454,3 +454,44 @@ func TestRunFinishWithEveryDispatchDoneListsNoAgents(t *testing.T) {
 		t.Fatalf("no notice when every agent is done: %v", res)
 	}
 }
+
+func TestSessionIsToldOnceOfShellJobsLeftRunning(t *testing.T) {
+	w := newWorld(t)
+	lead := w.startLead()
+	coder, why := w.spawn(lead, "orchestrator", "coder")
+	if coder == "" {
+		t.Fatal(why)
+	}
+	w.launched(coder, "coder", "Bash", map[string]any{"backgroundTaskId": "bash1"})
+	w.launched(coder, "coder", "Bash", map[string]any{"backgroundTaskId": "bash2"})
+	w.launched(coder, "coder", "Bash", map[string]any{"backgroundTaskId": "bash3"})
+	w.launched(coder, "coder", "Agent", map[string]any{"status": "async_launched", "agentId": "helper1"})
+	if r := w.stop(coder, "coder", report("compiled"), false); r != "" {
+		t.Fatalf("coder stop was blocked: %s", r)
+	}
+	w.holdGate = true
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "reviewer", "clean")
+	w.leaf(lead, "style-reviewer", "done")
+	w.leaf(lead, "tester", "pass")
+	w.holdGate = false
+	run := w.state().Run
+	if out, err := w.finishGoal(run, "--goal", "met"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	tasks := []map[string]any{
+		{"id": "bash1", "type": "shell", "status": "running", "command": "make  watch\n  --serve   --port=9000\n"},
+		{"id": "bash3", "type": "shell", "status": "completed", "command": "sleep 1"},
+		{"id": "helper1", "type": "agent", "status": "running"},
+	}
+	res, _ := w.hook("Stop", map[string]any{"background_tasks": tasks})
+	why, _ = res["reason"].(string)
+	if res["decision"] != "block" || !strings.Contains(why, "bash1") || !strings.Contains(why, "coder") || !strings.Contains(why, run) ||
+		!strings.Contains(why, "make watch --serve --port=9000") || strings.Contains(why, "\n  ") ||
+		strings.Contains(why, "bash2") || strings.Contains(why, "bash3") || strings.Contains(why, "helper1") || strings.Contains(why, "TaskStop") {
+		t.Fatalf("the session should be told of bash1 alone, on one line: %v", res)
+	}
+	if res, _ = w.hook("Stop", map[string]any{"background_tasks": tasks}); res != nil {
+		t.Fatalf("a job is reported once: %v", res)
+	}
+}

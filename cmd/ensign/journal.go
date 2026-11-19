@@ -160,7 +160,16 @@ func hookStop(bridge string, in *HookInput) any {
 	return out
 }
 
-// agentsStop tells the main session, once per agent id, to stop the agents of an ended run of the session that may still be running. The lead is listed only once its turn ended after the run did without a handback, since until then it may be wrapping up. A subagent's own stop never reaches it.
+// shellOneLine collapses a command to a single line of at most max runes, ending in an ellipsis when cut.
+func shellOneLine(cmd string, max int) string {
+	rs := []rune(strings.Join(strings.Fields(cmd), " "))
+	if len(rs) > max {
+		return string(rs[:max-1]) + "…"
+	}
+	return string(rs)
+}
+
+// agentsStop tells the main session, once per agent id, to stop the agents of an ended run of the session that may still be running, and, once per task id, which background shell jobs of the run's agents are still running, which only their owners could stop. The lead is listed only once its turn ended after the run did without a handback, since until then it may be wrapping up. A subagent's own stop never reaches it.
 func agentsStop(bridge string, in *HookInput) any {
 	if in.AgentID != "" || in.SessionID == "" {
 		return nil
@@ -190,15 +199,37 @@ func agentsStop(bridge string, in *HookInput) any {
 			}
 			open = append(open, d.AgentID)
 		}
+		var jobs []string
+		var jobIDs []string
+		for _, t := range in.BackgroundTasks {
+			agent, ok := r.State.Tasks[t.ID]
+			if !ok || !r.State.Shells[t.ID] || t.Status != "running" || slices.Contains(r.State.TasksTold, t.ID) || slices.Contains(jobIDs, t.ID) {
+				continue
+			}
+			role := "unknown"
+			if d := r.State.byAgent(agent); d != nil && d.Role != "" {
+				role = d.Role
+			}
+			jobIDs = append(jobIDs, t.ID)
+			jobs = append(jobs, fmt.Sprintf("task %s (agent %s, role %s, run %s): %s", t.ID, agent, role, id, shellOneLine(t.Command, 120)))
+		}
 		status := r.State.Status
 		told := false
-		if len(open) > 0 {
+		if len(open) > 0 || len(jobs) > 0 {
 			r.State.AgentsTold = append(r.State.AgentsTold, open...)
+			r.State.TasksTold = append(r.State.TasksTold, jobIDs...)
 			told = r.save() == nil
 		}
 		r.close()
 		if told {
-			return block(fmt.Sprintf("run %s is over (%s), but these agents it started may still be running: %s. Stop each now, in this turn, with TaskStop (the agent id is its task id), then end your turn.", id, status, strings.Join(open, ", ")))
+			var msg []string
+			if len(open) > 0 {
+				msg = append(msg, fmt.Sprintf("run %s is over (%s), but these agents it started may still be running: %s. Stop each now, in this turn, with TaskStop (the agent id is its task id), then end your turn.", id, status, strings.Join(open, ", ")))
+			}
+			if len(jobs) > 0 {
+				msg = append(msg, fmt.Sprintf("run %s is over (%s), but these shell jobs its agents started are still running: %s. Only the agent that owns a job can stop it, so neither you nor the lead can; each ends when its command exits. They are reported, not stopped: tell the user which jobs are still running.", id, status, strings.Join(jobs, "; ")))
+			}
+			return block(strings.Join(msg, "\n\n"))
 		}
 	}
 	return nil
