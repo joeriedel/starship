@@ -1889,3 +1889,30 @@ func TestNextAfterAParallelPrebuildStageNamesNoBuildOutcome(t *testing.T) {
 		t.Fatalf("the prebuild is not a branch outcome: %s", got)
 	}
 }
+
+func TestParallelTesterStageWithServicesIsNotPrebuilt(t *testing.T) {
+	w := prebuildWorld(t, "echo build >> order", "echo up >> order", "echo down >> order")
+	lead := w.startLead()
+	w.toTest(lead)
+	w.parallelTest()
+	r, err := openSessionRun(w.bridge, w.sid)
+	if err != nil || r == nil {
+		t.Fatalf("no active run: %v", err)
+	}
+	snap := r.Snap
+	r.close()
+	s, _, _ := snap.Pipeline.find("test")
+	if prebuildStage(snap, s) {
+		t.Fatal("a parallel stage with services must not be prebuilt")
+	}
+	if got := w.next(); strings.Contains(got, "run-stage") || !strings.Contains(got, "Dispatch 2 tester agent(s)") {
+		t.Fatalf("next should dispatch the testers directly: %s", got)
+	}
+	id, why := w.spawn(lead, "orchestrator", "tester")
+	if id == "" {
+		t.Fatalf("the tester should be allowed with no prebuild: %s", why)
+	}
+	if p := w.decodedPromptOf(id); strings.Contains(p, "Already done by ensign") || !strings.Contains(p, "@services-up`") {
+		t.Fatalf("the tester should run the build and services itself:\n%s", p)
+	}
+}
