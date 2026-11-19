@@ -40,7 +40,7 @@ func plainStage(snap *Snapshot, s *Stage) bool {
 	return x.NotApplicable != "" || (x.Command == "" && x.Guidance == "") || x.Plain
 }
 
-// prebuildStage reports whether ensign runs @build itself before the stage's tester is spawned, so that no agent waits on a long build. It applies to a tester stage that is not plain when every side's @build is a command or not applicable (at least one a command), and its services, if any, are all commands. A parallel stage is only prebuilt when it has no services to start: its testers cannot share one @services-down. That exclusion is intended: such a stage keeps the flow without a prebuild, where each tester runs @build and the services itself.
+// prebuildStage reports whether ensign runs @build itself before the stage's tester is spawned, so that no agent waits on a long build. It applies to a tester stage that is not plain when every side's @build is a command or not applicable (at least one a command), and its services, if any, are all commands. A parallel stage is only prebuilt when it has no services to start: its testers cannot share one @services-down. That exclusion is intended: such a stage runs without a prebuild, and each tester runs @build and starts the services itself.
 func prebuildStage(snap *Snapshot, s *Stage) bool {
 	if s.isLead() || s.Role != "tester" || plainStage(snap, s) {
 		return false
