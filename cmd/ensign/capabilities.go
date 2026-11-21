@@ -21,7 +21,7 @@ type Capabilities struct {
 	Connectors bool     // connector tools pass the whitelist; connectorDecision still governs them
 }
 
-// editKinds are the folder kinds `may.edit` can name. Each grants a folder only under the conditions the edit guard has always put on it: code in a live code or style dispatch, docs in a live documentation dispatch, run is the run's scratch and evidence folders in a live dispatch and the system temp folders, secretary is notes/secretary and notes/focal, reader is <bridge>/reader once bridge.yaml declares the role under connectors.
+// editKinds are the folder kinds `may.edit` can name. Each grants a folder only under the conditions the edit guard has always put on it: code in a live code or style dispatch, docs in a live documentation dispatch, run is the run's scratch and evidence folders in a live dispatch and the system temp folders, secretary is notes/secretary and notes/focal, reader is <bridge>/reader once bridge.yaml declares the role under connectors (a reader without that declaration falls back to its other kinds).
 var editKinds = []string{"code", "docs", "run", "secretary", "reader"}
 
 // harnessTools are the tools Claude Code gives every agent whatever its tools: line says, so the whitelist lets them through: SubagentHandback ends every agent's work, and ToolSearch only loads the schemas of tools the agent already has.

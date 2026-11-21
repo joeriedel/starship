@@ -284,7 +284,7 @@ func TestRoleAgents(t *testing.T) {
 		t.Errorf("orchestrator dispatching a stage role: %s", why)
 	}
 	for _, role := range []string{"Explore", "general-purpose", ""} {
-		if id, why := w.spawn(lead, "orchestrator", role); id == "" {
+		if denied, why := w.capCall(lead, "orchestrator", "Agent", sub(role)); denied {
 			t.Errorf("orchestrator dispatching %q: %s", role, why)
 		}
 	}
