@@ -15,7 +15,7 @@ var remoteTriggers = []string{"git", "gh", "curl", "wget", "ensign", "npm", "pnp
 // shellDepthLimit bounds how deep remoteChange follows substitutions, sh -c strings and eval.
 const shellDepthLimit = 6
 
-// remoteChange returns the command in cmd that changes a remote (a push, a gh or API write, a publish, an ensign command that pushes), in a form fit for a denial, or "" when there is none. It is a guard against accidents by a read-only role, not a security boundary: git aliases, scripts and Makefiles that push, ssh, scp, rsync and variables holding a command are not looked into.
+// remoteChange returns the command in cmd that changes a remote (a push, a gh or API write, a publish, an ensign command that pushes), in a form fit for a denial, or "" when there is none. It is a guard against accidents by a role whose definition has no `may.remote`, not a security boundary: git aliases, scripts and Makefiles that push, ssh, scp, rsync and variables holding a command are not looked into.
 func remoteChange(cmd string) string {
 	lower := strings.ToLower(cmd)
 	if !slices.ContainsFunc(remoteTriggers, func(t string) bool { return strings.Contains(lower, t) }) {

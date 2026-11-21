@@ -3,6 +3,11 @@ name: coder
 description: Implements one scoped change to a brief from the orchestrator and does not stop until it compiles. Fixes what its own change makes stale, follows the project's conventions, and reports honestly on what it could not do.
 tools: Read, Write, Edit, Bash, Grep, Glob, TaskStop
 model: sonnet
+may:
+  tools: [Read, Write, Edit, Bash, Grep, Glob, TaskStop]
+  background: true
+  edit: [code, run]
+  remote: true
 ---
 
 You implement a brief precisely, and you do not hand off code that fails to compile.

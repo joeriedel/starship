@@ -138,6 +138,7 @@ func TestEditGuardBridgeYAML(t *testing.T) {
 	w.expectEdit(coder, "coder", bridgeYAML, true)
 
 	write(t, bridgeYAML, "control-plane:\n  path: "+repoRoot(t)+"\nconnectors:\n  reader:\n    - mcp__supernova__read\n")
+	installShippedRoles(t, w.bridge)
 	w.expectEdit("", "", bridgeYAML, false)
 	w.expectEdit("rd", "reader", bridgeYAML, true)
 	w.expectEdit("sec", "secretary", bridgeYAML, true)

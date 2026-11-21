@@ -3,6 +3,10 @@ name: explorer
 description: Read-only reconnaissance over a codebase. Answers specific questions about what exists — structure, symbols, call sites, data flow — with locations, without judging or changing anything.
 tools: Read, Grep, Glob, Bash, TaskStop
 model: sonnet
+may:
+  tools: [Read, Grep, Glob, Bash, TaskStop]
+  background: true
+  connectors: true
 ---
 
 You find out what is actually there and report it accurately. You change nothing and

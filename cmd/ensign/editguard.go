@@ -35,12 +35,29 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 	if why := snapshotGuard(bridge, in, target, goos); why != "" {
 		return why, "", nil
 	}
-	if in.AgentID != "" && (in.AgentType == "reader" || in.AgentType == "secretary") {
-		var folders []string
-		if in.AgentType == "secretary" {
-			// The secretary is confined whether or not the reader is declared: it can outlive the reader's removal until link is rerun.
-			folders = []string{filepath.Join(bridge, "notes", "secretary"), filepath.Join(bridge, "notes", "focal")}
-		} else {
+	var caps *Capabilities
+	var static []string
+	if in.AgentID != "" {
+		var err error
+		if caps, err = hookRoleCapabilities(bridge, in); err != nil {
+			return "this edit was refused because " + roleDefinitionRefusal(in.AgentType, err), "", nil
+		}
+	}
+	// A starship role gets the folder kinds it declares; any other agent keeps the run kinds.
+	may := func(kind string) bool {
+		if caps == nil {
+			return kind == "code" || kind == "docs" || kind == "run"
+		}
+		return caps.edits(kind)
+	}
+	if caps != nil {
+		if len(caps.Edit) == 0 {
+			return "this edit was refused because this " + in.AgentType + "'s definition declares no `may.edit` folder, so it may edit nothing. Working around the guard is a failure, not a fix.", "", nil
+		}
+		if caps.edits("secretary") {
+			static = append(static, filepath.Join(bridge, "notes", "secretary"), filepath.Join(bridge, "notes", "focal"))
+		}
+		if caps.edits("reader") {
 			bf, err := loadBridgeFile(bridge)
 			var rules map[string][]string
 			if err == nil {
@@ -49,20 +66,23 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 			if err != nil {
 				return "this edit was refused because bridge.yaml can't be read or is invalid, so a reader's folder can't be checked: " + err.Error(), "", nil
 			}
-			if _, declared := rules["reader"]; declared {
-				folders = []string{filepath.Join(bridge, "reader")}
+			if _, declared := rules[in.AgentType]; declared {
+				static = append(static, filepath.Join(bridge, "reader"))
 			}
 		}
-		if folders != nil {
+		if !may("code") && !may("docs") && !may("run") {
 			resolved := resolveEditTarget(expanded, in.Cwd, goos)
-			for _, folder := range folders {
+			for _, folder := range static {
 				if pathWithin(resolved, resolveEditFolder(folder, goos), goos) {
 					return "", "", nil
 				}
 			}
-			only := "folder " + folders[0] + ", the only folder"
-			if len(folders) > 1 {
-				only = "folders " + strings.Join(folders, " and ") + ", the only folders"
+			if len(static) == 0 {
+				return "this edit was refused because " + target + " is in no folder a " + in.AgentType + " may edit: its declared folders are not available. Working around the guard is a failure, not a fix.", "", nil
+			}
+			only := "folder " + static[0] + ", the only folder"
+			if len(static) > 1 {
+				only = "folders " + strings.Join(static, " and ") + ", the only folders"
 			}
 			return "this edit was refused because " + target + " is outside " + only + " a " + in.AgentType + " may edit. Working around the guard is a failure, not a fix.", "", nil
 		}
@@ -77,8 +97,8 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 		if err != nil {
 			return "", "", err
 		}
-		folders = editTempFolders()
 		who = "this agent"
+		var lead, scratch []string
 		if r != nil {
 			defer r.close()
 			if r.warn != nil {
@@ -95,18 +115,22 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 				}
 			}
 			if d := callerDispatch(r, in); d != nil {
-				scratch, evidence := filepath.Join(r.Dir, "scratch"), filepath.Join(r.Dir, "reports", "evidence")
 				who = "this " + d.Role
-				if !d.Done && (d.Stage == "code" || d.Stage == "style") {
-					folders = append(append(runCodeFolders(r), scratch, evidence), folders...)
-				} else if !d.Done && d.Role == "documentation" {
-					docs := docsFolders(r)
-					who = "this documentation stage (only the @docs paths: " + strings.Join(docs, ", ") + ")"
-					folders = append(append(docs, scratch, evidence), folders...)
-				} else {
-					folders = append([]string{scratch, evidence}, folders...)
+				codeStage := !d.Done && (d.Stage == "code" || d.Stage == "style")
+				if codeStage && may("code") {
+					lead = runCodeFolders(r)
+				} else if !codeStage && !d.Done && d.Role == "documentation" && may("docs") {
+					lead = docsFolders(r)
+					who = "this documentation stage (only the @docs paths: " + strings.Join(lead, ", ") + ")"
+				}
+				if may("run") {
+					scratch = []string{filepath.Join(r.Dir, "scratch"), filepath.Join(r.Dir, "reports", "evidence")}
 				}
 			}
+		}
+		folders = append(append(static, lead...), scratch...)
+		if may("run") {
+			folders = append(folders, editTempFolders()...)
 		}
 	}
 	resolved := resolveEditTarget(expanded, in.Cwd, goos)

@@ -229,13 +229,27 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 0
 		}
 	}
+	var roleCaps *Capabilities
+	if event == "PreToolUse" && in.AgentID != "" && bridgeErr == nil {
+		var why string
+		var cerr error
+		if roleCaps, cerr = hookRoleCapabilities(bridge, &in); cerr != nil {
+			why = roleDefinitionRefusal(in.AgentType, cerr)
+		} else if roleCaps != nil {
+			why = roleCaps.toolRefusal(in.AgentType, &in)
+		}
+		if why != "" {
+			json.NewEncoder(stdout).Encode(denial(why))
+			return 0
+		}
+	}
 	if event == "PreToolUse" && in.ToolName == "Bash" {
 		cmd, _ := in.ToolInput["command"].(string)
 		if line := attributionChange(cmd, in.Cwd); line != "" {
 			json.NewEncoder(stdout).Encode(denial(attributionRefusal(line)))
 			return 0
 		}
-		if in.AgentID != "" && (in.AgentType == "explorer" || in.AgentType == "reviewer") {
+		if roleCaps != nil && !roleCaps.Remote {
 			if what := remoteChange(cmd); what != "" {
 				json.NewEncoder(stdout).Encode(denial("this role can't change a remote, so `" + what + "` was refused. Probe git behaviour in a scratch repository under the system temp folder, pushing to a local path; otherwise report the need to your caller."))
 				return 0
@@ -427,6 +441,12 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	} else if r == nil {
 		role, _ := in.ToolInput["subagent_type"].(string)
+		if event == "PreToolUse" && roleCaps != nil && (in.ToolName == "Agent" || in.ToolName == "Task") {
+			if why := roleCaps.agentRefusal(in.AgentType, role, nil); why != "" {
+				json.NewEncoder(stdout).Encode(denial(why))
+				return 0
+			}
+		}
 		if event == "PreToolUse" && in.AgentID != "" {
 			found, unread, listFailed := stageRoleAnywhere(bridge, role)
 			reason := "starship: this agent's run can't be found: the session restarted and the agent could not be tied to any live run, so it can't dispatch stages"
@@ -451,10 +471,21 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	wasTerminal := r != nil && r.State.terminal()
+	var agentsWhy string
+	if roleCaps != nil && event == "PreToolUse" && (in.ToolName == "Agent" || in.ToolName == "Task") {
+		var p *Pipeline
+		if r != nil && r.Snap != nil {
+			p = r.Snap.Pipeline
+		}
+		sub, _ := in.ToolInput["subagent_type"].(string)
+		agentsWhy = roleCaps.agentRefusal(in.AgentType, sub, p)
+	}
 	var out any
 	switch event {
 	case "PreToolUse":
-		if in.ToolName == "SubagentHandback" && isFreeAgent(r, &in) {
+		if agentsWhy != "" {
+			out = deny(r, "", agentsWhy)
+		} else if in.ToolName == "SubagentHandback" && isFreeAgent(r, &in) {
 			out = hookRunlessAgent(bridge, event, &in)
 		} else {
 			out, err = hookPreToolUse(&in, r)

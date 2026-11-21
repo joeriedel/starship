@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -365,33 +366,40 @@ func jsonStr(s string) string {
 	return string(b)
 }
 
-func TestBashHookRefusesRemoteChangesForReadOnlyRoles(t *testing.T) {
+func TestBashHookRefusesRemoteChangesForRolesWithoutRemote(t *testing.T) {
+	w := newWorld(t)
+	installShippedRoles(t, w.bridge)
+	write(t, filepath.Join(w.bridge, ".claude", "agents", "supernova-scout.md"), "---\nname: supernova-scout\nmay:\n  tools: [Bash]\n  remote: true\n---\n")
 	push := `{"command":"git push origin main"}`
 	for _, role := range []string{"explorer", "reviewer"} {
-		for _, env := range []bool{true, false} {
-			denied, reason := bashHook(t, env, "a1", role, push)
-			if !denied {
-				t.Errorf("%s (env %v) not denied", role, env)
-			}
-			if !strings.HasPrefix(reason, "starship: ") || !strings.Contains(reason, "git push origin main") || !strings.Contains(reason, "scratch repository") {
-				t.Errorf("reason = %q", reason)
-			}
+		denied, reason := bashHook(t, true, "a1", role, push)
+		if !denied {
+			t.Errorf("%s not denied", role)
 		}
-		if denied, _ := bashHook(t, false, "a1", role, `{"command":"git log --oneline"}`); denied {
+		if !strings.HasPrefix(reason, "starship: ") || !strings.Contains(reason, "git push origin main") || !strings.Contains(reason, "scratch repository") {
+			t.Errorf("reason = %q", reason)
+		}
+		if denied, _ := bashHook(t, true, "a1", role, `{"command":"git log --oneline"}`); denied {
 			t.Errorf("%s: git log denied", role)
 		}
-		if denied, _ := bashHook(t, false, "a1", role, `{"command":"git push /tmp/supernova/remote.git main"}`); denied {
+		if denied, _ := bashHook(t, true, "a1", role, `{"command":"git push /tmp/supernova/remote.git main"}`); denied {
 			t.Errorf("%s: push to a local path denied", role)
 		}
 		for _, input := range []string{`{}`, `{"command":42}`, `{"command":null}`} {
-			if denied, _ := bashHook(t, false, "a1", role, input); denied {
+			if denied, _ := bashHook(t, true, "a1", role, input); denied {
 				t.Errorf("%s: %s denied", role, input)
 			}
 		}
 	}
-	for _, c := range []struct{ id, role string }{{"a1", "coder"}, {"a1", "tester"}, {"a1", "orchestrator"}, {"a1", "supernova-scout"}, {"a1", ""}, {"", "explorer"}, {"", "reviewer"}, {"", ""}} {
-		if denied, _ := bashHook(t, false, c.id, c.role, push); denied {
+	// A role without a file in the bridge's .claude/agents is a built-in or a user's agent, and the session has no role: neither is judged here.
+	for _, c := range []struct{ id, role string }{{"a1", "coder"}, {"a1", "tester"}, {"a1", "orchestrator"}, {"a1", "supernova-scout"}, {"a1", "general-purpose"}, {"a1", ""}, {"", "explorer"}, {"", "reviewer"}, {"", ""}} {
+		if denied, _ := bashHook(t, true, c.id, c.role, push); denied {
 			t.Errorf("agent %q role %q denied", c.id, c.role)
+		}
+	}
+	for _, role := range []string{"explorer", "reviewer"} {
+		if denied, _ := bashHook(t, false, "a1", role, push); denied {
+			t.Errorf("%s outside a bridge has no role file to judge by, so it is not denied", role)
 		}
 	}
 }

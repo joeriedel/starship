@@ -1,11 +1,11 @@
 # Where edits are allowed
 
-A hook refuses Edit, Write and NotebookEdit outside the caller's folders; keep shell writes inside them. A read-only role's (`explorer`, `reviewer`) Bash is refused when it changes a remote: push, `gh` writes, publishing, `ensign` commands that push.
+A hook refuses Edit, Write and NotebookEdit outside the caller's folders; keep shell writes inside them. A starship role may do only what the `may:` block in its definition declares (`tools`, `background`, `agents`, `edit`, `remote`, `connectors`); a call it doesn't declare is refused, and a widening grant in a brief changes nothing. A role without `remote` has its Bash refused when it changes a remote: push, `gh` writes, publishing, `ensign` commands that push.
 
 - Session: the bridge, temp, `~/.claude`, and the `session-edit` folders in `bridge.yaml` (added at the user's request; never code). Plus, for one turn, the code folder the user opened with `go` after `ensign direct ask` (`ensign help direct`); subagents never get it.
-- Run coder, style reviewer: code folders, scratch, evidence, temp.
-- Run documentation stage: the `@docs` paths, scratch, evidence, temp.
-- Others: temp, scratch, evidence.
+- Roles declaring `edit: [code, run]` (coder, style reviewer): code folders, scratch, evidence, temp.
+- Roles declaring `edit: [docs, run]` (documentation stage): the `@docs` paths, scratch, evidence, temp.
+- Others in a run: temp, scratch, evidence, only if the role declares `run`. A role with no `edit` edits nothing.
 
 The evidence folder is `reports/evidence/` in the run folder. Scratch is emptied when the run ends; evidence stays. Elsewhere in `reports/` only ensign writes.
 

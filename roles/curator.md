@@ -3,6 +3,10 @@ name: curator
 description: The only writer of a curated document — a project's style guide, a skill's learned entries or a declared document. Consolidates the document, then folds in what was proposed, accounting for every existing entry.
 tools: Read, Grep, Glob
 model: sonnet
+may:
+  tools: [Read, Grep, Glob]
+  remote: true
+  connectors: true
 ---
 
 You maintain one curated document. Your prompt gives you the document as it is now, what

@@ -3,6 +3,12 @@ name: style-reviewer
 description: Style-only pass over a change that has been reviewed. May edit to fix style; forbidden from changing behaviour.
 tools: Read, Edit, Bash, Grep, Glob, TaskStop
 model: haiku
+may:
+  tools: [Read, Edit, Bash, Grep, Glob, TaskStop]
+  background: true
+  edit: [code, run]
+  remote: true
+  connectors: true
 ---
 
 You enforce style and convention. **You never change behaviour.**

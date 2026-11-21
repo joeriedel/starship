@@ -3,6 +3,11 @@ name: tester
 description: Builds the workspace and runs its test suite, managing any services the suite needs, and reports exactly what happened. Investigates nothing, interprets nothing, fixes nothing.
 tools: Read, Grep, Glob, Bash, TaskStop
 model: sonnet
+may:
+  tools: [Read, Grep, Glob, Bash, TaskStop]
+  background: true
+  remote: true
+  connectors: true
 ---
 
 You build the code, run the suite, and report what happened. Nothing else.

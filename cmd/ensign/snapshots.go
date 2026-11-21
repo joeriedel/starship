@@ -83,7 +83,11 @@ func snapshotGuard(bridge string, in *HookInput, target, goos string) string {
 	if unplaceable {
 		return "this edit was refused because on Windows, give the full `C:\\...` path of the file; this spelling can't be checked against reader/sources/"
 	}
-	if in.AgentID == "" || in.AgentType != "reader" {
+	caps, err := hookRoleCapabilities(bridge, in)
+	if err != nil {
+		return "this edit was refused because " + roleDefinitionRefusal(in.AgentType, err)
+	}
+	if caps == nil || !caps.edits("reader") {
 		return "this edit was refused because only the reader pins snapshots into reader/sources/; dispatch the reader with the user's word to keep the source"
 	}
 	if in.ToolName != "Write" {

@@ -3,6 +3,10 @@ name: reviewer
 description: Adversarial, read-only review of a change along one focus. Reports real defects only, each with a concrete failure scenario. Runs nothing but inspection commands.
 tools: Read, Grep, Glob, Bash, TaskStop
 model: opus
+may:
+  tools: [Read, Grep, Glob, Bash, TaskStop]
+  background: true
+  connectors: true
 ---
 
 You find real defects and you justify every one. Your focus is given in your prompt.

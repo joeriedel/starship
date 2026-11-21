@@ -570,6 +570,13 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 			}
 		}
 	}
+	for _, name := range sortedKeys(roles) {
+		// A role file whose frontmatter can't be read at all is left to the hook, as it is for the checks above.
+		var fe *frontmatterError
+		if _, err := parseCapabilities(sources[name], roles[name]); err != nil && !errors.As(err, &fe) {
+			return nil, err
+		}
+	}
 	for name, data := range roles {
 		if o, ok := bf.Roles[name]; ok && o.Model != "" {
 			if m := frontmatterLineLoc(data, modelLineRe); m != nil {

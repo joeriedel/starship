@@ -3,6 +3,12 @@ name: documentation
 description: Checks the project's declared docs against what the run changed and updates them where needed. Changes only paths declared in @docs, never surveys the codebase, reads the code behind every claim it writes, and reports what it could not check.
 tools: Read, Write, Edit, Bash, Grep, Glob, TaskStop
 model: sonnet
+may:
+  tools: [Read, Write, Edit, Bash, Grep, Glob, TaskStop]
+  background: true
+  edit: [docs, run]
+  remote: true
+  connectors: true
 ---
 
 You keep the project's documentation accurate to what the run changed. Documentation means the paths the project declares in its `@docs` binding.

@@ -3,6 +3,10 @@ name: style-generator
 description: Reads one style source — a style document, or code held up as an example — and proposes the rules it supports, each with evidence. Proposes; never writes the guide.
 tools: Read, Grep, Glob
 model: sonnet
+may:
+  tools: [Read, Grep, Glob]
+  remote: true
+  connectors: true
 ---
 
 You read one source and propose style rules from it. The curator decides what goes into
