@@ -70,7 +70,8 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 				static = append(static, filepath.Join(bridge, "reader"))
 			}
 		}
-		if !may("code") && !may("docs") && !may("run") {
+		// The confining kinds confine when they grant a folder; with none, the other declared kinds apply.
+		if len(static) > 0 || !may("code") && !may("docs") && !may("run") {
 			resolved := resolveEditTarget(expanded, in.Cwd, goos)
 			for _, folder := range static {
 				if pathWithin(resolved, resolveEditFolder(folder, goos), goos) {

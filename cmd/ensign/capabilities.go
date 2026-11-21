@@ -15,7 +15,7 @@ import (
 type Capabilities struct {
 	Tools      []string // tool whitelist; Agent and Task are one tool
 	Background bool     // Bash with run_in_background
-	Agents     []string // Agent subagent_type: "stages", "free" or literal role names
+	Agents     []string // Agent subagent_type: "stages", "free", "others" or literal role names
 	Edit       []string // folder kinds, see editKinds
 	Remote     bool     // may change a remote
 	Connectors bool     // connector tools pass the whitelist; connectorDecision still governs them
@@ -138,15 +138,17 @@ func (c *Capabilities) toolRefusal(role string, in *HookInput) string {
 	return ""
 }
 
-// agentRefusal is why the role may not dispatch subagent, or "". "stages" and "free" need the run's pipeline, which is nil when the agent's run can't be found, so only literal names cover then.
-func (c *Capabilities) agentRefusal(role, subagent string, p *Pipeline) string {
+// agentRefusal is why the role may not dispatch subagent, or "". "stages" and "free" need the run's pipeline, which is nil when the agent's run can't be found, so only literal names and "others" cover then. "others" is any subagent_type, an empty one included, that is not a stage role: stageRole says whether it is one, in the run's pipeline or, with no run, anywhere in the bridge.
+func (c *Capabilities) agentRefusal(role, subagent string, p *Pipeline, stageRole bool) string {
 	for _, a := range c.Agents {
 		switch {
 		case a == "stages" && p != nil && p.hasStageRole(subagent):
 			return ""
 		case a == "free" && p != nil && slices.Contains(p.FreeRoles, subagent):
 			return ""
-		case a == subagent && a != "stages" && a != "free":
+		case a == "others" && !stageRole:
+			return ""
+		case a == subagent && a != "stages" && a != "free" && a != "others":
 			return ""
 		}
 	}

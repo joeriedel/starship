@@ -442,7 +442,8 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 	} else if r == nil {
 		role, _ := in.ToolInput["subagent_type"].(string)
 		if event == "PreToolUse" && roleCaps != nil && (in.ToolName == "Agent" || in.ToolName == "Task") {
-			if why := roleCaps.agentRefusal(in.AgentType, role, nil); why != "" {
+			found, _, _ := stageRoleAnywhere(bridge, role)
+			if why := roleCaps.agentRefusal(in.AgentType, role, nil, found); why != "" {
 				json.NewEncoder(stdout).Encode(denial(why))
 				return 0
 			}
@@ -478,7 +479,7 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			p = r.Snap.Pipeline
 		}
 		sub, _ := in.ToolInput["subagent_type"].(string)
-		agentsWhy = roleCaps.agentRefusal(in.AgentType, sub, p)
+		agentsWhy = roleCaps.agentRefusal(in.AgentType, sub, p, p != nil && p.hasStageRole(sub))
 	}
 	var out any
 	switch event {

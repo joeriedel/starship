@@ -6,7 +6,7 @@ model: opus
 may:
   tools: [Read, Grep, Glob, Bash, Agent, TaskStop]
   background: true
-  agents: [stages, free]
+  agents: [stages, others]
   remote: true
   connectors: true
 ---

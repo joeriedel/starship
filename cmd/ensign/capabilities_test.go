@@ -246,6 +246,7 @@ func TestRoleAgents(t *testing.T) {
 	w := capWorld(t)
 	write(t, filepath.Join(w.bridge, ".claude", "agents", "supernova-lead.md"), roleFile("supernova-lead", "\n", "may:", "  tools: [Agent]", "  agents: [supernova-scout]"))
 	write(t, filepath.Join(w.bridge, ".claude", "agents", "supernova-bare.md"), roleFile("supernova-bare", "\n", "may:", "  tools: [Task]"))
+	write(t, filepath.Join(w.bridge, ".claude", "agents", "supernova-stages.md"), roleFile("supernova-stages", "\n", "may:", "  tools: [Agent]", "  agents: [stages]"))
 	sub := func(role string) map[string]any {
 		return map[string]any{"subagent_type": role, "prompt": "x", "description": "x"}
 	}
@@ -261,6 +262,13 @@ func TestRoleAgents(t *testing.T) {
 		// Without a run, "stages" and "free" cover nothing.
 		{"orchestrator", "coder", true},
 		{"general-purpose", "supernova-scout", false},
+		// "others" is any subagent_type that is not a stage role, with no run too.
+		{"orchestrator", "Explore", false},
+		{"orchestrator", "general-purpose", false},
+		{"orchestrator", "", false},
+		{"orchestrator", "explorer", false},
+		{"supernova-stages", "Explore", true},
+		{"supernova-stages", "", true},
 	} {
 		denied, why := w.capCall("a1", c.caller, "Agent", sub(c.role))
 		if denied != c.denied {
@@ -275,8 +283,10 @@ func TestRoleAgents(t *testing.T) {
 	if id, why := w.spawn(lead, "orchestrator", "coder"); id == "" {
 		t.Errorf("orchestrator dispatching a stage role: %s", why)
 	}
-	if id, why := w.spawn(lead, "orchestrator", "supernova-scout"); id != "" || !strings.Contains(why, "may.agents") {
-		t.Errorf("orchestrator dispatching an unlisted role: id=%q %s", id, why)
+	for _, role := range []string{"Explore", "general-purpose", ""} {
+		if id, why := w.spawn(lead, "orchestrator", role); id == "" {
+			t.Errorf("orchestrator dispatching %q: %s", role, why)
+		}
 	}
 }
 
@@ -312,9 +322,10 @@ func TestRoleEditFolders(t *testing.T) {
 	write(t, filepath.Join(w.bridge, ".claude", "agents", "supernova-temp.md"), roleFile("supernova-temp", "\n", "may:", "  tools: [Edit]", "  edit: [run]"))
 	w.expectEdit("a1", "supernova-temp", tmpFile, false)
 	w.expectEdit("a1", "supernova-temp", filepath.Join(ws, "main.go"), true)
-	// A reader that bridge.yaml does not declare has no folder.
+	// A reader that bridge.yaml does not declare falls back to its other declared kinds.
 	write(t, bridgeYAML, "control-plane:\n  path: "+repoRoot(t)+"\n")
 	w.expectEdit("rd", "reader", filepath.Join(w.bridge, "reader", "facts.md"), true)
+	w.expectEdit("rd", "reader", tmpFile, false)
 
 	// In a run.
 	lead := w.startLead()

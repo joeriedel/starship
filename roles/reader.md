@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Write, Edit
 model: opus
 may:
   tools: [Read, Grep, Glob, Write, Edit]
-  edit: [reader]
+  edit: [reader, run]
   remote: true
   connectors: true
 ---
