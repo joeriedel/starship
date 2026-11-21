@@ -64,7 +64,6 @@ func TestSnapshotGuard(t *testing.T) {
 		{"session", "", "", "Write", name, goodSnapshot, "only the reader"},
 		{"coder", "c1", "coder", "Write", name, goodSnapshot, "only the reader"},
 		{"edit", "r1", "reader", "Edit", name, goodSnapshot, "never changed"},
-		{"notebook edit", "r1", "reader", "NotebookEdit", name, goodSnapshot, "never changed"},
 		{"already exists", "r1", "reader", "Write", existing, goodSnapshot, "never rewritten"},
 		{"subfolder", "r1", "reader", "Write", filepath.Join(src, "mail", "m1-2026-11-04.md"), goodSnapshot, "directly in reader/sources/"},
 		{"upper case name", "r1", "reader", "Write", filepath.Join(src, "Mail-m1-2026-11-04.md"), goodSnapshot, "file name"},
@@ -84,6 +83,11 @@ func TestSnapshotGuard(t *testing.T) {
 		if denied != (c.want != "") || !strings.Contains(why, c.want) {
 			t.Errorf("%s: denied=%v %q, want %q", c.label, denied, why, c.want)
 		}
+	}
+
+	// The reader's tools omit NotebookEdit, so the tool whitelist refuses it first; drive snapshotGuard's branch directly.
+	if why := snapshotGuard(w.bridge, &HookInput{ToolName: "NotebookEdit", AgentID: "r1", AgentType: "reader"}, name, runtime.GOOS); !strings.Contains(why, "never changed") {
+		t.Errorf("notebook edit: %q, want \"never changed\"", why)
 	}
 
 	// sources itself and the sibling folder that shares its prefix.
