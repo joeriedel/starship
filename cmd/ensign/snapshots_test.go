@@ -19,6 +19,7 @@ func declaredGuardWorld(t *testing.T) (*world, string) {
 	t.Helper()
 	w, tmp := newGuardWorld(t)
 	write(t, filepath.Join(w.bridge, "bridge.yaml"), "control-plane:\n  path: "+repoRoot(t)+"\n"+readerRules)
+	installShippedRoles(t, w.bridge)
 	return w, tmp
 }
 

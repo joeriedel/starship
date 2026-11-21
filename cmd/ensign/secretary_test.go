@@ -205,6 +205,7 @@ func TestSecretaryEditGuard(t *testing.T) {
 
 func TestSecretaryEditGuardReaderUndeclared(t *testing.T) {
 	w, tmp := newGuardWorld(t)
+	installShippedRoles(t, w.bridge)
 	sec := filepath.Join(w.bridge, "notes", "secretary")
 	focal := filepath.Join(w.bridge, "notes", "focal")
 	cases := []struct {

@@ -151,7 +151,8 @@ func (w *world) capCall(agent, agentType, tool string, input map[string]any) (bo
 }
 
 func TestRoleToolWhitelist(t *testing.T) {
-	w := capWorld(t)
+	w, tmp := newGuardWorld(t)
+	installShippedRoles(t, w.bridge)
 	write(t, filepath.Join(w.bridge, ".claude", "agents", "supernova-scout.md"), "---\nname: supernova-scout\ntools: Read, Bash\n---\nbody\n")
 	write(t, filepath.Join(w.bridge, ".claude", "agents", "supernova-shell.md"), roleFile("supernova-shell", "\n", "may:", "  tools: [Read, Bash]", "  remote: true"))
 	run := map[string]any{"command": "go build ./..."}
@@ -182,7 +183,7 @@ func TestRoleToolWhitelist(t *testing.T) {
 		{"supernova-scout", "SubagentHandback", map[string]any{"message": "done"}, false, ""},
 		// An agent with no role file, and the session, are not judged by a definition.
 		{"general-purpose", "Bash", map[string]any{"command": "ls", "run_in_background": true}, false, ""},
-		{"general-purpose", "Edit", map[string]any{"file_path": "/tmp/a"}, false, ""},
+		{"general-purpose", "Edit", map[string]any{"file_path": filepath.Join(tmp, "a")}, false, ""},
 	}
 	for _, c := range cases {
 		denied, why := w.capCall("a1", c.role, c.tool, c.input)
