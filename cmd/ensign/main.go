@@ -365,6 +365,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 0
 		}
 		if in.ToolName == "Read" || in.ToolName == "Grep" {
+			if in.ToolName == "Read" {
+				clearNotesGateOnRead(bridge, &in)
+			}
 			if d := readGuard(bridge, &in, runtime.GOOS); d != nil {
 				json.NewEncoder(stdout).Encode(d)
 			}
@@ -382,6 +385,12 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 			if why := readerMailRefusal(bridge, &in); why != "" {
 				json.NewEncoder(stdout).Encode(denial(why))
 				return 0
+			}
+			if in.AgentID == "" {
+				if err := notesGateRefusal(bridge, in.SessionID); err != nil {
+					json.NewEncoder(stdout).Encode(denial(err.Error()))
+					return 0
+				}
 			}
 		}
 		if in.ToolName != "Agent" && in.ToolName != "Task" && in.ToolName != "SubagentHandback" {
@@ -785,24 +794,12 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 			}
 		}
 	}
-	// A compaction or clear replaces the context, so the task's project notes, which
-	// task open printed into it, are printed again. The pointer that stands in for them is fixed text, so the lines leave room for it.
-	var reprint, pointer string
-	if task := sessionTask(bridge, in.SessionID); in.SessionID != "" && task != "" && (in.Source == "compact" || in.Source == "clear") {
-		project, _, _ := strings.Cut(task, "/")
-		if block, err := projectNotes(bridge, project); err == nil && block != "" {
-			reprint = block
-			pointer = reprintPointer(project, task)
-		}
+	// A compaction or clear replaces the context, so the task's project notes, which task open printed into it, must be read again: the line names them and the gate holds work until they are. The line is fixed text, so the lines leave room for it.
+	var notes string
+	if in.Source == "compact" || in.Source == "clear" {
+		notes = notesReadLine(bridge, in.SessionID, sessionTask(bridge, in.SessionID))
 	}
-	ctx := head + lines.render(bridge, in.SessionID, head, contextChars(pointer))
-	if reprint != "" {
-		if len(ctx)+len(reprint) < sessionContextLimit {
-			ctx += reprint
-		} else {
-			ctx += pointer
-		}
-	}
+	ctx := head + lines.render(bridge, in.SessionID, head, contextChars(notes)) + notes
 	show := "Starship ready · bridge " + filepath.Base(bridge)
 	if restart {
 		show += " · role definitions changed: restart claude for them to apply"
@@ -854,13 +851,8 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	return reply(show+leftBehindShow(carryErr)+holdShow, ctx)
 }
 
-// sessionContextLimit is the length, in characters, of additionalContext past which Claude Code cuts it to a preview.
-//
-// The check against it compares bytes on purpose: bytes are never fewer than characters however they are counted, so the text cannot pass the limit, and non-ASCII notes only fall back to the pointer earlier.
-const sessionContextLimit = 10000
-
-// projectNotesBudget is the size of project.md, in bytes, that is always reprinted after a compaction: what sessionContextLimit leaves once the heading, manual and session lines have taken up to manualLimit; sessionStartRoom covers the notes wrapper.
-const projectNotesBudget = sessionContextLimit - manualLimit
+// projectNotesBudget is the size of project.md, in bytes, past which it is flagged: a project's standing instructions are read whole after a compaction, so they stay short.
+const projectNotesBudget = 8000
 
 // beforeHandback is settings as ensign wrote them before it registered PostToolUse and
 // matched SubagentHandback.
@@ -1144,8 +1136,4 @@ func finishIfTerminal(r *RunFiles, wasTerminal bool, stderr io.Writer) error {
 
 func readyHeading(version, bridge string) string {
 	return fmt.Sprintf("STARSHIP-READY ensign %s bridge %s\n", version, bridge)
-}
-
-func reprintPointer(project, task string) string {
-	return fmt.Sprintf("\nnotes      projects/%s/project.md is too long to reprint here; run `ensign task open %s` to see it again\n", project, task)
 }

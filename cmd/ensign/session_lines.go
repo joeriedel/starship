@@ -11,7 +11,10 @@ import (
 	"unicode/utf16"
 )
 
-// sessionStartRoom is the room kept free under manualLimit for text the session start budget can't foresee.
+// sessionContextLimit is Claude Code's cutoff for the additionalContext of a hook: text past it is dropped.
+const sessionContextLimit = 10000
+
+// sessionStartRoom is the room kept free under sessionContextLimit for text the session start budget can't foresee.
 const sessionStartRoom = 400
 
 // contextChars counts s the way Claude Code's limit on additionalContext is most strictly read. The limit is in characters and the docs don't say whether those are code points or UTF-16 code units; code units are the higher count, and bytes would overstate non-ASCII text.
@@ -89,7 +92,7 @@ const (
 
 // sessionLinesAllowance is the number of characters the lines may take once the fixed text and the extra reserved characters are counted against the session-start budget.
 func sessionLinesAllowance(fixed string, extra int) int {
-	return manualLimit - sessionStartRoom - contextChars(fixed) - extra
+	return sessionContextLimit - sessionStartRoom - contextChars(fixed) - extra
 }
 
 // render is the text of the lines for a reply whose fixed text, with extra characters more reserved, takes the rest of the budget. Lines that don't fit are held for the session and counted in a last line. Holding is best effort: a failure, or a start with no session id, changes the wording of that line.

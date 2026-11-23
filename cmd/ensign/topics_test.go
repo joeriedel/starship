@@ -189,60 +189,6 @@ func (w *world) startWithNotes(source, notes string) string {
 	return ctx
 }
 
-func TestSessionStartReprintsNotesAfterCompactOrClear(t *testing.T) {
-	const notes = "Always answer in haiku.\n"
-	for _, c := range []struct {
-		source string
-		want   bool
-	}{{"compact", true}, {"clear", true}, {"resume", false}, {"startup", false}} {
-		t.Run(c.source, func(t *testing.T) {
-			w := linkedWorld(t)
-			ctx := w.startWithNotes(c.source, notes)
-			if got := strings.Contains(ctx, "Always answer in haiku."); got != c.want {
-				t.Fatalf("notes reprinted = %v, want %v:\n%s", got, c.want, ctx)
-			}
-			if c.want {
-				block, _ := projectNotes(w.bridge, "supernova")
-				if !strings.HasSuffix(ctx, block) || contextChars(ctx) >= sessionContextLimit {
-					t.Errorf("notes should come last, under the limit (%d):\n%s", contextChars(ctx), ctx)
-				}
-				if strings.Index(ctx, "STARSHIP-READY") > strings.Index(ctx, "notes      projects/supernova/project.md") {
-					t.Errorf("notes should follow the manual")
-				}
-			}
-		})
-	}
-}
-
-func TestSessionStartPointsAtNotesTooLongToReprint(t *testing.T) {
-	w := linkedWorld(t)
-	body := strings.Repeat("Prefer small commits and explain each one.\n", 400)
-	ctx := w.startWithNotes("compact", body)
-	if strings.Contains(ctx, "Prefer small commits") {
-		t.Errorf("long notes should not be reprinted")
-	}
-	if !strings.Contains(ctx, "`ensign task open supernova/auth-refactor`") {
-		t.Errorf("want a pointer to task open:\n%s", ctx)
-	}
-	if contextChars(ctx) >= sessionContextLimit {
-		t.Errorf("context is %d characters", contextChars(ctx))
-	}
-}
-
-func TestSessionStartReprintsNothingWithoutTaskOrNotes(t *testing.T) {
-	w := linkedWorld(t)
-	write(t, filepath.Join(w.bridge, "projects/supernova/project.md"), "Always answer in haiku.\n")
-	res, _ := w.hook("SessionStart", map[string]any{"source": "compact"})
-	spec, _ := res["hookSpecificOutput"].(map[string]any)
-	if ctx, _ := spec["additionalContext"].(string); strings.Contains(ctx, "haiku") {
-		t.Errorf("no recorded task, no notes:\n%s", ctx)
-	}
-	w = linkedWorld(t)
-	if ctx := w.startWithNotes("compact", ""); strings.Contains(ctx, "notes      ") {
-		t.Errorf("no project.md, no notes:\n%s", ctx)
-	}
-}
-
 func TestSessionStartPointsAtRequestsTopic(t *testing.T) {
 	w := linkedWorld(t)
 	ctx := w.startWithNotes("startup", "")
@@ -258,44 +204,5 @@ func TestSessionStartPointsAtRequestsTopic(t *testing.T) {
 	}
 	if out.String() != requestCommands(w.bridge) || !strings.Contains(out.String(), "ensign git-catalog squash") {
 		t.Errorf("requests topic should print the entries:\n%s", out.String())
-	}
-}
-
-// Notes that fit under sessionContextLimit are reprinted whole even when that takes the text past manualLimit; one byte more and the pointer replaces them.
-func TestSessionStartReprintsNotesUpToTheLimit(t *testing.T) {
-	for _, source := range []string{"compact", "clear"} {
-		t.Run(source, func(t *testing.T) {
-			w := linkedWorld(t)
-			notesOf := func(n int) string { return strings.Repeat("a", n-1) + "\n" }
-			const small = projectNotesBudget + 1
-			rest := len(w.startWithNotes(source, notesOf(small))) - small
-			fit := w.startWithNotes(source, notesOf(sessionContextLimit-1-rest))
-			block, _ := projectNotes(w.bridge, "supernova")
-			if len(fit) != sessionContextLimit-1 || len(fit) <= manualLimit || !strings.HasSuffix(fit, block) || strings.Contains(fit, "too long to reprint") {
-				t.Fatalf("notes one byte under the limit should be reprinted whole: %d bytes, limit %d, manual %d", len(fit), sessionContextLimit, manualLimit)
-			}
-			over := w.startWithNotes(source, notesOf(sessionContextLimit-rest))
-			if !strings.Contains(over, "too long to reprint") || strings.Contains(over, "aaaa") || contextChars(over) > manualLimit-sessionStartRoom {
-				t.Errorf("notes at the limit should give the pointer and fit the budget: %d characters", contextChars(over))
-			}
-		})
-	}
-}
-
-// The reprint check compares bytes, so non-ASCII notes that are under the limit in characters still get the pointer.
-func TestSessionStartCountsBytesForNotes(t *testing.T) {
-	w := linkedWorld(t)
-	const small = projectNotesBudget + 1
-	// The warning names the size, which has one more digit for the é notes.
-	rest := len(w.startWithNotes("compact", strings.Repeat("a", small-1)+"\n")) - small + 1
-	ctx := w.startWithNotes("compact", strings.Repeat("é", sessionContextLimit-rest-2)+"\n")
-	pointer := "\nnotes      projects/supernova/project.md is too long to reprint"
-	i := strings.Index(ctx, pointer)
-	if i < 0 {
-		t.Fatalf("want the pointer, not the notes")
-	}
-	block, _ := projectNotes(w.bridge, "supernova")
-	if bytes, chars := i+len(block), contextChars(ctx[:i])+contextChars(block); bytes < sessionContextLimit || chars >= sessionContextLimit {
-		t.Errorf("fixture should pass the limit in bytes (%d) and not in characters (%d)", bytes, chars)
 	}
 }

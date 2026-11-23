@@ -1897,8 +1897,9 @@ func startRuns(bridge, session string, st *seqStep) (texts []string, busy, failu
 		var b *folderBusyError
 		var dirty *dirtyFolderError
 		var lockBusy *lockBusyError
+		var gated *notesGateError
 		switch {
-		case errors.As(err, &b) || errors.As(err, &dirty) || errors.As(err, &lockBusy):
+		case errors.As(err, &b) || errors.As(err, &dirty) || errors.As(err, &lockBusy) || errors.As(err, &gated):
 			ru.Reason = "waiting: " + err.Error()
 			if busy == nil {
 				busy = err
@@ -1922,6 +1923,9 @@ func startRuns(bridge, session string, st *seqStep) (texts []string, busy, failu
 
 // startRun approves a queued run and binds it to the session. It returns what the session does next, the same text go gives a plain run.
 func startRun(bridge, session, task, run string) (string, error) {
+	if err := notesGateRefusal(bridge, session); err != nil {
+		return "", err
+	}
 	if data, err := os.ReadFile(sessionFile(bridge, session) + ".pin"); err == nil {
 		if started := strings.TrimSpace(string(data)); started != pinnedCommit(bridge) {
 			return "", fmt.Errorf("the bridge was updated to a new starship release after this session started; restart claude before starting a run")
@@ -2160,6 +2164,10 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 		if seq == nil {
 			return nil
 		}
+		if gerr := notesGateRefusal(bridge, session); gerr != nil {
+			text, ok = "go was not taken, nothing was approved: "+gerr.Error(), true
+			return nil
+		}
 		seq.Returned = ""
 		seq.QueueStart = !slices.ContainsFunc(sf.Sequences, func(o *sequence) bool { return o != seq && o.Approved && !o.Closed })
 		ok, seq.Approved = true, true
@@ -2197,7 +2205,7 @@ func approveSequence(bridge, session string) (text string, ok bool, err error) {
 }
 
 // waitingText says what a run or publish step waits for when its run, or the step, is waiting for a busy code folder or a landing, else "".
-func waitingText(st *seqStep) string {
+func waitingText(st *seqStep, gate error) string {
 	var lines []string
 	if strings.HasPrefix(st.Reason, "waiting:") {
 		lines = append(lines, fmt.Sprintf("Step %s is %s", st.ref(), st.Reason))
@@ -2209,6 +2217,10 @@ func waitingText(st *seqStep) string {
 	}
 	if len(lines) == 0 {
 		return ""
+	}
+	var gated *notesGateError
+	if st.Kind == "run" && errors.As(gate, &gated) {
+		return strings.Join(lines, "\n") + "\nIt starts once this session has read " + gated.file + " with the Read tool; ending the turn without reading it leaves the step pending."
 	}
 	return strings.Join(lines, "\n") + "\nIt starts by itself once the folder is free (for a dirty folder: once the named paths are committed, stashed or discarded); this turn is held only a few times for it."
 }
@@ -2261,7 +2273,7 @@ func sequenceStop(bridge string, in *HookInput) any {
 					blocks = &st.WaitBlocks
 				}
 				if waitable {
-					todo = strings.TrimSpace(todo + "\n\n" + waitingText(st))
+					todo = strings.TrimSpace(todo + "\n\n" + waitingText(st, notesGateRefusal(bridge, in.SessionID)))
 				}
 				if todo == "" || *blocks >= seqStopBudget {
 					continue
@@ -3229,6 +3241,9 @@ func checkAddable(bridge, session, name string) error {
 	if err := movedRefusal(bridge, session); err != nil {
 		return err
 	}
+	if err := notesGateRefusal(bridge, session); err != nil {
+		return err
+	}
 	if err := writesPendingRefusal(bridge, session); err != nil {
 		return err
 	}
@@ -3258,6 +3273,9 @@ func checkAddable(bridge, session, name string) error {
 func seqAdd(bridge, session string, out io.Writer, name string, st *seqStep) error {
 	return withSeq(bridge, session, func(sf *seqFile) error {
 		if err := movedRefusal(bridge, session); err != nil {
+			return err
+		}
+		if err := notesGateRefusal(bridge, session); err != nil {
 			return err
 		}
 		if name != "" && sf.openSeq() != nil {

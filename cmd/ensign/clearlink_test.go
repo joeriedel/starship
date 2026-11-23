@@ -50,8 +50,8 @@ func TestClearCarriesTaskWithoutLiveRun(t *testing.T) {
 		if got := sessionTask(w.bridge, "s2"); got != clearTask {
 			t.Errorf("transcript %v: task = %q", withTranscript, got)
 		}
-		if !strings.Contains(ctx, "Always answer in haiku.") {
-			t.Errorf("transcript %v: notes not reprinted", withTranscript)
+		if !strings.Contains(ctx, "notes      read ") {
+			t.Errorf("transcript %v: notes not named", withTranscript)
 		}
 	}
 }
@@ -86,8 +86,8 @@ func TestClearUnderSameIDKeepsTask(t *testing.T) {
 	if got := sessionTask(w.bridge, "s1"); got != clearTask {
 		t.Errorf("task = %q", got)
 	}
-	if !strings.Contains(ctx, "Always answer in haiku.") {
-		t.Errorf("notes not reprinted")
+	if !strings.Contains(ctx, "notes      read ") {
+		t.Errorf("notes not named")
 	}
 }
 

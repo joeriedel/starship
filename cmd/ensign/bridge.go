@@ -1333,7 +1333,7 @@ func projectNotesWarning(bridge, project string) string {
 	if err != nil || !fi.Mode().IsRegular() || fi.Size() <= projectNotesBudget {
 		return ""
 	}
-	return fmt.Sprintf("projects/%s/project.md is %d bytes, over its budget of %d: over the budget it cannot be reprinted after a compaction; the project's design belongs in projects/%s/design/", project, fi.Size(), projectNotesBudget, project)
+	return fmt.Sprintf("projects/%s/project.md is %d bytes, over its limit of %d: project.md holds the session's standing instructions, so keep it short; the project's design belongs in projects/%s/design/", project, fi.Size(), projectNotesBudget, project)
 }
 
 // projectNotes is the block task open prints for a project's project.md, empty when the

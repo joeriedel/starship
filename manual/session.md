@@ -46,7 +46,7 @@ In a task, product code reaches a workspace only through a run, **never through 
 
 File what the user says that governs future work **that turn**:
 
-- `projects/<project>/project.md`: session instructions and context, printed by `task open` and after a compaction or clear; run agents never see it (copy what they need into Scope). Only instructions to the session (approvals, how the user wants work done).
+- `projects/<project>/project.md`: session instructions and context, printed by `task open`; after a compaction or clear read it first, or runs, `go` and Agent dispatches are refused; under 8000 bytes; run agents never see it (copy what they need into Scope). Only instructions to the session.
 - `projects/<project>/design/`: the project's design, Markdown files each starting with a one-line summary. `task open` and every run's work item list them (paths and summaries, never contents). Move a project-wide decision made in a task into the matching design file. A task's or subtask's `design: [<file>.md]` frontmatter names its files, marked for review.
 - `project.yaml`: platforms, bindings, rules, pipelines, extensions only; comments reach nobody.
 - The task journal: one task's state and history.

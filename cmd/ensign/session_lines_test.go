@@ -97,7 +97,7 @@ func sessionContext(w *world, source string) string {
 }
 
 func TestSessionStartBoundHoldsForAnyNumberAndLengthOfLines(t *testing.T) {
-	limit := manualLimit - sessionStartRoom
+	limit := sessionContextLimit - sessionStartRoom
 	for _, c := range []struct {
 		name     string
 		n        int
@@ -107,7 +107,7 @@ func TestSessionStartBoundHoldsForAnyNumberAndLengthOfLines(t *testing.T) {
 		{"many short", 60, "k", ""},
 		{"many multibyte", 40, "é😀" + strings.Repeat("😀", 150), ""},
 		// A YAML key over 1024 characters does not parse, so the long line is a declared name, which is a value.
-		{"one longer than the allowance", 1, "k", strings.Repeat("k", 2*manualLimit)},
+		{"one longer than the allowance", 1, "k", strings.Repeat("k", 2*sessionContextLimit)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			w := linkedWorld(t)
@@ -242,7 +242,7 @@ func TestSessionStartSaysWhenLinesCouldNotBeHeld(t *testing.T) {
 	if !strings.Contains(ctx, "more session-start lines did not fit and could not be held.") || strings.Contains(ctx, "held; read them") {
 		t.Errorf("want the could-not-be-held line:\n%s", ctx)
 	}
-	if contextChars(ctx) > manualLimit-sessionStartRoom {
+	if contextChars(ctx) > sessionContextLimit-sessionStartRoom {
 		t.Errorf("the variant must fit too: %d", contextChars(ctx))
 	}
 }
@@ -289,14 +289,13 @@ func TestCouldNotRecordWithOverflowIsNotHeld(t *testing.T) {
 // sessionLinesFloor is the least allowance the situational lines may be left with: room for the collapse line (about 75 characters) plus one of the largest realistic lines (a broken-extension row runs 200-400 characters).
 const sessionLinesFloor = 500
 
-// worstCaseAllowance is the allowance for the given manual with the longest realistic bridge path, version, project and task.
+// worstCaseAllowance is the allowance for the given manual with the longest realistic bridge path, version and project.
 func worstCaseAllowance(manual string) int {
 	bridge := "/supernova" + strings.Repeat("b", 190)
 	version := "supernova" + strings.Repeat("v", 11)
 	project := "supernova" + strings.Repeat("p", 21)
-	task := project + "/supernova" + strings.Repeat("t", 20)
 	head := readyHeading(version, bridge) + "\n" + manual
-	return sessionLinesAllowance(head, contextChars(reprintPointer(project, task)))
+	return sessionLinesAllowance(head, contextChars(notesReadText(filepath.Join(bridge, "projects", project, "project.md"), filepath.Join(bridge, "projects", project, "design"))))
 }
 
 func TestManualLeavesRoomForSessionLines(t *testing.T) {
@@ -310,8 +309,8 @@ func TestManualLeavesRoomForSessionLines(t *testing.T) {
 }
 
 func TestSessionLinesFloorHasTeeth(t *testing.T) {
-	if got := worstCaseAllowance(strings.Repeat("x", manualLimit)); got >= sessionLinesFloor {
-		t.Errorf("a manual of %d bytes leaves %d, which is not under the floor of %d", manualLimit, got, sessionLinesFloor)
+	if got := worstCaseAllowance(strings.Repeat("x", sessionContextLimit)); got >= sessionLinesFloor {
+		t.Errorf("a manual of %d bytes leaves %d, which is not under the floor of %d", sessionContextLimit, got, sessionLinesFloor)
 	}
 }
 

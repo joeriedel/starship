@@ -323,7 +323,7 @@ const staleGCAge = 5 * time.Minute
 // pidRecordAge is how old a <pid>.pid record must be before a sweep removes it. Age, not liveness, because a session idle past it loses only the link to its earlier id, which is how /clear behaved before the record existed.
 const pidRecordAge = 30 * 24 * time.Hour
 
-// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .sequence.corrupt, .writes, .bgtasks, the input and text files saved for its writes (<id>.writes.<token>.json and <id>.writes.<token>.<n>.txt), the review document of its writes (.starship/review/<id>-writes.md), .direct, .moved, .topic-*, .lock, .sequence.lock, .writes.lock, .sequence.tmp, .writes.tmp and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
+// sessionFileAge is how long a session must be untouched before a sweep removes its <id>.task, .pin, .env, .sequence, .sequence.corrupt, .writes, .bgtasks, the input and text files saved for its writes (<id>.writes.<token>.json and <id>.writes.<token>.<n>.txt), the review document of its writes (.starship/review/<id>-writes.md), .direct, .moved, .notes-gate, .topic-*, .lock, .sequence.lock, .writes.lock, .sequence.tmp, .writes.tmp and .tmp files. Age, not liveness, because those files are never rewritten when a session ends; a session idle past it loses its task, topic memory, .pin (so the "bridge updated" check is skipped in createRun and startRun) and .env until its next run rebinds it.
 const sessionFileAge = 30 * 24 * time.Hour
 
 // deadLink reports whether a session link names at least one run, none of the names is a path, and every named run's folder is gone. A link that is empty, unreadable or names a path is not dead. Links hold one run id per line.
@@ -362,7 +362,7 @@ func sessionOfFile(name string) (string, bool) {
 	if strings.HasSuffix(name, ".gc") {
 		return "", false
 	}
-	for _, suf := range []string{".task", ".pin", ".env", ".lines", ".sequence", ".sequence.corrupt", ".writes", ".bgtasks", ".direct", ".moved", ".incoming"} {
+	for _, suf := range []string{".task", ".pin", ".env", ".lines", ".sequence", ".sequence.corrupt", ".writes", ".bgtasks", ".direct", ".moved", ".notes-gate", ".incoming"} {
 		if strings.HasSuffix(name, suf) {
 			return strings.TrimSuffix(name, suf), true
 		}
@@ -945,7 +945,7 @@ func settleSession(dir, id string, files, renamed []string, s *sessionSweep) {
 // sessionIDPaths is the bare id and the fixed suffixes of a session's files.
 func sessionIDPaths(dir, id string) []string {
 	var paths []string
-	for _, suf := range []string{"", ".task", ".pin", ".env", ".sequence", ".sequence.corrupt", ".writes", ".bgtasks", ".direct", ".moved", ".incoming"} {
+	for _, suf := range []string{"", ".task", ".pin", ".env", ".sequence", ".sequence.corrupt", ".writes", ".bgtasks", ".direct", ".moved", ".notes-gate", ".incoming"} {
 		paths = append(paths, filepath.Join(dir, id+suf))
 	}
 	return paths

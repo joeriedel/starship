@@ -360,7 +360,7 @@ func TestSequenceStepWaitsWhileTheWorkFolderIsDirty(t *testing.T) {
 	if st.Status == "active" || len(st.Runs) != 1 || !strings.HasPrefix(st.Runs[0].Reason, "waiting:") || !strings.Contains(st.Runs[0].Reason, "b.go") {
 		t.Fatalf("the step should wait on the dirty folder: %+v (go said %q)", st.Runs, ctx)
 	}
-	if got := waitingText(st); !strings.Contains(got, "b.go") {
+	if got := waitingText(st, nil); !strings.Contains(got, "b.go") {
 		t.Errorf("the waiting text should show it: %q", got)
 	}
 	os.Remove(filepath.Join(ws, "b.go"))

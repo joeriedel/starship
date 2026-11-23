@@ -1889,6 +1889,9 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 		if err := movedRefusal(bridge, session); err != nil {
 			return nil, err
 		}
+		if err := notesGateRefusal(bridge, session); err != nil {
+			return nil, err
+		}
 	}
 	if session != "" {
 		if data, err := os.ReadFile(sessionFile(bridge, session) + ".pin"); err == nil {
