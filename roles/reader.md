@@ -6,7 +6,6 @@ model: opus
 may:
   tools: [Read, Grep, Glob, Write, Edit]
   edit: [reader, run]
-  remote: true
   connectors: true
 ---
 

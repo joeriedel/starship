@@ -5,8 +5,6 @@ tools: Read, Grep, Glob
 model: sonnet
 may:
   tools: [Read, Grep, Glob]
-  remote: true
-  connectors: true
 ---
 
 You maintain one curated document. Your prompt gives you the document as it is now, what

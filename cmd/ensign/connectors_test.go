@@ -348,7 +348,7 @@ func TestConnectorSessionStartNotReady(t *testing.T) {
 }
 
 func scoutRole(name, front, nl string) string {
-	return strings.ReplaceAll("---\nname: "+name+"\ndescription: Reads.\n"+front+"---\n\nBody.\n", "\n", nl)
+	return strings.ReplaceAll("---\nname: "+name+"\ndescription: Reads.\n"+front+"may:\n  connectors: true\n---\n\nBody.\n", "\n", nl)
 }
 
 func TestConnectorsRefuseMcpServersAtLink(t *testing.T) {
@@ -722,7 +722,7 @@ func TestDeclaredToolsNeedPlainToolsLine(t *testing.T) {
 	}
 
 	// Roles with nothing declared, or without a frontmatter tools: line, are left alone and raise no error.
-	body := "---\nname: scout\ndescription: Reads.\n---\n\ntools: [Read]\n"
+	body := "---\nname: scout\ndescription: Reads.\nmay:\n  connectors: true\n---\n\ntools: [Read]\n"
 	w := connWorld(t, rules+"  other: []\n")
 	write(t, filepath.Join(w.bridge, "roles", "scout.md"), body)
 	write(t, filepath.Join(w.bridge, "roles", "other.md"), scoutRole("other", "tools: [Read]\n", "\n"))
@@ -1013,5 +1013,42 @@ func TestBridgeUsesReportsAnUnloadableBridgeYaml(t *testing.T) {
 	}
 	if _, err := newTaskContent(b, "none", "", "a"); err == nil {
 		t.Fatal("task new must report the unloadable bridge.yaml")
+	}
+}
+
+func TestConnectorsNeedRoleToDeclareThem(t *testing.T) {
+	for _, role := range []string{"reviewer", "orchestrator", "explorer"} {
+		w := connWorld(t, "connectors:\n  "+role+":\n    - "+supernovaRead+"\n")
+		bf, err := loadBridgeFile(w.bridge)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = generatedFiles(w.bridge, bf, repoRoot(t))
+		if err == nil || !strings.Contains(err.Error(), "role \""+role+"\"") || !strings.Contains(err.Error(), "`connectors: true` under `may:`") {
+			t.Errorf("%s: link must refuse, naming the role and the capability: %v", role, err)
+		}
+	}
+	if _, ok := connWorld(t, readerRules).generated()[".claude/agents/reader.md"]; !ok {
+		t.Error("reader declares connectors and must link")
+	}
+	if _, ok := connWorld(t, "connectors:\n  reviewer: []\n").generated()[".claude/agents/reviewer.md"]; !ok {
+		t.Error("an empty list grants nothing and must link")
+	}
+	if _, ok := connWorld(t, "connectors:\n  nobody:\n    - "+supernovaRead+"\n").generated()[".claude/agents/reader.md"]; ok {
+		t.Error("a key naming no role keeps today's behaviour")
+	}
+
+	w := connWorld(t, "connectors:\n  scout:\n    - "+supernovaRead+"\n")
+	write(t, filepath.Join(w.bridge, "roles", "scout.md"), "---\nname: scout\ndescription: Reads.\ntools: Read\n---\n\nBody.\n")
+	bf, err := loadBridgeFile(w.bridge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generatedFiles(w.bridge, bf, repoRoot(t)); err == nil || !strings.Contains(err.Error(), "role \"scout\"") {
+		t.Errorf("a custom role without the capability must be refused: %v", err)
+	}
+	write(t, filepath.Join(w.bridge, "roles", "scout.md"), scoutRole("scout", "tools: Read\n", "\n"))
+	if got := string(w.generated()[".claude/agents/scout.md"]); !strings.Contains(got, supernovaRead) {
+		t.Errorf("a custom role that declares connectors links with the tools: %q", got)
 	}
 }

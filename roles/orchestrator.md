@@ -8,7 +8,6 @@ may:
   background: true
   agents: [stages, others]
   remote: true
-  connectors: true
 ---
 
 You lead one pipeline run. Your prompt lists the stages you lead, the workspace with its

@@ -93,6 +93,24 @@ func TestLinkRefusesAnInvalidMayBlock(t *testing.T) {
 	}
 }
 
+// shippedCaps is what each shipped role may do beyond its tools: a change to a shipped role's capabilities must change this table.
+var shippedCaps = map[string]struct {
+	background, remote, connectors bool
+	edit, agents                   []string
+}{
+	"coder":           {background: true, edit: []string{"code", "run"}},
+	"curator":         {},
+	"documentation":   {edit: []string{"docs", "run"}},
+	"explorer":        {},
+	"orchestrator":    {background: true, remote: true, agents: []string{"stages", "others"}},
+	"reader":          {connectors: true, edit: []string{"reader", "run"}},
+	"reviewer":        {},
+	"secretary":       {edit: []string{"secretary"}},
+	"style-generator": {},
+	"style-reviewer":  {background: true, edit: []string{"code", "run"}},
+	"tester":          {background: true, remote: true},
+}
+
 func TestShippedRolesDeclareTheirTools(t *testing.T) {
 	files, _ := filepath.Glob(filepath.Join(repoRoot(t), "roles", "*.md"))
 	if len(files) == 0 {
@@ -116,14 +134,14 @@ func TestShippedRolesDeclareTheirTools(t *testing.T) {
 		if !slices.Equal(caps.Tools, tools) {
 			t.Errorf("%s: may.tools %v, tools: line %v", role, caps.Tools, tools)
 		}
-		if caps.Background != slices.Contains(tools, "Bash") {
-			t.Errorf("%s: background = %v with tools %v", role, caps.Background, tools)
+		want, ok := shippedCaps[role]
+		if !ok {
+			t.Errorf("%s: no expected capabilities in shippedCaps", role)
+			continue
 		}
-		if caps.Remote == (role == "explorer" || role == "reviewer") {
-			t.Errorf("%s: remote = %v", role, caps.Remote)
-		}
-		if got, want := slices.Contains(caps.Agents, "stages"), role == "orchestrator"; got != want {
-			t.Errorf("%s: agents = %v", role, caps.Agents)
+		if caps.Background != want.background || caps.Remote != want.remote || caps.Connectors != want.connectors ||
+			!slices.Equal(caps.Edit, want.edit) || !slices.Equal(caps.Agents, want.agents) {
+			t.Errorf("%s: background=%v remote=%v connectors=%v edit=%v agents=%v, want %+v", role, caps.Background, caps.Remote, caps.Connectors, caps.Edit, caps.Agents, want)
 		}
 	}
 }
@@ -171,7 +189,8 @@ func TestRoleToolWhitelist(t *testing.T) {
 		{"coder", "Agent", map[string]any{"subagent_type": "explorer"}, true, "may.tools"},
 		{"coder", "Bash", run, false, ""},
 		{"coder", "TaskStop", map[string]any{"task_id": "t1"}, false, ""},
-		{"reviewer", "mcp__supernova_mail__read_message", map[string]any{}, false, ""},
+		{"reader", "mcp__supernova_mail__read_message", map[string]any{}, false, ""},
+		{"reviewer", "mcp__supernova_mail__read_message", map[string]any{}, true, "may.connectors"},
 		{"coder", "mcp__supernova_mail__read_message", map[string]any{}, true, "may.connectors"},
 		// A harness-injected tool passes whatever the definition lists.
 		{"curator", "SubagentHandback", map[string]any{"message": "done"}, false, ""},
@@ -227,6 +246,8 @@ func TestRoleBackground(t *testing.T) {
 	}{
 		{"coder", bg, false},
 		{"tester", bg, false},
+		{"explorer", bg, true},
+		{"reviewer", bg, true},
 		{"supernova-shell", map[string]any{"command": "ls"}, false},
 		{"supernova-shell", map[string]any{"command": "ls", "run_in_background": false}, false},
 		{"supernova-shell", bg, true},

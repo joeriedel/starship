@@ -573,8 +573,12 @@ func generatedFiles(bridge string, bf *BridgeFile, cp string) (map[string][]byte
 	for _, name := range sortedKeys(roles) {
 		// A role file whose frontmatter can't be read at all is left to the hook, as it is for the checks above.
 		var fe *frontmatterError
-		if _, err := parseCapabilities(sources[name], roles[name]); err != nil && !errors.As(err, &fe) {
+		caps, err := parseCapabilities(sources[name], roles[name])
+		if err != nil && !errors.As(err, &fe) {
 			return nil, err
+		}
+		if err == nil && len(rules[effective[name]]) > 0 && !caps.Connectors {
+			return nil, fmt.Errorf("bridge.yaml: connectors: role %q (%s) does not declare `connectors: true` under `may:`; a role's definition governs what it may do and bridge.yaml can't widen it, so add it to the role's `may:` or remove the entry", effective[name], sources[name])
 		}
 	}
 	for name, data := range roles {

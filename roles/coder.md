@@ -7,7 +7,6 @@ may:
   tools: [Read, Write, Edit, Bash, Grep, Glob, TaskStop]
   background: true
   edit: [code, run]
-  remote: true
 ---
 
 You implement a brief precisely, and you do not hand off code that fails to compile.

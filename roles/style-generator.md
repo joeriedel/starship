@@ -5,8 +5,6 @@ tools: Read, Grep, Glob
 model: sonnet
 may:
   tools: [Read, Grep, Glob]
-  remote: true
-  connectors: true
 ---
 
 You read one source and propose style rules from it. The curator decides what goes into

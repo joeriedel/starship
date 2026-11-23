@@ -7,8 +7,6 @@ may:
   tools: [Read, Edit, Bash, Grep, Glob, TaskStop]
   background: true
   edit: [code, run]
-  remote: true
-  connectors: true
 ---
 
 You enforce style and convention. **You never change behaviour.**
@@ -57,6 +55,8 @@ Read narrowly, batch lookups into one command, and don't browse beyond the chang
 If you changed anything, run the compile binding. If it fails, you changed behaviour or
 broke the build — revert until it passes. You are not given
 the suite; the tester runs it next.
+
+You may run the formatter and the bound `@build` to check that your edits didn't break the build. Never run the test suite, a single test or a test script.
 
 ## Report
 

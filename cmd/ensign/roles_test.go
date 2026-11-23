@@ -163,7 +163,7 @@ func TestReadOnlyRolesNeverChangeARemote(t *testing.T) {
 
 func TestBashRolesWaitByEndingTheTurn(t *testing.T) {
 	root := repoRoot(t)
-	for _, role := range []string{"coder", "documentation", "explorer", "reviewer", "style-reviewer", "tester", "orchestrator"} {
+	for _, role := range []string{"coder", "style-reviewer", "tester", "orchestrator"} {
 		data, err := os.ReadFile(filepath.Join(root, "roles", role+".md"))
 		if err != nil {
 			t.Fatal(err)
@@ -172,6 +172,15 @@ func TestBashRolesWaitByEndingTheTurn(t *testing.T) {
 			if !regexp.MustCompile(re).Match(data) {
 				t.Errorf("roles/%s.md does not match %q", role, re)
 			}
+		}
+	}
+	for _, role := range []string{"documentation", "explorer", "reviewer"} {
+		data, err := os.ReadFile(filepath.Join(root, "roles", role+".md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !regexp.MustCompile(`pgrep -f`).Match(data) || !regexp.MustCompile(`foreground`).Match(data) || regexp.MustCompile(`TaskStop|run_in_background`).Match(data) {
+			t.Errorf("roles/%s.md must say commands run in the foreground and name no background shell or TaskStop", role)
 		}
 	}
 	data, err := os.ReadFile(filepath.Join(root, "roles", "tester.md"))

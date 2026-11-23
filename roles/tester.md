@@ -7,7 +7,6 @@ may:
   tools: [Read, Grep, Glob, Bash, TaskStop]
   background: true
   remote: true
-  connectors: true
 ---
 
 You build the code, run the suite, and report what happened. Nothing else.
@@ -20,6 +19,7 @@ You build the code, run the suite, and report what happened. Nothing else.
 - **Never edit anything.** You have no `Write` or `Edit`.
 - **Run exactly the bindings you were given.** Don't substitute an equivalent, narrow the
   suite, or skip a failing test.
+  A bound command may change a remote as the binding says; never change one on your own.
 - **Report actual results, with exit codes.** The Bash tool reports when a command exits
   non-zero, so run each binding as given — don't append `echo $?` or other shell
   variables, which permission checks may refuse. Quote failures verbatim. Never say
