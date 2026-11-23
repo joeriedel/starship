@@ -368,6 +368,10 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 				json.NewEncoder(stdout).Encode(denial(why))
 				return 0
 			}
+			if why := readerFactsRefusal(bridge, &in); why != "" {
+				json.NewEncoder(stdout).Encode(denial(why))
+				return 0
+			}
 		}
 		if in.ToolName != "Agent" && in.ToolName != "Task" && in.ToolName != "SubagentHandback" {
 			if why := controlPlaneEdit(bridge, &in, runtime.GOOS); why != "" {
@@ -746,6 +750,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		for _, l := range brokenRoleLines(bridge, cp) {
 			lines.add(linePriorityBrokenExtension, l)
 		}
+	}
+	if pending, _ := readerFactsPending(bridge); pending {
+		lines.add(linePriorityReaderFacts, readerFactsLine())
 	}
 	for _, l := range impactWarnings(bridge) {
 		lines.add(linePriorityImpactUse, "starship: "+l)

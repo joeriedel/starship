@@ -151,6 +151,10 @@ func printLinks(bridge, project, taskFile string, front []byte, out io.Writer) {
 	case err != nil:
 		fmt.Fprintf(out, "links      STOP: the reader can't be checked: %v\n", err)
 	case declared:
+		if pending, _ := readerFactsPending(bridge); pending {
+			fmt.Fprintln(out, "reader     the look-up of these links waits for the facts migration: "+readerFactsMigrationHow)
+			return
+		}
 		fmt.Fprintln(out, "reader     before starting work, dispatch the reader agent with these links: for each, read its current state, compare it with its kept entry, update the entry; then tell the user what it reports changed")
 	}
 }

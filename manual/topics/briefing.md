@@ -32,6 +32,8 @@ The files are the user's to correct, and you make the correction directly, with 
 - `notes/secretary/`: `goals.md`, `items.md`, `items-archive.md`, `people.md`, `preferences.md` (the user's priority rules, read-only for the secretary) and `briefings/<YYYY-MM-DD>.md`. The briefing ends with a Suggestions section: proposed goals, proposed preference rules and channels to start watching. A second briefing the same day rewrites that day's file and marks what is new.
 - `reader/cursors/<source>.md`, `reader/mail-read/<source>.md`, `reader/command/`: the readers' state. All of it is Markdown under `reader/` or `notes/`, so `ensign journal commit` commits it. A briefing never touches mail and never offers to move it; when the user asks for cleanup, see `ensign help mail-cleanup`. Lines the migration of an old shared `reader/cursors.md` or `reader/mail-read.md` could not read are kept in `reader/cursors/unparsed.md`; every brief reports them as a Problem until you move each into its source's file or delete it and remove the file.
 
+While `reader/facts.md` is present (the facts are still in the old layout), `ensign brief` and every reader dispatch are refused until the session dispatches the reader for a facts migration; see `ensign help edits`, What the reader keeps.
+
 ## Declaring
 
 You edit `bridge.yaml` when the user asks, and tell them what you changed; the reader must be declared under `connectors:`:

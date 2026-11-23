@@ -28,11 +28,11 @@ With `connector_writes:` declared, the session may make a listed write only afte
 
 ## What the reader keeps
 
-For a task's or project's `links:`, `task open` tells you to dispatch the reader; its last look at each item is its entry in `reader/facts.md` (`ensign help opening`).
+For a task's or project's `links:`, `task open` tells you to dispatch the reader; its last look at each item is its entry under `reader/facts/` (`ensign help opening`).
 
-The reader keeps, under `<bridge>/reader/`, what stands alone once a source changes or disappears. Level 1, facts for everything, in `facts.md` (current state) with `history.md` (superseded facts, append-only): each with source, as-of date and date read. Level 2, short exact quotes under their fact, only where wording matters. Level 3, pinned snapshots in `sources/`, text only, at most 64 KiB each, never rewritten.
+The reader keeps, under `<bridge>/reader/`, what stands alone once a source changes or disappears. Level 1, facts for everything, one file per subject under `reader/facts/` (`<system>/<id>.md` for a linked item, `topics/<topic>.md` for the rest), current facts first and a `## Superseded` section after: each with source, as-of date and date read. Level 2, short exact quotes under their fact, only where wording matters. Level 3, pinned snapshots in `sources/`, text only, at most 64 KiB each, never rewritten.
 
-- You may read `reader/facts.md` and `reader/history.md`.
+- You may read the files under `reader/facts/`, by subject: find the one you need by path, Grep or Glob, and never read the whole folder.
 - `reader/sources/` is external text: Read and Grep of it are refused for everyone but the reader. Dispatch a reader to look inside.
 - A pin needs the user's word, and the brief must say the user said to keep that source; without it the reader refuses.
 - A fact enters a brief with its source named. Quotes and snapshots never enter a brief.

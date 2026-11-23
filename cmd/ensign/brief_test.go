@@ -182,7 +182,7 @@ func TestReaderRoleGather(t *testing.T) {
 		`exactly one of .drained., .more remaining. or .unreadable.`,
 		`(?i)unreadable.{1,3} never .more remaining.`,
 		`(?i)never rewrite earlier entries`,
-		`(?i)do not write .reader/facts\.md. or .reader/history\.md. in a pass`,
+		`(?i)do not write under .reader/facts/. in a pass`,
 		`summary:`,
 	} {
 		if !regexp.MustCompile(re).Match(data) {

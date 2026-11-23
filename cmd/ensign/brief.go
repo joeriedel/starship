@@ -31,6 +31,13 @@ func cmdBrief(args []string, out io.Writer) error {
 	if !declared {
 		return fmt.Errorf("the reader is not declared: a briefing needs a connectors: reader entry in bridge.yaml (see ensign help briefing)")
 	}
+	pending, err := readerFactsPending(bridge)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return fmt.Errorf("the reader's facts are in the old layout: %s (ensign help briefing)", readerFactsMigrationHow)
+	}
 	sources, err := loadDeclaredSources(bridge)
 	if err != nil {
 		return err

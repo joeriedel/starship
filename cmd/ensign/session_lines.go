@@ -31,6 +31,8 @@ const (
 	linePrioritySync
 	linePriorityMigrate
 	linePrioritySplitHistory
+	// The reader refuses its gathers and look-ups until the facts are migrated, so this is an action item.
+	linePriorityReaderFacts
 	linePriorityBrokenExtension
 	linePriorityEnv
 	linePriorityImpactUse

@@ -327,12 +327,12 @@ func TestRoleEditFolders(t *testing.T) {
 		w.expectEdit("ghost", role, filepath.Join(ws, "main.go"), true)
 	}
 	// The reader's and secretary's folders.
-	w.expectEdit("rd", "reader", filepath.Join(w.bridge, "reader", "facts.md"), false)
+	w.expectEdit("rd", "reader", filepath.Join(w.bridge, "reader", "facts", "topics", "launch.md"), false)
 	w.expectEdit("rd", "reader", tmpFile, true)
 	w.expectEdit("rd", "reader", bridgeYAML, true)
 	w.expectEdit("sec", "secretary", filepath.Join(w.bridge, "notes", "secretary", "a.md"), false)
 	w.expectEdit("sec", "secretary", filepath.Join(w.bridge, "notes", "focal", "a.md"), false)
-	w.expectEdit("sec", "secretary", filepath.Join(w.bridge, "reader", "facts.md"), true)
+	w.expectEdit("sec", "secretary", filepath.Join(w.bridge, "reader", "facts", "topics", "launch.md"), true)
 	w.expectEdit("sec", "secretary", tmpFile, true)
 	// Declared kinds that name nothing the role has no folder for are refused, and so is a role that declares none.
 	write(t, filepath.Join(w.bridge, ".claude", "agents", "supernova-scout.md"), "---\nname: supernova-scout\ntools: Edit\n---\n")
@@ -346,7 +346,7 @@ func TestRoleEditFolders(t *testing.T) {
 	w.expectEdit("a1", "supernova-temp", filepath.Join(ws, "main.go"), true)
 	// A reader that bridge.yaml does not declare falls back to its other declared kinds.
 	write(t, bridgeYAML, "control-plane:\n  path: "+repoRoot(t)+"\n")
-	w.expectEdit("rd", "reader", filepath.Join(w.bridge, "reader", "facts.md"), true)
+	w.expectEdit("rd", "reader", filepath.Join(w.bridge, "reader", "facts", "topics", "launch.md"), true)
 	w.expectEdit("rd", "reader", tmpFile, false)
 
 	// In a run.

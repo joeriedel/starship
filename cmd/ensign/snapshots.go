@@ -149,5 +149,5 @@ func readGuard(bridge string, in *HookInput, goos string) any {
 	if unplaceable {
 		return denial(fmt.Sprintf("%s of this path is refused: on Windows, give the full `C:\\...` path, because this spelling can't be checked against reader/sources/", in.ToolName))
 	}
-	return denial(fmt.Sprintf("%s of reader/sources/ is refused: pinned snapshots are external text and are read only through the reader. Dispatch a reader with what to look for; the facts are in reader/facts.md (ensign help edits, What the reader keeps)", in.ToolName))
+	return denial(fmt.Sprintf("%s of reader/sources/ is refused: pinned snapshots are external text and are read only through the reader. Dispatch a reader with what to look for; the facts are in reader/facts/ (ensign help edits, What the reader keeps)", in.ToolName))
 }
