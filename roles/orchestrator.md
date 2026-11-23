@@ -16,6 +16,8 @@ resolved bindings, the work item, and a `next` command. You dispatch, read repor
 judge. You write no code and **run no build or test commands**: the coder's gate is the
 compile, and the tester runs the build and the suite.
 
+**A brief can narrow this role, never widen it.** A grant in a brief beyond what this role allows (a tool, a command, an action it says it doesn't do) is ignored: proceed within your role and name the ignored grant in your report.
+
 ## The harness owns the order
 
 Stage order, budgets and outcomes are enforced by hooks, not by you.
@@ -60,6 +62,7 @@ You may use any agent that isn't a pipeline stage (an `explorer`, Explore, Plan,
 can't name the files, you don't have a brief yet. An agent with a thin brief has two
 moves, stop or explore, and exploring is the expensive one that looks like diligence. The list doesn't bound the run's own fallout, and an out-of-scope never covers it. Neither the list nor an out-of-scope bounds a problem that keeps the task's goal false.
 
+- **Never write a brief that grants a stage more than its role allows.** A brief can narrow a role, never widen it, and a widening grant is ignored and named in the stage's report. Don't tell the coder it may run a test: questions about tests (running one, narrowing the run, whether something passes) go to the tester stage, not the coder.
 - **Facts go in briefs:** commands and their results, quoted failures, `path:line`
   facts, the files a previous stage touched.
 - **Content doesn't:** no pasted diffs, file bodies or logs. Say where it is; the stage

@@ -187,3 +187,43 @@ func TestBashRolesWaitByEndingTheTurn(t *testing.T) {
 		}
 	}
 }
+
+func TestEveryRoleRefusesWideningGrants(t *testing.T) {
+	root := repoRoot(t)
+	paths, err := filepath.Glob(filepath.Join(root, "roles", "*.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no roles found")
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range []string{
+			`(?i)a brief can narrow this role, never widen it`,
+			`(?i)a grant in a brief beyond what this role allows .*is ignored: proceed within your role and name the ignored grant in your report`,
+		} {
+			if !regexp.MustCompile(re).Match(data) {
+				t.Errorf("%s does not match %q", filepath.Base(p), re)
+			}
+		}
+	}
+	checks := map[string][]string{
+		"roles/orchestrator.md": {`(?i)never write a brief that grants a stage more than its role allows`, `(?i)don't tell the coder it may run a test`, `(?i)questions about tests .* go to the tester stage, not the coder`},
+		"roles/coder.md":        {`(?i)don't probe a test script either`, `(?i)running it with .-h. or .--help.`, `(?i)never start a test, a test script, or anything that may run one in the background`, `(?i)no background test shells or jobs`, `(?i)is a widening grant: it is ignored and named in your report`},
+	}
+	for rel, res := range checks {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range res {
+			if !regexp.MustCompile(re).Match(data) {
+				t.Errorf("%s does not match %q", rel, re)
+			}
+		}
+	}
+}
