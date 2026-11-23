@@ -52,8 +52,14 @@ func designSummary(path string) string {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	first := true
 	for sc.Scan() {
-		line := strings.TrimSpace(strings.ReplaceAll(sc.Text(), "\r", ""))
+		text := sc.Text()
+		if first {
+			text = strings.TrimPrefix(text, "\ufeff")
+			first = false
+		}
+		line := strings.TrimSpace(strings.ReplaceAll(text, "\r", ""))
 		if line != "" {
 			return strings.TrimSpace(strings.TrimLeft(line, "#"))
 		}

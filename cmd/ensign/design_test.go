@@ -28,6 +28,7 @@ func TestDesignFilesAndSummaries(t *testing.T) {
 	w.designFile("b.md", "\n\n## Tokens are opaque\nsecond line\n")
 	w.designFile("a.md", "# Auth\r\nmore\r\n")
 	w.designFile("api/tokens.md", "Plain first line  \n")
+	w.designFile("bom.md", "\xEF\xBB\xBF# Bom\r\n")
 	w.designFile("empty.md", "")
 	w.designFile("notes.txt", "ignored\n")
 	files := designFiles(w.bridge, "supernova")
@@ -35,7 +36,7 @@ func TestDesignFilesAndSummaries(t *testing.T) {
 	for _, f := range files {
 		got = append(got, f.Name+"|"+f.Summary)
 	}
-	want := "a.md|Auth,api/tokens.md|Plain first line,b.md|Tokens are opaque,empty.md|"
+	want := "a.md|Auth,api/tokens.md|Plain first line,b.md|Tokens are opaque,bom.md|Bom,empty.md|"
 	if strings.Join(got, ",") != want {
 		t.Errorf("got %q want %q", strings.Join(got, ","), want)
 	}
