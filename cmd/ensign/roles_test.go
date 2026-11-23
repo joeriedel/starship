@@ -94,7 +94,7 @@ func TestReaderRoleRules(t *testing.T) {
 		`(?i)level 3, pinned snapshots`,
 		`(?i)<bridge>/reader/sources/. holds pinned snapshots`,
 		`(?i)as-of date`,
-		`(?i)moves to .history\.md., dated, with its replacement`,
+		`(?i)moves to that file.s .## Superseded. section, dated, with its replacement`,
 		`(?i)keep and report both`,
 		`(?i)no attachments: record that an attachment existed, by name, as a fact`,
 		`(?i)email: facts when you read it, plus quotes and snapshots`,

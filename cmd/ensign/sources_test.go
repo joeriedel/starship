@@ -218,7 +218,7 @@ func TestReaderRoleKeepsGatherRules(t *testing.T) {
 	for _, re := range []string{
 		`(?m)^## Gather$`,
 		`reader/cursors/<source>\.md`,
-		`(?i)do not write .reader/facts\.md. or .reader/history\.md. in a pass`,
+		`(?i)do not write under .reader/facts/. in a pass`,
 		`(?i)first look: go back 14 days`,
 		`(?i)never write a cursor for them`,
 		`(?i)batches of at most 50 things`,

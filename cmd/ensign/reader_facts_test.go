@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Joseph Riedel
+// Licensed under the MIT License. See LICENSE.
+
 package main
 
 import (
@@ -38,6 +41,7 @@ func TestReaderFactsMigrated(t *testing.T) {
 
 func TestReaderFactsSessionLineAndDispatch(t *testing.T) {
 	w, _ := declaredGuardWorld(t)
+	write(t, filepath.Join(w.bridge, ".claude", "settings.json"), hookSettings())
 	reader := func(prompt string) (string, bool) {
 		res, denied := w.toolCall("", "", "Agent", map[string]any{"subagent_type": "reader", "prompt": prompt})
 		return dig(res, "hookSpecificOutput", "permissionDecisionReason"), denied
@@ -61,7 +65,7 @@ func TestReaderFactsSessionLineAndDispatch(t *testing.T) {
 	if why, denied := w.toolCall("", "", "Agent", map[string]any{"subagent_type": "reader", "prompt": "Look at SUPER-42"}); !denied {
 		t.Errorf("session dispatch allowed: %v", why)
 	}
-	if res, denied := w.toolCall("agent-1", "coder", "Agent", map[string]any{"subagent_type": "reader", "prompt": "Look at SUPER-42"}); !denied || !strings.Contains(dig(res, "hookSpecificOutput", "permissionDecisionReason"), "facts migration") {
+	if res, denied := w.toolCall("agent-1", "orchestrator", "Agent", map[string]any{"subagent_type": "reader", "prompt": "Look at SUPER-42"}); !denied || !strings.Contains(dig(res, "hookSpecificOutput", "permissionDecisionReason"), "facts migration") {
 		t.Errorf("subagent dispatch allowed: %v", res)
 	}
 	if _, denied := w.toolCall("", "", "Agent", map[string]any{"subagent_type": "coder", "prompt": "x"}); denied {
