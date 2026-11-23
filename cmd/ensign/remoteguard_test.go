@@ -371,7 +371,7 @@ func TestBashHookRefusesRemoteChangesForRolesWithoutRemote(t *testing.T) {
 	installShippedRoles(t, w.bridge)
 	write(t, filepath.Join(w.bridge, ".claude", "agents", "supernova-scout.md"), "---\nname: supernova-scout\nmay:\n  tools: [Bash]\n  remote: true\n---\n")
 	push := `{"command":"git push origin main"}`
-	for _, role := range []string{"explorer", "reviewer"} {
+	for _, role := range []string{"explorer", "reviewer", "coder", "documentation", "style-reviewer"} {
 		denied, reason := bashHook(t, true, "a1", role, push)
 		if !denied {
 			t.Errorf("%s not denied", role)
@@ -392,7 +392,7 @@ func TestBashHookRefusesRemoteChangesForRolesWithoutRemote(t *testing.T) {
 		}
 	}
 	// A role without a file in the bridge's .claude/agents is a built-in or a user's agent, and the session has no role: neither is judged here.
-	for _, c := range []struct{ id, role string }{{"a1", "coder"}, {"a1", "tester"}, {"a1", "orchestrator"}, {"a1", "supernova-scout"}, {"a1", "general-purpose"}, {"a1", ""}, {"", "explorer"}, {"", "reviewer"}, {"", ""}} {
+	for _, c := range []struct{ id, role string }{{"a1", "tester"}, {"a1", "orchestrator"}, {"a1", "supernova-scout"}, {"a1", "general-purpose"}, {"a1", ""}, {"", "explorer"}, {"", "reviewer"}, {"", ""}} {
 		if denied, _ := bashHook(t, true, c.id, c.role, push); denied {
 			t.Errorf("agent %q role %q denied", c.id, c.role)
 		}
