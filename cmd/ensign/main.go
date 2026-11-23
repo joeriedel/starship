@@ -755,6 +755,13 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 	}
 	lines.add(linePriorityNotesInbox, notesInboxLine(bridge))
 	lines.add(linePriorityNotesIndex, notesIndex(bridge))
+	if projects, err := os.ReadDir(filepath.Join(bridge, "projects")); err == nil {
+		for _, e := range projects {
+			if w := projectNotesWarning(bridge, e.Name()); w != "" {
+				lines.add(linePriorityNotesBudget, "starship: "+w)
+			}
+		}
+	}
 	// A compaction or clear replaces the context, so the task's project notes, which
 	// task open printed into it, are printed again. The pointer that stands in for them is fixed text, so the lines leave room for it.
 	var reprint, pointer string
@@ -828,6 +835,9 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 //
 // The check against it compares bytes on purpose: bytes are never fewer than characters however they are counted, so the text cannot pass the limit, and non-ASCII notes only fall back to the pointer earlier.
 const sessionContextLimit = 10000
+
+// projectNotesBudget is the size of project.md, in bytes, that is always reprinted after a compaction: what sessionContextLimit leaves once the heading, manual and session lines have taken up to manualLimit; sessionStartRoom covers the notes wrapper.
+const projectNotesBudget = sessionContextLimit - manualLimit
 
 // beforeHandback is settings as ensign wrote them before it registered PostToolUse and
 // matched SubagentHandback.

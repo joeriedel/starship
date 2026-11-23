@@ -38,6 +38,7 @@ const (
 	// The inbox is a task for this session; the index only saves a listing.
 	linePriorityNotesInbox
 	linePriorityNotesIndex
+	linePriorityNotesBudget
 )
 
 type sessionLine struct {

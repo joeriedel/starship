@@ -267,7 +267,7 @@ func TestSessionStartReprintsNotesUpToTheLimit(t *testing.T) {
 		t.Run(source, func(t *testing.T) {
 			w := linkedWorld(t)
 			notesOf := func(n int) string { return strings.Repeat("a", n-1) + "\n" }
-			const small = 100
+			const small = projectNotesBudget + 1
 			rest := len(w.startWithNotes(source, notesOf(small))) - small
 			fit := w.startWithNotes(source, notesOf(sessionContextLimit-1-rest))
 			block, _ := projectNotes(w.bridge, "supernova")
@@ -285,8 +285,9 @@ func TestSessionStartReprintsNotesUpToTheLimit(t *testing.T) {
 // The reprint check compares bytes, so non-ASCII notes that are under the limit in characters still get the pointer.
 func TestSessionStartCountsBytesForNotes(t *testing.T) {
 	w := linkedWorld(t)
-	const small = 100
-	rest := len(w.startWithNotes("compact", strings.Repeat("a", small-1)+"\n")) - small
+	const small = projectNotesBudget + 1
+	// The warning names the size, which has one more digit for the é notes.
+	rest := len(w.startWithNotes("compact", strings.Repeat("a", small-1)+"\n")) - small + 1
 	ctx := w.startWithNotes("compact", strings.Repeat("é", sessionContextLimit-rest-2)+"\n")
 	pointer := "\nnotes      projects/supernova/project.md is too long to reprint"
 	i := strings.Index(ctx, pointer)

@@ -1306,6 +1306,9 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 		review = append(slices.Clone(review), pending[0].Design...)
 	}
 	fmt.Fprint(out, designListing(bridge, project, review))
+	if w := projectNotesWarning(bridge, project); w != "" {
+		fmt.Fprintf(out, "\nnotes      %s\n", w)
+	}
 	notes, err := projectNotes(bridge, project)
 	if err != nil {
 		return err
@@ -1322,6 +1325,15 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// projectNotesWarning says that a project's project.md is over projectNotesBudget, empty when it is within it, missing or unreadable.
+func projectNotesWarning(bridge, project string) string {
+	fi, err := os.Stat(filepath.Join(bridge, "projects", project, "project.md"))
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() <= projectNotesBudget {
+		return ""
+	}
+	return fmt.Sprintf("projects/%s/project.md is %d bytes, over its budget of %d: over the budget it cannot be reprinted after a compaction; the project's design belongs in projects/%s/design/", project, fi.Size(), projectNotesBudget, project)
 }
 
 // projectNotes is the block task open prints for a project's project.md, empty when the
