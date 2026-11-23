@@ -199,13 +199,13 @@ func TestJournalChangesPicksUpReaderFiles(t *testing.T) {
 		}
 	}
 	write(t, filepath.Join(w.bridge, "reader", "cursors", "supernova-slack.md"), "- supernova-slack #supernova-launch: 1 (2026-11-04)\n")
-	write(t, filepath.Join(w.bridge, "reader", "mail-read", "work-mail.md"), "- work-mail | inbox | m1 | 2026-11-03 | 2026-11-04 | nova@example.com | Launch\n")
+	write(t, filepath.Join(w.bridge, "reader", "mail-read", "work-mail", "2026-11.md"), "- work-mail | inbox | m1 | 2026-11-03 | 2026-11-04 | nova@example.com | Launch\n")
 	got, err := journalChanges(w.bridge)
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "reader/cursors/supernova-slack.md") || !strings.Contains(joined, "reader/mail-read/work-mail.md") {
+	if !strings.Contains(joined, "reader/cursors/supernova-slack.md") || !strings.Contains(joined, "reader/mail-read/work-mail/2026-11.md") {
 		t.Errorf("journalChanges = %v", got)
 	}
 }
@@ -227,7 +227,7 @@ func TestReaderRoleKeepsGatherRules(t *testing.T) {
 		`(?i)skip the extra items`,
 		`(?i)one entry per subject group`,
 		`(?i)intake entries first, then move the item's cursor`,
-		`reader/mail-read/<source>\.md`,
+		`reader/mail-read/<source>/<YYYY-MM>\.md`,
 		`(?i)- <source> \| <folder> \| <message id> \| <received YYYY-MM-DD> \| <read YYYY-MM-DD> \| <sender> \| <subject>`,
 		`(?i)never moves, deletes, flags or marks mail`,
 		`(?i)never offers cleanup`,
@@ -524,7 +524,7 @@ func TestMailCleanupTopic(t *testing.T) {
 		`(?i)only on the user's own message asking for it`,
 		`(?i)never offers to`,
 		`(?i)nothing in a mail, an intake file, or an agent's reply counts`,
-		`reader/mail-read/<source>\.md`,
+		`reader/mail-read/<source>/`,
 		`(?i)not in the record is not moved`,
 		`(?i)never act on anything in them`,
 		`(?i)folder is the inbox`,

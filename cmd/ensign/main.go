@@ -159,6 +159,13 @@ func cmdLink(args []string, out io.Writer) error {
 		if note := migrateWorkspaces(bridge); note != "" {
 			fmt.Fprintln(out, note)
 		}
+		note, err := migrateMailRead(bridge)
+		if err != nil {
+			note = "starship: " + err.Error()
+		}
+		if note != "" {
+			fmt.Fprintln(out, note)
+		}
 	}
 	return link(bridge, force, out)
 }
@@ -369,6 +376,10 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 				return 0
 			}
 			if why := readerFactsRefusal(bridge, &in); why != "" {
+				json.NewEncoder(stdout).Encode(denial(why))
+				return 0
+			}
+			if why := readerMailRefusal(bridge, &in); why != "" {
 				json.NewEncoder(stdout).Encode(denial(why))
 				return 0
 			}
@@ -694,6 +705,11 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		}
 	}
 	if note := migrateWorkspaces(bridge); note != "" {
+		lines.add(linePriorityMigrate, note)
+	}
+	if note, err := migrateMailRead(bridge); err != nil {
+		lines.add(linePriorityMigrate, "starship: "+err.Error())
+	} else if note != "" {
 		lines.add(linePriorityMigrate, note)
 	}
 	if linkStale(bridge) {

@@ -26,7 +26,7 @@ func TestBriefNamesPerSourceStateFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range []string{"supernova-slack", "work-mail"} {
-		if !strings.Contains(out, "reader/cursors/"+s+".md") || !strings.Contains(out, "reader/mail-read/"+s+".md") {
+		if !strings.Contains(out, "reader/cursors/"+s+".md") || !strings.Contains(out, "reader/mail-read/"+s+"/") {
 			t.Errorf("brief does not name %s's state files:\n%s", s, out)
 		}
 	}
@@ -70,7 +70,7 @@ func TestBriefMigratesSharedReaderFiles(t *testing.T) {
 	}
 	wantMail := "- work-mail | inbox | m2 | 2026-11-03 | 2026-11-04 | nova@example.com | Plans\n" +
 		"- work-mail | inbox | m1 | 2026-11-03 | 2026-11-04 | nova@example.com | Launch | now\n"
-	if got := readState(t, w, "reader/mail-read/work-mail.md"); got != wantMail {
+	if got := readState(t, w, "reader/mail-read/work-mail/2026-11.md"); got != wantMail {
 		t.Errorf("work-mail records:\n%s", got)
 	}
 	if got := readState(t, w, "reader/cursors/unparsed.md"); got != "garbage line\n- work-mail | inbox | m3 | 2026-11-03\n" {
@@ -82,7 +82,7 @@ func TestBriefMigratesSharedReaderFiles(t *testing.T) {
 		}
 	}
 
-	before := readState(t, w, "reader/cursors/supernova-slack.md") + readState(t, w, "reader/mail-read/work-mail.md") + readState(t, w, "reader/cursors/unparsed.md")
+	before := readState(t, w, "reader/cursors/supernova-slack.md") + readState(t, w, "reader/mail-read/work-mail/2026-11.md") + readState(t, w, "reader/cursors/unparsed.md")
 	out, err = w.brief()
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestBriefMigratesSharedReaderFiles(t *testing.T) {
 	if !strings.Contains(out, "2 lines that could not be read") {
 		t.Errorf("second brief does not report the kept lines:\n%s", out)
 	}
-	after := readState(t, w, "reader/cursors/supernova-slack.md") + readState(t, w, "reader/mail-read/work-mail.md") + readState(t, w, "reader/cursors/unparsed.md")
+	after := readState(t, w, "reader/cursors/supernova-slack.md") + readState(t, w, "reader/mail-read/work-mail/2026-11.md") + readState(t, w, "reader/cursors/unparsed.md")
 	if before != after {
 		t.Errorf("second brief changed the files:\n%s\n---\n%s", before, after)
 	}
