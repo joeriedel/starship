@@ -1782,6 +1782,11 @@ func createRun(bridge string, o runOpts, queued bool, out io.Writer) (*Snapshot,
 	if o.retryOf != "" {
 		c.Rules = o.rules
 	}
+	review := c.Design
+	if pick != nil {
+		review = append(slices.Clone(review), pick.sub.Design...)
+	}
+	c.WorkItem += designSection(bridge, c.Project, review)
 	if len(c.Rules) > 0 {
 		c.WorkItem += "\n\n## Project rules\n\n"
 		for _, r := range c.Rules {

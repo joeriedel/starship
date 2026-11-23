@@ -486,6 +486,8 @@ type TaskFile struct {
 	Vcs      TaskVcs `yaml:"vcs"`
 	// Locations are the project's code locations the task uses; each run works in one.
 	Locations []string `yaml:"locations"`
+	// Design names the project design files particular to the task, marked for review.
+	Design []string `yaml:"design"`
 }
 
 // Config is everything a run is built from, after merging the layers.
@@ -499,6 +501,7 @@ type Config struct {
 	Location      string     // the project location this run works in, when the project declares locations
 	Locations     *Locations // the project's declared locations
 	WorkItem      string     // task.md body
+	Design        []string   // design files the task names, for review
 	Subtask       string     // the subtask this run works on, when the task has subtasks
 	Pipeline      *Pipeline
 	Bindings      map[string]Binding
@@ -849,6 +852,10 @@ func loadTarget(bridge string, t Target) (*Config, error) {
 		if err := checkTaskKeys(taskFile, front); err != nil {
 			return nil, err
 		}
+		if err := checkDesignNames(bridge, c.Project, taskFile, tf.Design); err != nil {
+			return nil, err
+		}
+		c.Design = tf.Design
 		if c.Location, err = taskLocation(c.Locations, c.Project, t.Task, tf.Locations, t.Location); err != nil {
 			return nil, err
 		}

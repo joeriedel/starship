@@ -5,7 +5,7 @@ A task can be split into subtasks, each run on its own, one after another, on th
 - Layout: one file per subtask, `projects/<project>/tasks/<task>/subtasks/<NN>-<name>.md`, e.g. `01-models-schema.md`. The name is the file name without `.md`.
 - Order: by the number the name starts with, then by name. Number them in the order they must run.
 - Content: a `## Goal` and/or a `## Scope` section, as in a task. A subtask with neither is refused.
-- Frontmatter is optional. `location: <name>` sets the code location its run works in. When the task uses several locations every subtask must name one of them; otherwise it is optional.
+- Frontmatter is optional. `location: <name>` sets the code location its run works in. When the task uses several locations every subtask must name one of them; otherwise it is optional. `design: [<file>.md]` names design files (relative to `projects/<project>/design/`) particular to the subtask; the run's work item and `task open` (for the next subtask) mark them for review, and a name that is not a design file is an error. A task's own frontmatter takes the same `design:` key.
 - Never edit the task's own files to record progress; ensign keeps it in `.starship/tasks/`.
 
 Running:

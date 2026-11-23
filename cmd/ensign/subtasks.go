@@ -26,6 +26,7 @@ type subtask struct {
 	Location string
 	Goal     string
 	Scope    string
+	Design   []string // design files the subtask names, for review
 }
 
 // subtaskMark records that a subtask is done or dropped; a subtask with no mark is pending.
@@ -59,7 +60,8 @@ func loadSubtasks(taskDir string) ([]subtask, error) {
 		}
 		body := string(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))
 		var meta struct {
-			Location string `yaml:"location"`
+			Location string   `yaml:"location"`
+			Design   []string `yaml:"design"`
 		}
 		if strings.HasPrefix(body, "---\n") {
 			front, rest, err := splitFrontmatter(path)
@@ -77,6 +79,7 @@ func loadSubtasks(taskDir string) ([]subtask, error) {
 			Location: meta.Location,
 			Goal:     section(body, "Goal"),
 			Scope:    section(body, "Scope"),
+			Design:   meta.Design,
 		})
 	}
 	sort.SliceStable(subs, func(i, j int) bool {
@@ -249,6 +252,12 @@ func pickSubtask(bridge string, o runOpts) (*chosenSubtask, error) {
 	}
 	if err := checkSubtasks(subs, tf.Locations); err != nil {
 		return nil, err
+	}
+	project, _, _ := strings.Cut(o.task, "/")
+	for _, s := range subs {
+		if err := checkDesignNames(bridge, project, s.Path, s.Design); err != nil {
+			return nil, err
+		}
 	}
 	marks, err := subtaskMarks(bridge, o.task, subs)
 	if err != nil {

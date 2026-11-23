@@ -849,6 +849,9 @@ func cmdProject(args []string, out io.Writer) error {
 		if err := writeFile(p, noCodeProjectContent(name, platforms)); err != nil {
 			return err
 		}
+		if err := os.MkdirAll(designDir(bridge, name), 0o755); err != nil {
+			return err
+		}
 		fmt.Fprintf(out, "created %s, a project of tasks without code\n", relTo(bridge, p))
 		return nil
 	}
@@ -889,6 +892,9 @@ func cmdProject(args []string, out io.Writer) error {
 		}
 	}
 	if err := writeFile(p, content); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(designDir(bridge, name), 0o755); err != nil {
 		return err
 	}
 	if _, err := setWorkspace(bridge, name, dir); err != nil {
@@ -933,6 +939,9 @@ func newLocationsProject(bridge, name, file, locationList string, platforms []st
 		content += "  " + n + ": {}\n"
 	}
 	if err := writeFile(file, content); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(designDir(bridge, name), 0o755); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "created %s with locations %s; define its bindings before starting a run\n", relTo(bridge, file), strings.Join(names, ", "))
@@ -1232,11 +1241,14 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 	if err := checkTaskKeys(taskFile, front); err != nil {
 		return err
 	}
+	project, name, _ := strings.Cut(task, "/")
+	if err := checkDesignNames(bridge, project, taskFile, tf.Design); err != nil {
+		return err
+	}
 	fmt.Fprintf(out, "task       %s\n", task)
 	if p := subtaskProgress(bridge, task); p != "" {
 		fmt.Fprintf(out, "subtasks   %s\n", strings.TrimPrefix(p, "subtasks "))
 	}
-	project, name, _ := strings.Cut(task, "/")
 	noCode, err := taskHasNoCode(bridge, project, name)
 	if err != nil {
 		return err
@@ -1286,6 +1298,14 @@ func openTask(bridge, task, taskDir string, out io.Writer) error {
 			fmt.Fprintf(out, "item       %s\n", l.Line)
 		}
 	}
+	review := tf.Design
+	if pending, _, err := pendingSubtasks(bridge, task); err == nil && len(pending) > 0 {
+		if err := checkDesignNames(bridge, project, pending[0].Path, pending[0].Design); err != nil {
+			return err
+		}
+		review = append(slices.Clone(review), pending[0].Design...)
+	}
+	fmt.Fprint(out, designListing(bridge, project, review))
 	notes, err := projectNotes(bridge, project)
 	if err != nil {
 		return err

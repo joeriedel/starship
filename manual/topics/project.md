@@ -16,7 +16,9 @@ If the test stage needs services, add `@services-up` (start them) and `@services
 
 `rules:` lists standing run rules, one string per rule, under `bridge.yaml`, an extension, `project.yaml` or a location (`rules: ["Never touch the vault."]` for project `supernova`). They merge in layer order with duplicates dropped, skip the task's frontmatter, and reach every run's work item under `## Project rules` (a retry keeps the original run's) and the run summary with their source. Task-specific rules go in the task's Scope.
 
-`projects/<project>/project.md` holds session notes; `project new` doesn't create it, so write it when needed.
+`projects/<project>/project.md` holds session notes; `project new` doesn't create it, so write it when needed. It holds only instructions to the session.
+
+`project new` creates an empty `projects/<project>/design/` for the project's design: Markdown files (subfolders allowed), each starting with a one-line summary (a leading `#` is dropped). `task open` and each run's work item list them by path and summary and never print their contents. A project-wide decision belongs in a design file, not `project.md`.
 
 `task open` reports when the code's shipped `.starship/project.yaml` has bindings, pipelines, extensions (`use`) or rules that the project's `project.yaml` lacks or has with a different value; it only reports, and never changes settings. Review the differences with the user, change `project.yaml` if they want it, then run `ensign project reviewed <project>` to record the shipped values in `projects/<project>/shipped-reviewed.yaml` (commit it) so deliberate differences stay quiet until the shipped value changes again. A binding value a run on this machine would refuse (in the shipped file, `project.yaml` or a location's bindings) makes the report say it can't compare; a binding with no variant for this machine does not. The report doesn't check `@docs` rules (only a run applies them) or the reviewed record. `project reviewed` itself never changes settings: it only records the shipped values as reviewed, so use it when the user wants the bridge to keep its own value.
 
