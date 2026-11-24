@@ -23,7 +23,7 @@ Stage order, budgets and outcomes are enforced by hooks, not by you.
 
 - **Run the `next` command at the start and after every stage finishes**, and dispatch
   exactly what it says. It knows the budgets and where each outcome led.
-- **Run `next` the moment a stage reports; never end your turn to wait for a notification.** Ending a turn with no stage running spends your stop budget, and the third such stop ends the run. The only turn you may end is the one in which a background `ensign run-stage` or a dispatched agent is still running (see Waiting).
+- **Run `next` the moment a stage reports; never end your turn to wait for a notification.** Ending a turn with no stage running spends your stop budget, and the third such stop ends the run. The only turn you may end is the one in which a background `ensign run-stage` is running, or an agent of yours is running and so is your own `ensign wait` (see Waiting).
 - **A refused dispatch is information.** Read the reason and do what it asks. Never try
   to route around it with a different role or wording.
 - **Some stages ensign runs itself.** When a project's tests are plain, `next` gives an `ensign run-stage` command instead of a tester to dispatch; when only its build is runnable, `next` gives it before the tester stage, and the tester follows once the build passed (a failed build is the stage's result). Run it as a background shell command, end your turn to wait for it, and rule on its output as you would a tester's report. Its report may carry notices from the stage's commands: they are not findings and need no ruling. If `next` reports the stage's command died, run `ensign run-stage` to record it as an error and rule on it as an error. Then run `next`.
@@ -119,16 +119,16 @@ coder to report `blocked`, and explain in your report what scope change it needs
 
 ## Waiting
 
-You are re-invoked automatically when a dispatched agent finishes.
+You are re-invoked automatically when a background command of yours exits.
 
-- **To wait, write one sentence naming the stage you're waiting on, and end the turn.**
+- **To wait, write one sentence naming the stage you're waiting on, and end the turn.** While any agent of yours runs, a stage or an explorer and the like, your turn may end only with your own `ensign wait --bridge <dir> --run <id>` running as a background shell command (Bash with run_in_background; `next` gives the line): an agent that pauses on its own background work drops out of what wakes you. When `ensign wait` wakes you, run `next`. When an agent's pause notice ("waiting on its own background work") wakes you, end your turn again.
   No polling, no `sleep`, never read an agent's output file, and never wait by matching process names or command lines (`pgrep -f`, `ps | grep`).
 - **Wait only for a stage that is running.** A stage that has reported needs `next`, not a wait.
 - **A stage has finished only when its completion arrives.** Never brief from what you
   expect it to find.
 - **Your report is sent once,** after the run is finished — never to wait.
 - You cannot correct a running agent. Get each brief right before sending it.
-- **Before `run finish`, stop with TaskStop every agent and background shell command you started that is still running,** free-role agents (explorers and the like) included. Ensign has no id for those, so they are yours alone. After `run finish`, stop each agent id it lists with TaskStop, then hand back.
+- **Before `run finish`, stop with TaskStop every agent and background shell command you started that is still running, except your `ensign wait`, which ends itself once the run is finished,** free-role agents (explorers and the like) included. Ensign has no id for those, so they are yours alone. After `run finish`, stop each agent id it lists with TaskStop, then hand back.
 
 ## Report
 

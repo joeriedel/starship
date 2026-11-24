@@ -49,6 +49,8 @@ func main() {
 		err = cmdDirect(os.Args[2:], os.Stdout)
 	case "next":
 		err = cmdNext(os.Args[2:], os.Stdout)
+	case "wait":
+		err = cmdWait(os.Args[2:], os.Stdout)
 	case "dependency":
 		err = cmdDependency(os.Args[2:], os.Stdout)
 	case "p4":
@@ -207,6 +209,7 @@ func usage() {
   ensign git-catalog squash <project>/<task> [--location <name>] -m <message>
   ensign github-pr pull-request|merge|update <project>/<task> [--location <name>]
   ensign next [--bridge <dir>] [--run <id>]
+  ensign wait [--bridge <dir>] [--run <id>]
   ensign run-stage [--bridge <dir>] [--run <id>]
   ensign dependency apply --side <location> | restore [--side <location>] [--bridge <dir>] [--run <id>]
   ensign p4 open <path>... [--bridge <dir>] [--run <id>]
@@ -393,6 +396,9 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 				}
 			}
 		}
+		if in.ToolName == "TaskStop" && in.AgentID != "" {
+			noteHelperStop(bridge, &in)
+		}
 		if in.ToolName != "Agent" && in.ToolName != "Task" && in.ToolName != "SubagentHandback" {
 			if why := controlPlaneEdit(bridge, &in, runtime.GOOS); why != "" {
 				json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{
@@ -515,9 +521,15 @@ func cmdHook(event string, stdin io.Reader, stdout, stderr io.Writer) int {
 		} else {
 			out, err = hookPreToolUse(&in, r)
 		}
+		if in.ToolName == "SubagentHandback" && out == nil && err == nil && in.AgentID != "" && r.State.byAgent(in.AgentID) == nil {
+			r.State.agentEnded(in.AgentID)
+		}
 	case "PostToolUse":
 		if isFreeAgent(r, &in) {
 			out = hookRunlessAgent(bridge, event, &in)
+			if r.State.Helpers[in.AgentID] {
+				_, err = hookPostToolUse(&in, r)
+			}
 		} else {
 			out, err = hookPostToolUse(&in, r)
 		}

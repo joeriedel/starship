@@ -467,9 +467,14 @@ func TestStagesRunInTheForeground(t *testing.T) {
 		t.Fatalf("run_in_background = %v, want false", bg)
 	}
 
-	// The lead ending its turn while that stage still runs is a wait, not giving up.
+	// The lead ending its turn while that stage still runs is a wait, once its own `ensign wait` runs.
+	if r := w.stop(lead, "orchestrator", "Waiting for the coder.", false); !strings.Contains(r, "ensign wait --bridge") {
+		t.Fatalf("a lead with a stage running and no wait of its own should be told to run one: %q", r)
+	}
+	w.launched(lead, "orchestrator", "Bash", map[string]any{"backgroundTaskId": "wait1"})
+	wait := []map[string]any{{"id": "wait1", "type": "shell", "status": "running"}}
 	for i := 0; i < 5; i++ {
-		if r := w.stop(lead, "orchestrator", "Waiting for the coder.", i > 0); r != "" {
+		if r := w.stopWith(lead, "orchestrator", "Waiting for the coder.", i > 0, wait); r != "" {
 			t.Fatalf("waiting lead was blocked: %s", r)
 		}
 	}
@@ -1193,14 +1198,22 @@ func TestHeartbeatMigration(t *testing.T) {
 func TestWaitOnOwnBackgroundTask(t *testing.T) {
 	w := newWorld(t)
 	lead := w.startLead()
-	// The lead waits on a background explorer while no stage is running.
+	// The lead waits on a background explorer while no stage is running: its own `ensign wait` is what lets it.
 	w.launched(lead, "orchestrator", "Agent", map[string]any{"status": "async_launched", "agentId": "explorer1"})
 	task := []map[string]any{{"id": "explorer1", "type": "subagent", "status": "running"}}
-	if r := w.stopWith(lead, "orchestrator", "Waiting for the explorer.", false, task); r != "" {
-		t.Fatalf("a lead waiting on its own background agent should be let stop: %s", r)
+	if r := w.stopWith(lead, "orchestrator", "Waiting for the explorer.", false, task); !strings.Contains(r, "ensign wait --bridge") {
+		t.Fatalf("a lead whose only wait is a background agent should be told to run ensign wait: %q", r)
 	}
-	if st := w.state(); *st.byAgent(lead).StopsLeft != stopBudget {
-		t.Fatalf("a wait must not spend the stop budget, got %d left", *st.byAgent(lead).StopsLeft)
+	if left := w.stopsLeft(lead); left != stopBudget {
+		t.Fatalf("the first such block is free, got %d left", left)
+	}
+	w.launched(lead, "orchestrator", "Bash", map[string]any{"backgroundTaskId": "wait1"})
+	task = append(task, map[string]any{"id": "wait1", "type": "shell", "status": "running"})
+	if r := w.stopWith(lead, "orchestrator", "Waiting for the explorer.", false, task); r != "" {
+		t.Fatalf("a lead waiting on its own ensign wait should be let stop: %s", r)
+	}
+	if left := w.stopsLeft(lead); left != stopBudget {
+		t.Fatalf("a wait must not spend the stop budget, got %d left", left)
 	}
 
 	// A stage waits on a background Bash command.

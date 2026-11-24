@@ -513,8 +513,15 @@ func backgroundLaunch(in *HookInput) string {
 // A TaskStop
 // by the owner forgets the file: a stopped task no longer blocks a handback.
 func hookPostToolUse(in *HookInput, r *RunFiles) (any, error) {
-	if callerDispatch(r, in) == nil {
+	caller := callerDispatch(r, in)
+	helper := caller == nil && r.State.Helpers[in.AgentID]
+	if caller == nil && !helper {
 		return nil, nil
+	}
+	lead := false
+	if caller != nil {
+		s := (&machine{snap: r.Snap, st: r.State}).stage(caller.Stage)
+		lead = s != nil && s.isLead()
 	}
 	if in.ToolName == "TaskStop" {
 		id, _ := in.ToolInput["task_id"].(string)
@@ -523,6 +530,13 @@ func hookPostToolUse(in *HookInput, r *RunFiles) (any, error) {
 		}
 		if id != "" && r.State.Tasks[id] == in.AgentID {
 			delete(r.State.TaskFiles, id)
+			if helper {
+				delete(r.State.Tasks, id)
+				delete(r.State.Shells, id)
+			}
+		}
+		if lead && r.State.Helpers[id] {
+			r.State.agentEnded(id)
 		}
 		return nil, nil
 	}
@@ -539,15 +553,35 @@ func hookPostToolUse(in *HookInput, r *RunFiles) (any, error) {
 			r.State.Shells = map[string]bool{}
 		}
 		r.State.Shells[task] = true
-		if path := taskOutputFile(task); path != "" {
+		if cmd, _ := in.ToolInput["command"].(string); waitCommandRe.MatchString(cmd) {
+			if r.State.Waits == nil {
+				r.State.Waits = map[string]bool{}
+			}
+			r.State.Waits[task] = true
+		}
+		// A helper's TaskFiles would make its handback refuse, which is not asked of it.
+		if path := taskOutputFile(task); path != "" && !helper {
 			if r.State.TaskFiles == nil {
 				r.State.TaskFiles = map[string]string{}
 			}
 			r.State.TaskFiles[task] = path
 		}
+	} else if lead {
+		caller.WaitBlocked = false
+		if sub, _ := in.ToolInput["subagent_type"].(string); !r.Snap.Pipeline.hasStageRole(sub) {
+			if r.State.Helpers == nil {
+				r.State.Helpers = map[string]bool{}
+			}
+			if !slices.Contains(r.State.Ended, task) {
+				r.State.Helpers[task] = true
+			}
+		}
 	}
 	return nil, nil
 }
+
+// waitCommandRe recognizes a shell command that runs `ensign wait`, with or without a path before ensign.
+var waitCommandRe = regexp.MustCompile(`(^|[\s;&|(/\\])ensign(\.exe)?\s+wait(\s|$|[;&|)])`)
 
 var taskIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
@@ -599,11 +633,11 @@ func outputShowsRunning(path string) bool {
 	return !exitLineRe.MatchString(line)
 }
 
-// runningTasks lists the background commands the agent launched whose output file shows them still running.
+// runningTasks lists the background commands the agent launched whose output file shows them still running. An `ensign wait` of a finished run is left out: it is about to exit, and its exit line may not be written yet.
 func runningTasks(r *RunFiles, agent string) []string {
 	var ids []string
 	for id, path := range r.State.TaskFiles {
-		if r.State.Tasks[id] == agent && outputShowsRunning(path) {
+		if r.State.Tasks[id] == agent && !(r.State.Waits[id] && r.State.terminal()) && outputShowsRunning(path) {
 			ids = append(ids, id)
 		}
 	}
@@ -621,12 +655,96 @@ func ownsInFlight(r *RunFiles, in *HookInput) bool {
 	return false
 }
 
+// leadShellExcusesStop reports whether a background command of the lead's own excuses its stop. An `ensign wait` does not when no dispatch is running and the lead has a stage result to read or the run is at its gate: the wait would end or never end, and the lead must act first.
+func leadShellExcusesStop(r *RunFiles, in *HookInput, scope string) bool {
+	waitOnly := false
+	for _, t := range in.BackgroundTasks {
+		if r.State.Shells[t.ID] && r.State.Tasks[t.ID] == in.AgentID {
+			if !r.State.Waits[t.ID] {
+				return true
+			}
+			waitOnly = true
+		}
+	}
+	if !waitOnly {
+		return false
+	}
+	if dispatchesRunning(r.Snap, r.State, scope) {
+		return true
+	}
+	return !r.State.reportedSinceLeadCall(scope) && r.State.Gate == ""
+}
+
+// noteHelperStop records a helper as finished when a lead's TaskStop names it, at the attempt: the helper may already be dead, and the call then errors with no PostToolUse. It only records, and any failure is left to the call's other hooks.
+func noteHelperStop(bridge string, in *HookInput) {
+	r, err := openHookRun(bridge, in)
+	if r == nil || err != nil {
+		return
+	}
+	defer r.close()
+	caller := callerDispatch(r, in)
+	if caller == nil {
+		return
+	}
+	if s := (&machine{snap: r.Snap, st: r.State}).stage(caller.Stage); s == nil || !s.isLead() {
+		return
+	}
+	id, _ := in.ToolInput["task_id"].(string)
+	if id == "" {
+		id, _ = in.ToolInput["shell_id"].(string)
+	}
+	if r.State.Helpers[id] {
+		r.State.agentEnded(id)
+		r.save()
+	}
+}
+
+// leadWaitReason is the block for a lead that ends its turn with an agent running and no background command of its own: run `ensign wait`, and stop with TaskStop an agent that ended without reporting. At the closing gate with only helpers running, that command would end only once the helpers are gone, which a live helper that never ends would prevent, so the lead is sent to stop them and finish the run instead.
+func leadWaitReason(r *RunFiles, m *machine, scope string) string {
+	helpers := liveHelpers(r.Snap, r.State)
+	ids := strings.Join(helpers, ", ")
+	if r.State.Gate != "" && !dispatchesRunning(r.Snap, r.State, scope) {
+		return "agents you started are still running, and ending your turn now would lose your wake-up. Stop each with TaskStop (helper agent ids: " + ids + "), then finish the run. " + m.expect(scope)
+	}
+	reason := fmt.Sprintf("an agent you started is still running, and ending your turn without a background command of your own would lose your wake-up. Run `ensign wait --bridge %s --run %s` as a background shell command (Bash with run_in_background), then end your turn. If a stage agent has failed and will not report, stop your `ensign wait` with TaskStop and end your turn; the run then ends as an error.", shellQuote(r.Snap.Bridge), r.State.Run)
+	if len(helpers) > 0 {
+		reason += " If one of these agents has already ended without reporting, stop it with TaskStop; the helpers still recorded as running are: " + ids + "."
+	}
+	return reason
+}
+
+// pausedOnTask reports whether the agent that stopped has a background task of its own in flight, so that it is paused, not finished. Over-holding is deliberate: an ownerless Monitor of the session can keep a helper paused until its handback, the lead's TaskStop or the run's end, which never costs a wake-up. A task whose recorded owner is another agent is not its own. A task with no recorded owner counts if it is neither a shell command nor an agent (a Monitor, say), and, unless strict, whatever it is, since it may be the agent's own.
+func pausedOnTask(r *RunFiles, in *HookInput, strict bool) bool {
+	for _, t := range in.BackgroundTasks {
+		owner := r.State.Tasks[t.ID]
+		switch {
+		case t.ID == in.AgentID || owner != "" && owner != in.AgentID:
+		case owner == in.AgentID:
+			return true
+		case !strict || t.Type != "shell" && t.Type != "subagent" && t.Type != "agent":
+			return true
+		}
+	}
+	return false
+}
+
 func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 	d := r.State.byAgent(in.AgentID)
+	if d == nil && r.State.Helpers[in.AgentID] {
+		// A helper that stops with a background task of its own in flight is paused, not finished.
+		if !pausedOnTask(r, in, true) {
+			r.State.agentEnded(in.AgentID)
+		}
+		return nil, nil
+	}
 	if d == nil {
 		run, id := readTag(in.AgentTranscriptPath)
 		if run != r.State.Run {
-			return nil, nil // not part of this run: a free role, or unrelated
+			// Not part of this run: a free role, or unrelated. An untagged agent may be a helper whose launch is not recorded yet, and its finish must not be lost.
+			if run == "" && in.AgentID != "" && !pausedOnTask(r, in, false) {
+				r.State.agentEnded(in.AgentID)
+			}
+			return nil, nil
 		}
 		if d = r.State.dispatch(id); d == nil {
 			return nil, fmt.Errorf("dispatch %s from the transcript tag is not in run %s", id, run)
@@ -654,13 +772,30 @@ func hookSubagentStop(in *HookInput, r *RunFiles) (any, error) {
 			d.EndedTurnAfterEnd = true
 			return nil, nil
 		}
-		if m.runningIn(s.ID) != "" {
-			// Stages run in the foreground, so this means one ran in the background anyway.
-			// Ending the turn is how the lead waits for it; blocking would force filler.
-			return nil, nil
+		if d.Handback == "" && leadShellExcusesStop(r, in, s.ID) {
+			return nil, nil // waiting on a background command of its own, which wakes it
 		}
-		if d.Handback == "" && ownsInFlight(r, in) {
-			return nil, nil // waiting on its own background task
+		// With no dispatch running and no gate, an unread result is read first: the stop after it can then be excused by a wait.
+		readFirst := r.State.Gate == "" && !dispatchesRunning(r.Snap, r.State, s.ID) && r.State.reportedSinceLeadCall(s.ID)
+		if !readFirst && agentsRunning(r.Snap, r.State, s.ID) {
+			// A paused agent drops out of the lead's live background work, so only a background command of the lead's own keeps its wake-up.
+			reason := leadWaitReason(r, m, s.ID)
+			if !d.WaitBlocked {
+				d.WaitBlocked = true
+				r.State.log("blocked", s.ID, d.ID, "lead stopped with an agent running and no ensign wait")
+				return block(reason), nil
+			}
+			if d.spendStop() {
+				m.fail("lead-stopped", "the lead stopped before the pipeline finished")
+				d.Done = true
+				d.EndedTurnAfterEnd = true
+				return nil, nil
+			}
+			r.State.log("blocked", s.ID, d.ID, "lead stopped with an agent running and no ensign wait")
+			return block(reason), nil
+		}
+		if m.runningIn(s.ID) != "" && !agentsRunning(r.Snap, r.State, s.ID) {
+			return nil, nil // ensign runs this stage itself, and its command wakes the lead
 		}
 		var next strings.Builder
 		writeNext(r, &next)
@@ -1248,8 +1383,10 @@ func openRunByFlags(args []string, usage string) (*RunFiles, error) {
 }
 
 // leadScope is the scope whose stages the session or lead dispatches.
-func leadScope(r *RunFiles) string {
-	if lead := r.Snap.Pipeline.Stages[0]; lead.isLead() {
+func leadScope(r *RunFiles) string { return leadScopeOf(r.Snap) }
+
+func leadScopeOf(snap *Snapshot) string {
+	if lead := snap.Pipeline.Stages[0]; lead.isLead() {
 		return lead.ID
 	}
 	return ""

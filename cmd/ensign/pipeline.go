@@ -259,6 +259,7 @@ func (m *machine) resume(answer string, extra map[string]int) error {
 	}
 	question := st.Reason
 	st.Status, st.Reason, st.Approved, st.Finished = "running", "", true, false
+	st.Helpers = nil
 	st.Answers = append(st.Answers, fmt.Sprintf("Q: %s\nA: %s", question, answer))
 	st.log("resumed", "", "", answer)
 	p := st.Resume
@@ -315,19 +316,34 @@ func (m *machine) expect(scope string) string {
 	if s.Parallel != nil {
 		left := len(s.Dimensions) - len(sc.Branches)
 		if left > 0 {
-			return fmt.Sprintf("Dispatch %d %s agent(s) for stage %q — one per focus (%s); each is assigned its focus automatically.",
-				left, s.Role, s.ID, strings.Join(s.Dimensions, ", "))
+			return fmt.Sprintf("Dispatch %d %s agent(s) for stage %q — one per focus (%s); each is assigned its focus automatically.%s",
+				left, s.Role, s.ID, strings.Join(s.Dimensions, ", "), m.waitAdvice(scope, true))
 		}
-		return fmt.Sprintf("Wait: stage %q has %d of %d %s agents still running.", s.ID, running, len(s.Dimensions), s.Role)
+		return fmt.Sprintf("Wait: stage %q has %d of %d %s agents still running.%s", s.ID, running, len(s.Dimensions), s.Role, m.waitAdvice(scope, false))
 	}
 	if running > 0 {
-		return fmt.Sprintf("Wait: stage %q (%s) is still running.", s.ID, s.Role)
+		if plainStage(m.snap, s) {
+			return fmt.Sprintf("Wait: stage %q (%s) is still running.", s.ID, s.Role)
+		}
+		return fmt.Sprintf("Wait: stage %q (%s) is still running.%s", s.ID, s.Role, m.waitAdvice(scope, false))
 	}
 	if plainStage(m.snap, s) {
 		return fmt.Sprintf("Stage %q is run by ensign itself; start no agent for it. Run `ensign run-stage --bridge %s --run %s` as a background shell command (Bash with run_in_background), then end your turn to wait for it. When it completes, rule on its output as you would a tester's report and run `ensign next`.",
 			s.ID, shellQuote(m.snap.Bridge), m.st.Run)
 	}
-	return fmt.Sprintf("Dispatch stage %q: one %s agent.", s.ID, s.Role)
+	return fmt.Sprintf("Dispatch stage %q: one %s agent.%s", s.ID, s.Role, m.waitAdvice(scope, true))
+}
+
+// waitAdvice is what next tells a lead about waiting for its agents: its own background `ensign wait`, without which a paused agent can cost it its wake-up. It is given only for the scope `ensign wait` watches.
+func (m *machine) waitAdvice(scope string, dispatching bool) string {
+	if scope != leadScopeOf(m.snap) {
+		return ""
+	}
+	cmd := fmt.Sprintf("`ensign wait --bridge %s --run %s`", shellQuote(m.snap.Bridge), m.st.Run)
+	if dispatching {
+		return " After dispatching, run " + cmd + " as a background shell command (Bash with run_in_background), then end your turn to wait; it ends once no agent of yours is running, and you then run `ensign next`. If a stage agent has failed and will not report, stop your `ensign wait` with TaskStop and end your turn; the run then ends as an error."
+	}
+	return " If " + cmd + " is not running as a background shell command (Bash with run_in_background), start it, then end your turn to wait; when it ends, run `ensign next`. If a stage agent has failed and will not report, stop your `ensign wait` with TaskStop and end your turn; the run then ends as an error."
 }
 
 func (m *machine) running(scope, stage string) int {

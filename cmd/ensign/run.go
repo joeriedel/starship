@@ -86,6 +86,8 @@ type Dispatch struct {
 	Reconciled string `json:"reconciled,omitempty"`
 	// Prebuild marks a dispatch that is ensign's own build before a tester stage (see prebuildStage): it ends as pass, when it only records ScopeState.Built, or as the stage's outcome.
 	Prebuild bool `json:"prebuild,omitempty"`
+	// WaitBlocked is set on a lead once its free stop block to run `ensign wait` was used, and cleared at each new background launch by the lead.
+	WaitBlocked bool `json:"wait_blocked,omitempty"`
 }
 
 type ScopeState struct {
@@ -153,6 +155,9 @@ type State struct {
 	Tasks     map[string]string `json:"tasks,omitempty"`      // background task id -> id of the agent that launched it
 	TaskFiles map[string]string `json:"task_files,omitempty"` // background Bash task id -> its output file, while it may still be running
 	Shells    map[string]bool   `json:"shells,omitempty"`     // the ids in Tasks that are background Bash commands, not background agents
+	Helpers   map[string]bool   `json:"helpers,omitempty"`    // the helper agents (not stages) the lead started that have not finished, by agent id
+	Waits     map[string]bool   `json:"waits,omitempty"`      // the ids in Shells that are an `ensign wait`
+	Ended     []string          `json:"ended,omitempty"`      // the latest agents seen finishing, so a launch record that arrives after its agent's finish does not make it a running helper
 
 	Sequence bool `json:"sequence,omitempty"` // the run is a step of its session's sequence
 
@@ -645,6 +650,9 @@ func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
 			return openSpawnRun(bridge, in)
 		}
 		r, err := findAgentRun(bridge, in)
+		if r == nil && err == nil && helperEvent(in) {
+			return findHelperRun(bridge, in, live)
+		}
 		if r == nil || err != nil {
 			return r, err
 		}
@@ -674,6 +682,54 @@ func openHookRun(bridge string, in *HookInput) (*RunFiles, error) {
 		return ar, err
 	}
 	return openSoleSessionRun(bridge, in.SessionID)
+}
+
+// helperEvent reports a hook call by which a helper agent is found among several live runs: its stop, its handback and its post-tool call. Its other calls keep being refused as those of an agent no run knows.
+func helperEvent(in *HookInput) bool {
+	return in.Event == "SubagentStop" || in.Event == "PostToolUse" || in.Event == "PreToolUse" && in.ToolName == "SubagentHandback"
+}
+
+// findHelperRun opens the live run, of the given ids, whose state records the calling agent as launched by a lead's agent and that is no dispatch. It returns nil, nil when there is none.
+func findHelperRun(bridge string, in *HookInput, live []string) (*RunFiles, error) {
+	for _, id := range live {
+		var st State
+		if readRunState(filepath.Join(runsDir(bridge), id), &st) != nil || !st.isHelperLaunch(in.AgentID) {
+			continue
+		}
+		r, err := openRun(bridge, id)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !r.State.terminal() && r.State.isHelperLaunch(in.AgentID) {
+			return r, nil
+		}
+		r.close()
+	}
+	return nil, nil
+}
+
+// endedBound is how many finished agents State.Ended keeps.
+const endedBound = 64
+
+// agentEnded records that an agent finished: it is no running helper, and a launch recorded later does not make it one.
+func (st *State) agentEnded(id string) {
+	delete(st.Helpers, id)
+	if id == "" || slices.Contains(st.Ended, id) {
+		return
+	}
+	st.Ended = append(st.Ended, id)
+	if len(st.Ended) > endedBound {
+		st.Ended = st.Ended[len(st.Ended)-endedBound:]
+	}
+}
+
+// isHelperLaunch reports whether the agent was launched in the background by a dispatch's agent and is no dispatch itself.
+func (st *State) isHelperLaunch(agent string) bool {
+	owner := st.Tasks[agent]
+	return owner != "" && !st.Shells[agent] && st.byAgent(owner) != nil && st.byAgent(agent) == nil
 }
 
 // markRetired marks an open run as error and releases it. The lock is released before any
