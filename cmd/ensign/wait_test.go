@@ -361,7 +361,7 @@ func TestNextTellsTheLeadOfAParallelStageToRunEnsignWait(t *testing.T) {
 		}
 	}
 	got = w.next()
-	if !strings.HasPrefix(got, "Wait: stage ") || !strings.Contains(got, "still running.") || !strings.Contains(got, want) {
+	if !strings.Contains(got, "\nWait: stage \"review\" has 2 of 2 reviewer agents still running.") || !strings.Contains(got, want) || !strings.Contains(got, "run_in_background") {
 		t.Fatalf("next: %s", got)
 	}
 }
