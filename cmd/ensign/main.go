@@ -812,15 +812,12 @@ func hookSessionStart(in *HookInput, bridge string, stdout, stderr io.Writer) in
 		notes = notesReadLine(bridge, in.SessionID, sessionTask(bridge, in.SessionID))
 	}
 	ctx := head + lines.render(bridge, in.SessionID, head, contextChars(notes)) + notes
-	show := "Starship ready · bridge " + filepath.Base(bridge)
+	show := readyLine(version, bridge)
 	if restart {
 		show += " · role definitions changed: restart claude for them to apply"
 	}
 	if guardMissing {
 		show += " · Bash guards missing: see .claude/settings.json"
-	}
-	if version != "" && version != "dev" {
-		show += " · " + version
 	}
 	if keep, err := bf.keepRuns(); err != nil {
 		fmt.Fprintln(stderr, "starship:", err)
@@ -1148,4 +1145,13 @@ func finishIfTerminal(r *RunFiles, wasTerminal bool, stderr io.Writer) error {
 
 func readyHeading(version, bridge string) string {
 	return fmt.Sprintf("STARSHIP-READY ensign %s bridge %s\n", version, bridge)
+}
+
+// readyLine is the head of the line shown to the user at session start: the version, when there is one, right after "bridge", then the bridge's name.
+func readyLine(version, bridge string) string {
+	head := "Starship ready · bridge"
+	if version != "" && version != "dev" {
+		head += " v" + strings.TrimPrefix(version, "v")
+	}
+	return head + " (" + filepath.Base(bridge) + ")"
 }
