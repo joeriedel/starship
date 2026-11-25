@@ -68,9 +68,12 @@ func editGuard(bridge string, in *HookInput, goos string) (reason, warning strin
 			}
 			if _, declared := rules[in.AgentType]; declared {
 				static = append(static, filepath.Join(bridge, "reader"))
+				if d := sessionDownloads(bridge, in.SessionID, goos); d != "" {
+					static = append(static, d)
+				}
 			}
 		}
-		// The confining kinds confine when they grant a folder; with none, the other declared kinds apply.
+		// The confining kinds confine when they grant a folder (a declared reader's own folder and its session's downloads folder); with none, the other declared kinds apply.
 		if len(static) > 0 || !may("code") && !may("docs") && !may("run") {
 			resolved := resolveEditTarget(expanded, in.Cwd, goos)
 			for _, folder := range static {
@@ -370,6 +373,19 @@ func stripExtendedPrefix(p, goos string) string {
 		return `\\` + p[8:]
 	}
 	return strings.TrimPrefix(p, `\\?\`)
+}
+
+// sessionDownloads is the folder a reader may write a downloaded file to, <bridge>/.starship/downloads/<session id>, or "" when the session id is missing or not a plain file name on every platform, or when a link moves the folder out of the bridge's .starship.
+func sessionDownloads(bridge, sid, goos string) string {
+	if sid == "" || strings.ContainsAny(sid, `/\:*?"<>|`) || strings.Contains(sid, "..") || strings.TrimSpace(sid) != sid || strings.HasSuffix(sid, ".") || windowsReserved(sid) {
+		return ""
+	}
+	folder := filepath.Join(bridge, ".starship", "downloads", sid)
+	want := filepath.Join(resolveEditFolder(filepath.Join(bridge, ".starship"), goos), "downloads", sid)
+	if foldPath(resolveEditFolder(folder, goos), goos) != foldPath(want, goos) {
+		return ""
+	}
+	return folder
 }
 
 // foldPath puts a path in the form used to compare paths: slashes as separators, cleaned, and lower case where the file system ignores case.

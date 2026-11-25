@@ -444,3 +444,97 @@ func TestWindowsGuardsJudgeExpandedForm(t *testing.T) {
 		}
 	}
 }
+
+func TestReaderDownloadsFolder(t *testing.T) {
+	w, tmp := declaredGuardWorld(t)
+	own := filepath.Join(w.bridge, ".starship", "downloads", w.sid)
+	allowed := []string{filepath.Join(own, "report.pdf"), filepath.Join(own, "a", "b.txt")}
+	for _, p := range allowed {
+		w.expectEdit("rd", "reader", p, false)
+	}
+	sep := string(filepath.Separator)
+	refused := []string{
+		filepath.Join(w.bridge, ".starship", "downloads", "other", "report.pdf"),
+		filepath.Join(w.bridge, ".starship", "x"),
+		filepath.Join(w.bridge, ".starship", "downloads", "x"),
+		filepath.Join(w.bridge, ".starship", "sessions", "x"),
+		filepath.Join(w.bridge, ".starship", "runs", "x"),
+		own + sep + ".." + sep + "other" + sep + "x",
+		own + sep + ".." + sep + ".." + sep + "x",
+		own + sep + ".." + sep + ".." + sep + ".." + sep + "bridge.yaml",
+		filepath.Join(w.bridge, "notes", "x"),
+		filepath.Join(tmp, "x"),
+	}
+	for _, p := range refused {
+		w.expectEdit("rd", "reader", p, true)
+	}
+	refusal := func() string {
+		t.Helper()
+		refused, why := w.tryEdit("rd", "reader", filepath.Join(w.bridge, "notes", "x"))
+		if !refused {
+			t.Fatal("a reader's edit of notes/x must be refused")
+		}
+		return why
+	}
+	if why := refusal(); !strings.Contains(why, own) || !strings.Contains(why, filepath.Join(w.bridge, "reader")) || !strings.Contains(why, "the only folders") {
+		t.Errorf("the refusal must name both folders: %s", why)
+	}
+
+	// Every other agent type keeps what it had.
+	roles, _ := filepath.Glob(filepath.Join(repoRoot(t), "roles", "*.md"))
+	for _, f := range roles {
+		role := strings.TrimSuffix(filepath.Base(f), ".md")
+		if role == "reader" {
+			continue
+		}
+		w.expectEdit("a1", role, filepath.Join(own, "report.pdf"), true)
+	}
+	w.expectEdit("a1", "general-purpose", filepath.Join(own, "report.pdf"), true)
+	w.expectEdit("a1", "", filepath.Join(own, "report.pdf"), true)
+
+	// A missing or non-plain session id grants nothing, and neither does a bridge that does not declare the reader.
+	for _, sid := range []string{"", ".", "..", "a/b", `a\b`, "a:b", "a:stream", "a.", "a ", " a", "CON", "nul.txt", "a*b"} {
+		old := w.sid
+		w.sid = sid
+		w.expectEdit("rd", "reader", filepath.Join(w.bridge, ".starship", "downloads", sid, "x"), true)
+		w.expectEdit("rd", "reader", filepath.Join(w.bridge, ".starship", "downloads", "x"), true)
+		w.expectEdit("rd", "reader", filepath.Join(w.bridge, "reader", "x"), false)
+		w.sid = old
+	}
+	yaml := filepath.Join(w.bridge, "bridge.yaml")
+	write(t, yaml, "control-plane:\n  path: "+repoRoot(t)+"\n")
+	w.expectEdit("rd", "reader", filepath.Join(own, "report.pdf"), true)
+}
+
+func TestReaderDownloadsFolderLinks(t *testing.T) {
+	w, _ := declaredGuardWorld(t)
+	outside := t.TempDir()
+	downloads := filepath.Join(w.bridge, ".starship", "downloads")
+	own := filepath.Join(downloads, w.sid)
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, own); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	w.expectEdit("rd", "reader", filepath.Join(own, "x"), true)
+	w.expectEdit("rd", "reader", filepath.Join(outside, "x"), true)
+	os.Remove(own)
+
+	if err := os.MkdirAll(own, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(own, "link")); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	w.expectEdit("rd", "reader", filepath.Join(own, "link", "x"), true)
+	w.expectEdit("rd", "reader", filepath.Join(own, "ok"), false)
+
+	// A downloads folder that is a link moves the session's folder.
+	os.RemoveAll(downloads)
+	if err := os.Symlink(outside, downloads); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	w.expectEdit("rd", "reader", filepath.Join(own, "x"), true)
+	w.expectEdit("rd", "reader", filepath.Join(outside, w.sid, "x"), true)
+}

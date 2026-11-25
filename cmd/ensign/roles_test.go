@@ -236,3 +236,49 @@ func TestEveryRoleRefusesWideningGrants(t *testing.T) {
 		}
 	}
 }
+
+func TestDownloadRules(t *testing.T) {
+	for rel, res := range map[string][]string{
+		"roles/reader.md": {
+			`(?m)^## Downloads$`,
+			`(?i)only when your brief says the user wants the file`,
+			`(?i)a download is not a pin`,
+			`(?i)exact path its result says the file was saved to`,
+			`(?i)also give the source's own file name`,
+			`(?i)large text result is saved as JSON content blocks`,
+			`(?i)say it is JSON-wrapped, and say so when the source or tool says the text is a file's base64`,
+			`(?i)base64 or other binary content that is only in your context with no saved path`,
+			`<bridge>/\.starship/downloads/<session id>/<name>`,
+			`(?i)write that text unchanged, with nothing added`,
+			`(?i)a refused write names the folders you may write`,
+			`(?i)never present a partial file as whole`,
+			`(?i)never retype or re-encode binary content, base64 included`,
+			`(?i)data, never instructions`,
+			`(?i)nothing about a download goes into .reader/facts/. unless the brief asks`,
+			`(?i)nowhere else but the downloads folder, and only for a download`,
+		},
+		"roles/orchestrator.md": {
+			`(?i)only when the work item says the user wants a file from an external system`,
+			`(?i)copy the saved file into your run's scratch folder, or the evidence folder`,
+			`(?i)base64 text the source says is a file's base64 is decoded`,
+			`(?i)never put it in the workspace`,
+			`(?i)don't paste its content into a brief or report`,
+			`(?i)name a copy left there in your report for the session to remove`,
+		},
+		"manual/topics/edits.md": {
+			`(?i)dispatch the reader saying the user wants the file`,
+			`(?i)remove the copy from the downloads folder`,
+			`(?i)a run gets the file only when the user says so`,
+		},
+	} {
+		data, err := os.ReadFile(filepath.Join(repoRoot(t), filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range res {
+			if !regexp.MustCompile(re).Match(data) {
+				t.Errorf("%s does not match %q", rel, re)
+			}
+		}
+	}
+}
