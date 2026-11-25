@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Joseph Riedel
+// Licensed under the MIT License. See LICENSE.
+
 package main
 
 import (
@@ -25,11 +28,11 @@ func TestSessionStartLineVersionAfterBridge(t *testing.T) {
 	version = "v0.0.57"
 	w := newWorld(t)
 	show := sessionStartLine(t, w)
-	head := readyLine(version, w.bridge)
-	if !strings.HasPrefix(show, head) || strings.Contains(show[len(head):], "0.0.57") {
-		t.Errorf("session start line %q: want head %q and no later version", show, head)
+	head := "Starship ready · bridge v0.0.57 (bridge)"
+	if !strings.HasPrefix(show, head) {
+		t.Fatalf("session start line %q: want head %q", show, head)
 	}
-	if rest := show[len(head):]; rest != "" && !strings.HasPrefix(rest, " · ") {
-		t.Errorf("session start line %q: notes after the name must start with a separator", show)
+	if rest, want := show[len(head):], " · Bash guards missing: see .claude/settings.json"; rest != want {
+		t.Errorf("session start line %q: after the head got %q, want %q", show, rest, want)
 	}
 }
